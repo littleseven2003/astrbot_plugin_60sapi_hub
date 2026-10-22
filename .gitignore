@@ -1,0 +1,29 @@
+# Python and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+# Local runtime / credentials / evidence
+.local/
+work/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.log
+/data/
+# Build and editor artifacts
+node_modules/
+dist/
+build/
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Require an English category and a meaningful Chinese subject."""
+import re
+import sys
+from pathlib import Path
+
+ALLOWED = r"feat|fix|docs|refactor|perf|test|build|ci|chore|style|revert"
+subject = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()[0:1]
+subject = subject[0] if subject else ""
+match = re.fullmatch(rf"({ALLOWED}): (\S.*)", subject)
+if not match or not re.search(r"[\u3400-\u9fff]", match.group(2)):
+    print("提交标题必须为 英文类别: 中文描述，例如 feat: 支持资讯组合。", file=sys.stderr)
+    sys.exit(1)
+if len(subject) > 100:
+    print("提交标题请控制在 100 个字符以内，细节写入正文。", file=sys.stderr)
+    sys.exit(1)

@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Validate pushed revisions, annotated release tags and protected history."""
+import datetime
+import re
+import subprocess
+import sys
+
+NUMBER = r"(?:0|[1-9][0-9]*)"
+PRE_ID = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+VERSION = re.compile(rf"v{NUMBER}\.{NUMBER}\.{NUMBER}(?:-{PRE_ID}(?:\.{PRE_ID})*)?")
+
+
+def git(*args):
+    return subprocess.run(["git", *args], text=True, capture_output=True)
+
+
+def reject(message):
+    print("推送被拒绝：" + message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def is_zero(sha):
+    return bool(sha) and set(sha) == {"0"}
+
+
+def plugin_version(revision):
+    result = git("show", revision + ":metadata.yaml")
+    if result.returncode:
+        # Documentation-only revisions legitimately have no plugin metadata.
+        exists = git("cat-file", "-e", revision + ":metadata.yaml")
+        if exists.returncode:
+            return None
+        reject("无法读取 metadata.yaml")
+    values = re.findall(r"^version:\s*(.*?)\s*$", result.stdout, re.MULTILINE)
+    if len(values) != 1:
+        reject("metadata.yaml 必须有一个顶层 version 字段")
+    value = values[0].split("#", 1)[0].strip().strip("\"'")
+    if not VERSION.fullmatch(value):
+        reject("metadata.yaml 的版本须为 vX.Y.Z 或合法 SemVer 预发布版本")
+    return value
+
+
+for line in sys.stdin:
+    parts = line.split()
+    if len(parts) != 4:
+        reject("无效的 pre-push 输入")
+    local_ref, local_sha, remote_ref, remote_sha = parts
+    protected = remote_ref == "refs/heads/main" or remote_ref.startswith("refs/tags/")
+    if is_zero(local_sha):
+        if protected:
+            reject("不允许删除 main 或发布标签")
+        continue
+    commit = git("rev-parse", local_sha + "^{commit}")
+    if commit.returncode:
+        reject("推送对象必须指向提交")
+    revision = commit.stdout.strip()
+    version = plugin_version(revision)
+    if remote_ref == "refs/heads/main" and not is_zero(remote_sha):
+        if git("merge-base", "--is-ancestor", remote_sha, revision).returncode:
+            reject("main 只允许快进更新；先 fetch 并检查历史")
+    if not remote_ref.startswith("refs/tags/"):
+        continue
+    tag = remote_ref[len("refs/tags/"):]
+    if not VERSION.fullmatch(tag):
+        reject("发布标签必须采用 vX.Y.Z 或合法 SemVer 预发布格式")
+    if not is_zero(remote_sha) and remote_sha != local_sha:
+        reject("已发布标签不可覆盖")
+    if git("cat-file", "-t", local_sha).stdout.strip() != "tag":
+        reject("发布必须使用带注释标签 git tag -a")
+    if version != tag:
+        reject("标签须与该提交 metadata.yaml 中的 version 一致；纯文档不可发布程序标签")
+    changelog = git("show", revision + ":docs/changelog.md")
+    heading = re.search(
+        rf"^## \[{re.escape(tag[1:])}\] - (\d{{4}}-\d{{2}}-\d{{2}})\s*$",
+        changelog.stdout, re.MULTILINE,
+    )
+    if changelog.returncode or not heading:
+        reject("变更记录须包含与标签一致且带日期的版本标题")
+    try:
+        datetime.date.fromisoformat(heading.group(1))
+    except ValueError:
+        reject("变更记录中的发布日期无效")

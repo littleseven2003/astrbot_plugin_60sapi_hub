@@ -1,0 +1,5 @@
+name: astrbot_plugin_60sapi_hub
+desc: 接入 60s API 的资讯聚合与订阅插件，业务功能尚在开发中
+version: v0.1.0-dev.1
+author: littleseven2003
+repo: https://github.com/littleseven2003/astrbot_plugin_60sapi_hub

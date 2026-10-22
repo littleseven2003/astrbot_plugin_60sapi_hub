@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。当前仅文档，代码、依赖和测试目录随功能实现创建。
+本项目按个人开源项目维护。当前已建立最小插件入口和程序版本源，业务功能尚未实现；代码、依赖和测试目录随后续功能按需创建。
 
 ## 获取与本地设置
 
@@ -14,11 +14,99 @@ git config core.hooksPath .githooks
 
 ## 开发环境
 
-先选择并记录实际 AstrBot release/commit、Python 版本和测试平台，对照源码核验生命周期、配置、可视化视图、Web API、发送、渲染与存储能力。
+当前验证基线为 AstrBot v4.29.1 和 Python 3.12，依据与核验范围见下文“AstrBot 兼容性基线”。使用独立虚拟环境和独立 `ASTRBOT_ROOT`，不要改动正在使用的 AstrBot 实例。
 
-使用独立虚拟环境。运行依赖随实现添加，不提前安装整个依赖集合，不把 AstrBot 本体加入插件 requirements。
+运行依赖随实现添加，不提前安装整个依赖集合，不把 AstrBot 本体加入插件 requirements。当前入口只导入宿主 API，没有第三方运行依赖，因此不创建 requirements.txt。
 
 测试宿主、凭据、运行数据库、图片缓存和未脱敏日志不提交到仓库。需要真实平台测试时使用专用测试账号/群。
+
+## AstrBot 兼容性基线
+
+### 验证基线
+
+| 项目 | 值 |
+|---|---|
+| AstrBot | v4.29.1 |
+| 源码 commit | `dffe922773725e9c178392c423676ad65044748c`（2026-10-17） |
+| 源码 | https://github.com/AstrBotDevs/AstrBot/tree/v4.29.1 |
+| Python | 3.12.13；v4.29.1 的 `pyproject.toml` 声明 `requires-python = ">=3.12"` |
+| 官方文档 | https://docs.astrbot.app/dev/star/plugin-new.html 及同目录的配置、视图、存储、发送章节 |
+
+选择依据：v4.29.1 是核验时仓库最新的稳定 tag，插件 API 以该 tag 源码为准。运行验证在隔离源码环境和独立 `ASTRBOT_ROOT` 中完成，没有连接真实消息平台。
+
+不从旧版文档推断最低兼容版本。`metadata.yaml` 暂不声明 `astrbot_version`，因为尚未验证 4.29.1 以外的版本；扩大范围前须补充源码核对和运行验证。
+
+### 已核验的宿主行为
+
+**源码已核验，且运行已验证：**
+
+- 插件目录为 `<ASTRBOT_ROOT>/data/plugins/<目录名>/`，入口是 `main.py`（也接受 `<目录名>.py`）；元数据文件为 `metadata.yaml` 或 `metadata.yml`。
+- `metadata.yaml` 必填 `name`、`desc`、`version`、`author`，`repo` 可选；本仓库把其中的 `version` 作为唯一程序版本源。
+- 插件主类继承 `astrbot.api.star.Star` 即可被自动发现，不需要 `register_star` 装饰器；类名不要求与目录名一致。
+- 加载时实例化插件类，调用可选 `initialize()`；停用或重载时调用插件类自身定义的 `terminate()`，随后解绑处理器并重新导入模块。没有资源需要释放时不必写空生命周期方法。
+- 在 WebUI 插件列表中可读到名称、作者、版本和仓库；停用、启用、重载均返回成功，重载后插件仍只有一份注册记录，未出现本插件引起的 Traceback。
+- 初始加载、停用、启用和重载过程没有触发 60s API 请求，也没有发送消息。
+
+**源码已核验，尚未在本轮运行验证：**
+
+- 配置：`_conf_schema.json` 会被解析，配置以 `AstrBotConfig` 注入 `__init__`，持久化到 `<ASTRBOT_ROOT>/data/config/<插件目录名>_config.json`；`secret: true` 只遮罩 WebUI 显示，不加密配置文件。
+- 插件视图：`views/<视图名>/index.html` 由 Dashboard 扫描并以受限 iframe 加载，前端通过 `window.AstrBotPluginView` bridge 调用后端；视图目录变更后需要重载插件。
+- Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由需以插件名开头，由 Dashboard 负责鉴权；同路由同方法会替换旧注册，后端应使用 `astrbot.api.web` 的请求/响应封装。
+- 插件数据：`data/plugin_data/<插件名>/` 是约定的持久化位置，可用 `get_astrbot_plugin_data_path()` 或 `StarTools` 获取；不要把运行数据放在插件代码目录。
+- v4.29.1 的 `main.py` 仍保留 `>=3.10` 的历史运行时检查，但包元数据和依赖要求以 Python 3.12 为准，不能据此宣称 Python 3.10 可用。
+- 停用/重载优先调用插件类自身定义的 `__del__`，没有才调用 `terminate`；插件不应使用 `__del__` 管理资源。重载不会整体清空已注册 Web API，但相同路由和方法会替换，新增路由须自行避免残留。
+
+**未验证：**
+
+- 4.29.1 以外的 AstrBot 版本、其他 Python 版本和其他操作系统。
+- 配置表单在真实 WebUI 中的保存/重载、插件视图 bridge 调用、Web API 鉴权与上传。
+- 消息平台、群成员隔离、主动投递、渲染、SQLite、调度与重启恢复。
+- 60s API 实例的真实返回结构；这些属于后续 M2-M5。
+
+### 可复现的本地验证
+
+以下命令用于隔离环境，不要指向正在使用的 AstrBot 实例。第一步在本插件仓库根目录执行。
+
+```bash
+git clone --depth 1 --branch v4.29.1 https://github.com/AstrBotDevs/AstrBot.git /tmp/astrbot-src
+python3.12 -m venv /tmp/astrbot-venv
+/tmp/astrbot-venv/bin/pip install -r /tmp/astrbot-src/requirements.txt
+
+export ASTRBOT_ROOT=/tmp/astrbot-smoke
+export DASHBOARD_PASSWORD='LocalSmokeTest-Only-2026'
+mkdir -p "$ASTRBOT_ROOT/data/plugins"
+ln -s "$PWD" "$ASTRBOT_ROOT/data/plugins/astrbot_plugin_60sapi_hub"
+
+cd /tmp/astrbot-src
+ASTRBOT_ROOT="$ASTRBOT_ROOT" DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=16185 \
+  ASTRBOT_DASHBOARD_INITIAL_PASSWORD="$DASHBOARD_PASSWORD" \
+  /tmp/astrbot-venv/bin/python main.py
+```
+
+启动日志应出现 `Loading plugin astrbot_plugin_60sapi_hub` 和对应版本。另开终端执行：
+
+```bash
+BASE=http://127.0.0.1:16185
+TOKEN=$(curl -sS -X POST "$BASE/api/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"astrbot\",\"password\":\"$DASHBOARD_PASSWORD\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["token"])')
+AUTH="Authorization: Bearer $TOKEN"
+curl -sS "$BASE/api/v1/plugins" -H "$AUTH"
+curl -sS -X PATCH "$BASE/api/v1/plugins/enabled" -H "$AUTH" \
+  -H 'Content-Type: application/json' \
+  -d '{"plugin_id":"astrbot_plugin_60sapi_hub","enabled":false}'
+curl -sS -X PATCH "$BASE/api/v1/plugins/enabled" -H "$AUTH" \
+  -H 'Content-Type: application/json' \
+  -d '{"plugin_id":"astrbot_plugin_60sapi_hub","enabled":true}'
+curl -sS -X POST "$BASE/api/v1/plugins/reload" -H "$AUTH" \
+  -H 'Content-Type: application/json' \
+  -d '{"plugin_id":"astrbot_plugin_60sapi_hub"}'
+```
+
+预期：插件列表该项的 `activated` 在停用/启用间变化；重载后同一名称仍只有一项；日志没有本插件引起的 Traceback；没有 60s API 请求或消息发送日志。验证后按 `Ctrl+C` 停止宿主，并清理 `/tmp/astrbot-src`、`/tmp/astrbot-venv`、`/tmp/astrbot-smoke`。
+
+WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数据库或真实站点凭据。
 
 ## Git 提交规则
 
@@ -47,9 +135,7 @@ commit-msg hook 检查类别、冒号空格及中文描述。它不能判断改�
 
 ## 版本来源
 
-当前只有文档，**没有程序版本或发布标签**。
-
-首次创建真实插件时，在 metadata.yaml 的 version 字段建立唯一程序版本源，初始为 `v0.1.0-dev.1`。不额外维护容易不同步的 VERSION 或 __version__。
+当前已在 `metadata.yaml` 的 `version` 字段建立唯一程序版本源，初始开发版本为 `v0.1.0-dev.1`；**尚无发布标签或可分发版本**。不额外维护容易不同步的 VERSION 或 `__version__`。
 
 使用 SemVer：
 

@@ -1,9 +1,10 @@
 # 参考资料
 
-核验日期：2026-10-22。已核对文档不等于已完成运行兼容验证；实现时优先检查所选版本源码。
+核验日期：2026-10-22。源码基线为 AstrBot v4.29.1；已核对文档不等于已完成运行兼容验证，实现时优先检查所选版本源码。
 
 | 主题 | 官方来源 |
 |---|---|
+| AstrBot 源码基线 | https://github.com/AstrBotDevs/AstrBot/tree/v4.29.1 |
 | AstrBot 插件开发 | https://docs.astrbot.app/dev/star/plugin-new.html |
 | 配置表单 | https://docs.astrbot.app/dev/star/guides/plugin-config.html |
 | 插件后台视图 | https://docs.astrbot.app/dev/star/guides/plugin-pages.html |

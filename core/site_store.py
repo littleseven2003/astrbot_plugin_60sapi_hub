@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +79,7 @@ class SiteStore:
     def __init__(self, database_path: str | Path) -> None:
         self._database_path = Path(database_path)
         self._connection: aiosqlite.Connection | None = None
+        self._connection_broken = False
         self._lock = asyncio.Lock()
 
     @property
@@ -91,6 +93,10 @@ class SiteStore:
     async def open(self) -> None:
         """创建父目录、初始化首次 schema，并打开连接。"""
         async with self._lock:
+            if self._connection_broken:
+                raise SiteStoreError(
+                    "站点数据库连接状态不确定，请重新创建存储实例",
+                )
             if self._connection is not None:
                 return
 
@@ -167,7 +173,8 @@ class SiteStore:
         async with self._lock:
             connection = self._require_connection()
             now = _utc_now()
-            try:
+
+            async def perform() -> None:
                 await connection.execute(
                     """
                     INSERT INTO sites (
@@ -186,11 +193,12 @@ class SiteStore:
                         now,
                     ),
                 )
-                await connection.commit()
-            except Exception as exc:
-                await self._rollback_quietly(connection)
-                raise SiteStoreError("保存站点失败") from exc
 
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="保存站点失败",
+            )
             return StoredSite(
                 id=site_id,
                 name=name,
@@ -256,7 +264,8 @@ class SiteStore:
         async with self._lock:
             connection = self._require_connection()
             now = _utc_now()
-            try:
+
+            async def perform() -> None:
                 cursor = await connection.execute(
                     """
                     UPDATE sites
@@ -276,7 +285,6 @@ class SiteStore:
                     ),
                 )
                 if cursor.rowcount != 1:
-                    await self._rollback_quietly(connection)
                     row = await self._fetchone_unlocked(
                         "SELECT revision FROM sites WHERE id = ?",
                         (site_id,),
@@ -284,12 +292,12 @@ class SiteStore:
                     if row is None:
                         raise SiteRecordNotFoundError(site_id)
                     raise SiteRevisionConflictError(int(row["revision"]))
-                await connection.commit()
-            except (SiteRecordNotFoundError, SiteRevisionConflictError):
-                raise
-            except Exception as exc:
-                await self._rollback_quietly(connection)
-                raise SiteStoreError("更新站点失败") from exc
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="更新站点失败",
+            )
 
             try:
                 row = await self._fetchone_unlocked(
@@ -312,13 +320,13 @@ class SiteStore:
     async def delete_site(self, site_id: str, *, expected_revision: int) -> None:
         async with self._lock:
             connection = self._require_connection()
-            try:
+
+            async def perform() -> None:
                 cursor = await connection.execute(
                     "DELETE FROM sites WHERE id = ? AND revision = ?",
                     (site_id, expected_revision),
                 )
                 if cursor.rowcount != 1:
-                    await self._rollback_quietly(connection)
                     row = await self._fetchone_unlocked(
                         "SELECT revision FROM sites WHERE id = ?",
                         (site_id,),
@@ -326,12 +334,12 @@ class SiteStore:
                     if row is None:
                         raise SiteRecordNotFoundError(site_id)
                     raise SiteRevisionConflictError(int(row["revision"]))
-                await connection.commit()
-            except (SiteRecordNotFoundError, SiteRevisionConflictError):
-                raise
-            except Exception as exc:
-                await self._rollback_quietly(connection)
-                raise SiteStoreError("删除站点失败") from exc
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="删除站点失败",
+            )
 
     def _require_connection(self) -> aiosqlite.Connection:
         if self._connection is None:
@@ -351,6 +359,107 @@ class SiteStore:
     async def _rollback_quietly(connection: aiosqlite.Connection) -> None:
         try:
             await connection.rollback()
+        except Exception:
+            pass
+
+    async def _commit_write(
+        self,
+        connection: aiosqlite.Connection,
+        operation: Callable[[], Awaitable[None]],
+        *,
+        failure_message: str,
+    ) -> None:
+        commit_task: asyncio.Task[None] | None = None
+        try:
+            await operation()
+            commit_task = asyncio.create_task(connection.commit())
+            await asyncio.shield(commit_task)
+        except asyncio.CancelledError:
+            await self._cleanup_cancelled_write(connection, commit_task)
+            raise
+        except (SiteRecordNotFoundError, SiteRevisionConflictError):
+            await self._rollback_for_error(connection)
+            raise
+        except SiteStoreClosedError:
+            raise
+        except Exception as exc:
+            await self._rollback_for_error(connection)
+            raise SiteStoreError(failure_message) from exc
+
+    async def _cleanup_cancelled_write(
+        self,
+        connection: aiosqlite.Connection,
+        commit_task: asyncio.Task[None] | None,
+    ) -> None:
+        if commit_task is not None:
+            try:
+                await self._wait_for_cleanup(commit_task)
+            except asyncio.CancelledError:
+                await self._discard_connection(connection)
+                return
+            except Exception:
+                await self._rollback_after_cancel(connection)
+                return
+            # COMMIT completed. A cancelled caller does not imply rollback;
+            # the transaction must not be reported as undone.
+            return
+        await self._rollback_after_cancel(connection)
+
+    async def _rollback_after_cancel(
+        self,
+        connection: aiosqlite.Connection,
+    ) -> None:
+        rollback_task = asyncio.create_task(connection.rollback())
+        try:
+            await self._wait_for_cleanup(rollback_task)
+        except asyncio.CancelledError:
+            await self._discard_connection(connection)
+        except Exception:
+            await self._discard_connection(connection)
+
+    async def _rollback_for_error(
+        self,
+        connection: aiosqlite.Connection,
+    ) -> None:
+        rollback_task = asyncio.create_task(connection.rollback())
+        try:
+            cancelled = await self._wait_for_cleanup(rollback_task)
+        except asyncio.CancelledError:
+            await self._discard_connection(connection)
+            raise
+        except Exception:
+            await self._discard_connection(connection)
+            return
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _wait_for_cleanup(self, task: asyncio.Task[None]) -> bool:
+        """Wait for a commit/rollback/close task without losing cancellation."""
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(task)
+                return cancelled
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+
+    async def _discard_connection(
+        self,
+        connection: aiosqlite.Connection,
+    ) -> None:
+        self._connection_broken = True
+        if self._connection is connection:
+            self._connection = None
+        try:
+            close_task = asyncio.create_task(connection.close())
+        except Exception:
+            return
+        try:
+            await self._wait_for_cleanup(close_task)
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
 

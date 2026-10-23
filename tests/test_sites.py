@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import math
 import sqlite3
@@ -248,6 +249,115 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
                 (site_id,),
             ).fetchone()
         return None if row is None else row[0]
+
+    async def _cancel_blocked_write(self, operation) -> None:
+        """Hold an external write lock, cancel a queued write, then release it."""
+        external = sqlite3.connect(self.db_path, isolation_level=None, timeout=5)
+        external.execute("BEGIN IMMEDIATE")
+        connection = self.service._store._connection
+        self.assertIsNotNone(connection)
+        assert connection is not None
+        write_queued = asyncio.Event()
+        original_execute = connection._execute
+
+        async def tracked_execute(fn, *args, **kwargs):
+            sql = args[0] if args else ""
+            if isinstance(sql, str) and sql.lstrip().upper().startswith(
+                ("INSERT", "UPDATE", "DELETE"),
+            ):
+                write_queued.set()
+            return await original_execute(fn, *args, **kwargs)
+
+        connection._execute = tracked_execute
+        task = asyncio.create_task(operation)
+        try:
+            await asyncio.wait_for(write_queued.wait(), timeout=2)
+            task.cancel()
+            if external.in_transaction:
+                external.rollback()
+            external.close()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+            try:
+                if external.in_transaction:
+                    external.rollback()
+            except sqlite3.ProgrammingError:
+                pass
+            try:
+                external.close()
+            except sqlite3.ProgrammingError:
+                pass
+            connection._execute = original_execute
+
+    async def test_cancelled_create_does_not_commit_with_next_write(self) -> None:
+        await self._cancel_blocked_write(
+            self.service.create_site(make_create(name="被取消的站点")),
+        )
+        await self.service.create_site(make_create(name="正常站点"))
+        await self.service.close()
+        self.service = SiteService(self.db_path)
+        await self.service.open()
+        names = {site.name for site in await self.service.list_sites()}
+        self.assertEqual(names, {"正常站点"})
+
+    async def test_cancelled_update_does_not_commit_with_next_write(self) -> None:
+        site = await self.service.create_site(make_create(name="原始名称"))
+        await self._cancel_blocked_write(
+            self.service.update_site(
+                site.id,
+                make_update(site, name="被取消的编辑"),
+            ),
+        )
+        await self.service.create_site(make_create(name="正常站点"))
+        await self.service.close()
+        self.service = SiteService(self.db_path)
+        await self.service.open()
+        current = await self.service.get_site(site.id)
+        self.assertEqual(current.name, "原始名称")
+        self.assertEqual(current.revision, 1)
+
+    async def test_cancel_cleanup_failure_marks_store_unusable(self) -> None:
+        await self.service.create_site(make_create(name="原始站点"))
+        connection = self.service._store._connection
+        self.assertIsNotNone(connection)
+        assert connection is not None
+        original_rollback = connection.rollback
+
+        async def failing_rollback() -> None:
+            raise RuntimeError("forced rollback failure")
+
+        connection.rollback = failing_rollback
+        try:
+            await self._cancel_blocked_write(
+                self.service.create_site(make_create(name="取消的站点")),
+            )
+        finally:
+            connection.rollback = original_rollback
+
+        self.assertFalse(self.service.is_open)
+        with self.assertRaises(SiteStorageError):
+            await self.service.list_sites()
+        with self.assertRaises(SiteStorageError):
+            await self.service.open()
+
+    async def test_cancelled_delete_does_not_commit_with_next_write(self) -> None:
+        site = await self.service.create_site(make_create(name="应保留的站点"))
+        await self._cancel_blocked_write(
+            self.service.delete_site(site.id, site.revision),
+        )
+        await self.service.create_site(make_create(name="正常站点"))
+        await self.service.close()
+        self.service = SiteService(self.db_path)
+        await self.service.open()
+        current = await self.service.get_site(site.id)
+        self.assertEqual(current.name, "应保留的站点")
 
     async def test_create_defaults_and_get(self) -> None:
         site = await self.service.create_site(

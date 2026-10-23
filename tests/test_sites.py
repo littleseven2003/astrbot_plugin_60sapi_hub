@@ -361,6 +361,43 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SiteStorageError):
             await self.service.open()
 
+    async def test_cancelled_commit_keeps_committed_row(self) -> None:
+        connection = self.service._store._connection
+        self.assertIsNotNone(connection)
+        assert connection is not None
+        original_commit = connection.commit
+        commit_started = asyncio.Event()
+        allow_commit = asyncio.Event()
+
+        async def blocking_commit() -> None:
+            commit_started.set()
+            await allow_commit.wait()
+            await original_commit()
+
+        connection.commit = blocking_commit
+        task = asyncio.create_task(
+            self.service.create_site(make_create(name="取消时已提交站点")),
+        )
+        try:
+            await asyncio.wait_for(commit_started.wait(), timeout=2)
+            task.cancel()
+            allow_commit.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await self.service.close()
+            self.service = SiteService(self.db_path)
+            await self.service.open()
+            names = {site.name for site in await self.service.list_sites()}
+            self.assertEqual(names, {"取消时已提交站点"})
+        finally:
+            connection.commit = original_commit
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+
     async def test_cancelled_delete_does_not_commit_with_next_write(self) -> None:
         site = await self.service.create_site(make_create(name="应保留的站点"))
         await self._cancel_blocked_write(

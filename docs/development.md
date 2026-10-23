@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。当前已建立最小插件入口、程序版本源和站点存储服务，其余业务功能尚未实现；代码、依赖和测试目录随后续功能按需创建。
+本项目按个人开源项目维护。当前已建立最小插件入口、程序版本源、站点存储和后台站点管理；其余业务功能尚未实现；代码、依赖和测试目录随后续功能按需创建。
 
 ## 获取与本地设置
 
@@ -47,22 +47,27 @@ git config core.hooksPath .githooks
 - 在 WebUI 插件列表中可读到名称、作者、版本和仓库；停用、启用、重载均返回成功，重载后插件仍只有一份注册记录，未出现本插件引起的 Traceback。
 - 插件数据目录通过 `StarTools.get_data_dir(plugin_name)` 创建；站点数据库位于 `<ASTRBOT_ROOT>/data/plugin_data/<插件名>/sites.sqlite3`。停用后数据库句柄关闭，启用/重载后数据保留。
 - 初始加载、停用、启用和重载过程没有触发 60s API 请求，也没有发送消息。
+- 插件视图：Dashboard 会扫描插件根目录的 `views/<视图名>/index.html`（其次 `pages/`），以受限 iframe 加载并自动注入 bridge。真实环境已验证 `views/sites/index.html` 被发现、页面标题通过 `.astrbot-plugin/i18n/zh-CN.json` 显示为“站点管理”，侧边栏入口可用。
+- 视图 bridge：实际对象为 `window.AstrBotPluginView`（别名 `AstrBotPluginPage`），提供 `ready()`、`getContext()`、`getLocale()`、`getI18n()`、`t(...)`、`onContext(...)`、`apiGet(endpoint)`、`apiPost(endpoint, body)`、上传/下载和 SSE 方法。`endpoint` 是相对路径，由宿主拼成 `/api/v1/plugins/extensions/<插件名>/<endpoint>`；本页只使用 `apiGet`/`apiPost`，不创建独立登录或保存 Dashboard token。
+- 视图 bridge 的响应约定：后端返回 `{status:"ok",data:...}` 时解析为 `data` 本身；返回 `{status:"error",message,...}` 或 HTTP 失败时抛出 `Error`。本页按成功/校验失败/冲突/连接失败分别处理。
+- Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由须以 `/<插件名>/` 开头；Dashboard 负责扩展路由鉴权，处理器可通过 `astrbot.api.web.request.username` 检查当前用户。请求体用 `request.json(default=None)`，响应使用 `json_response`/`error_response`。同路由同方法会替换旧注册；重载不会整体清空注册表，因此插件用“实例是否已启用”标志拒绝停用后的旧处理器。
+- 真实 Web API 已验证：未登录请求返回 401；登录后可完成站点列表、新增、读取、编辑、删除；校验错误返回 400、未找到返回 404、revision 冲突返回 409 且不覆盖、存储不可用返回 503；凭据只返回 `has_bearer_token`。停用后旧处理器返回 503，启用/重载后新实例恢复读写，数据仍保留。
+- 站点管理页资源的 HTML/CSS/JS 由宿主页面服务按插件资产 token 提供；不启动第二个 HTTP 服务，不在页面读取或写入 Dashboard cookie/token。真实浏览器已验证新增、编辑、凭据保留/替换/清除、冲突、删除、刷新、停用/启用/重载和窄屏布局。
 
 **源码已核验，尚未在本轮运行验证：**
 
-- 配置：`_conf_schema.json` 会被解析，配置以 `AstrBotConfig` 注入 `__init__`，持久化到 `<ASTRBOT_ROOT>/data/config/<插件目录名>_config.json`；`secret: true` 只遮罩 WebUI 显示，不加密配置文件。
-- 插件视图：`views/<视图名>/index.html` 由 Dashboard 扫描并以受限 iframe 加载，前端通过 `window.AstrBotPluginView` bridge 调用后端；视图目录变更后需要重载插件。
-- Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由需以插件名开头，由 Dashboard 负责鉴权；同路由同方法会替换旧注册，后端应使用 `astrbot.api.web` 的请求/响应封装。
+- 配置：`_conf_schema.json` 会被解析，配置以 `AstrBotConfig` 注入 `__init__`，持久化到 `<ASTRBOT_ROOT>/data/config/<插件目录名>_config.json`；`secret: true` 只遮罩 WebUI 显示，不加密配置文件。该能力当前未使用。
 - v4.29.1 的 `main.py` 仍保留 `>=3.10` 的历史运行时检查，但包元数据和依赖要求以 Python 3.12 为准，不能据此宣称 Python 3.10 可用。
-- 停用/重载优先调用插件类自身定义的 `__del__`，没有才调用 `terminate`；插件不应使用 `__del__` 管理资源。重载不会整体清空已注册 Web API，但相同路由和方法会替换，新增路由须自行避免残留。
+- 停用/重载优先调用插件类自身定义的 `__del__`，没有才调用 `terminate`；插件不应使用 `__del__` 管理资源。
 
 **未验证：**
 
 - 4.29.1 以外的 AstrBot 版本、其他 Python 版本和其他操作系统。
-- 配置表单在真实 WebUI 中的保存/重载、插件视图 bridge 调用、Web API 鉴权与上传。
+- 配置表单在真实 WebUI 中的保存/重载、上传功能、暗色主题以及除 Chromium 外的浏览器。
 - 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
 - SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 实例的真实返回结构；这些属于后续 M2-M5。
+- 站点连通性测试、内容获取、解析、渲染与发送均未实现，不要用本页的格式校验代替连通性验证。
 
 ### 可复现的本地验证
 
@@ -78,8 +83,9 @@ python3.12 -m venv /tmp/astrbot-venv
 export ASTRBOT_ROOT=/tmp/astrbot-smoke
 read -rsp '设置本地测试密码: ' DASHBOARD_PASSWORD; echo
 export DASHBOARD_PASSWORD
-mkdir -p "$ASTRBOT_ROOT/data/plugins"
-ln -s "$PWD" "$ASTRBOT_ROOT/data/plugins/astrbot_plugin_60sapi_hub"
+mkdir -p "$ASTRBOT_ROOT/data/plugins/astrbot_plugin_60sapi_hub"
+PLUGIN_DIR="$ASTRBOT_ROOT/data/plugins/astrbot_plugin_60sapi_hub"
+tar --exclude='.git' --exclude='__pycache__' -cf - . | tar -xf - -C "$PLUGIN_DIR"
 
 cd /tmp/astrbot-src
 ASTRBOT_ROOT="$ASTRBOT_ROOT" DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=16185 \
@@ -88,6 +94,8 @@ ASTRBOT_ROOT="$ASTRBOT_ROOT" DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=16185 \
 ```
 
 启动日志应出现 `Loading plugin astrbot_plugin_60sapi_hub` 和对应版本。日志中的初始密码仅用于本地验证，不要复制到仓库或公开渠道。
+
+**注意：** AstrBot v4.29.1 的页面发现会把插件根目录 `resolve()` 后要求其仍位于 `data/plugins` 下。若把仓库用符号链接放到插件目录，后台视图不会出现；这是宿主路径安全边界，不是插件视图错误。页面验证必须使用上面的实际目录副本，或正式安装产生的真实目录。
 
 **终端二：登录并验证生命周期。** 另开终端，独立输入终端一设置的同一测试密码：
 
@@ -105,6 +113,7 @@ unset DASHBOARD_PASSWORD LOGIN
 AUTH="Authorization: Bearer $TOKEN"
 
 curl -sS "$BASE/api/v1/plugins" -H "$AUTH"
+curl -sS "$BASE/api/v1/plugins/extensions/astrbot_plugin_60sapi_hub/sites" -H "$AUTH"
 curl -sS -X PATCH "$BASE/api/v1/plugins/enabled" -H "$AUTH" \
   -H 'Content-Type: application/json' \
   -d '{"plugin_id":"astrbot_plugin_60sapi_hub","enabled":false}'
@@ -119,7 +128,9 @@ unset TOKEN AUTH
 
 密码和 token 不应出现在命令回显、提交内容或日志附件中。非交互环境可在两个 shell 中分别显式 export 同一个临时密码，但不要把它写入仓库。
 
-预期：插件列表该项的 `activated` 在停用/启用间变化；重载后同一名称仍只有一项；日志没有本插件引起的 Traceback；没有 60s API 请求或消息发送日志。登录失败时终端二会直接退出，不执行后续请求。验证后按 `Ctrl+C` 停止宿主，并清理 `/tmp/astrbot-src`、`/tmp/astrbot-venv`、`/tmp/astrbot-smoke`。
+预期：插件列表该项的 `activated` 在停用/启用间变化；扩展站点列表在登录后返回 200；重载后同一名称仍只有一项；日志没有本插件引起的 Traceback；没有 60s API 请求或消息发送日志。登录失败时终端二会直接退出，不执行后续请求。页面可在登录后打开 `http://127.0.0.1:16185/#/plugin-view/astrbot_plugin_60sapi_hub/sites`；页面与 API 的完整验收步骤见[测试手册](testing.md)。
+
+验证后按 `Ctrl+C` 停止宿主，并清理 `/tmp/astrbot-src`、`/tmp/astrbot-venv`、`/tmp/astrbot-smoke`。
 
 WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数据库或真实站点凭据。
 
@@ -133,9 +144,17 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - revision：新增为 1；编辑和删除必须传入期望 revision，冲突时抛出明确错误；成功编辑后加 1。
 - 取消写入：新增、编辑、删除被取消时保留 `CancelledError`，在释放锁前完成回滚或关闭；提交前取消会回滚，COMMIT 已完成时不承诺撤销；清理无法确认时关闭连接并标记存储不可用，需要重建实例。
 - 凭据：编辑使用 `keep`、`set`、`clear`；默认 `keep`，空白值不会清除原凭据。公开站点结构只有 `has_bearer_token`，输入对象和存储对象的调试输出也隐藏原文。
-- 测试：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用临时数据库和虚构数据，不联网。
+- 测试：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用临时数据库和虚构数据，不联网；`tests/test_site_api.py` 覆盖后台业务接口的成功与错误映射。
 - 宿主检查：启动后确认数据库路径和 `PRAGMA user_version`；停用后确认数据库句柄已关闭；启用或重载后确认数据仍在且插件只有一份注册。不要对正在使用的插件数据目录做破坏性测试。
-- 当前未注册后台视图或 Web API；站点操作只能通过服务层调用，后台页面属于后续工作。
+
+## 站点管理页面与 API
+
+- 业务层：`core/site_api.py`；宿主适配：`site_web.py`；静态页面：`views/sites/index.html`、`style.css`、`app.js`；中文视图名：`.astrbot-plugin/i18n/zh-CN.json`。
+- 路由由 `main.py` 在 `__init__` 注册。bridge 只有 `apiGet`/`apiPost`，所以读取用 GET，新增用 POST，编辑/删除用 POST 子路径；所有路由都在 `/<插件名>/` 下，由 Dashboard 扩展鉴权，处理器再检查用户名和插件启用状态。
+- 校验与存储仍只有一套真源：页面不复制站点数据，不写本地存储，不缓存凭据；成功后重新读取列表。凭据编辑动作默认 `keep`，替换/清除需要显式选择；服务端只返回 `has_bearer_token`。
+- 冲突不会自动覆盖：服务端返回 409，页面重新读取列表并提示重新编辑；普通校验失败或连接失败保留表单输入。保存期间禁用表单，避免重复提交。
+- 页面不使用 CDN、外部字体、统计脚本或独立服务器；列表用 `textContent` 等 DOM API 渲染，不使用用户数据拼 `innerHTML`。
+- 当前不包含连通性测试、60s API 请求、endpoint 选择、内容组合、渲染、发送或调度；不要在这些功能实现前把页面按钮或说明扩展成未实现能力。
 
 ## Git 提交规则
 

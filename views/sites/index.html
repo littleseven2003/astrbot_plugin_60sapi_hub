@@ -71,6 +71,19 @@
 
         <div id="form-error" class="form-error" role="alert" hidden></div>
 
+        <div id="write-uncertain" class="uncertain" role="alert" hidden>
+          <h3>保存结果未确认</h3>
+          <p id="write-uncertain-text" class="uncertain-text"></p>
+          <div class="uncertain-actions">
+            <button id="recheck-write-button" class="button button-primary" type="button">
+              重新读取最新列表
+            </button>
+            <button id="review-close-button" class="button button-secondary" type="button" hidden>
+              关闭并查看最新列表
+            </button>
+          </div>
+        </div>
+
         <div class="form-grid">
           <label class="field">
             <span>站点名称</span>
@@ -180,6 +193,18 @@
         </header>
         <p id="delete-message"></p>
         <div id="delete-error" class="form-error" role="alert" hidden></div>
+        <div id="delete-uncertain" class="uncertain" role="alert" hidden>
+          <h3>删除结果未确认</h3>
+          <p id="delete-uncertain-text" class="uncertain-text"></p>
+          <div class="uncertain-actions">
+            <button id="recheck-delete-button" class="button button-primary" type="button">
+              重新读取最新列表
+            </button>
+            <button id="delete-review-close-button" class="button button-secondary" type="button" hidden>
+              关闭并查看最新列表
+            </button>
+          </div>
+        </div>
         <footer class="dialog-actions">
           <button id="delete-cancel-button" class="button button-secondary" type="button">
             取消

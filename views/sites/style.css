@@ -498,6 +498,36 @@ input:focus-visible,
   font-size: 0.9rem;
 }
 
+.uncertain {
+  padding: 14px 15px;
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--warning);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.uncertain h3 {
+  margin-bottom: 7px;
+  color: var(--warning);
+  font-size: 0.98rem;
+  font-weight: 680;
+}
+
+.uncertain-text {
+  max-width: 66ch;
+  color: var(--ink);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.uncertain-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 160px;
@@ -729,6 +759,14 @@ input:focus-visible,
   }
 
   .dialog-actions .button {
+    width: 100%;
+  }
+
+  .uncertain-actions {
+    flex-direction: column;
+  }
+
+  .uncertain-actions .button {
     width: 100%;
   }
 }

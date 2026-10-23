@@ -25,12 +25,22 @@ const elements = {
   tokenHelp: document.getElementById("token-help"),
   bearerToken: document.getElementById("bearer-token"),
   formError: document.getElementById("form-error"),
+  writeUncertain: document.getElementById("write-uncertain"),
+  writeUncertainText: document.getElementById("write-uncertain-text"),
+  recheckWriteButton: document.getElementById("recheck-write-button"),
+  reviewCloseButton: document.getElementById("review-close-button"),
   closeDialogButton: document.getElementById("close-dialog-button"),
   cancelButton: document.getElementById("cancel-button"),
   saveButton: document.getElementById("save-button"),
   deleteDialog: document.getElementById("delete-dialog"),
   deleteMessage: document.getElementById("delete-message"),
   deleteError: document.getElementById("delete-error"),
+  deleteUncertain: document.getElementById("delete-uncertain"),
+  deleteUncertainText: document.getElementById("delete-uncertain-text"),
+  recheckDeleteButton: document.getElementById("recheck-delete-button"),
+  deleteReviewCloseButton: document.getElementById(
+    "delete-review-close-button",
+  ),
   deleteCancelButton: document.getElementById("delete-cancel-button"),
   deleteConfirmButton: document.getElementById("delete-confirm-button"),
 };
@@ -44,7 +54,22 @@ const state = {
   loading: false,
   saving: false,
   deleting: false,
+  pendingWrite: null,
 };
+
+const EXPLICIT_WRITE_REJECTIONS = [
+  /无效[:：]/,
+  /请求体必须是 JSON 对象/,
+  /需要登录后才能管理站点/,
+  /missing api key/i,
+  /unauthorized/i,
+  /not authenticated/i,
+  /forbidden/i,
+  /插件当前未启用/,
+  /站点不存在或已被删除/,
+  /已被其他操作修改/,
+  /站点存储暂不可用/,
+];
 
 function showStatus(message, tone = "info") {
   elements.status.textContent = message;
@@ -80,17 +105,26 @@ function clearListState() {
   elements.listState.hidden = true;
 }
 
+function isTransportErrorMessage(message) {
+  return (
+    /^(failed to fetch|load failed|network error|request aborted)$/i.test(
+      message,
+    ) ||
+    /timeout of \d+ms exceeded/i.test(message) ||
+    /\b(ECONNABORTED|ECONNRESET|ERR_NETWORK|ERR_EMPTY_RESPONSE)\b/i.test(
+      message,
+    ) ||
+    /net::err_/i.test(message)
+  );
+}
+
 function friendlyErrorMessage(error) {
   const message =
     error && typeof error.message === "string" ? error.message.trim() : "";
   if (!message) {
     return "操作失败，请稍后重试。";
   }
-  if (
-    /failed to fetch|network error|load failed|timed? ?out|econn/i.test(
-      message,
-    )
-  ) {
+  if (isTransportErrorMessage(message)) {
     return "无法连接后台，请检查网络后重试。";
   }
   return message;
@@ -102,6 +136,24 @@ function isConflictMessage(message) {
 
 function isMissingMessage(message) {
   return message.includes("不存在") || message.includes("已被删除");
+}
+
+function isExplicitWriteRejection(message) {
+  return EXPLICIT_WRITE_REJECTIONS.some((pattern) =>
+    pattern.test(message),
+  );
+}
+
+function writeFailureDetail(error) {
+  const message =
+    error && typeof error.message === "string" ? error.message.trim() : "";
+  if (!message) {
+    return "未收到可用的错误信息。";
+  }
+  if (isTransportErrorMessage(message)) {
+    return "无法连接后台或未收到服务器响应。";
+  }
+  return message;
 }
 
 function selectedCredentialAction() {
@@ -370,7 +422,180 @@ function syncCredentialFields(hasToken, action) {
   }
 }
 
+function pendingElements(pending) {
+  if (pending.kind === "delete") {
+    return {
+      panel: elements.deleteUncertain,
+      text: elements.deleteUncertainText,
+      recheck: elements.recheckDeleteButton,
+      review: elements.deleteReviewCloseButton,
+    };
+  }
+  return {
+    panel: elements.writeUncertain,
+    text: elements.writeUncertainText,
+    recheck: elements.recheckWriteButton,
+    review: elements.reviewCloseButton,
+  };
+}
+
+function updatePendingUI(text) {
+  const pending = state.pendingWrite;
+  if (!pending) {
+    return;
+  }
+  const ui = pendingElements(pending);
+  ui.panel.hidden = false;
+  ui.text.textContent = text;
+
+  if (pending.kind !== "delete") {
+    setFormDisabled(true);
+  } else {
+    elements.deleteCancelButton.disabled = true;
+    elements.deleteConfirmButton.disabled = true;
+    elements.deleteConfirmButton.textContent = "等待确认结果";
+  }
+
+  if (pending.phase === "checking") {
+    ui.recheck.hidden = false;
+    ui.recheck.disabled = true;
+    ui.recheck.textContent = "正在重新读取…";
+    ui.review.hidden = true;
+  } else if (pending.phase === "review") {
+    ui.recheck.hidden = true;
+    ui.review.hidden = false;
+    ui.review.disabled = false;
+  } else {
+    ui.recheck.hidden = false;
+    ui.recheck.disabled = false;
+    ui.recheck.textContent = "重新读取最新列表";
+    ui.review.hidden = true;
+  }
+}
+
+function enterPendingWrite(kind, detail, target) {
+  state.pendingWrite = {
+    kind,
+    phase: "unconfirmed",
+    targetId: target ? target.id : null,
+  };
+  if (kind === "delete") {
+    elements.deleteError.hidden = true;
+    elements.deleteError.textContent = "";
+  } else {
+    clearFormError();
+    elements.saveButton.disabled = true;
+    elements.saveButton.textContent = "等待确认结果";
+  }
+  const action = kind === "delete" ? "删除" : "写入";
+  updatePendingUI(
+    "服务器可能已经完成，也可能没有收到请求。" +
+      `为避免重复${action}，请先重新读取最新列表确认。` +
+      `\n\n错误信息：${detail}`,
+  );
+}
+
+function pendingReviewText(pending) {
+  if (pending.kind === "create") {
+    return (
+      `已重新读取最新列表，当前共有 ${state.sites.length} 个站点。` +
+      "系统不能仅凭名称或地址判断哪一条（如有）来自本次操作；" +
+      "请关闭对话框查看完整列表并人工确认。确认没有本次记录后，" +
+      "再重新打开新增表单创建。"
+    );
+  }
+  const site = pending.targetId
+    ? state.sites.find((item) => item.id === pending.targetId)
+    : null;
+  const current = site
+    ? `仍在列表中：${site.name}（revision ${site.revision}，${
+        site.enabled ? "已启用" : "已停用"
+      }）。`
+    : "不在列表中。";
+  if (pending.kind === "edit") {
+    return (
+      `已重新读取最新列表。该站点当前${current}` +
+      "请关闭对话框查看列表并判断是否符合预期。如需继续，" +
+      "请关闭后重新打开编辑。"
+    );
+  }
+  return (
+    `已重新读取最新列表。该站点当前${current}` +
+    "请关闭对话框确认是否符合预期；如需再次删除，请关闭后重新操作。"
+  );
+}
+
+async function recheckPendingWrite() {
+  const pending = state.pendingWrite;
+  if (!pending || pending.phase === "checking") {
+    return;
+  }
+  pending.phase = "checking";
+  updatePendingUI("正在重新读取最新列表…");
+  const succeeded = await loadSites();
+  if (state.pendingWrite !== pending) {
+    return;
+  }
+  if (succeeded) {
+    pending.phase = "review";
+    updatePendingUI(pendingReviewText(pending));
+  } else {
+    pending.phase = "unconfirmed";
+    updatePendingUI(
+      "仍无法确认结果：重新读取最新列表失败。请不要重复提交；" +
+        "保持此页面，稍后再次重新读取。",
+    );
+  }
+}
+
+function clearPendingPanels() {
+  elements.writeUncertain.hidden = true;
+  elements.writeUncertainText.textContent = "";
+  elements.reviewCloseButton.hidden = true;
+  elements.deleteUncertain.hidden = true;
+  elements.deleteUncertainText.textContent = "";
+  elements.deleteReviewCloseButton.hidden = true;
+}
+
+function blockIfPendingWrite() {
+  if (!state.pendingWrite) {
+    return false;
+  }
+  showStatus(
+    "有写操作结果尚未确认。请先重新读取最新列表并关闭确认面板。",
+    "error",
+  );
+  return true;
+}
+
+function finishPendingReview() {
+  const pending = state.pendingWrite;
+  if (!pending || pending.phase !== "review") {
+    return;
+  }
+  const isDelete = pending.kind === "delete";
+  closeDialog(isDelete ? elements.deleteDialog : elements.siteDialog);
+  state.pendingWrite = null;
+  clearPendingPanels();
+  if (isDelete) {
+    state.deleteTarget = null;
+  } else {
+    setFormDisabled(false);
+    elements.saveButton.textContent =
+      state.mode === "create" ? "保存站点" : "保存更改";
+  }
+  showStatus(
+    "已重新读取最新列表，并关闭未确认的操作。请根据列表判断结果；" +
+      "如需继续，请重新打开对应表单。",
+    "info",
+  );
+}
+
 function openCreate() {
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearPendingPanels();
   state.mode = "create";
   state.editingId = null;
   state.editingRevision = null;
@@ -390,6 +615,10 @@ function openCreate() {
 }
 
 function openEdit(site) {
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearPendingPanels();
   state.mode = "edit";
   state.editingId = site.id;
   state.editingRevision = site.revision;
@@ -426,7 +655,7 @@ function formPayload() {
 
 async function handleSave(event) {
   event.preventDefault();
-  if (state.saving) {
+  if (state.saving || state.pendingWrite) {
     return;
   }
   clearFormError();
@@ -487,17 +716,29 @@ async function handleSave(event) {
           : "该站点已被删除，但列表刷新失败，请点击“刷新”重试。",
         "error",
       );
-    } else {
+    } else if (isExplicitWriteRejection(message)) {
       showFormError(message);
+    } else {
+      enterPendingWrite(
+        state.mode,
+        writeFailureDetail(error),
+        state.mode === "edit" ? { id: state.editingId } : null,
+      );
     }
   } finally {
     state.saving = false;
-    setFormDisabled(false);
-    elements.saveButton.textContent = idleLabel;
+    if (!state.pendingWrite) {
+      setFormDisabled(false);
+      elements.saveButton.textContent = idleLabel;
+    }
   }
 }
 
 function openDelete(site) {
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearPendingPanels();
   state.deleteTarget = site;
   elements.deleteMessage.textContent = `确定删除“${site.name}”吗？删除后无法从此页面恢复。`;
   elements.deleteError.textContent = "";
@@ -510,7 +751,7 @@ function openDelete(site) {
 }
 
 async function confirmDelete() {
-  if (state.deleting || !state.deleteTarget) {
+  if (state.deleting || state.pendingWrite || !state.deleteTarget) {
     return;
   }
   const target = state.deleteTarget;
@@ -545,15 +786,19 @@ async function confirmDelete() {
           : "该站点已被修改或删除，但列表刷新失败，请点击“刷新”重试。",
         "error",
       );
-    } else {
+    } else if (isExplicitWriteRejection(message)) {
       elements.deleteError.textContent = message;
       elements.deleteError.hidden = false;
+    } else {
+      enterPendingWrite("delete", writeFailureDetail(error), target);
     }
   } finally {
     state.deleting = false;
-    elements.deleteCancelButton.disabled = false;
-    elements.deleteConfirmButton.disabled = false;
-    elements.deleteConfirmButton.textContent = "删除";
+    if (!state.pendingWrite) {
+      elements.deleteCancelButton.disabled = false;
+      elements.deleteConfirmButton.disabled = false;
+      elements.deleteConfirmButton.textContent = "删除";
+    }
   }
 }
 
@@ -562,13 +807,21 @@ function bindEvents() {
   elements.retryButton.addEventListener("click", loadSites);
   elements.createButton.addEventListener("click", openCreate);
   elements.emptyCreateButton.addEventListener("click", openCreate);
+  elements.recheckWriteButton.addEventListener(
+    "click",
+    recheckPendingWrite,
+  );
+  elements.reviewCloseButton.addEventListener(
+    "click",
+    finishPendingReview,
+  );
   elements.cancelButton.addEventListener("click", () => {
-    if (!state.saving) {
+    if (!state.saving && !state.pendingWrite) {
       closeDialog(elements.siteDialog);
     }
   });
   elements.closeDialogButton.addEventListener("click", () => {
-    if (!state.saving) {
+    if (!state.saving && !state.pendingWrite) {
       closeDialog(elements.siteDialog);
     }
   });
@@ -586,23 +839,33 @@ function bindEvents() {
     );
   });
   elements.siteDialog.addEventListener("cancel", (event) => {
-    if (state.saving) {
+    if (state.saving || state.pendingWrite) {
       event.preventDefault();
     }
   });
   elements.deleteCancelButton.addEventListener("click", () => {
-    if (!state.deleting) {
+    if (!state.deleting && !state.pendingWrite) {
       closeDialog(elements.deleteDialog);
     }
   });
   elements.deleteConfirmButton.addEventListener("click", confirmDelete);
+  elements.recheckDeleteButton.addEventListener(
+    "click",
+    recheckPendingWrite,
+  );
+  elements.deleteReviewCloseButton.addEventListener(
+    "click",
+    finishPendingReview,
+  );
   elements.deleteDialog.addEventListener("cancel", (event) => {
-    if (state.deleting) {
+    if (state.deleting || state.pendingWrite) {
       event.preventDefault();
     }
   });
   elements.deleteDialog.addEventListener("close", () => {
-    state.deleteTarget = null;
+    if (!state.pendingWrite) {
+      state.deleteTarget = null;
+    }
   });
 }
 

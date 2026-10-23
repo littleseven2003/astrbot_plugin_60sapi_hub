@@ -65,7 +65,9 @@ git config core.hooksPath .githooks
 
 ### 可复现的本地验证
 
-以下命令用于隔离环境，不要指向正在使用的 AstrBot 实例。第一步在本插件仓库根目录执行。
+以下命令用于隔离环境，不要指向正在使用的 AstrBot 实例。两个代码块分别在两个独立终端执行；环境变量不会跨终端共享，因此终端二需要独立输入与终端一相同的临时密码。
+
+**终端一：准备并启动宿主。** 在本插件仓库根目录执行：
 
 ```bash
 git clone --depth 1 --branch v4.29.1 https://github.com/AstrBotDevs/AstrBot.git /tmp/astrbot-src
@@ -73,7 +75,8 @@ python3.12 -m venv /tmp/astrbot-venv
 /tmp/astrbot-venv/bin/pip install -r /tmp/astrbot-src/requirements.txt
 
 export ASTRBOT_ROOT=/tmp/astrbot-smoke
-export DASHBOARD_PASSWORD='LocalSmokeTest-Only-2026'
+read -rsp '设置本地测试密码: ' DASHBOARD_PASSWORD; echo
+export DASHBOARD_PASSWORD
 mkdir -p "$ASTRBOT_ROOT/data/plugins"
 ln -s "$PWD" "$ASTRBOT_ROOT/data/plugins/astrbot_plugin_60sapi_hub"
 
@@ -83,15 +86,23 @@ ASTRBOT_ROOT="$ASTRBOT_ROOT" DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=16185 \
   /tmp/astrbot-venv/bin/python main.py
 ```
 
-启动日志应出现 `Loading plugin astrbot_plugin_60sapi_hub` 和对应版本。另开终端执行：
+启动日志应出现 `Loading plugin astrbot_plugin_60sapi_hub` 和对应版本。日志中的初始密码仅用于本地验证，不要复制到仓库或公开渠道。
+
+**终端二：登录并验证生命周期。** 另开终端，独立输入终端一设置的同一测试密码：
 
 ```bash
 BASE=http://127.0.0.1:16185
-TOKEN=$(curl -sS -X POST "$BASE/api/v1/auth/login" \
+read -rsp '输入终端一设置的测试密码: ' DASHBOARD_PASSWORD; echo
+export DASHBOARD_PASSWORD
+
+LOGIN=$(curl -sS -X POST "$BASE/api/v1/auth/login" \
   -H 'Content-Type: application/json' \
-  -d "{\"username\":\"astrbot\",\"password\":\"$DASHBOARD_PASSWORD\"}" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["token"])')
+  -d "$(python3 -c 'import json,os; print(json.dumps({"username":"astrbot","password":os.environ["DASHBOARD_PASSWORD"]}))')")
+TOKEN=$(printf '%s' "$LOGIN" | python3 -c 'import json,sys; d=json.load(sys.stdin); token=(d.get("data") or {}).get("token"); sys.exit(1) if not token else print(token)') \
+  || { echo '登录失败，停止后续验证。' >&2; exit 1; }
+unset DASHBOARD_PASSWORD LOGIN
 AUTH="Authorization: Bearer $TOKEN"
+
 curl -sS "$BASE/api/v1/plugins" -H "$AUTH"
 curl -sS -X PATCH "$BASE/api/v1/plugins/enabled" -H "$AUTH" \
   -H 'Content-Type: application/json' \
@@ -102,9 +113,12 @@ curl -sS -X PATCH "$BASE/api/v1/plugins/enabled" -H "$AUTH" \
 curl -sS -X POST "$BASE/api/v1/plugins/reload" -H "$AUTH" \
   -H 'Content-Type: application/json' \
   -d '{"plugin_id":"astrbot_plugin_60sapi_hub"}'
+unset TOKEN AUTH
 ```
 
-预期：插件列表该项的 `activated` 在停用/启用间变化；重载后同一名称仍只有一项；日志没有本插件引起的 Traceback；没有 60s API 请求或消息发送日志。验证后按 `Ctrl+C` 停止宿主，并清理 `/tmp/astrbot-src`、`/tmp/astrbot-venv`、`/tmp/astrbot-smoke`。
+密码和 token 不应出现在命令回显、提交内容或日志附件中。非交互环境可在两个 shell 中分别显式 export 同一个临时密码，但不要把它写入仓库。
+
+预期：插件列表该项的 `activated` 在停用/启用间变化；重载后同一名称仍只有一项；日志没有本插件引起的 Traceback；没有 60s API 请求或消息发送日志。登录失败时终端二会直接退出，不执行后续请求。验证后按 `Ctrl+C` 停止宿主，并清理 `/tmp/astrbot-src`、`/tmp/astrbot-venv`、`/tmp/astrbot-smoke`。
 
 WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数据库或真实站点凭据。
 

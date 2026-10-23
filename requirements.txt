@@ -1,0 +1,2 @@
+# 异步 SQLite 访问；AstrBot 本体由宿主提供，不作为插件依赖安装。
+aiosqlite>=0.21,<1

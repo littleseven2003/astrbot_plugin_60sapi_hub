@@ -49,7 +49,7 @@ git config core.hooksPath .githooks
 - 初始加载、停用、启用和重载过程没有触发 60s API 请求，也没有发送消息。
 - 插件视图：Dashboard 会扫描插件根目录的 `views/<视图名>/index.html`（其次 `pages/`），以受限 iframe 加载并自动注入 bridge。真实环境已验证 `views/sites/index.html` 被发现、页面标题通过 `.astrbot-plugin/i18n/zh-CN.json` 显示为“站点管理”，侧边栏入口可用。
 - 视图 bridge：实际对象为 `window.AstrBotPluginView`（别名 `AstrBotPluginPage`），提供 `ready()`、`getContext()`、`getLocale()`、`getI18n()`、`t(...)`、`onContext(...)`、`apiGet(endpoint)`、`apiPost(endpoint, body)`、上传/下载和 SSE 方法。`endpoint` 是相对路径，由宿主拼成 `/api/v1/plugins/extensions/<插件名>/<endpoint>`；本页只使用 `apiGet`/`apiPost`，不创建独立登录或保存 Dashboard token。
-- 视图 bridge 的响应约定：后端返回 `{status:"ok",data:...}` 时解析为 `data` 本身；返回 `{status:"error",message,...}` 或 HTTP 失败时抛出 `Error`。本页按成功/校验失败/冲突/连接失败分别处理。
+- 视图 bridge 的响应约定：后端返回 `{status:"ok",data:...}` 时解析为 `data` 本身；返回 `{status:"error",message,...}` 或 HTTP 失败时抛出 `Error`。本页按成功、明确拒绝、revision 冲突和结果未确认分别处理。
 - Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由须以 `/<插件名>/` 开头；Dashboard 负责扩展路由鉴权，处理器可通过 `astrbot.api.web.request.username` 检查当前用户。请求体用 `request.json(default=None)`，响应使用 `json_response`/`error_response`。同路由同方法会替换旧注册；重载不会整体清空注册表，因此插件用“实例是否已启用”标志拒绝停用后的旧处理器。
 - 真实 Web API 已验证：未登录请求返回 401；登录后可完成站点列表、新增、读取、编辑、删除；校验错误返回 400、未找到返回 404、revision 冲突返回 409 且不覆盖、存储不可用返回 503；凭据只返回 `has_bearer_token`。停用后旧处理器返回 503，启用/重载后新实例恢复读写，数据仍保留。
 - 站点管理页资源的 HTML/CSS/JS 由宿主页面服务按插件资产 token 提供；不启动第二个 HTTP 服务，不在页面读取或写入 Dashboard cookie/token。真实浏览器已验证新增、编辑、凭据保留/替换/清除、冲突、删除、刷新、停用/启用/重载和窄屏布局。
@@ -152,7 +152,9 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 业务层：`core/site_api.py`；宿主适配：`site_web.py`；静态页面：`views/sites/index.html`、`style.css`、`app.js`；中文视图名：`.astrbot-plugin/i18n/zh-CN.json`。
 - 路由由 `main.py` 在 `__init__` 注册。bridge 只有 `apiGet`/`apiPost`，所以读取用 GET，新增用 POST，编辑/删除用 POST 子路径；所有路由都在 `/<插件名>/` 下，由 Dashboard 扩展鉴权，处理器再检查用户名和插件启用状态。
 - 校验与存储仍只有一套真源：页面不复制站点数据，不写本地存储，不缓存凭据；成功后重新读取列表。凭据编辑动作默认 `keep`，替换/清除需要显式选择；服务端只返回 `has_bearer_token`。
-- 冲突不会自动覆盖：服务端返回 409，页面重新读取列表并提示重新编辑；普通校验失败或连接失败保留表单输入。保存期间禁用表单，避免重复提交。
+- 冲突不会自动覆盖：服务端返回 409，页面重新读取列表并提示重新编辑；普通校验失败保留表单输入，修正后可再次提交。保存期间禁用表单，避免重复提交。
+- 写请求的响应丢失、超时或连接中断进入“结果未确认”：页面保留表单/目标信息，禁用保存或删除、取消和关闭，只提供“重新读取最新列表”。重新读取失败继续保持未确认；读取成功后显示最新列表状态，并要求人工确认后再关闭。新增记录不按同名/同地址认领，只根据服务器列表和稳定 ID 展示实际状态；编辑/删除不自动重发。
+- 4.29.1 bridge 的失败对象只有 `Error.message`，不保留 HTTP 状态或响应 `data.code`。页面把已知的服务端拒绝消息视为明确失败，其余（含网络异常和未知 5xx）保守归为未确认。当前无需修改 API 契约；以后若增加机器可读错误码，应同步 bridge 能力和兼容性说明。
 - 页面不使用 CDN、外部字体、统计脚本或独立服务器；列表用 `textContent` 等 DOM API 渲染，不使用用户数据拼 `innerHTML`。
 - 当前不包含连通性测试、60s API 请求、endpoint 选择、内容组合、渲染、发送或调度；不要在这些功能实现前把页面按钮或说明扩展成未实现能力。
 

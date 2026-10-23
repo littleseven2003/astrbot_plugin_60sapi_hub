@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。当前已建立最小插件入口和程序版本源，业务功能尚未实现；代码、依赖和测试目录随后续功能按需创建。
+本项目按个人开源项目维护。当前已建立最小插件入口、程序版本源和站点存储服务，其余业务功能尚未实现；代码、依赖和测试目录随后续功能按需创建。
 
 ## 获取与本地设置
 
@@ -16,7 +16,7 @@ git config core.hooksPath .githooks
 
 当前验证基线为 AstrBot v4.29.1 和 Python 3.12，依据与核验范围见下文“AstrBot 兼容性基线”。使用独立虚拟环境和独立 `ASTRBOT_ROOT`，不要改动正在使用的 AstrBot 实例。
 
-运行依赖随实现添加，不提前安装整个依赖集合，不把 AstrBot 本体加入插件 requirements。当前入口只导入宿主 API，没有第三方运行依赖，因此不创建 requirements.txt。
+运行依赖随实现添加，不提前安装整个依赖集合，不把 AstrBot 本体加入插件 requirements。当前运行依赖为 `aiosqlite`（异步 SQLite），约束见 [requirements.txt](../requirements.txt)；AstrBot 本体由宿主提供，不作为插件依赖安装。
 
 测试宿主、凭据、运行数据库、图片缓存和未脱敏日志不提交到仓库。需要真实平台测试时使用专用测试账号/群。
 
@@ -45,6 +45,7 @@ git config core.hooksPath .githooks
 - 插件主类继承 `astrbot.api.star.Star` 即可被自动发现，不需要 `register_star` 装饰器；类名不要求与目录名一致。
 - 加载时实例化插件类，调用可选 `initialize()`；停用或重载时调用插件类自身定义的 `terminate()`，随后解绑处理器并重新导入模块。没有资源需要释放时不必写空生命周期方法。
 - 在 WebUI 插件列表中可读到名称、作者、版本和仓库；停用、启用、重载均返回成功，重载后插件仍只有一份注册记录，未出现本插件引起的 Traceback。
+- 插件数据目录通过 `StarTools.get_data_dir(plugin_name)` 创建；站点数据库位于 `<ASTRBOT_ROOT>/data/plugin_data/<插件名>/sites.sqlite3`。停用后数据库句柄关闭，启用/重载后数据保留。
 - 初始加载、停用、启用和重载过程没有触发 60s API 请求，也没有发送消息。
 
 **源码已核验，尚未在本轮运行验证：**
@@ -52,7 +53,6 @@ git config core.hooksPath .githooks
 - 配置：`_conf_schema.json` 会被解析，配置以 `AstrBotConfig` 注入 `__init__`，持久化到 `<ASTRBOT_ROOT>/data/config/<插件目录名>_config.json`；`secret: true` 只遮罩 WebUI 显示，不加密配置文件。
 - 插件视图：`views/<视图名>/index.html` 由 Dashboard 扫描并以受限 iframe 加载，前端通过 `window.AstrBotPluginView` bridge 调用后端；视图目录变更后需要重载插件。
 - Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由需以插件名开头，由 Dashboard 负责鉴权；同路由同方法会替换旧注册，后端应使用 `astrbot.api.web` 的请求/响应封装。
-- 插件数据：`data/plugin_data/<插件名>/` 是约定的持久化位置，可用 `get_astrbot_plugin_data_path()` 或 `StarTools` 获取；不要把运行数据放在插件代码目录。
 - v4.29.1 的 `main.py` 仍保留 `>=3.10` 的历史运行时检查，但包元数据和依赖要求以 Python 3.12 为准，不能据此宣称 Python 3.10 可用。
 - 停用/重载优先调用插件类自身定义的 `__del__`，没有才调用 `terminate`；插件不应使用 `__del__` 管理资源。重载不会整体清空已注册 Web API，但相同路由和方法会替换，新增路由须自行避免残留。
 
@@ -60,7 +60,8 @@ git config core.hooksPath .githooks
 
 - 4.29.1 以外的 AstrBot 版本、其他 Python 版本和其他操作系统。
 - 配置表单在真实 WebUI 中的保存/重载、插件视图 bridge 调用、Web API 鉴权与上传。
-- 消息平台、群成员隔离、主动投递、渲染、SQLite、调度与重启恢复。
+- 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
+- SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 实例的真实返回结构；这些属于后续 M2-M5。
 
 ### 可复现的本地验证
@@ -121,6 +122,19 @@ unset TOKEN AUTH
 预期：插件列表该项的 `activated` 在停用/启用间变化；重载后同一名称仍只有一项；日志没有本插件引起的 Traceback；没有 60s API 请求或消息发送日志。登录失败时终端二会直接退出，不执行后续请求。验证后按 `Ctrl+C` 停止宿主，并清理 `/tmp/astrbot-src`、`/tmp/astrbot-venv`、`/tmp/astrbot-smoke`。
 
 WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数据库或真实站点凭据。
+
+## 站点存储服务
+
+- 领域模型、校验和服务：`core/sites.py`。公开模型为 `SiteConfig`、`SiteCreate`、`SiteUpdate`；错误分为校验、未找到、revision 冲突和存储不可用。
+- SQLite 存储：`core/site_store.py`，使用 `aiosqlite` 异步访问，不阻塞事件循环。
+- 数据库位置：`main.py` 通过 `StarTools.get_data_dir(plugin_name)` 获取插件数据目录，再使用其中的 `sites.sqlite3`。
+- 生命周期：`initialize()` 打开数据库并完成首次建库，`terminate()` 关闭连接；打开失败会关闭已创建的连接，`close()` 可重复调用。
+- schema：首次打开创建 `sites` 表，并把 `PRAGMA user_version` 设为 1；遇到更高版本拒绝打开，不自动删除或覆盖数据库。
+- revision：新增为 1；编辑和删除必须传入期望 revision，冲突时抛出明确错误；成功编辑后加 1。
+- 凭据：编辑使用 `keep`、`set`、`clear`；默认 `keep`，空白值不会清除原凭据。公开站点结构只有 `has_bearer_token`，输入对象和存储对象的调试输出也隐藏原文。
+- 测试：安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用临时数据库和虚构数据，不联网。
+- 宿主检查：启动后确认数据库路径和 `PRAGMA user_version`；停用后确认数据库句柄已关闭；启用或重载后确认数据仍在且插件只有一份注册。不要对正在使用的插件数据目录做破坏性测试。
+- 当前未注册后台视图或 Web API；站点操作只能通过服务层调用，后台页面属于后续工作。
 
 ## Git 提交规则
 

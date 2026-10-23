@@ -81,6 +81,14 @@ class SiteStorageError(SiteError):
     """站点持久化不可用或执行失败。"""
 
 
+class SiteDisabledError(SiteError):
+    """站点存在但未启用，不能用于上游获取。"""
+
+    def __init__(self, site_id: str) -> None:
+        self.site_id = site_id
+        super().__init__(f"站点 {site_id} 未启用。")
+
+
 class CredentialAction(str, Enum):
     """编辑站点时对 Bearer 凭据的处理方式。"""
 
@@ -102,6 +110,17 @@ class SiteConfig:
     revision: int
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SiteFetchConfig:
+    """仅供内部获取层使用的站点连接配置，凭据不进入公开视图。"""
+
+    id: str
+    name: str
+    base_url: str
+    timeout_seconds: float
+    bearer_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +209,21 @@ class SiteService:
         async with self._translate_store_errors(normalized_id):
             stored = await self._store.get_site(normalized_id)
         return _to_public(stored)
+
+    async def get_fetch_config(self, site_id: object) -> SiteFetchConfig:
+        """读取已启用站点的内部连接配置；凭据只交给获取层。"""
+        normalized_id = normalize_site_id(site_id)
+        async with self._translate_store_errors(normalized_id):
+            stored = await self._store.get_site(normalized_id)
+        if not stored.enabled:
+            raise SiteDisabledError(normalized_id)
+        return SiteFetchConfig(
+            id=stored.id,
+            name=stored.name,
+            base_url=stored.base_url,
+            timeout_seconds=stored.timeout_seconds,
+            bearer_token=stored.bearer_token,
+        )
 
     async def update_site(self, site_id: str, data: SiteUpdate) -> SiteConfig:
         normalized_id = normalize_site_id(site_id)
@@ -520,7 +554,9 @@ __all__ = [
     "SiteConfig",
     "SiteConflictError",
     "SiteCreate",
+    "SiteDisabledError",
     "SiteError",
+    "SiteFetchConfig",
     "SiteNotFoundError",
     "SiteService",
     "SiteStorageError",

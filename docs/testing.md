@@ -4,7 +4,8 @@
 
 ## 当前检查
 
-- 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。
+- 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。
+- 取消回归：用独立 SQLite 连接持有写锁，等待写操作已排队后取消任务，再释放锁；覆盖新增、编辑、删除取消后的下一次正常写入和重开数据库，确认未提交修改不落盘。不要用固定 sleep 判断写操作已进入等待。
 - 宿主级：在 AstrBot v4.29.1 中加载、停用、启用、重载；确认 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3` 存在、停用后数据库句柄关闭、重载后数据保留且插件只有一份注册。
 - 未执行：后台页面、Web API、真实消息平台和真实 60s API。不要用模拟宿主导入测试替代实际加载结论。
 

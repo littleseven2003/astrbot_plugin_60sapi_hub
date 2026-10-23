@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>站点管理 · 60sAPI Hub</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#sites-list">跳到站点列表</a>
+
+    <main class="page">
+      <header class="page-header">
+        <div class="page-heading">
+          <p class="product">60sAPI Hub</p>
+          <h1>站点管理</h1>
+          <p class="lede">
+            维护 60s API 的基础地址、超时和访问凭据。内容获取与推送尚未启用。
+          </p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-button" class="button button-secondary" type="button">
+            刷新
+          </button>
+          <button id="create-button" class="button button-primary" type="button">
+            新增站点
+          </button>
+        </div>
+      </header>
+
+      <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+
+      <section class="list-section" aria-labelledby="sites-heading">
+        <div class="section-head">
+          <h2 id="sites-heading">已保存站点</h2>
+          <span id="site-count" class="count">0 个</span>
+        </div>
+
+        <div id="list-state" class="list-state" hidden>
+          <p id="list-state-text"></p>
+          <button id="retry-button" class="button button-secondary" type="button" hidden>
+            重试
+          </button>
+        </div>
+
+        <div id="empty-state" class="empty-state" hidden>
+          <p class="empty-title">还没有站点</p>
+          <p>先添加一个 60s API 基础地址，保存后即可在后续功能中使用。</p>
+          <button id="empty-create-button" class="button button-primary" type="button">
+            新增第一个站点
+          </button>
+        </div>
+
+        <ul id="sites-list" class="sites-list" aria-busy="true"></ul>
+      </section>
+
+      <p class="footnote">
+        地址只做格式校验，不会在此页面发起连通性测试。凭据保存后不会回显。
+      </p>
+    </main>
+
+    <dialog id="site-dialog" class="dialog" aria-labelledby="dialog-title">
+      <form id="site-form" class="form">
+        <header class="dialog-head">
+          <h2 id="dialog-title">新增站点</h2>
+          <button id="close-dialog-button" class="icon-button" type="button" aria-label="关闭">
+            ×
+          </button>
+        </header>
+
+        <div id="form-error" class="form-error" role="alert" hidden></div>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>站点名称</span>
+            <input
+              id="name"
+              name="name"
+              type="text"
+              maxlength="80"
+              required
+              autocomplete="off"
+              placeholder="例如：主站"
+            />
+          </label>
+
+          <label class="field">
+            <span>超时（秒）</span>
+            <input
+              id="timeout"
+              name="timeout_seconds"
+              type="number"
+              min="1"
+              max="120"
+              step="0.1"
+              value="10"
+              required
+            />
+          </label>
+
+          <label class="field field-wide">
+            <span>基础地址</span>
+            <input
+              id="base-url"
+              name="base_url"
+              type="url"
+              maxlength="2048"
+              required
+              inputmode="url"
+              autocomplete="url"
+              spellcheck="false"
+              placeholder="https://api.example.com/news"
+            />
+            <small>
+              不要包含末尾 /v2；支持内网、Docker 主机名、方括号 IPv6 和反向代理路径前缀。
+            </small>
+          </label>
+        </div>
+
+        <label class="toggle">
+          <input id="enabled" name="enabled" type="checkbox" />
+          <span class="toggle-track" aria-hidden="true"></span>
+          <span class="toggle-copy">
+            <strong>启用站点</strong>
+            <small>关闭后保留配置，但不会参与后续内容获取。</small>
+          </span>
+        </label>
+
+        <fieldset id="credential-section" class="credential-section">
+          <legend>访问凭据</legend>
+          <p id="credential-state" class="help" hidden></p>
+
+          <div id="credential-actions" class="credential-actions" hidden>
+            <label class="radio">
+              <input type="radio" name="credential_action" value="keep" checked />
+              <span>保留原凭据</span>
+            </label>
+            <label class="radio">
+              <input type="radio" name="credential_action" value="set" />
+              <span>设置新凭据</span>
+            </label>
+            <label class="radio">
+              <input type="radio" name="credential_action" value="clear" />
+              <span>清除凭据</span>
+            </label>
+          </div>
+
+          <label id="token-field" class="field token-field">
+            <span id="token-label">Bearer 凭据（可选）</span>
+            <input
+              id="bearer-token"
+              name="bearer_token"
+              type="password"
+              maxlength="4096"
+              autocomplete="new-password"
+              spellcheck="false"
+            />
+            <small id="token-help">
+              留空表示不设置凭据。只填写凭据本身，不要带 Bearer 前缀；保存后不会回显。
+            </small>
+          </label>
+        </fieldset>
+
+        <footer class="dialog-actions">
+          <button id="cancel-button" class="button button-secondary" type="button">
+            取消
+          </button>
+          <button id="save-button" class="button button-primary" type="submit">
+            保存站点
+          </button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="delete-dialog" class="dialog dialog-small" aria-labelledby="delete-title">
+      <div class="form">
+        <header class="dialog-head">
+          <h2 id="delete-title">删除站点</h2>
+        </header>
+        <p id="delete-message"></p>
+        <div id="delete-error" class="form-error" role="alert" hidden></div>
+        <footer class="dialog-actions">
+          <button id="delete-cancel-button" class="button button-secondary" type="button">
+            取消
+          </button>
+          <button id="delete-confirm-button" class="button button-danger" type="button">
+            删除
+          </button>
+        </footer>
+      </div>
+    </dialog>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -132,7 +132,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - schema：首次打开创建 `sites` 表，并把 `PRAGMA user_version` 设为 1；遇到更高版本拒绝打开，不自动删除或覆盖数据库。
 - revision：新增为 1；编辑和删除必须传入期望 revision，冲突时抛出明确错误；成功编辑后加 1。
 - 凭据：编辑使用 `keep`、`set`、`clear`；默认 `keep`，空白值不会清除原凭据。公开站点结构只有 `has_bearer_token`，输入对象和存储对象的调试输出也隐藏原文。
-- 测试：安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用临时数据库和虚构数据，不联网。
+- 测试：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用临时数据库和虚构数据，不联网。
 - 宿主检查：启动后确认数据库路径和 `PRAGMA user_version`；停用后确认数据库句柄已关闭；启用或重载后确认数据仍在且插件只有一份注册。不要对正在使用的插件数据目录做破坏性测试。
 - 当前未注册后台视图或 Web API；站点操作只能通过服务层调用，后台页面属于后续工作。
 

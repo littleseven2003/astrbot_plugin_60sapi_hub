@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
-from site_store import (
+from .site_store import (
     SCHEMA_VERSION,
     SiteRecordNotFoundError,
     SiteRevisionConflictError,

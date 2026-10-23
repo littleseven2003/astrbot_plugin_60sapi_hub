@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from site_store import SCHEMA_VERSION, StoredSite
-from sites import (
+from core.site_store import SCHEMA_VERSION, StoredSite
+from core.sites import (
     MAX_BASE_URL_LENGTH,
     MAX_BEARER_TOKEN_LENGTH,
     MAX_SITE_NAME_LENGTH,

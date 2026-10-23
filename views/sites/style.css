@@ -91,7 +91,8 @@ h3 {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -429,6 +430,156 @@ input:focus-visible,
   font-size: 0.84rem;
 }
 
+.preview-section {
+  margin-top: 34px;
+  padding-top: 28px;
+  border-top: 1px solid var(--border);
+}
+
+.preview-lede {
+  max-width: 68ch;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.preview-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.preview-site-field {
+  flex: 1;
+  max-width: 420px;
+}
+
+.preview-site-field select {
+  cursor: pointer;
+}
+
+.preview-status {
+  margin-top: 14px;
+}
+
+.preview-result {
+  margin-top: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.preview-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 24px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-meta-item {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.preview-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.preview-meta-item strong,
+.preview-meta-item span:not(.preview-label),
+.preview-meta-item code {
+  overflow-wrap: anywhere;
+}
+
+.preview-meta-item code {
+  color: var(--ink);
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  font-size: 0.86rem;
+}
+
+.preview-warning {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
+  background: var(--surface-strong);
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.preview-empty {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.news-list {
+  display: grid;
+  gap: 11px;
+  margin: 16px 0 0;
+  padding-left: 1.5em;
+}
+
+.news-list li::marker {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.news-title {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.news-link {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.preview-tip,
+.preview-source-link {
+  margin-top: 16px;
+  padding-top: 13px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.preview-source-link {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+
 .dialog {
   width: min(680px, calc(100vw - 32px));
   max-height: calc(100vh - 40px);
@@ -556,7 +707,8 @@ input:focus-visible,
   line-height: 1.5;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   min-height: 42px;
   padding: 9px 11px;
@@ -572,7 +724,8 @@ input:focus-visible,
   opacity: 0.72;
 }
 
-.field input:focus-visible {
+.field input:focus-visible,
+.field select:focus-visible {
   border-color: var(--accent);
   outline: 2px solid var(--focus);
   outline-offset: 1px;
@@ -768,6 +921,27 @@ input:focus-visible,
 
   .uncertain-actions .button {
     width: 100%;
+  }
+
+  .preview-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .preview-site-field {
+    max-width: none;
+  }
+
+  .preview-controls .button {
+    width: 100%;
+  }
+
+  .preview-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-result {
+    padding: 15px;
   }
 }
 

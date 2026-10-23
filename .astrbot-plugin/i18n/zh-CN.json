@@ -2,7 +2,7 @@
   "views": {
     "sites": {
       "title": "站点管理",
-      "description": "管理 60s API 站点地址、超时和访问凭据。"
+      "description": "管理 60s API 站点并预览每日新闻。"
     }
   }
 }

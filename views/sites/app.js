@@ -9,6 +9,20 @@ const elements = {
   retryButton: document.getElementById("retry-button"),
   emptyState: document.getElementById("empty-state"),
   refreshButton: document.getElementById("refresh-button"),
+  previewSite: document.getElementById("preview-site"),
+  previewButton: document.getElementById("preview-button"),
+  previewHint: document.getElementById("preview-hint"),
+  previewStatus: document.getElementById("preview-status"),
+  previewResult: document.getElementById("preview-result"),
+  previewSource: document.getElementById("preview-source"),
+  previewEndpoint: document.getElementById("preview-endpoint"),
+  previewContentDate: document.getElementById("preview-content-date"),
+  previewFetchedAt: document.getElementById("preview-fetched-at"),
+  previewWarnings: document.getElementById("preview-warnings"),
+  previewEmpty: document.getElementById("preview-empty"),
+  previewNewsList: document.getElementById("preview-news-list"),
+  previewTip: document.getElementById("preview-tip"),
+  previewSourceLink: document.getElementById("preview-source-link"),
   createButton: document.getElementById("create-button"),
   emptyCreateButton: document.getElementById("empty-create-button"),
   siteDialog: document.getElementById("site-dialog"),
@@ -55,6 +69,9 @@ const state = {
   saving: false,
   deleting: false,
   pendingWrite: null,
+  previewLoading: false,
+  previewSiteId: null,
+  previewRequestId: 0,
 };
 
 const EXPLICIT_WRITE_REJECTIONS = [
@@ -351,6 +368,7 @@ async function loadSites() {
     const rawSites = result && Array.isArray(result.sites) ? result.sites : [];
     state.sites = rawSites.map(normalizeSite).filter(Boolean);
     renderSites();
+    syncPreviewSites();
     succeeded = true;
     if (elements.status.dataset.tone === "error") {
       clearStatus();
@@ -369,6 +387,227 @@ async function loadSites() {
     elements.sitesList.setAttribute("aria-busy", "false");
   }
   return succeeded;
+}
+
+function showPreviewStatus(message, tone = "info") {
+  elements.previewStatus.textContent = message;
+  elements.previewStatus.dataset.tone = tone;
+  elements.previewStatus.hidden = false;
+}
+
+function hidePreviewStatus() {
+  elements.previewStatus.textContent = "";
+  elements.previewStatus.hidden = true;
+  delete elements.previewStatus.dataset.tone;
+}
+
+function clearPreviewResult() {
+  elements.previewResult.hidden = true;
+  elements.previewSource.textContent = "";
+  elements.previewSource.removeAttribute("title");
+  elements.previewEndpoint.textContent = "";
+  elements.previewContentDate.textContent = "";
+  elements.previewFetchedAt.textContent = "";
+  elements.previewFetchedAt.removeAttribute("datetime");
+  elements.previewWarnings.textContent = "";
+  elements.previewWarnings.hidden = true;
+  elements.previewEmpty.hidden = true;
+  elements.previewNewsList.replaceChildren();
+  elements.previewNewsList.hidden = true;
+  elements.previewTip.textContent = "";
+  elements.previewTip.hidden = true;
+  elements.previewSourceLink.textContent = "";
+  elements.previewSourceLink.hidden = true;
+}
+
+function resetPreviewResult() {
+  state.previewRequestId += 1;
+  clearPreviewResult();
+  hidePreviewStatus();
+}
+
+function syncPreviewSites() {
+  resetPreviewResult();
+  const enabledSites = state.sites.filter((site) => site.enabled);
+  if (!enabledSites.some((site) => site.id === state.previewSiteId)) {
+    state.previewSiteId = enabledSites.length ? enabledSites[0].id : null;
+  }
+
+  elements.previewSite.replaceChildren();
+  if (enabledSites.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "没有已启用的站点";
+    elements.previewSite.append(option);
+    elements.previewSite.disabled = true;
+    elements.previewButton.disabled = true;
+    elements.previewHint.textContent =
+      "暂无已启用站点。请先在站点列表中启用一个站点。";
+    elements.previewHint.hidden = false;
+    return;
+  }
+
+  for (const site of enabledSites) {
+    const option = document.createElement("option");
+    option.value = site.id;
+    option.textContent = site.name;
+    elements.previewSite.append(option);
+  }
+  elements.previewSite.value = state.previewSiteId;
+  elements.previewSite.disabled = state.previewLoading;
+  elements.previewButton.disabled = state.previewLoading;
+  elements.previewHint.hidden = true;
+}
+
+function setPreviewBusy(busy) {
+  state.previewLoading = busy;
+  const hasSite = Boolean(elements.previewSite.value);
+  elements.previewSite.disabled = busy || !hasSite;
+  elements.previewButton.disabled = busy || !hasSite;
+  elements.previewButton.textContent = busy ? "正在获取…" : "获取每日新闻";
+  elements.previewSite.setAttribute("aria-busy", String(busy));
+}
+
+function renderPreview(snapshot) {
+  if (
+    !snapshot ||
+    typeof snapshot !== "object" ||
+    !Array.isArray(snapshot.items)
+  ) {
+    throw new Error("预览数据格式异常。");
+  }
+
+  const sourceName =
+    typeof snapshot.site_name === "string" && snapshot.site_name
+      ? snapshot.site_name
+      : "未知站点";
+  const sourceId =
+    typeof snapshot.site_id === "string" && snapshot.site_id
+      ? snapshot.site_id
+      : "未知 ID";
+  elements.previewSource.textContent = sourceName;
+  elements.previewSource.title = `${sourceName}（${sourceId}）`;
+  elements.previewEndpoint.textContent =
+    typeof snapshot.endpoint === "string" && snapshot.endpoint
+      ? snapshot.endpoint
+      : "/v2/60s";
+  elements.previewContentDate.textContent =
+    typeof snapshot.content_date === "string" && snapshot.content_date
+      ? snapshot.content_date
+      : "未知";
+  const fetchedAt =
+    typeof snapshot.fetched_at === "string" ? snapshot.fetched_at : "";
+  const displayFetchedAt = formatUpdatedAt(fetchedAt);
+  elements.previewFetchedAt.textContent = displayFetchedAt || "未知";
+  if (fetchedAt) {
+    elements.previewFetchedAt.setAttribute("datetime", fetchedAt);
+  }
+
+  const warnings = Array.isArray(snapshot.warnings)
+    ? snapshot.warnings.filter((item) => typeof item === "string" && item)
+    : [];
+  if (warnings.length === 0 && snapshot.date_is_unknown) {
+    warnings.push("上游未提供可识别的内容日期，日期保持未知。");
+  }
+  if (warnings.length === 0 && snapshot.is_stale) {
+    warnings.push("上游内容日期早于当前日期；未用今天覆盖。");
+  }
+  elements.previewWarnings.textContent = warnings.join("\n");
+  elements.previewWarnings.hidden = warnings.length === 0;
+
+  elements.previewNewsList.replaceChildren();
+  for (const item of snapshot.items) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      typeof item.title !== "string" ||
+      !item.title.trim()
+    ) {
+      throw new Error("预览数据格式异常。");
+    }
+    const row = document.createElement("li");
+    const title = document.createElement("p");
+    title.className = "news-title";
+    title.textContent = item.title;
+    row.append(title);
+    if (typeof item.link === "string" && item.link) {
+      const link = document.createElement("p");
+      link.className = "news-link";
+      link.textContent = `链接：${item.link}`;
+      row.append(link);
+    }
+    elements.previewNewsList.append(row);
+  }
+  const empty = snapshot.items.length === 0;
+  elements.previewNewsList.hidden = empty;
+  elements.previewEmpty.hidden = !empty;
+
+  if (typeof snapshot.tip === "string" && snapshot.tip.trim()) {
+    elements.previewTip.textContent = `微语：${snapshot.tip}`;
+    elements.previewTip.hidden = false;
+  }
+  if (
+    typeof snapshot.source_link === "string" &&
+    snapshot.source_link
+  ) {
+    elements.previewSourceLink.textContent =
+      `来源链接：${snapshot.source_link}`;
+    elements.previewSourceLink.hidden = false;
+  }
+
+  elements.previewResult.hidden = false;
+  showPreviewStatus(
+    empty
+      ? "已获取，上游返回了合法空内容。"
+      : `已获取 ${snapshot.items.length} 条每日新闻。`,
+    "success",
+  );
+}
+
+async function previewDailyNews() {
+  if (!bridge || state.previewLoading) {
+    return;
+  }
+  const siteId = elements.previewSite.value;
+  if (!siteId) {
+    showPreviewStatus("请先选择已启用站点。", "error");
+    return;
+  }
+
+  const requestId = ++state.previewRequestId;
+  state.previewLoading = true;
+  clearPreviewResult();
+  showPreviewStatus("正在获取每日新闻…", "info");
+  setPreviewBusy(true);
+
+  try {
+    const snapshot = await bridge.apiPost(
+      "daily-news/preview",
+      { site_id: siteId },
+    );
+    if (
+      requestId !== state.previewRequestId ||
+      elements.previewSite.value !== siteId
+    ) {
+      return;
+    }
+    renderPreview(snapshot);
+  } catch (error) {
+    if (requestId === state.previewRequestId) {
+      clearPreviewResult();
+      showPreviewStatus(
+        `获取失败：${friendlyErrorMessage(error)}`,
+        "error",
+      );
+    }
+  } finally {
+    if (requestId === state.previewRequestId) {
+      setPreviewBusy(false);
+    } else {
+      state.previewLoading = false;
+      setPreviewBusy(false);
+    }
+  }
 }
 
 function resetCredentialForm() {
@@ -807,6 +1046,12 @@ function bindEvents() {
   elements.retryButton.addEventListener("click", loadSites);
   elements.createButton.addEventListener("click", openCreate);
   elements.emptyCreateButton.addEventListener("click", openCreate);
+  elements.previewButton.addEventListener("click", previewDailyNews);
+  elements.previewSite.addEventListener("change", () => {
+    state.previewSiteId = elements.previewSite.value;
+    resetPreviewResult();
+    setPreviewBusy(false);
+  });
   elements.recheckWriteButton.addEventListener(
     "click",
     recheckPendingWrite,

@@ -16,7 +16,7 @@
           <p class="product">60sAPI Hub</p>
           <h1>站点管理</h1>
           <p class="lede">
-            维护 60s API 的基础地址、超时和访问凭据。内容获取与推送尚未启用。
+            维护 60s API 的基础地址、超时和访问凭据，并预览每日新闻。
           </p>
         </div>
         <div class="header-actions">
@@ -55,8 +55,56 @@
         <ul id="sites-list" class="sites-list" aria-busy="true"></ul>
       </section>
 
+      <section class="preview-section" aria-labelledby="preview-heading">
+        <div class="section-head">
+          <h2 id="preview-heading">每日新闻预览</h2>
+          <span class="count">/v2/60s</span>
+        </div>
+        <p class="preview-lede">
+          选择一个已启用站点后主动获取一次每日新闻。打开页面或保存站点不会请求上游。
+        </p>
+        <div class="preview-controls">
+          <label class="field preview-site-field">
+            <span>站点</span>
+            <select id="preview-site" disabled></select>
+          </label>
+          <button id="preview-button" class="button button-primary" type="button" disabled>
+            获取每日新闻
+          </button>
+        </div>
+        <p id="preview-hint" class="help" hidden></p>
+        <div id="preview-status" class="status preview-status" role="status" aria-live="polite" hidden></div>
+        <div id="preview-result" class="preview-result" hidden>
+          <div class="preview-meta">
+            <div class="preview-meta-item">
+              <span class="preview-label">来源</span>
+              <strong id="preview-source"></strong>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">接口</span>
+              <code id="preview-endpoint"></code>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">内容日期</span>
+              <span id="preview-content-date"></span>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">获取时间</span>
+              <time id="preview-fetched-at"></time>
+            </div>
+          </div>
+          <div id="preview-warnings" class="preview-warning" role="note" hidden></div>
+          <div id="preview-empty" class="preview-empty" hidden>
+            上游返回了合法的空内容（0 条新闻）。
+          </div>
+          <ol id="preview-news-list" class="news-list"></ol>
+          <p id="preview-tip" class="preview-tip" hidden></p>
+          <p id="preview-source-link" class="preview-source-link" hidden></p>
+        </div>
+      </section>
+
       <p class="footnote">
-        地址只做格式校验，不会在此页面发起连通性测试。凭据保存后不会回显。
+        站点保存只做格式校验；每日新闻预览会主动请求一次上游。凭据保存后不会回显。
       </p>
     </main>
 

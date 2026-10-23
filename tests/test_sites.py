@@ -76,10 +76,19 @@ class BaseUrlValidationTest(unittest.TestCase):
             ),
             "https://api.example.com/v2x": "https://api.example.com/v2x",
             "https://api.example.com/news//": "https://api.example.com/news",
+            "  https://api.example.com/news/  ": "https://api.example.com/news",
+            "\thttps://api.example.com/news/\n": "https://api.example.com/news",
         }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(normalize_base_url(raw), expected)
+
+    def test_invalid_url_errors_do_not_echo_input(self) -> None:
+        secret = "super-secret-token"
+        with self.assertRaises(SiteValidationError) as raised:
+            normalize_base_url(f"https://user:{secret}@example.com")
+        self.assertNotIn(secret, str(raised.exception))
+        self.assertNotIn("user:", str(raised.exception))
 
     def test_invalid_urls_are_rejected(self) -> None:
         cases = [
@@ -106,6 +115,11 @@ class BaseUrlValidationTest(unittest.TestCase):
             "http://bad..example.com",
             "http://exa mple.com",
             "http://example.com/a b",
+            "http://exa\nmple.com",
+            "http://exa\rmple.com",
+            "http://example.com/a\tb",
+            "http://example.com/a\x00b",
+            "http://example.com/a\rb",
             "http://999.1.1.1",
             "http://[gggg::1]",
             "http://::1",

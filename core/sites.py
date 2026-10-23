@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import math
 import re
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -400,6 +401,8 @@ def normalize_base_url(value: object) -> str:
     raw = value.strip()
     if not raw:
         raise SiteValidationError("base_url", "不能为空")
+    if any(unicodedata.category(char) == "Cc" for char in raw):
+        raise SiteValidationError("base_url", "不能包含控制字符")
     if len(raw) > MAX_BASE_URL_LENGTH:
         raise SiteValidationError(
             "base_url",

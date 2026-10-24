@@ -23,8 +23,8 @@ from core.content_client import ContentHttpClient
 from core.sites import (
     SiteCreate,
     SiteDisabledError,
+    SiteNotFoundError,
     SiteService,
-    SiteValidationError,
 )
 
 
@@ -222,7 +222,7 @@ class BiliServiceTest(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaises(SiteDisabledError):
                 await service.preview(disabled.id)
-            with self.assertRaises(SiteValidationError):
+            with self.assertRaises(SiteNotFoundError):
                 await service.preview("missing-site-id")
         finally:
             await service.close()

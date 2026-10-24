@@ -21,7 +21,7 @@ from core.news import (
     NewsTransportError,
 )
 from core.news_api import NewsApi
-from core.news_client import NewsHttpClient
+from core.content_client import ContentHttpClient
 from core.news_service import NewsService
 from core.sites import (
     SiteCreate,
@@ -176,7 +176,7 @@ class NewsApiSecretLeakTest(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200, content=body)
             return httpx.Response(500, content=body)
 
-        client = NewsHttpClient(
+        client = ContentHttpClient(
             transport=httpx.MockTransport(handler),
             retry_delay_seconds=0,
         )

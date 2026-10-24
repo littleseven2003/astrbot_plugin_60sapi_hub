@@ -12,7 +12,7 @@ from .news import (
     build_daily_news_url,
     parse_daily_news,
 )
-from .news_client import NewsHttpClient
+from .content_client import ContentHttpClient
 from .sites import SiteService
 
 
@@ -23,11 +23,11 @@ class NewsService:
         self,
         sites: SiteService,
         *,
-        client: NewsHttpClient | None = None,
+        client: ContentHttpClient | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._sites = sites
-        self._client = client or NewsHttpClient()
+        self._client = client or ContentHttpClient()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     @property

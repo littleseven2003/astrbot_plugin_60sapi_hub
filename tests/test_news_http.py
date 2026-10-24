@@ -262,3 +262,142 @@ class NewsHttpClientTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewsHttpClientLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def _wait_until(self, predicate, label: str) -> None:
+        for _ in range(1000):
+            if predicate():
+                return
+            await asyncio.sleep(0)
+        raise AssertionError(f"condition not reached: {label}")
+
+    async def _client(self, handler, **kwargs):
+        client = NewsHttpClient(
+            transport=httpx.MockTransport(handler),
+            retry_delay_seconds=0,
+            **kwargs,
+        )
+        await client.open()
+        self.addAsyncCleanup(client.close)
+        return client
+
+    async def test_close_cancels_inflight_and_waits_without_touching_unrelated_tasks(
+        self,
+    ) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        unrelated = asyncio.create_task(asyncio.Event().wait())
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            started.set()
+            await release.wait()
+            return httpx.Response(200, content=b"late")
+
+        client = await self._client(handler)
+        request = asyncio.create_task(
+            client.fetch_json(
+                URL,
+                bearer_token=None,
+                timeout_seconds=30,
+            ),
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await client.close()
+        with self.assertRaises(NewsClientClosedError):
+            await request
+        self.assertFalse(unrelated.done())
+        self.assertEqual(client.active_request_count, 0)
+        self.assertFalse(client.is_open)
+        unrelated.cancel()
+        await asyncio.gather(unrelated, return_exceptions=True)
+
+    async def test_close_cancels_queued_request_and_classifies_it(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        requests = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal requests
+            requests += 1
+            started.set()
+            await release.wait()
+            return httpx.Response(200, content=b"late")
+
+        client = await self._client(
+            handler,
+            max_concurrent_requests=1,
+        )
+        first = asyncio.create_task(
+            client.fetch_json(URL, bearer_token=None, timeout_seconds=30),
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        second = asyncio.create_task(
+            client.fetch_json(URL, bearer_token=None, timeout_seconds=30),
+        )
+        await self._wait_until(
+            lambda: client.active_request_count == 2,
+            "two owned requests",
+        )
+        await client.close()
+        results = await asyncio.gather(
+            first,
+            second,
+            return_exceptions=True,
+        )
+        self.assertEqual(len(results), 2)
+        for result in results:
+            self.assertIsInstance(result, NewsClientClosedError)
+        self.assertEqual(requests, 1)
+
+    async def test_close_cancels_retry_wait(self) -> None:
+        attempts = 0
+        retry_wait_started = asyncio.Event()
+
+        class RetryWaitClient(NewsHttpClient):
+            async def _sleep(self, seconds: float) -> None:
+                retry_wait_started.set()
+                await asyncio.Event().wait()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(503, content=b"temporary")
+
+        client = RetryWaitClient(
+            transport=httpx.MockTransport(handler),
+            retry_delay_seconds=1,
+        )
+        await client.open()
+        self.addAsyncCleanup(client.close)
+        request = asyncio.create_task(
+            client.fetch_json(URL, bearer_token=None, timeout_seconds=30),
+        )
+        await asyncio.wait_for(retry_wait_started.wait(), timeout=1)
+        await client.close()
+        with self.assertRaises(NewsClientClosedError):
+            await request
+        self.assertEqual(attempts, 1)
+
+    async def test_close_is_idempotent_and_reopen_isolated(self) -> None:
+        calls = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, content=b"ok")
+
+        client = await self._client(handler)
+        await client.close()
+        await client.close()
+        self.assertFalse(client.is_open)
+        await client.open()
+        self.assertTrue(client.is_open)
+        body = await client.fetch_json(
+            URL,
+            bearer_token=None,
+            timeout_seconds=2,
+        )
+        self.assertEqual(body, b"ok")
+        self.assertEqual(calls, 1)
+        self.assertEqual(client.active_request_count, 0)

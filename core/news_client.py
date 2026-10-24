@@ -54,36 +54,93 @@ class NewsHttpClient:
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._semaphore: asyncio.Semaphore | None = None
+        self._state_lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task[bytes]] = set()
+        self._closed = True
+        self._generation = 0
+        self._closed_generation: int | None = None
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def is_open(self) -> bool:
-        return self._client is not None
+        return self._client is not None and not self._closed
 
     @property
     def max_response_bytes(self) -> int:
         return self._max_response_bytes
 
+    @property
+    def active_request_count(self) -> int:
+        """当前由本客户端创建、尚未结束的请求任务数。"""
+        return len(self._tasks)
+
     async def open(self) -> None:
-        if self._client is not None:
-            return
-        self._semaphore = asyncio.Semaphore(
-            self._max_concurrent_requests,
-        )
-        self._client = httpx.AsyncClient(
-            follow_redirects=False,
-            trust_env=False,
-            transport=self._transport,
-            limits=httpx.Limits(
-                max_connections=self._max_concurrent_requests,
-                max_keepalive_connections=self._max_concurrent_requests,
-            ),
-        )
+        while True:
+            async with self._state_lock:
+                if self._client is not None and not self._closed:
+                    return
+                close_task = self._close_task
+            if close_task is not None and not close_task.done():
+                await asyncio.shield(close_task)
+                continue
+            async with self._state_lock:
+                if self._client is not None and not self._closed:
+                    return
+                if self._close_task is not None and not self._close_task.done():
+                    continue
+                self._generation += 1
+                self._closed_generation = None
+                self._closed = False
+                self._semaphore = asyncio.Semaphore(
+                    self._max_concurrent_requests,
+                )
+                self._client = httpx.AsyncClient(
+                    follow_redirects=False,
+                    trust_env=False,
+                    transport=self._transport,
+                    limits=httpx.Limits(
+                        max_connections=self._max_concurrent_requests,
+                        max_keepalive_connections=self._max_concurrent_requests,
+                    ),
+                )
+                return
 
     async def close(self) -> None:
-        client, self._client = self._client, None
-        self._semaphore = None
-        if client is not None:
-            await client.aclose()
+        async with self._state_lock:
+            close_task = self._close_task
+            if close_task is None:
+                if self._client is None and not self._tasks:
+                    self._closed = True
+                    return
+                self._closed = True
+                self._closed_generation = self._generation
+                client = self._client
+                self._client = None
+                self._semaphore = None
+                tasks = tuple(self._tasks)
+                close_task = asyncio.create_task(
+                    self._finish_close(client, tasks),
+                )
+                self._close_task = close_task
+        await asyncio.shield(close_task)
+
+    async def _finish_close(
+        self,
+        client: httpx.AsyncClient | None,
+        tasks: tuple[asyncio.Task[bytes], ...],
+    ) -> None:
+        current = asyncio.current_task()
+        try:
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if client is not None:
+                await client.aclose()
+        finally:
+            async with self._state_lock:
+                if self._close_task is current:
+                    self._close_task = None
 
     async def fetch_json(
         self,
@@ -93,13 +150,46 @@ class NewsHttpClient:
         timeout_seconds: float,
     ) -> bytes:
         """读取 JSON 响应体；调用方负责后续解析。"""
-        client = self._client
-        semaphore = self._semaphore
-        if client is None or semaphore is None:
-            raise NewsClientClosedError("上游客户端当前不可用。")
-        if timeout_seconds <= 0:
-            raise NewsTimeoutError("获取每日新闻超时。")
+        async with self._state_lock:
+            client = self._client
+            semaphore = self._semaphore
+            if self._closed or client is None or semaphore is None:
+                raise NewsClientClosedError("上游客户端当前不可用。")
+            if timeout_seconds <= 0:
+                raise NewsTimeoutError("获取每日新闻超时。")
+            generation = self._generation
+            task = asyncio.create_task(
+                self._run_request(
+                    client,
+                    semaphore,
+                    generation,
+                    url,
+                    bearer_token=bearer_token,
+                    timeout_seconds=timeout_seconds,
+                ),
+            )
+            self._tasks.add(task)
 
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        finally:
+            self._tasks.discard(task)
+
+    async def _run_request(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        generation: int,
+        url: str,
+        *,
+        bearer_token: str | None,
+        timeout_seconds: float,
+    ) -> bytes:
         try:
             async with asyncio.timeout(timeout_seconds):
                 async with semaphore:
@@ -109,6 +199,10 @@ class NewsHttpClient:
                         bearer_token=bearer_token,
                         timeout_seconds=timeout_seconds,
                     )
+        except asyncio.CancelledError:
+            if self._closed_generation == generation:
+                raise NewsClientClosedError("上游客户端当前不可用。") from None
+            raise
         except TimeoutError as exc:
             raise NewsTimeoutError("获取每日新闻超时。") from exc
 
@@ -139,9 +233,12 @@ class NewsHttpClient:
                     raise NewsTransportError("无法连接上游站点。") from exc
 
             if self._retry_delay_seconds:
-                await asyncio.sleep(self._retry_delay_seconds)
+                await self._sleep(self._retry_delay_seconds)
 
         raise NewsTransportError("无法连接上游站点。")
+
+    async def _sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
 
     async def _fetch_once(
         self,

@@ -191,6 +191,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 重试：最多 2 次尝试（首次 + 1 次重试），只重试网络传输错误和 408/429/502/503/504；重试间隔 0.25 秒，且不会突破整体超时。业务错误、非 JSON、结构变化、重定向和响应过大部分不重试。
 - 大小与并发：响应体最多 2 MiB，先检查 Content-Length，再在流式读取中累计限制；错误响应只丢弃最多 8 KiB，不解析、不记录、不返回正文。共享客户端最多 2 个并发请求。
 - 错误脱敏：`NewsHTTPStatusError` 只暴露数字 HTTP 状态，`NewsBusinessError` 只暴露数字业务 code；上游错误正文不进入异常 message、后台响应或日志。回归链路从真实 `ContentHttpClient` 经 `NewsService`/`ContentService` 到对应 API，让模拟上游在错误正文回显虚构 Bearer token，断言响应无凭据。
+- 可选链接容错：共享 `optional_http_url()` 只捕获 `urlsplit()` 的 `ValueError`/`UnicodeError`，未闭合 IPv6 方括号或 NFKC 展开后非法的 Unicode 主机会返回 `None`；合法 HTTP(S) 和方括号 IPv6 保留。它不捕获其他异常，必要标题缺失仍按结构错误处理，不能因忽略链接而吞掉字段校验。
 - 重定向：`follow_redirects=False`，任何 3xx 都返回错误，不把 Authorization 发往新目标；`trust_env=False`，不自动使用环境代理。
 - 不缓存预览内容；每次点击都重新请求。暂不持久化新闻快照。
 

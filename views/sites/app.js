@@ -598,7 +598,9 @@ function renderPreview(snapshot) {
   elements.previewResult.hidden = false;
   showPreviewStatus(
     empty
-      ? `已获取，上游返回了合法空${label}列表。`
+      ? isBili
+        ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
+        : "已获取，上游返回了合法的空内容（0 条新闻）。"
       : `已获取 ${snapshot.items.length} 条${label}。`,
     "success",
   );
@@ -1089,9 +1091,13 @@ function bindEvents() {
   elements.retryButton.addEventListener("click", loadSites);
   elements.createButton.addEventListener("click", openCreate);
   elements.emptyCreateButton.addEventListener("click", openCreate);
-  elements.previewButton.addEventListener("click", previewDailyNews);
+  elements.previewButton.addEventListener("click", previewContent);
   elements.previewSite.addEventListener("change", () => {
     state.previewSiteId = elements.previewSite.value;
+    resetPreviewResult();
+    setPreviewBusy(false);
+  });
+  elements.previewContentType.addEventListener("change", () => {
     resetPreviewResult();
     setPreviewBusy(false);
   });

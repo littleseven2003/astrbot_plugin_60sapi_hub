@@ -10,17 +10,23 @@ const elements = {
   emptyState: document.getElementById("empty-state"),
   refreshButton: document.getElementById("refresh-button"),
   previewSite: document.getElementById("preview-site"),
+  previewContentType: document.getElementById("preview-content-type"),
   previewButton: document.getElementById("preview-button"),
   previewHint: document.getElementById("preview-hint"),
   previewStatus: document.getElementById("preview-status"),
   previewResult: document.getElementById("preview-result"),
   previewSource: document.getElementById("preview-source"),
+  previewContentTypeLabel: document.getElementById("preview-content-type-label"),
   previewEndpoint: document.getElementById("preview-endpoint"),
+  previewDateItem: document.getElementById("preview-date-item"),
   previewContentDate: document.getElementById("preview-content-date"),
+  previewItemCount: document.getElementById("preview-item-count"),
   previewFetchedAt: document.getElementById("preview-fetched-at"),
   previewWarnings: document.getElementById("preview-warnings"),
   previewEmpty: document.getElementById("preview-empty"),
+  previewEmptyText: document.getElementById("preview-empty-text"),
   previewNewsList: document.getElementById("preview-news-list"),
+  previewBiliList: document.getElementById("preview-bili-list"),
   previewTip: document.getElementById("preview-tip"),
   previewSourceLink: document.getElementById("preview-source-link"),
   createButton: document.getElementById("create-button"),
@@ -72,6 +78,11 @@ const state = {
   previewLoading: false,
   previewSiteId: null,
   previewRequestId: 0,
+};
+
+const CONTENT_LABELS = {
+  daily_news: "每日新闻",
+  bilibili_hot: "Bilibili 热搜",
 };
 
 const EXPLICIT_WRITE_REJECTIONS = [
@@ -405,15 +416,21 @@ function clearPreviewResult() {
   elements.previewResult.hidden = true;
   elements.previewSource.textContent = "";
   elements.previewSource.removeAttribute("title");
+  elements.previewContentTypeLabel.textContent = "";
   elements.previewEndpoint.textContent = "";
+  elements.previewDateItem.hidden = false;
   elements.previewContentDate.textContent = "";
+  elements.previewItemCount.textContent = "";
   elements.previewFetchedAt.textContent = "";
   elements.previewFetchedAt.removeAttribute("datetime");
   elements.previewWarnings.textContent = "";
   elements.previewWarnings.hidden = true;
   elements.previewEmpty.hidden = true;
+  elements.previewEmptyText.textContent = "上游返回了合法的空内容。";
   elements.previewNewsList.replaceChildren();
   elements.previewNewsList.hidden = true;
+  elements.previewBiliList.replaceChildren();
+  elements.previewBiliList.hidden = true;
   elements.previewTip.textContent = "";
   elements.previewTip.hidden = true;
   elements.previewSourceLink.textContent = "";
@@ -440,6 +457,7 @@ function syncPreviewSites() {
     option.textContent = "没有已启用的站点";
     elements.previewSite.append(option);
     elements.previewSite.disabled = true;
+    elements.previewContentType.disabled = true;
     elements.previewButton.disabled = true;
     elements.previewHint.textContent =
       "暂无已启用站点。请先在站点列表中启用一个站点。";
@@ -455,6 +473,7 @@ function syncPreviewSites() {
   }
   elements.previewSite.value = state.previewSiteId;
   elements.previewSite.disabled = state.previewLoading;
+  elements.previewContentType.disabled = state.previewLoading;
   elements.previewButton.disabled = state.previewLoading;
   elements.previewHint.hidden = true;
 }
@@ -463,20 +482,23 @@ function setPreviewBusy(busy) {
   state.previewLoading = busy;
   const hasSite = Boolean(elements.previewSite.value);
   elements.previewSite.disabled = busy || !hasSite;
+  elements.previewContentType.disabled = busy || !hasSite;
   elements.previewButton.disabled = busy || !hasSite;
-  elements.previewButton.textContent = busy ? "正在获取…" : "获取每日新闻";
+  elements.previewButton.textContent = busy ? "正在获取…" : "获取内容";
   elements.previewSite.setAttribute("aria-busy", String(busy));
+  elements.previewContentType.setAttribute("aria-busy", String(busy));
 }
 
 function renderPreview(snapshot) {
-  if (
-    !snapshot ||
-    typeof snapshot !== "object" ||
-    !Array.isArray(snapshot.items)
-  ) {
+  if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.items)) {
     throw new Error("预览数据格式异常。");
   }
-
+  const contentType = snapshot.content_type;
+  const label = CONTENT_LABELS[contentType];
+  if (!label) {
+    throw new Error("预览结果与当前选择不符。");
+  }
+  const isBili = contentType === "bilibili_hot";
   const sourceName =
     typeof snapshot.site_name === "string" && snapshot.site_name
       ? snapshot.site_name
@@ -487,14 +509,20 @@ function renderPreview(snapshot) {
       : "未知 ID";
   elements.previewSource.textContent = sourceName;
   elements.previewSource.title = `${sourceName}（${sourceId}）`;
+  elements.previewContentTypeLabel.textContent = label;
   elements.previewEndpoint.textContent =
     typeof snapshot.endpoint === "string" && snapshot.endpoint
       ? snapshot.endpoint
-      : "/v2/60s";
-  elements.previewContentDate.textContent =
-    typeof snapshot.content_date === "string" && snapshot.content_date
+      : isBili
+        ? "/v2/bili"
+        : "/v2/60s";
+  elements.previewDateItem.hidden = isBili;
+  elements.previewContentDate.textContent = isBili
+    ? ""
+    : typeof snapshot.content_date === "string" && snapshot.content_date
       ? snapshot.content_date
       : "未知";
+  elements.previewItemCount.textContent = `${snapshot.items.length} 条`;
   const fetchedAt =
     typeof snapshot.fetched_at === "string" ? snapshot.fetched_at : "";
   const displayFetchedAt = formatUpdatedAt(fetchedAt);
@@ -503,19 +531,27 @@ function renderPreview(snapshot) {
     elements.previewFetchedAt.setAttribute("datetime", fetchedAt);
   }
 
-  const warnings = Array.isArray(snapshot.warnings)
-    ? snapshot.warnings.filter((item) => typeof item === "string" && item)
-    : [];
-  if (warnings.length === 0 && snapshot.date_is_unknown) {
-    warnings.push("上游未提供可识别的内容日期，日期保持未知。");
-  }
-  if (warnings.length === 0 && snapshot.is_stale) {
-    warnings.push("上游内容日期早于当前日期；未用今天覆盖。");
+  const warnings = [];
+  if (!isBili) {
+    const rawWarnings = Array.isArray(snapshot.warnings)
+      ? snapshot.warnings.filter((item) => typeof item === "string" && item)
+      : [];
+    warnings.push(...rawWarnings);
+    if (warnings.length === 0 && snapshot.date_is_unknown) {
+      warnings.push("上游未提供可识别的内容日期，日期保持未知。");
+    }
+    if (warnings.length === 0 && snapshot.is_stale) {
+      warnings.push("上游内容日期早于当前日期；未用今天覆盖。");
+    }
   }
   elements.previewWarnings.textContent = warnings.join("\n");
   elements.previewWarnings.hidden = warnings.length === 0;
 
-  elements.previewNewsList.replaceChildren();
+  const list = isBili ? elements.previewBiliList : elements.previewNewsList;
+  const otherList = isBili ? elements.previewNewsList : elements.previewBiliList;
+  otherList.replaceChildren();
+  otherList.hidden = true;
+  list.replaceChildren();
   for (const item of snapshot.items) {
     if (
       !item ||
@@ -536,17 +572,21 @@ function renderPreview(snapshot) {
       link.textContent = `链接：${item.link}`;
       row.append(link);
     }
-    elements.previewNewsList.append(row);
+    list.append(row);
   }
   const empty = snapshot.items.length === 0;
-  elements.previewNewsList.hidden = empty;
+  list.hidden = empty;
   elements.previewEmpty.hidden = !empty;
+  elements.previewEmptyText.textContent = isBili
+    ? "上游返回了合法的空 Bilibili 热搜列表（0 条）。"
+    : "上游返回了合法的空内容（0 条新闻）。";
 
-  if (typeof snapshot.tip === "string" && snapshot.tip.trim()) {
+  if (!isBili && typeof snapshot.tip === "string" && snapshot.tip.trim()) {
     elements.previewTip.textContent = `微语：${snapshot.tip}`;
     elements.previewTip.hidden = false;
   }
   if (
+    !isBili &&
     typeof snapshot.source_link === "string" &&
     snapshot.source_link
   ) {
@@ -558,13 +598,15 @@ function renderPreview(snapshot) {
   elements.previewResult.hidden = false;
   showPreviewStatus(
     empty
-      ? "已获取，上游返回了合法空内容。"
-      : `已获取 ${snapshot.items.length} 条每日新闻。`,
+      ? isBili
+        ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
+        : "已获取，上游返回了合法的空内容（0 条新闻）。"
+      : `已获取：${label} ${snapshot.items.length} 条。`,
     "success",
   );
 }
 
-async function previewDailyNews() {
+async function previewContent() {
   if (!bridge || state.previewLoading) {
     return;
   }
@@ -573,21 +615,28 @@ async function previewDailyNews() {
     showPreviewStatus("请先选择已启用站点。", "error");
     return;
   }
+  const contentType = elements.previewContentType.value;
+  const label = CONTENT_LABELS[contentType];
+  if (!label) {
+    showPreviewStatus("请选择支持的内容类型。", "error");
+    return;
+  }
 
   const requestId = ++state.previewRequestId;
   state.previewLoading = true;
   clearPreviewResult();
-  showPreviewStatus("正在获取每日新闻…", "info");
+  showPreviewStatus(`正在获取${label}…`, "info");
   setPreviewBusy(true);
 
   try {
     const snapshot = await bridge.apiPost(
-      "daily-news/preview",
-      { site_id: siteId },
+      "content/preview",
+      { site_id: siteId, content_type: contentType },
     );
     if (
       requestId !== state.previewRequestId ||
-      elements.previewSite.value !== siteId
+      elements.previewSite.value !== siteId ||
+      elements.previewContentType.value !== contentType
     ) {
       return;
     }
@@ -601,12 +650,8 @@ async function previewDailyNews() {
       );
     }
   } finally {
-    if (requestId === state.previewRequestId) {
-      setPreviewBusy(false);
-    } else {
-      state.previewLoading = false;
-      setPreviewBusy(false);
-    }
+    state.previewLoading = false;
+    setPreviewBusy(false);
   }
 }
 
@@ -1046,9 +1091,13 @@ function bindEvents() {
   elements.retryButton.addEventListener("click", loadSites);
   elements.createButton.addEventListener("click", openCreate);
   elements.emptyCreateButton.addEventListener("click", openCreate);
-  elements.previewButton.addEventListener("click", previewDailyNews);
+  elements.previewButton.addEventListener("click", previewContent);
   elements.previewSite.addEventListener("change", () => {
     state.previewSiteId = elements.previewSite.value;
+    resetPreviewResult();
+    setPreviewBusy(false);
+  });
+  elements.previewContentType.addEventListener("change", () => {
     resetPreviewResult();
     setPreviewBusy(false);
   });

@@ -2,7 +2,7 @@
   "views": {
     "sites": {
       "title": "站点管理",
-      "description": "管理 60s API 站点并预览每日新闻。"
+      "description": "管理 60s API 站点并预览每日新闻与 Bilibili 热搜。"
     }
   }
 }

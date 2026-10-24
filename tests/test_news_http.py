@@ -13,14 +13,14 @@ from core.news import (
     NewsTooLargeError,
     NewsTransportError,
 )
-from core.news_client import NewsHttpClient
+from core.content_client import ContentHttpClient
 
 URL = "http://example.test/prefix/v2/60s"
 
 
-class NewsHttpClientTest(unittest.IsolatedAsyncioTestCase):
+class ContentHttpClientTest(unittest.IsolatedAsyncioTestCase):
     async def _client(self, handler, **kwargs):
-        client = NewsHttpClient(
+        client = ContentHttpClient(
             transport=httpx.MockTransport(handler),
             retry_delay_seconds=0,
             **kwargs,
@@ -217,7 +217,7 @@ class NewsHttpClientTest(unittest.IsolatedAsyncioTestCase):
             await task
 
     async def test_closed_client_rejects_fetch(self) -> None:
-        client = NewsHttpClient(
+        client = ContentHttpClient(
             transport=httpx.MockTransport(
                 lambda request: httpx.Response(200, content=b"ok"),
             ),
@@ -264,7 +264,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class NewsHttpClientLifecycleTest(unittest.IsolatedAsyncioTestCase):
+class ContentHttpClientLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def _wait_until(self, predicate, label: str) -> None:
         for _ in range(1000):
             if predicate():
@@ -273,7 +273,7 @@ class NewsHttpClientLifecycleTest(unittest.IsolatedAsyncioTestCase):
         raise AssertionError(f"condition not reached: {label}")
 
     async def _client(self, handler, **kwargs):
-        client = NewsHttpClient(
+        client = ContentHttpClient(
             transport=httpx.MockTransport(handler),
             retry_delay_seconds=0,
             **kwargs,
@@ -354,7 +354,7 @@ class NewsHttpClientLifecycleTest(unittest.IsolatedAsyncioTestCase):
         attempts = 0
         retry_wait_started = asyncio.Event()
 
-        class RetryWaitClient(NewsHttpClient):
+        class RetryWaitClient(ContentHttpClient):
             async def _sleep(self, seconds: float) -> None:
                 retry_wait_started.set()
                 await asyncio.Event().wait()

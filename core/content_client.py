@@ -24,7 +24,7 @@ RETRYABLE_STATUS_CODES = frozenset({408, 429, 502, 503, 504})
 USER_AGENT = "astrbot-plugin-60sapi-hub/0.1"
 
 
-class NewsHttpClient:
+class ContentHttpClient:
     """共享 ``httpx.AsyncClient`` 的每日新闻请求器。
 
     重定向一律不跟随，避免把原站点 Authorization 发往其他来源。响应体先按
@@ -330,6 +330,6 @@ __all__ = [
     "DEFAULT_MAX_CONCURRENT_REQUESTS",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "DEFAULT_RETRY_DELAY_SECONDS",
-    "NewsHttpClient",
+    "ContentHttpClient",
     "RETRYABLE_STATUS_CODES",
 ]

@@ -26,7 +26,7 @@ class NewsStructureError(NewsError):
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
-        super().__init__(f"上游 JSON 结构不符合每日新闻接口约定：{reason}。")
+        super().__init__(f"上游 JSON 结构不符合接口约定：{reason}。")
 
 
 class NewsBusinessError(NewsError):
@@ -167,7 +167,7 @@ def parse_daily_news(
         warnings=tuple(warnings),
         items=items,
         tip=_optional_text(data.get("tip")),
-        source_link=_optional_http_url(data.get("link")),
+        source_link=optional_http_url(data.get("link")),
     )
 
 
@@ -188,7 +188,7 @@ def _parse_news_item(value: object, index: int) -> NewsItem:
             )
         return NewsItem(
             title=title_value.strip(),
-            link=_optional_http_url(value.get("link")),
+            link=optional_http_url(value.get("link")),
         )
 
     raise NewsStructureError(
@@ -225,13 +225,16 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
-def _optional_http_url(value: object) -> str | None:
+def optional_http_url(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     text = value.strip()
     if not text or any(ord(char) < 0x20 for char in text):
         return None
-    parsed = urlsplit(text)
+    try:
+        parsed = urlsplit(text)
+    except (UnicodeError, ValueError):
+        return None
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return None
     return text
@@ -259,5 +262,6 @@ __all__ = [
     "NewsTooLargeError",
     "NewsTransportError",
     "build_daily_news_url",
+    "optional_http_url",
     "parse_daily_news",
 ]

@@ -12,7 +12,7 @@ from .news import (
     build_daily_news_url,
     parse_daily_news,
 )
-from .news_client import NewsHttpClient
+from .content_client import ContentHttpClient
 from .sites import SiteService
 
 
@@ -23,22 +23,26 @@ class NewsService:
         self,
         sites: SiteService,
         *,
-        client: NewsHttpClient | None = None,
+        client: ContentHttpClient | None = None,
         clock: Callable[[], datetime] | None = None,
+        manage_client: bool = True,
     ) -> None:
         self._sites = sites
-        self._client = client or NewsHttpClient()
+        self._client = client or ContentHttpClient()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._manage_client = manage_client
 
     @property
     def is_open(self) -> bool:
         return self._client.is_open
 
     async def open(self) -> None:
-        await self._client.open()
+        if self._manage_client:
+            await self._client.open()
 
     async def close(self) -> None:
-        await self._client.close()
+        if self._manage_client:
+            await self._client.close()
 
     async def preview(self, site_id: object) -> NewsSnapshot:
         """按站点 ID 获取一次每日新闻；只接受已启用站点。"""

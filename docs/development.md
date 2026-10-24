@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。当前已建立最小插件入口、程序版本源、站点存储、后台站点管理和每日新闻获取预览；其他业务功能尚未实现；代码、依赖和测试目录随后续功能按需创建。
+本项目按个人开源项目维护。当前已建立最小插件入口、程序版本源、站点存储、后台站点管理和每日新闻 / Bilibili 热搜获取预览；其他业务功能尚未实现；代码、依赖和测试目录随后续功能按需创建。
 
 ## 获取与本地设置
 
@@ -53,7 +53,7 @@ git config core.hooksPath .githooks
 - Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由须以 `/<插件名>/` 开头；Dashboard 负责扩展路由鉴权，处理器可通过 `astrbot.api.web.request.username` 检查当前用户。请求体用 `request.json(default=None)`，响应使用 `json_response`/`error_response`。同路由同方法会替换旧注册；重载不会整体清空注册表，因此插件用“实例是否已启用”标志拒绝停用后的旧处理器。
 - 真实 Web API 已验证：未登录请求返回 401；登录后可完成站点列表、新增、读取、编辑、删除；校验错误返回 400、未找到返回 404、revision 冲突返回 409 且不覆盖、存储不可用返回 503；凭据只返回 `has_bearer_token`。停用后旧处理器返回 503，启用/重载后新实例恢复读写，数据仍保留。
 - 站点管理页资源的 HTML/CSS/JS 由宿主页面服务按插件资产 token 提供；不启动第二个 HTTP 服务，不在页面读取或写入 Dashboard cookie/token。真实浏览器已验证新增、编辑、凭据保留/替换/清除、冲突、删除、刷新、停用/启用/重载和窄屏布局。
-- 每日新闻预览 API 已注册为 `POST /<插件名>/daily-news/preview`，只接受站点 ID，沿用 Dashboard 鉴权和插件启用检查。真实宿主 API 已验证未登录 401、停用 503、正常/空内容/旧内容、上游 HTTP/业务/非 JSON/重定向/大小/超时错误。
+- 统一内容预览 API 已注册为 `POST /<插件名>/content/preview`，只接受站点 ID 和固定内容类型；每日新闻旧接口 `POST /<插件名>/daily-news/preview` 继续保留。两者沿用 Dashboard 鉴权和插件启用检查。真实宿主 API 已验证未登录 401、停用 503、两种内容正常/空内容/旧内容，以及未知类型 400、上游 HTTP/业务/非 JSON/重定向/大小/超时错误。
 - 每日新闻页面已在真实 Dashboard 中验证选择已启用站点主动获取、正常/空内容/旧内容/错误/超时状态、HTML 文本安全渲染、打开页面和保存站点不自动请求、停用/启用/重载后恢复、未登录 401、窄屏无横向溢出。
 
 **源码已核验，尚未在本轮运行验证：**
@@ -158,11 +158,11 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 写请求的响应丢失、超时或连接中断进入“结果未确认”：页面保留表单/目标信息，禁用保存或删除、取消和关闭，只提供“重新读取最新列表”。重新读取失败继续保持未确认；读取成功后显示最新列表状态，并要求人工确认后再关闭。新增记录不按同名/同地址认领，只根据服务器列表和稳定 ID 展示实际状态；编辑/删除不自动重发。
 - 4.29.1 bridge 的失败对象只有 `Error.message`，不保留 HTTP 状态或响应 `data.code`。页面把已知的服务端拒绝消息视为明确失败，其余（含网络异常和未知 5xx）保守归为未确认。当前无需修改 API 契约；以后若增加机器可读错误码，应同步 bridge 能力和兼容性说明。
 - 页面不使用 CDN、外部字体、统计脚本或独立服务器；列表用 `textContent` 等 DOM API 渲染，不使用用户数据拼 `innerHTML`。
-- 当前只包含每日新闻预览，不包含其他 endpoint、内容组合、渲染、发送或调度；不要在这些功能实现前把页面按钮或说明扩展成未实现能力。站点保存本身不发起上游请求。
+- 当前包含每日新闻和 Bilibili 热搜两种内容预览，不包含其他 endpoint、内容组合、渲染、发送或调度；不要在这些功能实现前把页面按钮或说明扩展成未实现能力。站点保存本身不发起上游请求。
 
-## 每日新闻获取与预览
+## 内容获取与预览
 
-### 上游契约
+### 每日新闻上游契约
 
 - 官方源码路由：`src/router.ts` 的 `appRouter` 前缀为 `/v2`，`/60s` 路由由 `src/modules/60s.module.ts` 处理，因此实际路径为 `/v2/60s`。核验源码 commit `d582aa65d44f76e91c434174c9cf44684d30755f`（package 2.54.0），官方文档页面最后修改时间为 2025-11-19。
 - 请求为 GET；`encoding` 参数支持 text/json/markdown/image/image-proxy，默认 JSON；`date` 可选，默认取当天并回退到前两天。本插件只请求默认 JSON 的最新内容，不传 `date`/`encoding`。
@@ -170,16 +170,28 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `data.date` 通常为 `YYYY-MM-DD`，也容忍 `YYYY/MM/DD` 并归一化；缺失或无法识别时内容日期未知。`tip`、`data.link`、条目 `link` 为可选字段；只保留通过 HTTP(S) 校验的链接，不执行上游 HTML。
 - 业务错误以 JSON `code != 200` 表示；HTTP 错误、非 JSON、结构变化、超时和大小超限分别归类。`news: []` 是合法空内容，不是解析失败。
 
+### Bilibili 热搜上游契约
+
+- 官方源码 `src/router.ts` 使用 `/v2` 前缀，`src/modules/bili.module.ts` 注册 `/bili`，实际路径 `/v2/bili`；核验源码 commit `d582aa65d44f76e91c434174c9cf44684d30755f`（package 2.54.0），官方文档页面最后修改时间为 2025-11-11。
+- 请求为 GET，无额外参数；成功响应同为 `{code, message, data}`，但 `data` 是数组，不再是每日新闻的对象。
+- 官方源码把 Bilibili 内部列表映射为 `{title, link}`：标题取 `keyword` 或 `show_name`，链接为 `https://search.bilibili.com/all?keyword=...`。内部 `position`、`hot_id` 等字段没有进入 60s API 响应。
+- 当前公开契约没有排名、热度或更新时间字段；本插件不生成这些值，不用数组序号充当排名，不把获取时间当上游更新时间。顺序按响应数组原样保留，实际条数按列表长度。
+- `data: []` 是合法空列表；`data` 不是数组、条目不是对象或 `title` 不是非空字符串时是结构错误。`link` 可选，缺失、非字符串或不是安全 HTTP(S) 时忽略链接；不执行上游 HTML。
+- 业务错误/HTTP 错误/非 JSON/超时/大小/重定向与每日新闻共用同一客户端和错误分类。
+
 ### 实现边界
 
-- `core/news.py`：模型、错误、日期/条目解析、URL 拼接；`core/news_client.py`：共享 `httpx.AsyncClient`；`core/news_service.py`：读取站点内部配置并编排；`core/news_api.py`：后台错误映射；`news_web.py`：宿主路由。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合每日新闻和 Bilibili 热搜两个适配器；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取。
+- `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
-- URL 为 `base_url.rstrip("/") + "/v2/60s"`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
-- 客户端生命周期：`initialize()` 打开共享客户端，`terminate()` 先关闭客户端再关闭站点存储；打开失败释放已创建资源，停用后旧处理器由启用标志拒绝。`NewsHttpClient` 跟踪自己创建的请求任务；`close()` 先拒绝新请求，再取消并等待在途、排队和重试等待任务，最后关闭 `AsyncClient`。只取消本客户端的任务，不碰宿主无关任务；外部取消仍向调用方传播；关闭幂等，重新打开使用新 generation，不受旧请求影响。
+- URL 为站点基础地址分别拼接 `/v2/60s` 或 `/v2/bili`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
+- 两种 endpoint 共用一个 `ContentHttpClient` 实例、连接池和全局并发预算；`ContentService` 不按 endpoint 分别创建客户端。
+- 客户端生命周期：`initialize()` 打开共享客户端，`terminate()` 先关闭客户端再关闭站点存储；打开失败释放已创建资源，停用后旧处理器由启用标志拒绝。`ContentHttpClient` 跟踪自己创建的请求任务；`close()` 先拒绝新请求，再取消并等待在途、排队和重试等待任务，最后关闭 `AsyncClient`。只取消本客户端的任务，不碰宿主无关任务；外部取消仍向调用方传播；关闭幂等，重新打开使用新 generation，不受旧请求影响。
 - 超时：站点 `timeout_seconds` 是整体上限；连接超时为 `min(5, timeout)`，读/写/连接池使用同一上限。整体超时包住并发等待和重试。
 - 重试：最多 2 次尝试（首次 + 1 次重试），只重试网络传输错误和 408/429/502/503/504；重试间隔 0.25 秒，且不会突破整体超时。业务错误、非 JSON、结构变化、重定向和响应过大部分不重试。
 - 大小与并发：响应体最多 2 MiB，先检查 Content-Length，再在流式读取中累计限制；错误响应只丢弃最多 8 KiB，不解析、不记录、不返回正文。共享客户端最多 2 个并发请求。
-- 错误脱敏：`NewsHTTPStatusError` 只暴露数字 HTTP 状态，`NewsBusinessError` 只暴露数字业务 code；上游错误正文不进入异常 message、后台响应或日志。回归链路从真实 `NewsHttpClient` 经 `NewsService` 到 `NewsApi`，让模拟上游在错误正文回显虚构 Bearer token，断言响应无凭据。
+- 错误脱敏：`NewsHTTPStatusError` 只暴露数字 HTTP 状态，`NewsBusinessError` 只暴露数字业务 code；上游错误正文不进入异常 message、后台响应或日志。回归链路从真实 `ContentHttpClient` 经 `NewsService`/`ContentService` 到对应 API，让模拟上游在错误正文回显虚构 Bearer token，断言响应无凭据。
+- 可选链接容错：共享 `optional_http_url()` 只捕获 `urlsplit()` 的 `ValueError`/`UnicodeError`，未闭合 IPv6 方括号或 NFKC 展开后非法的 Unicode 主机会返回 `None`；合法 HTTP(S) 和方括号 IPv6 保留。它不捕获其他异常，必要标题缺失仍按结构错误处理，不能因忽略链接而吞掉字段校验。
 - 重定向：`follow_redirects=False`，任何 3xx 都返回错误，不把 Authorization 发往新目标；`trust_env=False`，不自动使用环境代理。
 - 不缓存预览内容；每次点击都重新请求。暂不持久化新闻快照。
 
@@ -188,8 +200,13 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_news.py`：URL/反代/IPv6、字符串/对象条目、顺序与条数、空内容、缺失/非法/旧日期、业务/结构错误、站点启用/禁用/凭据隐藏、服务层 URL/令牌/超时传递。
 - `tests/test_news_http.py`：成功、重定向不跟随、可重试状态、重试上限、非重试状态、Content-Length 和流式大小限制、传输错误、超时、取消传播、关闭客户端、并发上限；并用事件同步覆盖在途、排队、重试等待中的关闭，关闭幂等、重新打开、无关任务不被取消。
 - `tests/test_news_api.py`：成功快照、无凭据泄漏、非法请求体、站点/上游错误映射和通用 500；覆盖 HTTP 错误和 HTTP 200 业务错误正文回显虚构 Bearer token 时后台响应不包含凭据。
-- 宿主与浏览器验证使用本地模拟上游，覆盖正常、空内容、旧内容、缺失日期、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后预览恢复；不连接真实消息平台。
+- `tests/test_bili.py`：正常/空列表、实际顺序与条数、标题/链接可选字段和畸形链接、结构/业务错误、URL/反代/IPv6、服务层 URL/令牌/超时。
+- `tests/test_content_service.py`：每日新闻和 Bilibili 热搜共用一个客户端和并发预算，使用各自站点凭据。
+- `tests/test_content_api.py`：两种内容成功映射、未知类型在任何请求前拒绝、Bilibili 空/顺序/无伪造指标、HTTP/业务错误回显 token 时无凭据。
+
+- 宿主与浏览器验证使用本地模拟上游，覆盖每日新闻与 Bilibili 热搜切换、正常、空内容、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后两种内容均恢复；不连接真实消息平台。
 - 官方公开实例 `https://60s.viki.moe/v2/60s` 只做一次低频 GET 核验：HTTP 200、`code=200`、内容日期与 15 条字符串新闻；保存的响应用解析器验证通过。没有把该实例写入默认配置，也没有用真实实例做浏览器全链路。
+- Bilibili 官方公开实例 `https://60s.viki.moe/v2/bili` 于 2026-10-24 低频请求一次：HTTP 500、`code=500`，message 表明 Bilibili 上游返回 HTML，未得到可用列表。因此 Bilibili 的正常/空/错误/HTML 行为全部由本地模拟和官方源码/文档核验；不声称真实列表验证通过。
 
 ## Git 提交规则
 

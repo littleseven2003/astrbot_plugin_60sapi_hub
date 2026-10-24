@@ -1,13 +1,15 @@
 """60s API Hub 的 AstrBot 插件入口。
 
-负责宿主装配、站点存储、每日新闻获取和后台接口的生命周期；渲染、发送与
-调度尚未实现。
+负责宿主装配、站点存储、每日新闻 / Bilibili 热搜获取和后台接口的生命周期；
+渲染、发送与调度尚未实现。
 """
 
 from astrbot.api.star import Context, Star, StarTools
 
+from .content_web import ContentWeb
+from .core.content_api import ContentApi
+from .core.content_service import ContentService
 from .core.news_api import NewsApi
-from .core.news_service import NewsService
 from .core.site_api import SiteApi
 from .core.sites import SiteService
 from .news_web import NewsWeb
@@ -25,7 +27,7 @@ class SixtySAPIHub(Star):
         plugin_name = getattr(self, "name", "") or PLUGIN_NAME
         data_dir = StarTools.get_data_dir(plugin_name)
         self.sites = SiteService(data_dir / DATABASE_FILENAME)
-        self.news = NewsService(self.sites)
+        self.content = ContentService(self.sites)
         self._active = False
         self._site_web = SiteWeb(
             SiteApi(self.sites),
@@ -33,19 +35,25 @@ class SixtySAPIHub(Star):
             is_active=lambda: self._active,
         )
         self._news_web = NewsWeb(
-            NewsApi(self.news),
+            NewsApi(self.content.news),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._content_web = ContentWeb(
+            ContentApi(self.content),
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
         self._site_web.register(context)
         self._news_web.register(context)
+        self._content_web.register(context)
 
     async def initialize(self) -> None:
         await self.sites.open()
         try:
-            await self.news.open()
+            await self.content.open()
         except Exception:
-            await self.news.close()
+            await self.content.close()
             await self.sites.close()
             raise
         self._active = True
@@ -53,6 +61,6 @@ class SixtySAPIHub(Star):
     async def terminate(self) -> None:
         self._active = False
         try:
-            await self.news.close()
+            await self.content.close()
         finally:
             await self.sites.close()

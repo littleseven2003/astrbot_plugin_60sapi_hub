@@ -123,10 +123,10 @@ class NewsApi:
                 "服务器内部错误，请稍后重试。",
                 "internal_error",
             )
-        return _ok(_snapshot_dict(snapshot))
+        return _ok(snapshot_dict(snapshot))
 
 
-def _snapshot_dict(snapshot: NewsSnapshot) -> dict[str, Any]:
+def snapshot_dict(snapshot: NewsSnapshot) -> dict[str, Any]:
     return {
         "site_id": snapshot.site_id,
         "site_name": snapshot.site_name,
@@ -177,4 +177,4 @@ def _validation_error(exc: SiteValidationError) -> NewsApiResult:
     )
 
 
-__all__ = ["NewsApi", "NewsApiResult"]
+__all__ = ["NewsApi", "NewsApiResult", "snapshot_dict"]

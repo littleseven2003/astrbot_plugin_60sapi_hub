@@ -10,8 +10,6 @@ from urllib.parse import urlsplit
 
 ENDPOINT = "/v2/60s"
 CHINA_TIMEZONE = timezone(timedelta(hours=8))
-MAX_DETAIL_LENGTH = 300
-
 _DATE_RE = re.compile(r"^(\d{4})[-/](\d{2})[-/](\d{2})$")
 
 
@@ -32,15 +30,11 @@ class NewsStructureError(NewsError):
 
 
 class NewsBusinessError(NewsError):
-    """上游 JSON 的业务 code 不是 200。"""
+    """上游 JSON 的业务 code 不是 200；只暴露数字 code。"""
 
-    def __init__(self, code: int, detail: str | None = None) -> None:
+    def __init__(self, code: int) -> None:
         self.code = code
-        self.detail = _truncate(detail)
-        message = f"上游返回业务错误（code {code}）。"
-        if self.detail:
-            message = f"{message} {self.detail}"
-        super().__init__(message)
+        super().__init__(f"上游返回业务错误（code {code}）。")
 
 
 class NewsTimeoutError(NewsError):
@@ -56,22 +50,17 @@ class NewsTooLargeError(NewsError):
 
 
 class NewsHTTPStatusError(NewsError):
-    """上游返回非 2xx HTTP 状态。"""
+    """上游返回非 2xx HTTP 状态；只暴露数字状态码。"""
 
     def __init__(
         self,
         status_code: int,
-        detail: str | None = None,
         *,
         retryable: bool = False,
     ) -> None:
         self.status_code = status_code
-        self.detail = _truncate(detail)
         self.retryable = retryable
-        message = f"上游站点返回 HTTP {status_code}。"
-        if self.detail:
-            message = f"{message} {self.detail}"
-        super().__init__(message)
+        super().__init__(f"上游站点返回 HTTP {status_code}。")
 
 
 class NewsRedirectError(NewsError):
@@ -140,7 +129,7 @@ def parse_daily_news(
     if isinstance(code, bool) or not isinstance(code, int):
         raise NewsStructureError("响应 code 必须是整数")
     if code != 200:
-        raise NewsBusinessError(code, _optional_text(payload.get("message")))
+        raise NewsBusinessError(code)
 
     data = payload.get("data")
     if not isinstance(data, dict):
@@ -246,12 +235,6 @@ def _optional_http_url(value: object) -> str | None:
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return None
     return text
-
-
-def _truncate(value: str | None) -> str | None:
-    if not value:
-        return None
-    return value[:MAX_DETAIL_LENGTH]
 
 
 def _as_utc(value: datetime) -> datetime:

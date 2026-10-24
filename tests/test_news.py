@@ -169,7 +169,7 @@ class DailyNewsParserTest(unittest.TestCase):
         with self.assertRaises(NewsBusinessError) as context:
             parse({"code": 500, "message": "上游业务失败", "data": None})
         self.assertEqual(context.exception.code, 500)
-        self.assertIn("上游业务失败", str(context.exception))
+        self.assertNotIn("上游业务失败", str(context.exception))
 
     def test_required_news_and_item_errors(self) -> None:
         missing_news = payload()

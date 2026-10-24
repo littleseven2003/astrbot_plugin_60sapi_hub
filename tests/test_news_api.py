@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
+
+import httpx
 
 from core.news import (
     NewsBusinessError,
@@ -17,9 +21,13 @@ from core.news import (
     NewsTransportError,
 )
 from core.news_api import NewsApi
+from core.news_client import NewsHttpClient
+from core.news_service import NewsService
 from core.sites import (
+    SiteCreate,
     SiteDisabledError,
     SiteNotFoundError,
+    SiteService,
     SiteStorageError,
     SiteValidationError,
 )
@@ -106,9 +114,9 @@ class NewsApiTest(unittest.IsolatedAsyncioTestCase):
             (NewsTimeoutError("timeout"), 504, "upstream_timeout"),
             (NewsTooLargeError(1024), 502, "upstream_too_large"),
             (NewsInvalidJSONError("bad json"), 502, "upstream_invalid_json"),
-            (NewsBusinessError(500, "业务失败"), 502, "upstream_business_error"),
+            (NewsBusinessError(500), 502, "upstream_business_error"),
             (NewsStructureError("结构变化"), 502, "upstream_structure"),
-            (NewsHTTPStatusError(500, "server"), 502, "upstream_http_error"),
+            (NewsHTTPStatusError(500), 502, "upstream_http_error"),
             (NewsRedirectError(302), 502, "upstream_redirect"),
             (NewsTransportError("network"), 502, "upstream_unreachable"),
             (NewsClientClosedError("closed"), 503, "upstream_unavailable"),
@@ -127,6 +135,75 @@ class NewsApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 500)
         self.assertEqual(result.body["data"]["code"], "internal_error")
         self.assertNotIn("/secret/db", json.dumps(result.body))
+
+
+class NewsApiSecretLeakTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temporary_directory.name) / "sites.sqlite3"
+        self.sites = SiteService(self.db_path)
+        await self.sites.open()
+        self.token = "fictional-bearer-token-for-leak-test"
+        self.site = await self.sites.create_site(
+            SiteCreate(
+                name="泄露测试站点",
+                base_url="http://example.test/proxy",
+                enabled=True,
+                timeout_seconds=2,
+                bearer_token=self.token,
+            ),
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.sites.close()
+        self._temporary_directory.cleanup()
+
+    async def _preview(self, mode: str):
+        seen_auth: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            auth = request.headers.get("authorization", "")
+            seen_auth.append(auth)
+            body = json.dumps(
+                {
+                    "code": 500,
+                    "message": f"upstream echoed {auth}",
+                    "data": None,
+                },
+                ensure_ascii=False,
+            ).encode()
+            if mode == "business":
+                return httpx.Response(200, content=body)
+            return httpx.Response(500, content=body)
+
+        client = NewsHttpClient(
+            transport=httpx.MockTransport(handler),
+            retry_delay_seconds=0,
+        )
+        service = NewsService(self.sites, client=client)
+        await service.open()
+        try:
+            result = await NewsApi(service).preview({"site_id": self.site.id})
+        finally:
+            await service.close()
+        self.assertEqual(seen_auth, [f"Bearer {self.token}"])
+        return result
+
+    async def test_http_error_does_not_echo_bearer_token(self) -> None:
+        result = await self._preview("http")
+        self.assertEqual(result.status_code, 502)
+        self.assertEqual(result.body["data"]["code"], "upstream_http_error")
+        serialized = json.dumps(result.body, ensure_ascii=False)
+        self.assertNotIn(self.token, serialized)
+        self.assertNotIn("upstream echoed", serialized)
+
+    async def test_business_error_does_not_echo_bearer_token(self) -> None:
+        result = await self._preview("business")
+        self.assertEqual(result.status_code, 502)
+        self.assertEqual(result.body["data"]["code"], "upstream_business_error")
+        serialized = json.dumps(result.body, ensure_ascii=False)
+        self.assertNotIn(self.token, serialized)
+        self.assertNotIn("upstream echoed", serialized)
 
 
 if __name__ == "__main__":

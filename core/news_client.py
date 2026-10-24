@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any
-
 import httpx
 
 from .news import (
@@ -178,14 +175,14 @@ class NewsHttpClient:
             if 300 <= status < 400:
                 raise NewsRedirectError(status)
             if not 200 <= status < 300:
-                body = await self._read_bounded(
+                # 只丢弃有限错误正文，不解析、不记录、不返回上游文本。
+                await self._read_bounded(
                     response,
                     MAX_ERROR_BODY_BYTES,
                     too_large_error=False,
                 )
                 raise NewsHTTPStatusError(
                     status,
-                    _extract_error_detail(body),
                     retryable=status in RETRYABLE_STATUS_CODES,
                 )
 
@@ -229,25 +226,6 @@ def _content_length(response: httpx.Response) -> int | None:
     except (TypeError, ValueError):
         return None
     return length if length >= 0 else None
-
-
-def _extract_error_detail(body: bytes) -> str | None:
-    if not body:
-        return None
-    try:
-        parsed: Any = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        parsed = None
-    if isinstance(parsed, dict):
-        for key in ("message", "error", "detail"):
-            value = parsed.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()[:300]
-        return None
-    text = body.decode("utf-8", errors="replace").strip()
-    if not text or text.startswith("<"):
-        return None
-    return text[:300]
 
 
 __all__ = [

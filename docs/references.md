@@ -24,7 +24,7 @@
 |---|---|---|
 | 每日新闻 | https://docs.60s-api.viki.moe/254026209e0 | `/v2/60s`；GET；`encoding` 默认 json，可选 date；成功为 `{code,message,data}`，必要 `data.news`，`date` 可为空；条目为字符串或 `{title,link}` |
 | B站热搜 | https://docs.60s-api.viki.moe/254039323e0 | `/v2/bili`；GET；成功 `{code,message,data}`，`data` 为 `{title,link}` 数组；无排名/热度/更新时间字段 |
-| 知乎话题榜 | https://docs.60s-api.viki.moe/254026504e0 | /v2/zhihu；完整结构待实例核验 |
+| 知乎话题榜 | https://docs.60s-api.viki.moe/254026504e0 | `/v2/zhihu`；GET；成功 `{code,message,data}`，`data` 为对象数组；含 `title/detail/hot_value_desc/link` 等，无排名/更新时间字段 |
 | 抖音热搜 | https://docs.60s-api.viki.moe/254028799e0 | 栏目已确认，路径和变体实施时核验 |
 | 头条热搜 | https://docs.60s-api.viki.moe/254038833e0 | 栏目已确认，路径和变体实施时核验 |
 
@@ -42,5 +42,13 @@ Bilibili 热搜核验补充：
 - 文档页面最后修改时间 2025-11-11，示例只展示标题和链接。没有排名、热度或更新时间字段；数组顺序是接口返回顺序，不是经插件重排的排名。
 - 公开实例 `https://60s.viki.moe/v2/bili` 于 2026-10-24 低频请求一次：HTTP 500、`code=500`，message 表明 Bilibili 上游返回 HTML 导致解析失败，未得到可用列表。因此真实 Bilibili 列表没有成功核验；插件行为由官方源码/文档和本地模拟验证，不能据此宣称公开实例可用。
 - 不把 B站热搜当热门视频榜，不把列表序号当上游排名，不生成热度或更新时间。
+
+知乎热榜核验补充：
+
+- 官方源码 `src/router.ts` 使用 `/v2` 前缀，`src/modules/zhihu.module.ts` 注册 `/zhihu`；实际请求路径 `/v2/zhihu`。
+- 源码映射字段：`title`、`detail`（`target.excerpt`）、`cover`（首个子项缩略图）、`hot_value_desc`（`detail_text`）、`answer_cnt`、`follower_cnt`、`comment_cnt`、`created_at`（`target.created * 1000`）、`created`（格式化字符串）、`link`（`target.url` 转为 `www.zhihu.com/question/...`）。
+- 文档页面最后修改时间 2025-11-11；公开实例 2026-10-24 低频请求成功：HTTP 200、`code=200`、30 条数组，字段与源码映射一致。`detail` 可为空，`hot_value_desc` 是“1670 万热度”这类文本。
+- `created`/`created_at` 是话题创建时间，不是更新时间；没有排名字段。插件不把数组序号当排名，不把抓取时间当更新时间，不把热度文本换算成数值；`cover` 不渲染，避免自动请求远程图片。
+- 公开实例只用于一次字段/解析核验，不写入默认配置；未用真实实例完成浏览器全链路。
 
 不从上游文档中的示例推断所有实例版本一致。引入源码、图标或模板时分别核对许可证与署名要求。

@@ -601,7 +601,7 @@ function renderPreview(snapshot) {
       ? isBili
         ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
         : "已获取，上游返回了合法的空内容（0 条新闻）。"
-      : `已获取 ${snapshot.items.length} 条${label}。`,
+      : `已获取：${label} ${snapshot.items.length} 条。`,
     "success",
   );
 }

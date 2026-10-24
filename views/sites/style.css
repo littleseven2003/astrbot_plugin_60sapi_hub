@@ -941,6 +941,7 @@ input:focus-visible,
 
   .preview-site-field,
   .preview-type-field {
+    flex: 0 0 auto;
     max-width: none;
   }
 

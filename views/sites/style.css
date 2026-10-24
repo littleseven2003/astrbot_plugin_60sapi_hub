@@ -455,7 +455,13 @@ input:focus-visible,
   max-width: 420px;
 }
 
-.preview-site-field select {
+.preview-type-field {
+  flex: 0 1 210px;
+  max-width: 230px;
+}
+
+.preview-site-field select,
+.preview-type-field select {
   cursor: pointer;
 }
 
@@ -535,6 +541,11 @@ input:focus-visible,
   gap: 11px;
   margin: 16px 0 0;
   padding-left: 1.5em;
+}
+
+.bili-list {
+  list-style: none;
+  padding-left: 0;
 }
 
 .news-list li::marker {
@@ -928,7 +939,8 @@ input:focus-visible,
     flex-direction: column;
   }
 
-  .preview-site-field {
+  .preview-site-field,
+  .preview-type-field {
     max-width: none;
   }
 

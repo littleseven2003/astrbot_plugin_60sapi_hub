@@ -16,7 +16,7 @@
           <p class="product">60sAPI Hub</p>
           <h1>站点管理</h1>
           <p class="lede">
-            维护 60s API 的基础地址、超时和访问凭据，并预览每日新闻。
+            维护 60s API 的基础地址、超时和访问凭据，并预览每日新闻或 Bilibili 热搜。
           </p>
         </div>
         <div class="header-actions">
@@ -57,19 +57,26 @@
 
       <section class="preview-section" aria-labelledby="preview-heading">
         <div class="section-head">
-          <h2 id="preview-heading">每日新闻预览</h2>
-          <span class="count">/v2/60s</span>
+          <h2 id="preview-heading">内容预览</h2>
+          <span class="count">2 种内容</span>
         </div>
         <p class="preview-lede">
-          选择一个已启用站点后主动获取一次每日新闻。打开页面或保存站点不会请求上游。
+          选择已启用站点和内容类型后主动获取一次。打开页面、切换选项或保存站点不会请求上游。
         </p>
         <div class="preview-controls">
           <label class="field preview-site-field">
             <span>站点</span>
             <select id="preview-site" disabled></select>
           </label>
+          <label class="field preview-type-field">
+            <span>内容类型</span>
+            <select id="preview-content-type" disabled>
+              <option value="daily_news">每日新闻</option>
+              <option value="bilibili_hot">Bilibili 热搜</option>
+            </select>
+          </label>
           <button id="preview-button" class="button button-primary" type="button" disabled>
-            获取每日新闻
+            获取内容
           </button>
         </div>
         <p id="preview-hint" class="help" hidden></p>
@@ -81,12 +88,20 @@
               <strong id="preview-source"></strong>
             </div>
             <div class="preview-meta-item">
+              <span class="preview-label">内容类型</span>
+              <span id="preview-content-type-label"></span>
+            </div>
+            <div class="preview-meta-item">
               <span class="preview-label">接口</span>
               <code id="preview-endpoint"></code>
             </div>
-            <div class="preview-meta-item">
+            <div id="preview-date-item" class="preview-meta-item">
               <span class="preview-label">内容日期</span>
               <span id="preview-content-date"></span>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">条数</span>
+              <span id="preview-item-count"></span>
             </div>
             <div class="preview-meta-item">
               <span class="preview-label">获取时间</span>
@@ -95,16 +110,17 @@
           </div>
           <div id="preview-warnings" class="preview-warning" role="note" hidden></div>
           <div id="preview-empty" class="preview-empty" hidden>
-            上游返回了合法的空内容（0 条新闻）。
+            <span id="preview-empty-text">上游返回了合法的空内容。</span>
           </div>
           <ol id="preview-news-list" class="news-list"></ol>
+          <ul id="preview-bili-list" class="news-list bili-list" hidden></ul>
           <p id="preview-tip" class="preview-tip" hidden></p>
           <p id="preview-source-link" class="preview-source-link" hidden></p>
         </div>
       </section>
 
       <p class="footnote">
-        站点保存只做格式校验；每日新闻预览会主动请求一次上游。凭据保存后不会回显。
+        站点保存只做格式校验；内容预览会按所选类型主动请求一次上游。凭据保存后不会回显。
       </p>
     </main>
 

@@ -6,6 +6,7 @@ import unittest
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from core.news import (
     NewsBusinessError,
@@ -13,6 +14,7 @@ from core.news import (
     NewsItem,
     NewsStructureError,
     build_daily_news_url,
+    optional_http_url,
     parse_daily_news,
 )
 from core.news_service import NewsService
@@ -50,6 +52,36 @@ def parse(data: dict, *, fetched_at: datetime = FETCHED_AT):
         site_name="虚构站点",
         fetched_at=fetched_at,
     )
+
+
+class OptionalHttpUrlTest(unittest.TestCase):
+    def test_valid_http_and_ipv6_urls_are_preserved(self) -> None:
+        self.assertEqual(
+            optional_http_url("https://example.test/news"),
+            "https://example.test/news",
+        )
+        self.assertEqual(
+            optional_http_url("http://[::1]:8080/news"),
+            "http://[::1]:8080/news",
+        )
+
+    def test_unclosed_ipv6_and_unicode_netloc_are_ignored(self) -> None:
+        self.assertIsNone(optional_http_url("http://[::1"))
+        self.assertIsNone(optional_http_url("http://[::1]extra/path"))
+        self.assertIsNone(optional_http_url("http://a\u2100b.example/path"))
+        self.assertIsNone(optional_http_url("http://a\uff0fb.example/path"))
+
+    def test_explicit_unicode_error_is_treated_as_bad_url(self) -> None:
+        with patch(
+            "core.news.urlsplit",
+            side_effect=UnicodeError("invalid host"),
+        ):
+            self.assertIsNone(optional_http_url("https://example.test/news"))
+
+    def test_unexpected_parser_errors_are_not_swallowed(self) -> None:
+        with patch("core.news.urlsplit", side_effect=RuntimeError("unexpected")):
+            with self.assertRaises(RuntimeError):
+                optional_http_url("https://example.test/news")
 
 
 class DailyNewsParserTest(unittest.TestCase):
@@ -165,6 +197,35 @@ class DailyNewsParserTest(unittest.TestCase):
         self.assertIsNone(snapshot.items[0].link)
         self.assertIsNone(snapshot.items[1].link)
 
+    def test_malformed_item_and_source_links_are_omitted_without_failure(self) -> None:
+        snapshot = parse(
+            payload(
+                data={
+                    "link": "http://a\u2100b.example/source",
+                    "news": [
+                        {"title": "未闭合方括号", "link": "http://[::1"},
+                        {"title": "Unicode 主机", "link": "http://a\u2100b.example"},
+                        {
+                            "title": "合法 IPv6",
+                            "link": "http://[::1]:8080/news",
+                        },
+                    ],
+                },
+            ),
+        )
+        self.assertEqual(
+            [item.title for item in snapshot.items],
+            ["未闭合方括号", "Unicode 主机", "合法 IPv6"],
+        )
+        self.assertEqual(len(snapshot.items), 3)
+        self.assertIsNone(snapshot.items[0].link)
+        self.assertIsNone(snapshot.items[1].link)
+        self.assertEqual(
+            snapshot.items[2].link,
+            "http://[::1]:8080/news",
+        )
+        self.assertIsNone(snapshot.source_link)
+
     def test_business_error(self) -> None:
         with self.assertRaises(NewsBusinessError) as context:
             parse({"code": 500, "message": "上游业务失败", "data": None})
@@ -181,6 +242,8 @@ class DailyNewsParserTest(unittest.TestCase):
             payload(data={"news": [""]}),
             payload(data={"news": [{"title": ""}]}),
             payload(data={"news": [{"link": "https://example.com"}]}),
+            payload(data={"news": [{"link": "http://[::1"}]}),
+            payload(data={"news": [{"title": "标题", "link": "http://[::1"}, 123]}),
         ]
         for case in cases:
             with self.subTest(case=case):

@@ -185,5 +185,125 @@ class ContentApiSecretLeakTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("upstream echoed", serialized)
 
 
+class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temporary_directory.name) / "sites.sqlite3"
+        self.sites = SiteService(self.db_path)
+        await self.sites.open()
+        self.site = await self.sites.create_site(
+            SiteCreate(
+                name="链接容错测试",
+                base_url="http://example.test/proxy",
+                enabled=True,
+                timeout_seconds=2,
+                bearer_token="chain-token",
+            ),
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.sites.close()
+        self._temporary_directory.cleanup()
+
+    async def _run(self, mode: str):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if mode == "missing_title":
+                body = {
+                    "code": 200,
+                    "data": [{"link": "http://[::1"}],
+                }
+            elif request.url.path.endswith("/v2/bili"):
+                body = {
+                    "code": 200,
+                    "data": [
+                        {"title": "热搜一", "link": "http://[::1"},
+                        {
+                            "title": "热搜二",
+                            "link": "http://a\u2100b.example",
+                        },
+                        {
+                            "title": "热搜三",
+                            "link": "http://[::1]:8080/hot",
+                        },
+                    ],
+                }
+            else:
+                body = {
+                    "code": 200,
+                    "data": {
+                        "news": [
+                            {"title": "新闻一", "link": "http://[::1"},
+                            {
+                                "title": "新闻二",
+                                "link": "http://a\u2100b.example",
+                            },
+                            {
+                                "title": "新闻三",
+                                "link": "http://[::1]:8080/news",
+                            },
+                        ],
+                        "link": "http://a\u2100b.example/source",
+                    },
+                }
+            return httpx.Response(200, content=json.dumps(body).encode())
+
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        content = ContentService(
+            self.sites,
+            client=client,
+            clock=lambda: datetime(2026, 10, 24, 2, 0, tzinfo=timezone.utc),
+        )
+        await content.open()
+        try:
+            api = ContentApi(content)
+            daily = await api.preview(
+                {"site_id": self.site.id, "content_type": "daily_news"},
+            )
+            bili = await api.preview(
+                {"site_id": self.site.id, "content_type": "bilibili_hot"},
+            )
+            missing = await api.preview(
+                {"site_id": self.site.id, "content_type": "bilibili_hot"},
+            ) if mode == "missing_title" else None
+        finally:
+            await content.close()
+        return daily, bili, missing
+
+    async def test_both_content_types_survive_malformed_links(self) -> None:
+        daily, bili, _ = await self._run("normal")
+        self.assertEqual(daily.status_code, 200)
+        self.assertEqual(bili.status_code, 200)
+        daily_data = daily.body["data"]
+        bili_data = bili.body["data"]
+        self.assertEqual(
+            [item["title"] for item in daily_data["items"]],
+            ["新闻一", "新闻二", "新闻三"],
+        )
+        self.assertEqual(
+            [item["link"] for item in daily_data["items"]],
+            [None, None, "http://[::1]:8080/news"],
+        )
+        self.assertIsNone(daily_data["source_link"])
+        self.assertEqual(
+            [item["title"] for item in bili_data["items"]],
+            ["热搜一", "热搜二", "热搜三"],
+        )
+        self.assertEqual(bili_data["item_count"], 3)
+        self.assertEqual(
+            [item["link"] for item in bili_data["items"]],
+            [None, None, "http://[::1]:8080/hot"],
+        )
+
+    async def test_missing_title_is_still_a_structure_error(self) -> None:
+        daily, bili, missing = await self._run("missing_title")
+        self.assertEqual(daily.status_code, 502)
+        self.assertEqual(bili.status_code, 502)
+        self.assertEqual(daily.body["data"]["code"], "upstream_structure")
+        self.assertEqual(bili.body["data"]["code"], "upstream_structure")
+        self.assertIsNotNone(missing)
+        self.assertEqual(missing.status_code, 502)
+        self.assertEqual(missing.body["data"]["code"], "upstream_structure")
+
+
 if __name__ == "__main__":
     unittest.main()

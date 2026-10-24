@@ -105,6 +105,29 @@ class BiliParserTest(unittest.TestCase):
         self.assertIsNone(snapshot.items[4].link)
         self.assertEqual(snapshot.items[5].link, "https://example.test/ok")
 
+    def test_malformed_links_keep_title_order_and_count(self) -> None:
+        snapshot = self.parse(
+            [
+                {"title": "未闭合方括号", "link": "http://[::1"},
+                {"title": "Unicode 主机", "link": "http://a\u2100b.example"},
+                {
+                    "title": "合法 IPv6",
+                    "link": "http://[::1]:8080/hot",
+                },
+            ],
+        )
+        self.assertEqual(
+            [item.title for item in snapshot.items],
+            ["未闭合方括号", "Unicode 主机", "合法 IPv6"],
+        )
+        self.assertEqual(len(snapshot.items), 3)
+        self.assertIsNone(snapshot.items[0].link)
+        self.assertIsNone(snapshot.items[1].link)
+        self.assertEqual(
+            snapshot.items[2].link,
+            "http://[::1]:8080/hot",
+        )
+
     def test_no_rank_heat_or_update_fields_are_fabricated(self) -> None:
         snapshot = self.parse(
             [{"title": "条目", "link": "https://example.test/a"}],
@@ -146,6 +169,7 @@ class BiliParserTest(unittest.TestCase):
             ({"code": 200, "data": [{}]}, "title"),
             ({"code": 200, "data": [{"title": "  "}]}, "title"),
             ({"code": 200, "data": [{"title": 1}]}, "title"),
+            ({"code": 200, "data": [{"link": "http://[::1"}]}, "title"),
         ]
         for value, reason in cases:
             with self.subTest(value=value):

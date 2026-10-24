@@ -231,7 +231,10 @@ def optional_http_url(value: object) -> str | None:
     text = value.strip()
     if not text or any(ord(char) < 0x20 for char in text):
         return None
-    parsed = urlsplit(text)
+    try:
+        parsed = urlsplit(text)
+    except (UnicodeError, ValueError):
+        return None
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return None
     return text

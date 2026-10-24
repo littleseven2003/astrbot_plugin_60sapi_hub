@@ -37,7 +37,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_daily_and_bili_share_one_client_and_budget(self) -> None:
+    async def test_three_content_types_share_one_client_and_budget(self) -> None:
         await self._site("共享预算站点", "shared-token")
         started = asyncio.Event()
         release = asyncio.Event()
@@ -56,6 +56,12 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             active -= 1
             if request.url.path.endswith("/v2/bili"):
                 body = {"code": 200, "message": "ok", "data": [{"title": "热搜"}]}
+            elif request.url.path.endswith("/v2/zhihu"):
+                body = {
+                    "code": 200,
+                    "message": "ok",
+                    "data": [{"title": "知乎", "hot_value_desc": "10 万热度"}],
+                }
             else:
                 body = {
                     "code": 200,
@@ -77,27 +83,43 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             bili_task = asyncio.create_task(content.preview_bili(
                 (await self.sites.list_sites())[0].id,
             ))
+            zhihu_task = asyncio.create_task(content.preview_zhihu(
+                (await self.sites.list_sites())[0].id,
+            ))
             await asyncio.wait_for(started.wait(), timeout=1)
             await asyncio.sleep(0)
             release.set()
-            daily, bili = await asyncio.gather(daily_task, bili_task)
+            daily, bili, zhihu = await asyncio.gather(
+                daily_task,
+                bili_task,
+                zhihu_task,
+            )
         finally:
             await content.close()
         self.assertEqual(peak, 1)
-        self.assertEqual(set(seen), {"/proxy/v2/60s", "/proxy/v2/bili"})
+        self.assertEqual(
+            set(seen),
+            {"/proxy/v2/60s", "/proxy/v2/bili", "/proxy/v2/zhihu"},
+        )
         self.assertEqual(daily.items[0].title, "新闻")
         self.assertEqual(bili.items[0].title, "热搜")
+        self.assertEqual(zhihu.items[0].title, "知乎")
+        self.assertEqual(zhihu.items[0].hot_value_desc, "10 万热度")
         self.assertIs(content.news._client, content.bili._client)
+        self.assertIs(content.news._client, content.zhihu._client)
 
-    async def test_daily_and_bili_use_their_own_site_credentials(self) -> None:
+    async def test_content_types_use_their_own_site_credentials(self) -> None:
         daily_site = await self._site("每日新闻站点", "daily-token")
         bili_site = await self._site("B 站站点", "bili-token")
+        zhihu_site = await self._site("知乎站点", "zhihu-token")
         seen: dict[str, str] = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
             seen[request.url.path] = request.headers.get("authorization", "")
             if request.url.path.endswith("/v2/bili"):
                 body = {"code": 200, "data": [{"title": "热搜"}]}
+            elif request.url.path.endswith("/v2/zhihu"):
+                body = {"code": 200, "data": [{"title": "知乎"}]}
             else:
                 body = {"code": 200, "data": {"news": ["新闻"]}}
             return httpx.Response(200, content=json.dumps(body).encode())
@@ -108,7 +130,9 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         try:
             await content.preview_daily(daily_site.id)
             await content.preview_bili(bili_site.id)
+            await content.preview_zhihu(zhihu_site.id)
         finally:
             await content.close()
         self.assertEqual(seen["/proxy/v2/60s"], "Bearer daily-token")
         self.assertEqual(seen["/proxy/v2/bili"], "Bearer bili-token")
+        self.assertEqual(seen["/proxy/v2/zhihu"], "Bearer zhihu-token")

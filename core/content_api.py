@@ -25,13 +25,16 @@ from .sites import (
     SiteStorageError,
     SiteValidationError,
 )
+from .zhihu import ZhihuHotSnapshot
 
 DAILY_NEWS = "daily_news"
 BILIBILI_HOT = "bilibili_hot"
-KNOWN_CONTENT_TYPES = frozenset({DAILY_NEWS, BILIBILI_HOT})
+ZHIHU_HOT = "zhihu_hot"
+KNOWN_CONTENT_TYPES = frozenset({DAILY_NEWS, BILIBILI_HOT, ZHIHU_HOT})
 CONTENT_LABELS = {
     DAILY_NEWS: "每日新闻",
     BILIBILI_HOT: "Bilibili 热搜",
+    ZHIHU_HOT: "知乎热榜",
 }
 
 
@@ -66,8 +69,10 @@ class ContentApi:
         try:
             if content_type == DAILY_NEWS:
                 snapshot = await self._service.preview_daily(site_id)
-            else:
+            elif content_type == BILIBILI_HOT:
                 snapshot = await self._service.preview_bili(site_id)
+            else:
+                snapshot = await self._service.preview_zhihu(site_id)
         except SiteValidationError as exc:
             return _validation_error(exc)
         except SiteNotFoundError:
@@ -149,8 +154,10 @@ class ContentApi:
 
         if content_type == DAILY_NEWS:
             data = {**snapshot_dict(snapshot), "content_type": DAILY_NEWS}
-        else:
+        elif content_type == BILIBILI_HOT:
             data = _bili_snapshot_dict(snapshot)
+        else:
+            data = _zhihu_snapshot_dict(snapshot)
         return _ok(data)
 
 
@@ -164,6 +171,26 @@ def _bili_snapshot_dict(snapshot: BiliHotSnapshot) -> dict[str, Any]:
         "item_count": len(snapshot.items),
         "items": [
             {"title": item.title, "link": item.link}
+            for item in snapshot.items
+        ],
+    }
+
+
+def _zhihu_snapshot_dict(snapshot: ZhihuHotSnapshot) -> dict[str, Any]:
+    return {
+        "content_type": ZHIHU_HOT,
+        "site_id": snapshot.site_id,
+        "site_name": snapshot.site_name,
+        "endpoint": snapshot.endpoint,
+        "fetched_at": snapshot.fetched_at,
+        "item_count": len(snapshot.items),
+        "items": [
+            {
+                "title": item.title,
+                "detail": item.detail,
+                "hot_value_desc": item.hot_value_desc,
+                "link": item.link,
+            }
             for item in snapshot.items
         ],
     }
@@ -206,6 +233,7 @@ __all__ = [
     "CONTENT_LABELS",
     "DAILY_NEWS",
     "KNOWN_CONTENT_TYPES",
+    "ZHIHU_HOT",
     "ContentApi",
     "ContentApiResult",
 ]

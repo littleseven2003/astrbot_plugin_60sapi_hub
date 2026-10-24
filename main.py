@@ -1,12 +1,16 @@
 """60s API Hub 的 AstrBot 插件入口。
 
-负责宿主装配、站点存储和后台站点 API 的生命周期；内容获取与推送尚未实现。
+负责宿主装配、站点存储、每日新闻获取和后台接口的生命周期；渲染、发送与
+调度尚未实现。
 """
 
 from astrbot.api.star import Context, Star, StarTools
 
+from .core.news_api import NewsApi
+from .core.news_service import NewsService
 from .core.site_api import SiteApi
 from .core.sites import SiteService
+from .news_web import NewsWeb
 from .site_web import SiteWeb
 
 PLUGIN_NAME = "astrbot_plugin_60sapi_hub"
@@ -21,18 +25,34 @@ class SixtySAPIHub(Star):
         plugin_name = getattr(self, "name", "") or PLUGIN_NAME
         data_dir = StarTools.get_data_dir(plugin_name)
         self.sites = SiteService(data_dir / DATABASE_FILENAME)
+        self.news = NewsService(self.sites)
         self._active = False
         self._site_web = SiteWeb(
             SiteApi(self.sites),
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
+        self._news_web = NewsWeb(
+            NewsApi(self.news),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
         self._site_web.register(context)
+        self._news_web.register(context)
 
     async def initialize(self) -> None:
         await self.sites.open()
+        try:
+            await self.news.open()
+        except Exception:
+            await self.news.close()
+            await self.sites.close()
+            raise
         self._active = True
 
     async def terminate(self) -> None:
         self._active = False
-        await self.sites.close()
+        try:
+            await self.news.close()
+        finally:
+            await self.sites.close()

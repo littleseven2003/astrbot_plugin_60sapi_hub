@@ -195,3 +195,132 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
             state.release.set()
             if service.is_open:
                 await service.close()
+
+
+class ImmediateRenderer:
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    def render(self, _data, *, created_at="", cancel_event=None):
+        return []
+
+
+class AdmissionCancellationTest(unittest.IsolatedAsyncioTestCase):
+    async def _run_cancel_during_cleanup(self, service, second_cancel=False):
+        started = asyncio.Event()
+        second_stage = asyncio.Event()
+        original_gather = asyncio.gather
+
+        async def controlled_gather(*aws, **kwargs):
+            started.set()
+            try:
+                return await original_gather(*aws, **kwargs)
+            except asyncio.CancelledError:
+                if second_cancel:
+                    second_stage.set()
+                    await asyncio.sleep(0.05)
+                raise
+
+        with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
+            with patch("core.image_service.asyncio.gather", controlled_gather):
+                task = asyncio.create_task(service.render({}))
+                await asyncio.wait_for(started.wait(), 1)
+                task.cancel()
+                if second_cancel:
+                    await asyncio.wait_for(second_stage.wait(), 1)
+                    task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+    async def test_cancel_during_cleanup_releases_admission(self) -> None:
+        service = ProfileImageService(
+            max_concurrent_renders=1,
+            max_queued_renders=0,
+            timeout_seconds=2,
+        )
+        try:
+            await self._run_cancel_during_cleanup(service)
+            self.assertEqual(service._admission._value, 1)
+            with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
+                self.assertEqual(await service.render({}), [])
+        finally:
+            await service.close()
+
+    async def test_cancel_during_cleanup_without_renderer_patch(self) -> None:
+        service = ProfileImageService(
+            max_concurrent_renders=1,
+            max_queued_renders=0,
+            timeout_seconds=2,
+        )
+        started = asyncio.Event()
+        original_gather = asyncio.gather
+
+        async def controlled_gather(*aws, **kwargs):
+            started.set()
+            return await original_gather(*aws, **kwargs)
+
+        try:
+            with patch("core.image_service.asyncio.gather", controlled_gather):
+                task = asyncio.create_task(service.render({}))
+                await asyncio.wait_for(started.wait(), 1)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            self.assertEqual(service._admission._value, 1)
+        finally:
+            await service.close()
+
+    async def test_second_cancel_during_cleanup_releases_once(self) -> None:
+        service = ProfileImageService(
+            max_concurrent_renders=1,
+            max_queued_renders=0,
+            timeout_seconds=2,
+        )
+        try:
+            await self._run_cancel_during_cleanup(service, second_cancel=True)
+            self.assertEqual(service._admission._value, 1)
+            with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
+                self.assertEqual(await service.render({}), [])
+        finally:
+            await service.close()
+
+    async def test_multi_round_cancel_does_not_change_capacity(self) -> None:
+        service = ProfileImageService(
+            max_concurrent_renders=1,
+            max_queued_renders=0,
+            timeout_seconds=2,
+        )
+        try:
+            for _ in range(3):
+                await self._run_cancel_during_cleanup(service)
+                self.assertEqual(service._admission._value, 1)
+            with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
+                for _ in range(3):
+                    self.assertEqual(await service.render({}), [])
+            self.assertEqual(service._admission._value, 1)
+        finally:
+            await service.close()
+
+    async def test_close_and_cancel_do_not_leak(self) -> None:
+        service = ProfileImageService(
+            max_concurrent_renders=1,
+            max_queued_renders=0,
+            timeout_seconds=2,
+        )
+        started = asyncio.Event()
+        original_gather = asyncio.gather
+
+        async def controlled_gather(*aws, **kwargs):
+            started.set()
+            return await original_gather(*aws, **kwargs)
+
+        with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
+            with patch("core.image_service.asyncio.gather", controlled_gather):
+                task = asyncio.create_task(service.render({}))
+                await asyncio.wait_for(started.wait(), 1)
+                close_task = asyncio.create_task(service.close())
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                await asyncio.wait_for(close_task, 2)
+        self.assertFalse(service.is_open)

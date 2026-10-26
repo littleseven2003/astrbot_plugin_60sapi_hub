@@ -179,7 +179,7 @@ class ProfileImageService:
             raise ImageQueueTimeoutError("图片渲染排队超时。")
         admission_task = asyncio.create_task(self._admission.acquire())
         closed_task = asyncio.create_task(self._closed_event.wait())
-        pending: set[asyncio.Task[Any]] = set()
+        tasks: set[asyncio.Task[Any]] = {admission_task, closed_task}
         admitted = False
         handoff = False
         try:
@@ -188,6 +188,7 @@ class ProfileImageService:
                 timeout=remaining,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            tasks.update(pending)
             if not done:
                 raise ImageQueueTimeoutError("图片渲染排队超时。")
             if closed_task in done:
@@ -196,22 +197,31 @@ class ProfileImageService:
             admitted = True
             if self._closed:
                 raise ImageServiceClosedError("图片服务当前不可用。")
-            handoff = True
-        finally:
-            tasks = {admission_task, closed_task, *pending}
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
+
+            # 只有清理完成、即将无 await 地返回时，才把名额移交给调用方。
+            # 若清理期间再次被取消，finally 会归还名额，而不是提前 handoff。
+            self._cancel_tasks(tasks)
             await asyncio.gather(*tasks, return_exceptions=True)
+            handoff = True
+            return
+        finally:
             if not handoff:
-                if admission_task.done() and not admission_task.cancelled():
+                self._cancel_tasks(tasks)
+                if admitted:
+                    self._admission.release()
+                elif admission_task.done() and not admission_task.cancelled():
                     try:
                         if admission_task.result():
                             self._admission.release()
                     except Exception:
                         pass
-                elif admitted:
-                    self._admission.release()
+
+    def _cancel_tasks(self, tasks: set[asyncio.Task[Any]]) -> None:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                task.add_done_callback(_consume_task)
+
     def _on_render_done(
         self,
         future: Future[list[ImagePage]],
@@ -262,6 +272,13 @@ class ProfileImageService:
             raise
         except Exception as exc:
             raise ImageRenderFailedError("图片渲染失败。") from exc
+
+
+def _consume_task(task: asyncio.Task[Any]) -> None:
+    try:
+        task.exception()
+    except BaseException:
+        pass
 
 
 def _consume_future(future: Future[Any]) -> None:

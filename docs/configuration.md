@@ -1,6 +1,6 @@
 # 配置说明
 
-站点配置模型、校验、SQLite 持久化、后台站点管理页/API、五种内容预览和内容组合持久化/组合预览已实现；其他热榜、图文输出、任务、导入等功能仍为设计说明。
+站点配置模型、校验、SQLite 持久化、后台站点管理页/API、五种内容预览、内容组合持久化/预览及纯文字/Markdown/分页图片输出已实现；其他热榜、任务、导入等功能仍为设计说明。
 
 ### 后台站点管理
 
@@ -137,7 +137,8 @@
 | `GET /<插件名>/profiles/<id>` | 读取单个组合 |
 | `POST /<插件名>/profiles/<id>/update` | 按期望 revision 编辑组合 |
 | `POST /<插件名>/profiles/<id>/delete` | 按期望 revision 删除组合 |
-| `POST /<插件名>/profiles/<id>/preview` | 获取或刷新组合预览 |
+| `POST /<插件名>/profiles/<id>/preview` | 获取或刷新组合预览，并返回短期图片快照标识 |
+| `POST /<插件名>/profiles/<id>/image` | 用已接受快照生成分页 PNG |
 
 编辑和删除使用与站点一致的 revision 冲突保护。删除被任意组合引用的站点返回 409 `site_referenced` 和引用组合名称，不静默级联删除组合；数据库外键同时使用 `ON DELETE RESTRICT`。
 
@@ -165,6 +166,18 @@
 - 全部失败响应没有 `outputs`；页面清除旧输出并禁用复制/下载。
 - 后台提供纯文字/Markdown 源码切换、复制和 UTF-8 下载。文件名固定为 `60sapi-profile-<组合 ID>.txt` 或 `.md`，不拼接组合名称。格式切换、复制和下载只使用当前已接受的响应，不访问上游。
 - 复制开始时保存格式、文本、输出 epoch 和操作序号；完成提示或降级选区前重新检查这些身份。格式切换、预览刷新/失效、组合切换、编辑、下载或更新的一次复制都会使旧回调失效，旧回调不能修改提示、焦点、选区或按钮状态，也不使用全局锁阻塞预览。
+- 预览成功/部分成功时，服务端额外保存短期图片快照，并返回不透明 `image_snapshot`：
+  ```json
+  "image_snapshot": {"id": "opaque-token", "expires_at": "ISO-8601"}
+  ```
+  快照只保存该次预览已经验证、截取的组合名、站点名、状态、计数和 `sections`；不保存输出文本、HTML、任意前端 URL、文件路径或原始上游正文。
+- 图片生成请求只接受 `{"snapshot_id": "opaque-token"}`，组合 ID 来自已保存路由；服务端根据快照渲染，不接受前端传入内容、页面尺寸、文件路径或图片 URL。
+- 图片快照默认有效期 300 秒、最多 32 个、总大小 8 MiB，单快照最多 2 MiB；超出单快照限制时预览仍成功返回文字/Markdown，但不返回 `image_snapshot`，页面禁用图片生成。容量满时按未使用时间 evict；访问过期/淘汰快照返回 410 `snapshot_expired`，插件关闭时清空。
+- 图片接口沿用 Dashboard 鉴权；快照保存请求用户，生成时校验归属（不匹配 403 `forbidden`）。同时重新读取组合和站点并比较预览时的 `profile_revision`、`site_id`、`site_revision` 和启用状态；组合/站点修改、删除或停用返回 409 `snapshot_stale`，提示重新预览，不自动取新缓存或请求上游。
+- `POST /profiles/<id>/image` 成功返回 `page_count`、固定宽高和逐页 `index`、`width`、`height`、`sha256`、`png_base64`；图片只从快照生成。单页 900×1200，最多 6 页，总像素 8,000,000，单页 PNG 4 MiB，全部 PNG 12 MiB，base64 JSON 响应最多 16 MiB；超限返回 422 `image_limit_exceeded`，不静默截断，文字/Markdown 仍可用。
+- 渲染在受限线程池执行，最多 2 个并发、单次 20 秒超时；超时返回 504 `image_timeout`，插件关闭会取消等待并关闭线程池。字体缺失返回 503 `font_unavailable`；渲染异常返回 422 `image_render_failed`，不会影响已返回的文字/Markdown。
+- 图片是固定中文样式，由 Pillow 直接绘制，不使用 HTML 模板；上游文本按普通文本绘制并折叠控制字符，不加载封面、远程字体、CDN、内容链接或公共图片渲染服务。页面通过 data URL 展示生成结果，逐页下载文件名固定为 `60sapi-profile-<组合 ID>-page-<页码>.png`，不暴露绝对路径。
+- 图片输出依赖 Pillow 和宿主 CJK 字体；字体按系统候选路径发现（macOS 验证使用 Hiragino Sans GB，Linux 支持 Noto Sans CJK/WenQuanYi 等），也可用 `ASTRBOT_60SAPI_FONT` 指向字体文件。字体随宿主提供，不随插件分发；缺少字体时明确失败。
 - 剪贴板不可用时页面选中文本并提示手动复制；只有 `writeText` 实际成功后才提示复制成功。隔离宿主 iframe 会拒绝自动剪贴板权限，实际验证覆盖该降级路径；成功回调分支使用可控 Promise 验证，不描述为真实系统剪贴板写入成功。
 
 组合列表成功刷新后，前端比较当前组合的 revision、名称、站点和栏目签名；变化或删除时清除当前预览，不自动获取。组合编辑/删除成功或冲突时也立即使旧预览失效。预览响应必须同时匹配当前请求令牌、当前组合 ID 和当前已知 revision，旧 revision 响应被丢弃；旧请求的 finally 不得清除新请求的忙状态。

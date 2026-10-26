@@ -333,3 +333,93 @@ class ContentCacheIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(invalid.body["data"]["code"], "invalid_force_refresh")
         self.assertEqual(len(self.calls), before)
+
+
+class FullChainCancellationTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.sites = SiteService(
+            Path(self._temporary_directory.name) / "sites.sqlite3",
+        )
+        await self.sites.open()
+        self.site = await self.sites.create_site(
+            SiteCreate(
+                name="取消链路站点",
+                base_url="http://example.test/proxy",
+                enabled=True,
+                timeout_seconds=5,
+            ),
+        )
+        self.first_started = asyncio.Event()
+        self.cleanup_started = asyncio.Event()
+        self.cleanup_release = asyncio.Event()
+        self.requests = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.requests += 1
+            if self.requests == 1:
+                self.first_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cleanup_started.set()
+                    await self.cleanup_release.wait()
+                    raise
+            return httpx.Response(
+                200,
+                content=json.dumps(response_body(request.url.path)).encode(),
+            )
+
+        self.client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        self.cache = ContentCache(
+            ttl_seconds=300,
+            max_entries=32,
+            wait_timeout_seconds=2,
+        )
+        self.content = ContentService(
+            self.sites,
+            client=self.client,
+            cache=self.cache,
+        )
+        await self.content.open()
+        self.api = ContentApi(self.content)
+
+    async def asyncTearDown(self) -> None:
+        await self.content.close()
+        await self.sites.close()
+        self._temporary_directory.cleanup()
+
+    async def test_cancelled_api_request_does_not_poison_new_fetch(self) -> None:
+        first = asyncio.create_task(
+            self.api.preview(
+                {"site_id": self.site.id, "content_type": "toutiao_hot"},
+            ),
+        )
+        await asyncio.wait_for(self.first_started.wait(), timeout=1)
+        old_cache_task = next(iter(self.cache._tasks))
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        await asyncio.wait_for(self.cleanup_started.wait(), timeout=1)
+
+        second_result = await self.api.preview(
+            {"site_id": self.site.id, "content_type": "toutiao_hot"},
+        )
+        self.assertEqual(second_result.status_code, 200)
+        self.assertFalse(second_result.body["data"]["cache"]["hit"])
+        self.assertEqual(
+            second_result.body["data"]["items"][0]["title"],
+            "头条",
+        )
+        self.assertEqual(self.requests, 2)
+
+        # The old HTTP/cache cleanup may finish after the new result exists.
+        # It must not overwrite the new cache or remove its record.
+        self.cleanup_release.set()
+        await asyncio.gather(old_cache_task, return_exceptions=True)
+        hit = await self.api.preview(
+            {"site_id": self.site.id, "content_type": "toutiao_hot"},
+        )
+        self.assertTrue(hit.body["data"]["cache"]["hit"])
+        self.assertEqual(self.requests, 2)
+        self.assertEqual(hit.body["data"]["items"][0]["title"], "头条")

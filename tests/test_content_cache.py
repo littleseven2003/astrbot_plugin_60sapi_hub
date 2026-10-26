@@ -227,6 +227,164 @@ class ContentCacheTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
         self.assertEqual(first.snapshot, "shared")
 
+    async def test_cancelled_cleanup_cannot_be_joined_by_new_request(self) -> None:
+        key = CacheKey("site", "daily_news", (), 1)
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cleanup_release = asyncio.Event()
+        old_done = asyncio.Event()
+
+        async def old_fetch():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                return "old"
+            finally:
+                old_done.set()
+
+        waiter = asyncio.create_task(self.cache.get(key, old_fetch))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        old_task = next(iter(self.cache._tasks))
+        waiter.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await waiter
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+
+        new_started = asyncio.Event()
+        new_release = asyncio.Event()
+
+        async def new_fetch():
+            new_started.set()
+            await new_release.wait()
+            return "new"
+
+        new_waiter = asyncio.create_task(self.cache.get(key, new_fetch))
+        await asyncio.wait_for(new_started.wait(), timeout=1)
+        new_inflight = self.cache._inflight[key]
+        self.assertIsNot(new_inflight.task, old_task)
+
+        # Releasing the old cleanup must not remove the new in-flight record.
+        cleanup_release.set()
+        await asyncio.wait_for(old_done.wait(), timeout=1)
+        await asyncio.gather(old_task, return_exceptions=True)
+        self.assertIs(self.cache._inflight[key], new_inflight)
+        self.assertFalse(new_waiter.done())
+
+        new_release.set()
+        result = await asyncio.wait_for(new_waiter, timeout=1)
+        self.assertFalse(result.hit)
+        self.assertEqual(result.snapshot, "new")
+        hit = await self.cache.get(key, new_fetch)
+        self.assertTrue(hit.hit)
+        self.assertEqual(hit.snapshot, "new")
+
+    async def test_cancelled_cleanup_cannot_overwrite_new_cache(self) -> None:
+        key = CacheKey("site", "daily_news", (), 1)
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cleanup_release = asyncio.Event()
+
+        async def old_fetch():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                return "old"
+
+        waiter = asyncio.create_task(self.cache.get(key, old_fetch))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        old_task = next(iter(self.cache._tasks))
+        waiter.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await waiter
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+
+        async def new_fetch():
+            return "new"
+
+        new_result = await self.cache.get(key, new_fetch)
+        self.assertEqual(new_result.snapshot, "new")
+        cleanup_release.set()
+        await asyncio.gather(old_task, return_exceptions=True)
+        hit = await self.cache.get(key, new_fetch)
+        self.assertTrue(hit.hit)
+        self.assertEqual(hit.snapshot, "new")
+
+    async def test_expired_last_waiter_uses_same_new_fetch_path(self) -> None:
+        clock = FakeClock()
+        cache = ContentCache(
+            ttl_seconds=10,
+            max_entries=2,
+            monotonic=clock.monotonic,
+            wall_clock=clock.now,
+            wait_timeout_seconds=0.01,
+        )
+        await cache.open()
+        self.addAsyncCleanup(cache.close)
+        key = CacheKey("site", "daily_news", (), 1)
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cleanup_release = asyncio.Event()
+
+        async def old_fetch():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                return "old"
+
+        with self.assertRaises(ContentCacheWaitTimeoutError):
+            await cache.get(key, old_fetch)
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        old_task = next(iter(cache._tasks))
+
+        async def new_fetch():
+            return "new"
+
+        result = await cache.get(key, new_fetch)
+        self.assertEqual(result.snapshot, "new")
+        self.assertTrue((await cache.get(key, new_fetch)).hit)
+        cleanup_release.set()
+        await asyncio.gather(old_task, return_exceptions=True)
+
+    async def test_close_waits_for_cancelled_cleanup_task(self) -> None:
+        key = CacheKey("site", "daily_news", (), 1)
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cleanup_release = asyncio.Event()
+
+        async def old_fetch():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                return "old"
+
+        waiter = asyncio.create_task(self.cache.get(key, old_fetch))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        waiter.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await waiter
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        old_task = next(iter(self.cache._tasks))
+
+        close_task = asyncio.create_task(self.cache.close())
+        await asyncio.sleep(0)
+        self.assertFalse(close_task.done())
+        cleanup_release.set()
+        await asyncio.wait_for(close_task, timeout=1)
+        await asyncio.gather(old_task, return_exceptions=True)
+        self.assertFalse(self.cache.is_open)
+
     async def test_day_token_is_captured_before_fetch(self) -> None:
         key = CacheKey("site", "daily_news", (), 1)
         day = {"value": "2026-10-26"}

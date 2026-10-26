@@ -57,6 +57,7 @@ class _Inflight:
     task: asyncio.Task[CacheResult] | None
     waiters: int = 1
     completed: bool = False
+    cancelled: bool = False
 
 
 class ContentCache:
@@ -86,6 +87,7 @@ class ContentCache:
         self._wait_timeout_seconds = wait_timeout_seconds
         self._entries: OrderedDict[CacheKey, _CacheEntry] = OrderedDict()
         self._inflight: dict[CacheKey, _Inflight] = {}
+        self._tasks: set[asyncio.Task[CacheResult]] = set()
         self._lock = asyncio.Lock()
         self._closed = True
         self._close_task: asyncio.Task[None] | None = None
@@ -122,22 +124,20 @@ class ContentCache:
                     continue
                 self._closed = False
                 self._entries.clear()
+                self._tasks.clear()
                 return
 
     async def close(self) -> None:
         async with self._lock:
             close_task = self._close_task
             if close_task is None:
-                if self._closed and not self._inflight:
+                if self._closed and not self._inflight and not self._tasks:
                     return
                 self._closed = True
-                tasks = tuple(
-                    inflight.task
-                    for inflight in self._inflight.values()
-                    if inflight.task is not None
-                )
+                tasks = tuple(self._tasks)
                 self._inflight.clear()
                 self._entries.clear()
+                self._tasks.clear()
                 close_task = asyncio.create_task(self._finish_close(tasks))
                 self._close_task = close_task
         await asyncio.shield(close_task)
@@ -154,6 +154,7 @@ class ContentCache:
                 await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             async with self._lock:
+                self._tasks.clear()
                 if self._close_task is current:
                     self._close_task = None
 
@@ -190,7 +191,9 @@ class ContentCache:
                     self._entries.pop(key, None)
 
             inflight = self._inflight.get(key)
-            if inflight is not None and inflight.completed:
+            if inflight is not None and (
+                inflight.completed or inflight.cancelled
+            ):
                 self._inflight.pop(key, None)
                 inflight = None
             if inflight is None:
@@ -200,6 +203,7 @@ class ContentCache:
                 )
                 inflight.task = task
                 self._inflight[key] = inflight
+                self._tasks.add(task)
             else:
                 inflight.waiters += 1
             task = inflight.task
@@ -221,8 +225,12 @@ class ContentCache:
                 if (
                     inflight.waiters <= 0
                     and not inflight.completed
+                    and not inflight.cancelled
                     and not task.done()
                 ):
+                    inflight.cancelled = True
+                    if self._inflight.get(key) is inflight:
+                        self._inflight.pop(key, None)
                     task.cancel()
                     cancelled = True
             if cancelled:
@@ -266,6 +274,11 @@ class ContentCache:
                     raise ContentCacheClosedError(
                         "内容缓存当前不可用。",
                     )
+                if (
+                    inflight.cancelled
+                    or self._inflight.get(key) is not inflight
+                ):
+                    raise asyncio.CancelledError()
                 self._purge_expired(now)
                 self._entries[key] = entry
                 self._entries.move_to_end(key)
@@ -280,9 +293,12 @@ class ContentCache:
             return result
         finally:
             inflight.completed = True
+            current = asyncio.current_task()
             async with self._lock:
                 if self._inflight.get(key) is inflight:
                     self._inflight.pop(key, None)
+                if current is not None:
+                    self._tasks.discard(current)
 
     def _purge_expired(self, now: float) -> None:
         expired = [

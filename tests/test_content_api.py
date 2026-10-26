@@ -12,6 +12,7 @@ from core.bili import BiliHotItem, BiliHotSnapshot
 from core.content_api import ContentApi
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
+from core.douyin import DouyinHotItem, DouyinHotSnapshot
 from core.news import NewsItem, NewsSnapshot
 from core.sites import SiteCreate, SiteService
 from core.zhihu import ZhihuHotItem, ZhihuHotSnapshot
@@ -24,11 +25,13 @@ class FakeContentService:
         daily=None,
         bili=None,
         zhihu=None,
+        douyin=None,
         error: Exception | None = None,
     ) -> None:
         self.daily = daily
         self.bili = bili
         self.zhihu = zhihu
+        self.douyin = douyin
         self.error = error
         self.calls: list[tuple[str, object]] = []
 
@@ -49,6 +52,12 @@ class FakeContentService:
         if self.error:
             raise self.error
         return self.zhihu
+
+    async def preview_douyin(self, site_id):
+        self.calls.append(("douyin", site_id))
+        if self.error:
+            raise self.error
+        return self.douyin
 
 
 DAILY = NewsSnapshot(
@@ -72,6 +81,16 @@ ZHIHU = ZhihuHotSnapshot(
         ZhihuHotItem("第二话题", None, "88 万热度", None),
     ),
 )
+DOUYIN = DouyinHotSnapshot(
+    site_id="site-1",
+    site_name="站点",
+    endpoint="/v2/douyin",
+    fetched_at="2026-10-26T00:30:00+00:00",
+    items=(
+        DouyinHotItem("抖音热搜", 12189774, "https://www.douyin.com/search/TES"),
+        DouyinHotItem("第二热搜", None, None),
+    ),
+)
 BILI = BiliHotSnapshot(
     site_id="site-1",
     site_name="站点",
@@ -92,7 +111,7 @@ class ContentApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status_code, 400)
         self.assertEqual(result.body["data"]["code"], "unknown_content_type")
-        for label in ("每日新闻", "Bilibili 热搜", "知乎热榜"):
+        for label in ("每日新闻", "Bilibili 热搜", "知乎热榜", "抖音热搜"):
             self.assertIn(label, result.body["message"])
         self.assertEqual(service.calls, [])
 
@@ -150,6 +169,21 @@ class ContentApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["items"][0]["hot_value_desc"], "1670 万热度")
         serialized = json.dumps(data, ensure_ascii=False).lower()
         for key in ("rank", "ranking", "updated_at", "update_time"):
+            self.assertNotIn(key, serialized)
+
+    async def test_douyin_preview_keeps_raw_hot_value(self) -> None:
+        result = await ContentApi(
+            FakeContentService(daily=DAILY, bili=BILI, zhihu=ZHIHU, douyin=DOUYIN),
+        ).preview({"site_id": "site-1", "content_type": "douyin_hot"})
+        self.assertEqual(result.status_code, 200)
+        data = result.body["data"]
+        self.assertEqual(data["content_type"], "douyin_hot")
+        self.assertEqual(data["endpoint"], "/v2/douyin")
+        self.assertEqual(data["item_count"], 2)
+        self.assertEqual(data["items"][0]["hot_value"], 12189774)
+        self.assertEqual(data["items"][1]["hot_value"], None)
+        serialized = json.dumps(data, ensure_ascii=False).lower()
+        for key in ("rank", "ranking", "updated_at", "update_time", "cover"):
             self.assertNotIn(key, serialized)
 
     async def test_invalid_body_is_rejected(self) -> None:
@@ -244,6 +278,20 @@ class ContentApiSecretLeakTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.token, serialized)
         self.assertNotIn("upstream echoed", serialized)
 
+    async def test_http_error_does_not_echo_douyin_token(self) -> None:
+        result = await self._preview("http", "douyin_hot")
+        self.assertEqual(result.status_code, 502)
+        serialized = json.dumps(result.body, ensure_ascii=False)
+        self.assertNotIn(self.token, serialized)
+        self.assertNotIn("upstream echoed", serialized)
+
+    async def test_business_error_does_not_echo_douyin_token(self) -> None:
+        result = await self._preview("business", "douyin_hot")
+        self.assertEqual(result.status_code, 502)
+        serialized = json.dumps(result.body, ensure_ascii=False)
+        self.assertNotIn(self.token, serialized)
+        self.assertNotIn("upstream echoed", serialized)
+
 
 class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -283,6 +331,27 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
                         },
                         {
                             "title": "热搜三",
+                            "link": "http://[::1]:8080/hot",
+                        },
+                    ],
+                }
+            elif request.url.path.endswith("/v2/douyin"):
+                body = {
+                    "code": 200,
+                    "data": [
+                        {
+                            "title": "抖音一",
+                            "hot_value": 12189774,
+                            "link": "http://[::1",
+                        },
+                        {
+                            "title": "抖音二",
+                            "hot_value": "not-a-number",
+                            "link": "http://a\u2100b.example",
+                        },
+                        {
+                            "title": "抖音三",
+                            "hot_value": 0,
                             "link": "http://[::1]:8080/hot",
                         },
                     ],
@@ -349,18 +418,22 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
             zhihu = await api.preview(
                 {"site_id": self.site.id, "content_type": "zhihu_hot"},
             )
+            douyin = await api.preview(
+                {"site_id": self.site.id, "content_type": "douyin_hot"},
+            )
             missing = await api.preview(
-                {"site_id": self.site.id, "content_type": "zhihu_hot"},
+                {"site_id": self.site.id, "content_type": "douyin_hot"},
             ) if mode == "missing_title" else None
         finally:
             await content.close()
-        return daily, bili, zhihu, missing
+        return daily, bili, zhihu, douyin, missing
 
-    async def test_both_content_types_survive_malformed_links(self) -> None:
-        daily, bili, zhihu, _ = await self._run("normal")
+    async def test_all_content_types_survive_malformed_links(self) -> None:
+        daily, bili, zhihu, douyin, _ = await self._run("normal")
         self.assertEqual(daily.status_code, 200)
         self.assertEqual(bili.status_code, 200)
         self.assertEqual(zhihu.status_code, 200)
+        self.assertEqual(douyin.status_code, 200)
         daily_data = daily.body["data"]
         bili_data = bili.body["data"]
         self.assertEqual(
@@ -392,15 +465,30 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(zhihu_data["items"][0]["detail"], "摘要一")
         self.assertEqual(zhihu_data["items"][0]["hot_value_desc"], "100 万热度")
+        douyin_data = douyin.body["data"]
+        self.assertEqual(
+            [item["title"] for item in douyin_data["items"]],
+            ["抖音一", "抖音二", "抖音三"],
+        )
+        self.assertEqual(
+            [item["link"] for item in douyin_data["items"]],
+            [None, None, "http://[::1]:8080/hot"],
+        )
+        self.assertEqual(
+            [item["hot_value"] for item in douyin_data["items"]],
+            [12189774, None, 0],
+        )
 
     async def test_missing_title_is_still_a_structure_error(self) -> None:
-        daily, bili, zhihu, missing = await self._run("missing_title")
+        daily, bili, zhihu, douyin, missing = await self._run("missing_title")
         self.assertEqual(daily.status_code, 502)
         self.assertEqual(bili.status_code, 502)
         self.assertEqual(zhihu.status_code, 502)
+        self.assertEqual(douyin.status_code, 502)
         self.assertEqual(daily.body["data"]["code"], "upstream_structure")
         self.assertEqual(bili.body["data"]["code"], "upstream_structure")
         self.assertEqual(zhihu.body["data"]["code"], "upstream_structure")
+        self.assertEqual(douyin.body["data"]["code"], "upstream_structure")
         self.assertIsNotNone(missing)
         self.assertEqual(missing.status_code, 502)
         self.assertEqual(missing.body["data"]["code"], "upstream_structure")

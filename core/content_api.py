@@ -7,6 +7,7 @@ from typing import Any
 
 from .bili import BiliHotSnapshot
 from .content_service import ContentService
+from .douyin import DouyinHotSnapshot
 from .news import (
     NewsBusinessError,
     NewsClientClosedError,
@@ -30,12 +31,19 @@ from .zhihu import ZhihuHotSnapshot
 DAILY_NEWS = "daily_news"
 BILIBILI_HOT = "bilibili_hot"
 ZHIHU_HOT = "zhihu_hot"
-SUPPORTED_CONTENT_TYPES = (DAILY_NEWS, BILIBILI_HOT, ZHIHU_HOT)
+DOUYIN_HOT = "douyin_hot"
+SUPPORTED_CONTENT_TYPES = (
+    DAILY_NEWS,
+    BILIBILI_HOT,
+    ZHIHU_HOT,
+    DOUYIN_HOT,
+)
 KNOWN_CONTENT_TYPES = frozenset(SUPPORTED_CONTENT_TYPES)
 CONTENT_LABELS = {
     DAILY_NEWS: "每日新闻",
     BILIBILI_HOT: "Bilibili 热搜",
     ZHIHU_HOT: "知乎热榜",
+    DOUYIN_HOT: "抖音热搜",
 }
 
 
@@ -73,8 +81,10 @@ class ContentApi:
                 snapshot = await self._service.preview_daily(site_id)
             elif content_type == BILIBILI_HOT:
                 snapshot = await self._service.preview_bili(site_id)
-            else:
+            elif content_type == ZHIHU_HOT:
                 snapshot = await self._service.preview_zhihu(site_id)
+            else:
+                snapshot = await self._service.preview_douyin(site_id)
         except SiteValidationError as exc:
             return _validation_error(exc)
         except SiteNotFoundError:
@@ -158,8 +168,10 @@ class ContentApi:
             data = {**snapshot_dict(snapshot), "content_type": DAILY_NEWS}
         elif content_type == BILIBILI_HOT:
             data = _bili_snapshot_dict(snapshot)
-        else:
+        elif content_type == ZHIHU_HOT:
             data = _zhihu_snapshot_dict(snapshot)
+        else:
+            data = _douyin_snapshot_dict(snapshot)
         return _ok(data)
 
 
@@ -191,6 +203,25 @@ def _zhihu_snapshot_dict(snapshot: ZhihuHotSnapshot) -> dict[str, Any]:
                 "title": item.title,
                 "detail": item.detail,
                 "hot_value_desc": item.hot_value_desc,
+                "link": item.link,
+            }
+            for item in snapshot.items
+        ],
+    }
+
+
+def _douyin_snapshot_dict(snapshot: DouyinHotSnapshot) -> dict[str, Any]:
+    return {
+        "content_type": DOUYIN_HOT,
+        "site_id": snapshot.site_id,
+        "site_name": snapshot.site_name,
+        "endpoint": snapshot.endpoint,
+        "fetched_at": snapshot.fetched_at,
+        "item_count": len(snapshot.items),
+        "items": [
+            {
+                "title": item.title,
+                "hot_value": item.hot_value,
                 "link": item.link,
             }
             for item in snapshot.items
@@ -234,6 +265,7 @@ __all__ = [
     "BILIBILI_HOT",
     "CONTENT_LABELS",
     "DAILY_NEWS",
+    "DOUYIN_HOT",
     "KNOWN_CONTENT_TYPES",
     "SUPPORTED_CONTENT_TYPES",
     "ZHIHU_HOT",

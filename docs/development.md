@@ -211,19 +211,24 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合每日新闻、Bilibili 热搜和知乎热榜三个适配器；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
-- URL 为站点基础地址分别拼接 `/v2/60s` 或 `/v2/bili`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
-- 五种 endpoint 共用一个 `ContentHttpClient` 实例、连接池和全局并发预算；`ContentService` 不按 endpoint 分别创建客户端。
-- 客户端生命周期：`initialize()` 打开共享客户端，`terminate()` 先关闭客户端再关闭站点存储；打开失败释放已创建资源，停用后旧处理器由启用标志拒绝。`ContentHttpClient` 跟踪自己创建的请求任务；`close()` 先拒绝新请求，再取消并等待在途、排队和重试等待任务，最后关闭 `AsyncClient`。只取消本客户端的任务，不碰宿主无关任务；外部取消仍向调用方传播；关闭幂等，重新打开使用新 generation，不受旧请求影响。
+- URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
+- 五种 endpoint 共用一个 `ContentHttpClient` 实例、连接池和全局并发预算；`ContentService` 不按 endpoint 分别创建客户端。统一预览经 `ContentCache` 做 TTL/LRU 缓存和同键合并。
+- 客户端生命周期：`initialize()` 打开缓存和共享客户端，`terminate()` 先关闭缓存（拒绝新操作、取消并等待缓存自有任务、清空）再关闭客户端，最后关闭站点存储；打开失败释放已创建资源，停用后旧处理器由启用标志拒绝。`ContentHttpClient` 跟踪自己创建的请求任务；`close()` 先拒绝新请求，再取消并等待在途、排队和重试等待任务，最后关闭 `AsyncClient`。只取消本客户端的任务，不碰宿主无关任务；外部取消仍向调用方传播；关闭幂等，重新打开使用新 generation，不受旧请求影响。
 - 超时：站点 `timeout_seconds` 是整体上限；连接超时为 `min(5, timeout)`，读/写/连接池使用同一上限。整体超时包住并发等待和重试。
 - 重试：最多 2 次尝试（首次 + 1 次重试），只重试网络传输错误和 408/429/502/503/504；重试间隔 0.25 秒，且不会突破整体超时。业务错误、非 JSON、结构变化、重定向和响应过大部分不重试。
 - 大小与并发：响应体最多 2 MiB，先检查 Content-Length，再在流式读取中累计限制；错误响应只丢弃最多 8 KiB，不解析、不记录、不返回正文。共享客户端最多 2 个并发请求。
 - 错误脱敏：`NewsHTTPStatusError` 只暴露数字 HTTP 状态，`NewsBusinessError` 只暴露数字业务 code；上游错误正文不进入异常 message、后台响应或日志。回归链路从真实 `ContentHttpClient` 经 `NewsService`/`ContentService` 到对应 API，让模拟上游在错误正文回显虚构 Bearer token，断言响应无凭据。
 - 可选链接容错：共享 `optional_http_url()` 只捕获 `urlsplit()` 的 `ValueError`/`UnicodeError`，未闭合 IPv6 方括号或 NFKC 展开后非法的 Unicode 主机会返回 `None`；合法 HTTP(S) 和方括号 IPv6 保留。它不捕获其他异常，必要标题缺失仍按结构错误处理，不能因忽略链接而吞掉字段校验。
 - 重定向：`follow_redirects=False`，任何 3xx 都返回错误，不把 Authorization 发往新目标；`trust_env=False`，不自动使用环境代理。
-- 不缓存预览内容；每次点击都重新请求。暂不持久化新闻快照。
+- 缓存只覆盖统一预览接口，不改变旧每日新闻 `/daily-news/preview` 的主动获取响应结构。
+- 缓存默认 TTL 300 秒、容量 32、LRU；只缓存成功快照（包括合法空列表），错误不缓存。TTL 使用可注入单调时钟，从成功完成获取后开始。键为站点 ID、内容类型、明确空参数和站点 revision，不含 Bearer。
+- 每次读取缓存前重新读取站点配置；站点停用/删除拒绝，名称/地址/凭据修改递增 revision，旧快照不可复用。每日新闻用当前中国日期作为 day token，跨日失效。
+- 普通获取命中有效缓存不请求上游；`force_refresh` 严格布尔，绕过已完成缓存但复用同键在途获取，不直接返回旧缓存。同键获取合并；单个等待者取消不影响其他等待者，最后一个取消才终止共享获取；等待有 130 秒上限。
+- 刷新失败不缓存错误、不覆盖旧成功缓存；后续普通获取仍可命中旧缓存。响应独立返回 `cache.hit/expires_at/ttl_seconds`，不写入领域快照，不改变 `fetched_at`。
+- 关闭时缓存取消并等待自有在途任务、清空并拒绝新操作；不取消宿主无关任务，不留下后台任务或未处理异常。
 
 ### 测试与核验
 
@@ -235,7 +240,9 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_douyin.py`：正常/空列表、实际顺序和条数、标题/原始热度整数/可选链接、畸形链接、结构/业务错误、URL/反代/IPv6、服务层 URL/令牌/超时。
 - `tests/test_toutiao.py`：正常/空列表、实际顺序和条数、标题/原始热度整数/可选链接、畸形链接、结构/业务错误、URL/反代/IPv6、服务层 URL/令牌/超时。
 - `tests/test_content_service.py`：五种内容共用一个客户端和并发预算，使用各自站点凭据。
-- `tests/test_content_api.py`：五种内容成功映射、未知类型在任何请求前拒绝、Bilibili/知乎/抖音/今日头条空列表/顺序/无伪造指标、HTTP/业务错误回显 token 时无凭据，以及畸形链接不导致 500。
+- `tests/test_content_api.py`：五种内容成功映射、未知类型在任何请求前拒绝、Bilibili/知乎/抖音/今日头条空列表/顺序/无伪造指标、HTTP/业务错误回显 token 时无凭据、畸形链接不导致 500，以及严格 `force_refresh` 校验。
+- `tests/test_content_cache.py`：首次未命中/命中/TTL 边界/过期、强制刷新、合法空值、错误不缓存、刷新失败保留旧缓存、键隔离、LRU/过期清理、同键合并、等待者取消、等待超时、共享失败重试、关闭/重开。
+- `tests/test_content_cache_integration.py`：五种内容缓存、daily 跨中国日期、名称/地址/凭据 revision、禁用/删除、在途配置变化、API 缓存元信息、严格 force_refresh、刷新失败保留旧缓存。
 
 - 宿主与浏览器验证使用本地模拟上游，覆盖每日新闻、Bilibili 热搜、知乎热榜、抖音热搜与今日头条热榜切换、正常、空内容、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后五种内容均恢复；不连接真实消息平台。
 - 官方公开实例 `https://60s.viki.moe/v2/60s` 只做一次低频 GET 核验：HTTP 200、`code=200`、内容日期与 15 条字符串新闻；保存的响应用解析器验证通过。没有把该实例写入默认配置，也没有用真实实例做浏览器全链路。

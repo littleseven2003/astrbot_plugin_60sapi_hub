@@ -18,7 +18,7 @@ git config core.hooksPath .githooks
 
 运行依赖随实现添加，不提前安装整个依赖集合，不把 AstrBot 本体加入插件 requirements。当前运行依赖为 `aiosqlite`（异步 SQLite）、`httpx`（异步 HTTP）和 `Pillow`（本地中文图片渲染），约束见 [requirements.txt](../requirements.txt)；AstrBot 本体由宿主提供，不作为插件依赖安装。`httpx` 只由插件自身使用，不依赖宿主碰巧安装的版本。`Pillow` 只用于服务端绘制图片，按项目依赖安装；它不安装 AstrBot 本体。
 
-图片中文字体不随仓库分发，按系统路径发现（macOS 实测 `Hiragino Sans GB`；Linux 可检测 Noto Sans CJK/WenQuanYi）；也可设置 `ASTRBOT_60SAPI_FONT` 指向管理员提供的字体文件。字体仍受其自身许可约束，插件不复制或再分发系统字体；缺少字体时返回 `font_unavailable`，不生成伪造或缺字图片。
+图片中文字体不随仓库分发，按系统路径发现（macOS 实测 `Hiragino Sans GB`；Linux 可检测 Noto Sans CJK/WenQuanYi）；也可设置 `ASTRBOT_60SAPI_FONT` 指向管理员提供的字体文件。自动发现和显式路径都会用实际字形覆盖检查常见中文字符，缺少中文覆盖的字体（例如 Arial）会被跳过或拒绝。字体仍受其自身许可约束，插件不复制或再分发系统字体；缺少字体时返回 `font_unavailable`，不生成伪造或缺字图片。
 
 测试宿主、凭据、运行数据库、图片缓存和未脱敏日志不提交到仓库。需要真实平台测试时使用专用测试账号/群。
 
@@ -254,7 +254,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_profile_render.py`：纯函数同源、不修改输入；文字字段/顺序/限制/日期提示/空栏目/零值热度/失败栏目；Markdown 转义标题、换行、HTML、围栏、链接括号/空格、非法链接降级和生成结构。
 - `tests/test_image_snapshots.py`：TTL、LRU/数量、总字节、单快照大小、关闭后拒绝访问。
 - `tests/test_profile_image.py`：真实 PNG、长内容多页、同快照确定性、空列表/热度 0/部分失败、页数/字节/字体/取消限制。
-- `tests/test_image_service.py`：线程池超时、关闭阻塞渲染和资源释放。
+- `tests/test_image_service.py`：排队/准入上限、总超时、线程不响应取消、取消后新请求、关闭期间排队请求和资源释放。
 - `tests/test_profile_image_api.py`：同预览快照、图片不增加上游请求、后改数据不改变同快照图片、归属/过期/修改/删除/停用失效、全部失败无快照、图片超限仍保留文字。
 
 - 宿主与浏览器验证使用本地模拟上游，覆盖每日新闻、Bilibili 热搜、知乎热榜、抖音热搜与今日头条热榜切换、正常、空内容、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后五种内容均恢复；不连接真实消息平台。

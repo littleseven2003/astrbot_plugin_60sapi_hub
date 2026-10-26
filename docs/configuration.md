@@ -175,9 +175,9 @@
 - 图片快照默认有效期 300 秒、最多 32 个、总大小 8 MiB，单快照最多 2 MiB；超出单快照限制时预览仍成功返回文字/Markdown，但不返回 `image_snapshot`，页面禁用图片生成。容量满时按未使用时间 evict；访问过期/淘汰快照返回 410 `snapshot_expired`，插件关闭时清空。
 - 图片接口沿用 Dashboard 鉴权；快照保存请求用户，生成时校验归属（不匹配 403 `forbidden`）。同时重新读取组合和站点并比较预览时的 `profile_revision`、`site_id`、`site_revision` 和启用状态；组合/站点修改、删除或停用返回 409 `snapshot_stale`，提示重新预览，不自动取新缓存或请求上游。
 - `POST /profiles/<id>/image` 成功返回 `page_count`、固定宽高和逐页 `index`、`width`、`height`、`sha256`、`png_base64`；图片只从快照生成。单页 900×1200，最多 6 页，总像素 8,000,000，单页 PNG 4 MiB，全部 PNG 12 MiB，base64 JSON 响应最多 16 MiB；超限返回 422 `image_limit_exceeded`，不静默截断，文字/Markdown 仍可用。
-- 渲染在受限线程池执行，最多 2 个并发、单次 20 秒超时；超时返回 504 `image_timeout`，插件关闭会取消等待并关闭线程池。字体缺失返回 503 `font_unavailable`；渲染异常返回 422 `image_render_failed`，不会影响已返回的文字/Markdown。
+- 渲染在受限线程池执行，最多 2 个实际执行、4 个排队（准入 6 个）；20 秒总超时覆盖排队和执行。超时或取消后后台线程仍占用名额直至真正结束，避免连续超时造成线程池无界积压；超时返回 504 `image_timeout`，插件关闭会拒绝排队请求并关闭线程池。字体缺失返回 503 `font_unavailable`；渲染异常返回 422 `image_render_failed`，不会影响已返回的文字/Markdown。
 - 图片是固定中文样式，由 Pillow 直接绘制，不使用 HTML 模板；上游文本按普通文本绘制并折叠控制字符，不加载封面、远程字体、CDN、内容链接或公共图片渲染服务。页面通过 data URL 展示生成结果，逐页下载文件名固定为 `60sapi-profile-<组合 ID>-page-<页码>.png`，不暴露绝对路径。
-- 图片输出依赖 Pillow 和宿主 CJK 字体；字体按系统候选路径发现（macOS 验证使用 Hiragino Sans GB，Linux 支持 Noto Sans CJK/WenQuanYi 等），也可用 `ASTRBOT_60SAPI_FONT` 指向字体文件。字体随宿主提供，不随插件分发；缺少字体时明确失败。
+- 图片输出依赖 Pillow 和宿主 CJK 字体；字体按系统候选路径发现（macOS 验证使用 Hiragino Sans GB，Linux 支持 Noto Sans CJK/WenQuanYi 等），也可用 `ASTRBOT_60SAPI_FONT` 指向字体文件。字体随宿主提供，不随插件分发。自动发现和显式字体都会验证常见中文字符的实际字形；只有可加载但中文缺字的字体（例如 Arial）不会被采用，无法找到合格字体时明确失败。
 - 剪贴板不可用时页面选中文本并提示手动复制；只有 `writeText` 实际成功后才提示复制成功。隔离宿主 iframe 会拒绝自动剪贴板权限，实际验证覆盖该降级路径；成功回调分支使用可控 Promise 验证，不描述为真实系统剪贴板写入成功。
 
 组合列表成功刷新后，前端比较当前组合的 revision、名称、站点和栏目签名；变化或删除时清除当前预览，不自动获取。组合编辑/删除成功或冲突时也立即使旧预览失效。预览响应必须同时匹配当前请求令牌、当前组合 ID 和当前已知 revision，旧 revision 响应被丢弃；旧请求的 finally 不得清除新请求的忙状态。

@@ -48,7 +48,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/profile_render.py`：纯函数文字/Markdown 渲染，不依赖 AstrBot、HTTP、数据库或浏览器；只读取已截取的预览响应，不修改快照或缓存。
 - `core/image_snapshots.py`：进程内短期图片快照，TTL 300 秒/最多 32 个/总 8 MiB；保存已验证的截图输入、组合/站点 revision 和用户归属，不保存 HTML、URL 或文件路径。
 - `core/profile_image.py`：Pillow 固定样式中文分页渲染器；只读快照数据，按字符宽度换行并逐行分页，生成 900×1200 RGB PNG，不加载远程资源。
-- `core/image_service.py`：受限线程池（最多 2 并发）、20 秒超时、取消事件和关闭等待；避免阻塞事件循环。
+- `core/image_service.py`：受限线程池（最多 2 执行、4 排队，准入 6）、20 秒总超时、取消事件和关闭等待；后台任务结束前持续占用准入名额，避免超时后无界积压。
 - `core/site_store.py`：同一 SQLite 连接管理站点、组合和栏目；schema v2 事务迁移、外键 `ON DELETE RESTRICT` 和站点引用删除拒绝。
 - 组合预览：`core/profile_api.py` 读取一份组合版本和站点，按栏目配置顺序调用 `ContentService.preview_cached`；只请求选中类型，复用缓存和并发预算，逐栏截取返回条数，不修改完整快照。
 - 组合文字输出：预览成功或部分成功后，`core/profile_render.py` 基于同一份响应生成 `outputs.text` 和 `outputs.markdown`；后台只切换/复制/下载已接受响应，不再次获取。全部失败不生成输出。

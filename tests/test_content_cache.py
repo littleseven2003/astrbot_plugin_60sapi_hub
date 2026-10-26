@@ -227,6 +227,36 @@ class ContentCacheTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
         self.assertEqual(first.snapshot, "shared")
 
+    async def test_day_token_is_captured_before_fetch(self) -> None:
+        key = CacheKey("site", "daily_news", (), 1)
+        day = {"value": "2026-10-26"}
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return calls
+
+        task = asyncio.create_task(
+            self.cache.get(key, fetch, day_token=lambda: day["value"]),
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        day["value"] = "2026-10-27"
+        release.set()
+        first = await task
+        self.assertFalse(first.hit)
+        second = await self.cache.get(
+            key,
+            fetch,
+            day_token=lambda: day["value"],
+        )
+        self.assertFalse(second.hit)
+        self.assertEqual(calls, 2)
+
     async def test_waiting_cancel_does_not_cancel_shared_fetch(self) -> None:
         key = CacheKey("site", "zhihu_hot", (), 1)
         started = asyncio.Event()

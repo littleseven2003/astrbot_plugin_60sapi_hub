@@ -237,6 +237,7 @@ class ContentCache:
     ) -> CacheResult:
         try:
             try:
+                token = day_token() if day_token is not None else None
                 snapshot = await fetch()
             except asyncio.CancelledError:
                 if self._closed:
@@ -254,7 +255,6 @@ class ContentCache:
                 .astimezone(timezone.utc)
                 .isoformat(timespec="seconds")
             )
-            token = day_token() if day_token is not None else None
             entry = _CacheEntry(
                 snapshot=snapshot,
                 expires_monotonic=now + self._ttl_seconds,

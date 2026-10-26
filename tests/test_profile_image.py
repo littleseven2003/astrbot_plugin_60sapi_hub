@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import os
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -138,6 +140,51 @@ class ProfileImageRendererTest(unittest.TestCase):
             ProfileImageRenderer(
                 limits=ImageRenderLimits(max_page_bytes=100),
             ).render(sample_data(items=2))
+
+    def test_long_latin_name_is_split_without_loss(self) -> None:
+        renderer = ProfileImageRenderer()
+        width = 792
+        name = "W" * 80
+        lines = renderer._wrap(name, 34, width)
+        self.assertGreater(len(lines), 1)
+        self.assertEqual("".join(lines), name)
+        font = renderer._font(34)
+        self.assertTrue(all(font.getlength(line) <= width for line in lines))
+        data = sample_data(items=1)
+        data["profile_name"] = name
+        pages = renderer.render(data, created_at="t")
+        self.assertGreaterEqual(len(pages), 1)
+        with Image.open(io.BytesIO(pages[0].png)) as image:
+            self.assertEqual(image.size, (900, 1200))
+
+    def test_long_ascii_token_splits_without_loss(self) -> None:
+        renderer = ProfileImageRenderer()
+        width = 300
+        token = "https://example.test/" + ("a" * 500)
+        lines = renderer._wrap(token, 17, width)
+        self.assertGreater(len(lines), 1)
+        self.assertEqual("".join(lines), token)
+        font = renderer._font(17)
+        self.assertTrue(all(font.getlength(line) <= width for line in lines))
+
+    def test_non_cjk_font_is_rejected(self) -> None:
+        arial = Path("/System/Library/Fonts/Supplemental/Arial.ttf")
+        if not arial.is_file():
+            self.skipTest("Arial font not available")
+        with self.assertRaises(FontUnavailableError):
+            ProfileImageRenderer(font_path=arial).render(sample_data(items=1))
+        with patch.dict(os.environ, {"ASTRBOT_60SAPI_FONT": str(arial)}):
+            selected = find_cjk_font()
+        self.assertNotEqual(selected, arial)
+        self.assertTrue(selected.is_file())
+
+    def test_no_cjk_font_reports_clear_error(self) -> None:
+        import core.profile_image as image_module
+
+        with patch.object(image_module, "_FONT_CANDIDATES", ()):
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(FontUnavailableError):
+                    find_cjk_font()
 
     def test_missing_font_and_cancellation_raise(self) -> None:
         with self.assertRaises(FontUnavailableError):

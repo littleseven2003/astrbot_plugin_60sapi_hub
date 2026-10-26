@@ -78,6 +78,8 @@ _ACCENT = (32, 105, 86)
 _ERROR = (160, 56, 50)
 _RULE = (215, 209, 198)
 _CLOSING_PUNCT = set("，。、；：！？）》】”’…")
+_MAX_CONTENT_CHARS = 200_000
+_LINES_PER_PAGE_BUDGET = 60
 
 
 class ProfileImageRenderer:
@@ -90,8 +92,11 @@ class ProfileImageRenderer:
         limits: ImageRenderLimits | None = None,
     ) -> None:
         self._font_path = Path(font_path) if font_path else None
+        self._validated_font_path: Path | None = None
         self._limits = limits or ImageRenderLimits()
         self._font_cache: dict[int, Any] = {}
+        self._cancel_event: Any | None = None
+        self._line_budget = self._limits.max_pages * _LINES_PER_PAGE_BUDGET
 
     @property
     def limits(self) -> ImageRenderLimits:
@@ -113,6 +118,7 @@ class ProfileImageRenderer:
             raise FontUnavailableError("找不到可用的中文字体文件。")
         self._font_cache.clear()
         self._cancel_event = cancel_event
+        self._line_budget = self._limits.max_pages * _LINES_PER_PAGE_BUDGET
 
         first_header = self._first_header(data, created_at)
         cont_header = self._cont_header(data)
@@ -170,6 +176,18 @@ class ProfileImageRenderer:
             raise FontUnavailableError("图片渲染依赖 Pillow 未安装。")
         if size not in self._font_cache:
             path = self._font_path or find_cjk_font()
+            if path != self._validated_font_path:
+                try:
+                    font = ImageFont.truetype(str(path), 32)
+                except Exception as exc:
+                    raise FontUnavailableError(
+                        "无法加载中文字体，请检查宿主字体环境。",
+                    ) from exc
+                if not _font_supports_chinese(font):
+                    raise FontUnavailableError(
+                        "指定字体不包含有效中文覆盖，请更换字体文件。",
+                    )
+                self._validated_font_path = path
             try:
                 self._font_cache[size] = ImageFont.truetype(
                     str(path),
@@ -307,7 +325,15 @@ class ProfileImageRenderer:
                         _MUTED,
                         18,
                     ))
+            self._check_line_budget(lines)
         return lines
+
+    def _check_line_budget(
+        self,
+        lines: list[tuple[str, int, tuple[int, int, int], int]],
+    ) -> None:
+        if len(lines) > self._line_budget:
+            raise ImageLimitError("图片内容行数超过页数排版上限。")
 
     def _wrap(
         self,
@@ -319,12 +345,28 @@ class ProfileImageRenderer:
         clean = _clean(text)
         if not clean:
             return [""]
+        if len(clean) > _MAX_CONTENT_CHARS:
+            raise ImageLimitError("图片内容文本过长，超过渲染上限。")
         lines: list[str] = []
         current = ""
-        # 优先保留连续拉丁词，中文和标点仍可按字符换行；超长英文/URL
-        # 再退化为字符切分，保证不超出内容宽度。
+        # 优先保留连续拉丁词，中文和标点仍可按字符换行。超长单词/数字/
+        # URL 用二分查找分块，避免从末尾反复测量整段超长字符串。
         for token in re.findall(r"[A-Za-z0-9]+|.", clean):
+            self._check_cancelled()
             if not token:
+                continue
+            if not current and token == " ":
+                continue
+            token_width = font.getlength(token)
+            if token_width > width:
+                if current:
+                    lines.append(current)
+                    current = ""
+                chunks = self._split_by_width(token, font, width)
+                if len(lines) + len(chunks) > self._line_budget:
+                    raise ImageLimitError("图片内容行数超过页数排版上限。")
+                lines.extend(chunks[:-1])
+                current = chunks[-1] if chunks else ""
                 continue
             candidate = current + token
             if current and font.getlength(candidate) > width:
@@ -344,17 +386,35 @@ class ProfileImageRenderer:
                 else:
                     lines.append(current)
                     current = token
-                while current and font.getlength(current) > width:
-                    cut = len(current) - 1
-                    while cut > 1 and font.getlength(current[:cut]) > width:
-                        cut -= 1
-                    lines.append(current[:cut])
-                    current = current[cut:]
             else:
                 current = candidate
+            if len(lines) > self._line_budget:
+                raise ImageLimitError("图片内容行数超过页数排版上限。")
         if current:
             lines.append(current)
+        if len(lines) > self._line_budget:
+            raise ImageLimitError("图片内容行数超过页数排版上限。")
         return lines
+
+    def _split_by_width(self, text: str, font: Any, width: int) -> list[str]:
+        chunks: list[str] = []
+        start = 0
+        length = len(text)
+        while start < length:
+            self._check_cancelled()
+            low = start + 1
+            high = length
+            best = start + 1
+            while low <= high:
+                middle = (low + high) // 2
+                if font.getlength(text[start:middle]) <= width:
+                    best = middle
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            chunks.append(text[start:best])
+            start = best
+        return chunks
 
     def _wrapped_lines(
         self,
@@ -385,9 +445,13 @@ class ProfileImageRenderer:
             if self._is_section_label(line):
                 group_height = self._section_group_height(lines, index)
                 if pages[-1] and y + group_height > bottom:
+                    if len(pages) >= self._limits.max_pages:
+                        raise ImageLimitError("图片页数超过上限。")
                     pages.append([])
                     y = cont_start
             if pages[-1] and y + height > bottom:
+                if len(pages) >= self._limits.max_pages:
+                    raise ImageLimitError("图片页数超过上限。")
                 pages.append([])
                 y = cont_start
             pages[-1].append(line)
@@ -513,23 +577,50 @@ class ProfileImageRenderer:
 def find_cjk_font() -> Path:
     env_path = os.environ.get("ASTRBOT_60SAPI_FONT")
     candidates = ((env_path,) if env_path else ()) + _FONT_CANDIDATES
+    seen: set[str] = set()
     for raw in candidates:
         if not raw:
             continue
         path = Path(raw)
-        if not path.is_file():
+        key = str(path)
+        if key in seen or not path.is_file():
             continue
+        seen.add(key)
         if ImageFont is None:
             break
         try:
-            ImageFont.truetype(str(path), 20)
+            font = ImageFont.truetype(str(path), 32)
         except Exception:
             continue
-        return path
+        if _font_supports_chinese(font):
+            return path
     raise FontUnavailableError(
-        "未找到可用的中文字体；请安装 Noto Sans CJK/WenQuanYi，"
+        "未找到包含有效中文覆盖的字体；请安装 Noto Sans CJK/WenQuanYi，"
         "或通过 ASTRBOT_60SAPI_FONT 指定字体文件。",
     )
+
+
+def _font_supports_chinese(font: Any) -> bool:
+    """用实际字形覆盖检查字体是否支持常见中文，而不只验证可加载。
+
+    缺字时 FreeType 通常返回 .notdef 方块。把每个测试汉字与一个不应存在的
+    Unicode 码位比较，并要求至少两个不同字形，避免把 Arial 等西文字体当成
+    中文可用字体。该检查只使用 Pillow/FreeType，不引入 fontTools。
+    """
+    try:
+        missing = bytes(font.getmask("\U0010ffff"))
+    except Exception:
+        missing = b""
+    seen: set[bytes] = set()
+    for char in "中文测试新闻":
+        try:
+            glyph = bytes(font.getmask(char))
+        except Exception:
+            return False
+        if not glyph or glyph == missing:
+            return False
+        seen.add(glyph)
+    return len(seen) >= 2
 
 
 def _status_text(data: dict[str, Any]) -> str:

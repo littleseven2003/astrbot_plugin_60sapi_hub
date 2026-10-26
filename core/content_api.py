@@ -78,19 +78,25 @@ class ContentApi:
                 "unknown_content_type",
             )
         label = CONTENT_LABELS[content_type]
+        if "force_refresh" in payload:
+            force_refresh = payload["force_refresh"]
+            if type(force_refresh) is not bool:
+                return _error(
+                    400,
+                    "force_refresh 必须是布尔值。",
+                    "invalid_force_refresh",
+                )
+        else:
+            force_refresh = False
         site_id = payload.get("site_id")
 
         try:
-            if content_type == DAILY_NEWS:
-                snapshot = await self._service.preview_daily(site_id)
-            elif content_type == BILIBILI_HOT:
-                snapshot = await self._service.preview_bili(site_id)
-            elif content_type == ZHIHU_HOT:
-                snapshot = await self._service.preview_zhihu(site_id)
-            elif content_type == DOUYIN_HOT:
-                snapshot = await self._service.preview_douyin(site_id)
-            else:
-                snapshot = await self._service.preview_toutiao(site_id)
+            cached = await self._service.preview_cached(
+                content_type,
+                site_id,
+                force_refresh=force_refresh,
+            )
+            snapshot = cached.snapshot
         except SiteValidationError as exc:
             return _validation_error(exc)
         except SiteNotFoundError:
@@ -180,6 +186,11 @@ class ContentApi:
             data = _douyin_snapshot_dict(snapshot)
         else:
             data = _toutiao_snapshot_dict(snapshot)
+        data["cache"] = {
+            "hit": cached.hit,
+            "expires_at": cached.expires_at,
+            "ttl_seconds": self._service.cache_ttl_seconds,
+        }
         return _ok(data)
 
 

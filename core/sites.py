@@ -120,6 +120,7 @@ class SiteFetchConfig:
     name: str
     base_url: str
     timeout_seconds: float
+    revision: int
     bearer_token: str | None = field(default=None, repr=False)
 
 
@@ -222,6 +223,7 @@ class SiteService:
             name=stored.name,
             base_url=stored.base_url,
             timeout_seconds=stored.timeout_seconds,
+            revision=stored.revision,
             bearer_token=stored.bearer_token,
         )
 

@@ -145,6 +145,8 @@ const state = {
   profilePreviewBaseline: null,
   profilePreviewOutputs: null,
   profilePreviewFormat: "text",
+  profileOutputEpoch: 0,
+  profileCopyOperationId: 0,
 };
 
 const CONTENT_LABELS = {
@@ -1238,6 +1240,7 @@ function setProfilePreviewBusy(busy) {
 }
 
 function resetProfileOutput() {
+  state.profileOutputEpoch += 1;
   state.profilePreviewOutputs = null;
   state.profilePreviewFormat = "text";
   elements.profileOutputText.value = "";
@@ -1272,6 +1275,7 @@ function syncProfileOutputButtons() {
 }
 
 function renderProfileOutput() {
+  state.profileOutputEpoch += 1;
   const output = selectedProfileOutput();
   elements.profileOutputText.value = output;
   elements.profileOutputHint.textContent = "";
@@ -1284,15 +1288,32 @@ async function copyProfileOutput() {
   if (!output || state.profilePreviewLoading) {
     return;
   }
+  const operation = {
+    id: ++state.profileCopyOperationId,
+    epoch: state.profileOutputEpoch,
+    format: state.profilePreviewFormat,
+    text: output,
+  };
+  const ownsOperation = () =>
+    operation.id === state.profileCopyOperationId &&
+    operation.epoch === state.profileOutputEpoch &&
+    operation.format === state.profilePreviewFormat &&
+    operation.text === selectedProfileOutput();
   try {
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
       throw new Error("clipboard unavailable");
     }
     await navigator.clipboard.writeText(output);
+    if (!ownsOperation()) {
+      return;
+    }
     elements.profileOutputHint.textContent =
-      `已复制${state.profilePreviewFormat === "markdown" ? " Markdown 源码" : "纯文字"}。`;
+      `已复制${operation.format === "markdown" ? " Markdown 源码" : "纯文字"}。`;
     elements.profileOutputHint.hidden = false;
   } catch {
+    if (!ownsOperation()) {
+      return;
+    }
     elements.profileOutputText.focus();
     elements.profileOutputText.select();
     elements.profileOutputHint.textContent =
@@ -1306,6 +1327,7 @@ function downloadProfileOutput() {
   if (!output || state.profilePreviewLoading) {
     return;
   }
+  state.profileOutputEpoch += 1;
   const extension = state.profilePreviewFormat === "markdown" ? "md" : "txt";
   const safeId = String(state.profilePreviewId || "profile")
     .replace(/[^A-Za-z0-9_-]/g, "")

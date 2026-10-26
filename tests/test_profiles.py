@@ -146,7 +146,6 @@ class ProfileServiceTest(unittest.IsolatedAsyncioTestCase):
                     expected_revision=profile.revision,
                 ),
             )
-        await self.profiles.close() if hasattr(self.profiles, "close") else None
         await self.sites.close()
         reopened = SiteService(self.db_path)
         await reopened.open()

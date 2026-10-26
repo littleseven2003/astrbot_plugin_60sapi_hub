@@ -27,6 +27,7 @@ const elements = {
   previewEmptyText: document.getElementById("preview-empty-text"),
   previewNewsList: document.getElementById("preview-news-list"),
   previewBiliList: document.getElementById("preview-bili-list"),
+  previewZhihuList: document.getElementById("preview-zhihu-list"),
   previewTip: document.getElementById("preview-tip"),
   previewSourceLink: document.getElementById("preview-source-link"),
   createButton: document.getElementById("create-button"),
@@ -83,6 +84,7 @@ const state = {
 const CONTENT_LABELS = {
   daily_news: "每日新闻",
   bilibili_hot: "Bilibili 热搜",
+  zhihu_hot: "知乎热榜",
 };
 
 const EXPLICIT_WRITE_REJECTIONS = [
@@ -431,6 +433,8 @@ function clearPreviewResult() {
   elements.previewNewsList.hidden = true;
   elements.previewBiliList.replaceChildren();
   elements.previewBiliList.hidden = true;
+  elements.previewZhihuList.replaceChildren();
+  elements.previewZhihuList.hidden = true;
   elements.previewTip.textContent = "";
   elements.previewTip.hidden = true;
   elements.previewSourceLink.textContent = "";
@@ -499,6 +503,8 @@ function renderPreview(snapshot) {
     throw new Error("预览结果与当前选择不符。");
   }
   const isBili = contentType === "bilibili_hot";
+  const isZhihu = contentType === "zhihu_hot";
+  const isDaily = contentType === "daily_news";
   const sourceName =
     typeof snapshot.site_name === "string" && snapshot.site_name
       ? snapshot.site_name
@@ -515,13 +521,15 @@ function renderPreview(snapshot) {
       ? snapshot.endpoint
       : isBili
         ? "/v2/bili"
-        : "/v2/60s";
-  elements.previewDateItem.hidden = isBili;
-  elements.previewContentDate.textContent = isBili
-    ? ""
-    : typeof snapshot.content_date === "string" && snapshot.content_date
+        : isZhihu
+          ? "/v2/zhihu"
+          : "/v2/60s";
+  elements.previewDateItem.hidden = !isDaily;
+  elements.previewContentDate.textContent = isDaily
+    ? typeof snapshot.content_date === "string" && snapshot.content_date
       ? snapshot.content_date
-      : "未知";
+      : "未知"
+    : "";
   elements.previewItemCount.textContent = `${snapshot.items.length} 条`;
   const fetchedAt =
     typeof snapshot.fetched_at === "string" ? snapshot.fetched_at : "";
@@ -532,7 +540,7 @@ function renderPreview(snapshot) {
   }
 
   const warnings = [];
-  if (!isBili) {
+  if (isDaily) {
     const rawWarnings = Array.isArray(snapshot.warnings)
       ? snapshot.warnings.filter((item) => typeof item === "string" && item)
       : [];
@@ -547,10 +555,21 @@ function renderPreview(snapshot) {
   elements.previewWarnings.textContent = warnings.join("\n");
   elements.previewWarnings.hidden = warnings.length === 0;
 
-  const list = isBili ? elements.previewBiliList : elements.previewNewsList;
-  const otherList = isBili ? elements.previewNewsList : elements.previewBiliList;
-  otherList.replaceChildren();
-  otherList.hidden = true;
+  const list = isZhihu
+    ? elements.previewZhihuList
+    : isBili
+      ? elements.previewBiliList
+      : elements.previewNewsList;
+  for (const candidate of [
+    elements.previewNewsList,
+    elements.previewBiliList,
+    elements.previewZhihuList,
+  ]) {
+    if (candidate !== list) {
+      candidate.replaceChildren();
+      candidate.hidden = true;
+    }
+  }
   list.replaceChildren();
   for (const item of snapshot.items) {
     if (
@@ -566,6 +585,22 @@ function renderPreview(snapshot) {
     title.className = "news-title";
     title.textContent = item.title;
     row.append(title);
+    if (isZhihu && typeof item.detail === "string" && item.detail.trim()) {
+      const summary = document.createElement("p");
+      summary.className = "news-summary";
+      summary.textContent = item.detail;
+      row.append(summary);
+    }
+    if (
+      isZhihu &&
+      typeof item.hot_value_desc === "string" &&
+      item.hot_value_desc.trim()
+    ) {
+      const heat = document.createElement("p");
+      heat.className = "news-heat";
+      heat.textContent = item.hot_value_desc;
+      row.append(heat);
+    }
     if (typeof item.link === "string" && item.link) {
       const link = document.createElement("p");
       link.className = "news-link";
@@ -577,16 +612,18 @@ function renderPreview(snapshot) {
   const empty = snapshot.items.length === 0;
   list.hidden = empty;
   elements.previewEmpty.hidden = !empty;
-  elements.previewEmptyText.textContent = isBili
-    ? "上游返回了合法的空 Bilibili 热搜列表（0 条）。"
-    : "上游返回了合法的空内容（0 条新闻）。";
+  elements.previewEmptyText.textContent = isZhihu
+    ? "上游返回了合法的空知乎热榜列表（0 条）。"
+    : isBili
+      ? "上游返回了合法的空 Bilibili 热搜列表（0 条）。"
+      : "上游返回了合法的空内容（0 条新闻）。";
 
-  if (!isBili && typeof snapshot.tip === "string" && snapshot.tip.trim()) {
+  if (isDaily && typeof snapshot.tip === "string" && snapshot.tip.trim()) {
     elements.previewTip.textContent = `微语：${snapshot.tip}`;
     elements.previewTip.hidden = false;
   }
   if (
-    !isBili &&
+    isDaily &&
     typeof snapshot.source_link === "string" &&
     snapshot.source_link
   ) {
@@ -598,9 +635,11 @@ function renderPreview(snapshot) {
   elements.previewResult.hidden = false;
   showPreviewStatus(
     empty
-      ? isBili
-        ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
-        : "已获取，上游返回了合法的空内容（0 条新闻）。"
+      ? isZhihu
+        ? "已获取，上游返回了合法的空知乎热榜列表。"
+        : isBili
+          ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
+          : "已获取，上游返回了合法的空内容（0 条新闻）。"
       : `已获取：${label} ${snapshot.items.length} 条。`,
     "success",
   );

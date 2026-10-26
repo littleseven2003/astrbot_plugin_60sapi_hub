@@ -11,6 +11,8 @@ from .content_client import ContentHttpClient
 from .news import NewsSnapshot
 from .news_service import NewsService
 from .sites import SiteService
+from .zhihu import ZhihuHotSnapshot
+from .zhihu_service import ZhihuHotService
 
 
 class ContentService:
@@ -37,6 +39,12 @@ class ContentService:
             clock=clock,
             manage_client=False,
         )
+        self.zhihu = ZhihuHotService(
+            sites,
+            client=self._client,
+            clock=clock,
+            manage_client=False,
+        )
 
     @property
     def client(self) -> ContentHttpClient:
@@ -57,6 +65,9 @@ class ContentService:
 
     async def preview_bili(self, site_id: object) -> BiliHotSnapshot:
         return await self.bili.preview(site_id)
+
+    async def preview_zhihu(self, site_id: object) -> ZhihuHotSnapshot:
+        return await self.zhihu.preview(site_id)
 
 
 __all__ = ["ContentService"]

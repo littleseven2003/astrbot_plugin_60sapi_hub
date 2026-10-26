@@ -29,6 +29,7 @@ const elements = {
   previewBiliList: document.getElementById("preview-bili-list"),
   previewZhihuList: document.getElementById("preview-zhihu-list"),
   previewDouyinList: document.getElementById("preview-douyin-list"),
+  previewToutiaoList: document.getElementById("preview-toutiao-list"),
   previewTip: document.getElementById("preview-tip"),
   previewSourceLink: document.getElementById("preview-source-link"),
   createButton: document.getElementById("create-button"),
@@ -87,6 +88,7 @@ const CONTENT_LABELS = {
   bilibili_hot: "Bilibili 热搜",
   zhihu_hot: "知乎热榜",
   douyin_hot: "抖音热搜",
+  toutiao_hot: "今日头条热榜",
 };
 
 const EXPLICIT_WRITE_REJECTIONS = [
@@ -439,6 +441,8 @@ function clearPreviewResult() {
   elements.previewZhihuList.hidden = true;
   elements.previewDouyinList.replaceChildren();
   elements.previewDouyinList.hidden = true;
+  elements.previewToutiaoList.replaceChildren();
+  elements.previewToutiaoList.hidden = true;
   elements.previewTip.textContent = "";
   elements.previewTip.hidden = true;
   elements.previewSourceLink.textContent = "";
@@ -509,6 +513,7 @@ function renderPreview(snapshot) {
   const isBili = contentType === "bilibili_hot";
   const isZhihu = contentType === "zhihu_hot";
   const isDouyin = contentType === "douyin_hot";
+  const isToutiao = contentType === "toutiao_hot";
   const isDaily = contentType === "daily_news";
   const sourceName =
     typeof snapshot.site_name === "string" && snapshot.site_name
@@ -530,7 +535,9 @@ function renderPreview(snapshot) {
           ? "/v2/zhihu"
           : isDouyin
             ? "/v2/douyin"
-            : "/v2/60s";
+            : isToutiao
+              ? "/v2/toutiao"
+              : "/v2/60s";
   elements.previewDateItem.hidden = !isDaily;
   elements.previewContentDate.textContent = isDaily
     ? typeof snapshot.content_date === "string" && snapshot.content_date
@@ -562,18 +569,21 @@ function renderPreview(snapshot) {
   elements.previewWarnings.textContent = warnings.join("\n");
   elements.previewWarnings.hidden = warnings.length === 0;
 
-  const list = isDouyin
-    ? elements.previewDouyinList
-    : isZhihu
-      ? elements.previewZhihuList
-      : isBili
-        ? elements.previewBiliList
-        : elements.previewNewsList;
+  const list = isToutiao
+    ? elements.previewToutiaoList
+    : isDouyin
+      ? elements.previewDouyinList
+      : isZhihu
+        ? elements.previewZhihuList
+        : isBili
+          ? elements.previewBiliList
+          : elements.previewNewsList;
   for (const candidate of [
     elements.previewNewsList,
     elements.previewBiliList,
     elements.previewZhihuList,
     elements.previewDouyinList,
+    elements.previewToutiaoList,
   ]) {
     if (candidate !== list) {
       candidate.replaceChildren();
@@ -612,7 +622,7 @@ function renderPreview(snapshot) {
       row.append(heat);
     }
     if (
-      isDouyin &&
+      (isDouyin || isToutiao) &&
       Number.isInteger(item.hot_value) &&
       item.hot_value >= 0
     ) {
@@ -632,13 +642,15 @@ function renderPreview(snapshot) {
   const empty = snapshot.items.length === 0;
   list.hidden = empty;
   elements.previewEmpty.hidden = !empty;
-  elements.previewEmptyText.textContent = isDouyin
-    ? "上游返回了合法的空抖音热搜列表（0 条）。"
-    : isZhihu
-      ? "上游返回了合法的空知乎热榜列表（0 条）。"
-      : isBili
-        ? "上游返回了合法的空 Bilibili 热搜列表（0 条）。"
-        : "上游返回了合法的空内容（0 条新闻）。";
+  elements.previewEmptyText.textContent = isToutiao
+    ? "上游返回了合法的空今日头条热榜列表（0 条）。"
+    : isDouyin
+      ? "上游返回了合法的空抖音热搜列表（0 条）。"
+      : isZhihu
+        ? "上游返回了合法的空知乎热榜列表（0 条）。"
+        : isBili
+          ? "上游返回了合法的空 Bilibili 热搜列表（0 条）。"
+          : "上游返回了合法的空内容（0 条新闻）。";
 
   if (isDaily && typeof snapshot.tip === "string" && snapshot.tip.trim()) {
     elements.previewTip.textContent = `微语：${snapshot.tip}`;
@@ -657,13 +669,15 @@ function renderPreview(snapshot) {
   elements.previewResult.hidden = false;
   showPreviewStatus(
     empty
-      ? isDouyin
-        ? "已获取，上游返回了合法的空抖音热搜列表。"
-        : isZhihu
-          ? "已获取，上游返回了合法的空知乎热榜列表。"
-          : isBili
-            ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
-            : "已获取，上游返回了合法的空内容（0 条新闻）。"
+      ? isToutiao
+        ? "已获取，上游返回了合法的空今日头条热榜列表。"
+        : isDouyin
+          ? "已获取，上游返回了合法的空抖音热搜列表。"
+          : isZhihu
+            ? "已获取，上游返回了合法的空知乎热榜列表。"
+            : isBili
+              ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
+              : "已获取，上游返回了合法的空内容（0 条新闻）。"
       : `已获取：${label} ${snapshot.items.length} 条。`,
     "success",
   );

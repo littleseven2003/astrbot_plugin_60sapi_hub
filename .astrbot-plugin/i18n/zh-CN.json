@@ -2,7 +2,7 @@
   "views": {
     "sites": {
       "title": "站点管理",
-      "description": "管理 60s API 站点并预览每日新闻、Bilibili 热搜、知乎热榜与抖音热搜。"
+      "description": "管理 60s API 站点并预览每日新闻、Bilibili 热搜、知乎热榜、抖音热搜与今日头条热榜。"
     }
   }
 }

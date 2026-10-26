@@ -26,7 +26,7 @@
 | B站热搜 | https://docs.60s-api.viki.moe/254039323e0 | `/v2/bili`；GET；成功 `{code,message,data}`，`data` 为 `{title,link}` 数组；无排名/热度/更新时间字段 |
 | 知乎话题榜 | https://docs.60s-api.viki.moe/254026504e0 | `/v2/zhihu`；GET；成功 `{code,message,data}`，`data` 为对象数组；含 `title/detail/hot_value_desc/link` 等，无排名/更新时间字段 |
 | 抖音热搜 | https://docs.60s-api.viki.moe/254028799e0 | `/v2/douyin`；GET；固定默认热榜；`data` 为对象数组，含 `title/hot_value/link` 等；无排名字段 |
-| 头条热搜 | https://docs.60s-api.viki.moe/254038833e0 | 栏目已确认，路径和变体实施时核验 |
+| 头条热搜 | https://docs.60s-api.viki.moe/254038833e0 | `/v2/toutiao`；GET；固定默认热榜；`data` 为对象数组，含 `title/hot_value/link` 等；无排名字段 |
 
 每日新闻核验补充：
 
@@ -58,6 +58,14 @@ Bilibili 热搜核验补充：
 - 公开实例 2026-10-26 低频请求成功：HTTP 200、`code=200`、50 条数组；`title` 字符串、`hot_value` 整数、`link` 搜索链接，另有封面和时间字段。
 - 没有排名字段；数组顺序保留。`event_time`/`active_time` 等时间字段的单位/语义未作为更新时间使用，插件不展示；抓取时间不冒充更新时间。
 - `hot_value` 是原始整数，插件不做“万”等单位换算；`cover` 不渲染，避免自动请求远程图片。
+- 公开实例只用于一次字段/解析核验，不写入默认配置；未用真实实例完成浏览器全链路。
+
+今日头条热榜核验补充：
+
+- 官方源码 `src/router.ts` 使用 `/v2` 前缀，`src/modules/toutiao.module.ts` 注册 `/toutiao`；实际请求路径 `/v2/toutiao`，源码请求固定头条内部接口，没有文档化查询参数或榜单变体。
+- 文档页面最后修改时间 2025-11-11。源码映射：`title=Title`、`hot_value=+HotValue`（原始整数）、`cover=Image.url`、`link=Url` 去查询串和末尾斜杠；接口没有排名字段，也没有摘要、标签或独立时间字段。
+- 公开实例 2026-10-26 低频请求成功：HTTP 200、`code=200`、50 条数组；`title` 字符串、`hot_value` 整数、`link` 头条链接，另有 `cover`。
+- 数组顺序保留，序号不冒充排名；抓取时间不冒充更新时间；`hot_value` 不换算单位；`cover` 不渲染。
 - 公开实例只用于一次字段/解析核验，不写入默认配置；未用真实实例完成浏览器全链路。
 
 不从上游文档中的示例推断所有实例版本一致。引入源码、图标或模板时分别核对许可证与署名要求。

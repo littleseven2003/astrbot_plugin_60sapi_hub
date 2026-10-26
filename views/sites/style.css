@@ -545,7 +545,8 @@ input:focus-visible,
 
 .bili-list,
 .zhihu-list,
-.douyin-list {
+.douyin-list,
+.toutiao-list {
   list-style: none;
   padding-left: 0;
 }

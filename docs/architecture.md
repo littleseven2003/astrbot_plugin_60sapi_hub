@@ -1,6 +1,6 @@
 # 架构设计
 
-当前已实现最小插件入口、站点存储、后台站点管理、每日新闻、Bilibili 热搜、知乎热榜和抖音热搜获取预览，其余业务模块仍为设计约定，在实现相应功能时按需建立。
+当前已实现最小插件入口、站点存储、后台站点管理、每日新闻、Bilibili 热搜、知乎热榜、抖音热搜和今日头条热榜获取预览，其余业务模块仍为设计约定，在实现相应功能时按需建立。
 
 ## 数据流
 
@@ -33,25 +33,26 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 当前内容获取链路：
 
-- `core/content_client.py`：四种 endpoint 共用的 `httpx.AsyncClient`、有限重试、整体/连接/读取超时、流式大小限制、重定向拒绝和并发上限；不跟随重定向。客户端跟踪自己创建的请求任务，关闭时等待在途、排队和重试等待任务结束。
-- `core/content_service.py`：持有一个共享客户端，组合每日新闻、Bilibili 热搜、知乎热榜和抖音热搜四个适配器；四种预览共用连接池和全局并发预算。
+- `core/content_client.py`：五种 endpoint 共用的 `httpx.AsyncClient`、有限重试、整体/连接/读取超时、流式大小限制、重定向拒绝和并发上限；不跟随重定向。客户端跟踪自己创建的请求任务，关闭时等待在途、排队和重试等待任务结束。
+- `core/content_service.py`：持有一个共享客户端，组合每日新闻、Bilibili 热搜、知乎热榜、抖音热搜和今日头条热榜五个适配器；五种预览共用连接池和全局并发预算。
 - `core/news.py` / `core/news_service.py`：每日新闻内容模型、日期/条目解析和 `/v2/60s` 获取。
 - `core/bili.py` / `core/bili_service.py`：Bilibili 热搜内容模型、数组条目解析和 `/v2/bili` 获取。当前只使用 `title` 和可选 `link`，不生成排名、热度或更新时间。
 - `core/zhihu.py` / `core/zhihu_service.py`：知乎热榜内容模型、数组条目解析和 `/v2/zhihu` 获取。只使用 `title`、可选 `detail`、原始 `hot_value_desc` 文本和可选 `link`；不渲染 `cover`，不生成排名或更新时间。
 - `core/douyin.py` / `core/douyin_service.py`：抖音热搜内容模型、数组条目解析和 `/v2/douyin` 获取。只使用 `title`、可选原始整数 `hot_value` 和可选 `link`；不渲染 `cover`，不解释时间字段，不生成排名或更新时间。
-- `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定的 `content_type`（`daily_news`、`bilibili_hot`、`zhihu_hot`、`douyin_hot`）；未知类型在调用服务前拒绝，不能据此请求任意 URL。
+- `core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜内容模型、数组条目解析和 `/v2/toutiao` 获取。只使用 `title`、可选原始整数 `hot_value` 和可选 `link`；不渲染 `cover`，不生成排名、摘要、标签或更新时间。
+- `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定的 `content_type`（`daily_news`、`bilibili_hot`、`zhihu_hot`、`douyin_hot`、`toutiao_hot`）；未知类型在调用服务前拒绝，不能据此请求任意 URL。
 - `core/news_api.py` / `news_web.py`：保留每日新闻旧接口 `POST /<插件名>/daily-news/preview`，继续接受站点 ID 并返回原有每日新闻快照；页面使用统一接口。
 - `views/sites/`：在站点管理页内提供“内容预览”，选择站点和内容类型后主动获取；结果用安全 DOM 文本渲染，不写入站点配置，也不进入站点写操作的未确认流程。
 
-公共快照字段为来源站点、内容类型、endpoint 和获取时间；每日新闻另有内容日期、旧/未知日期警告、有序新闻条目、微语和来源链接。Bilibili 热搜另有有序标题/链接条目和实际条数；知乎热榜另有有序标题、摘要、原始热度文本、链接和实际条数；抖音热搜另有有序标题、原始整数热度、链接和实际条数，没有排名或更新时间字段。四种快照不共享字段语义，不把抓取时间当内容日期或更新时间，也不把列表序号当排名。
+公共快照字段为来源站点、内容类型、endpoint 和获取时间；每日新闻另有内容日期、旧/未知日期警告、有序新闻条目、微语和来源链接。Bilibili 热搜另有有序标题/链接条目和实际条数；知乎热榜另有有序标题、摘要、原始热度文本、链接和实际条数；抖音热搜另有有序标题、原始整数热度、链接和实际条数；今日头条热榜另有有序标题、原始整数热度、链接和实际条数，没有排名、摘要、标签或更新时间字段。五种快照不共享字段语义，不把抓取时间当内容日期或更新时间，也不把列表序号当排名。
 
-每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音 `data: []` 都是合法空内容；必要结构错误则整次解析失败。当前不持久化、不缓存预览内容。
+每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，今日头条热榜使用 `/v2/toutiao`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音/今日头条 `data: []` 都是合法空内容；必要结构错误则整次解析失败。当前不持久化、不缓存预览内容。
 
 ## 实现默认选择
 
 - 异步 Python 3.12；AstrBot 基线 v4.29.1，详见开发手册的兼容性基线。
 - 使用一个异步 HTTP 客户端，明确依赖约束。
-- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合、任务、发送记录等实体尚未实现。
+- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合、任务、发送记录等实体尚未实现。
 - SQLite 存复杂业务实体与发送记录，位置在宿主插件数据目录。
 - 少量全局设置使用 AstrBot 配置 schema；业务实体只有一个持久化真源。
 - 后台使用宿主插件视图及 bridge，当前站点页采用简单 HTML/CSS/JS，不引入 CDN、外部字体或独立服务器。
@@ -70,13 +71,13 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 ## 缓存与快照
 
-当前每日新闻、Bilibili 热搜、知乎热榜和抖音热搜预览都不缓存，每次主动请求上游；共享客户端最多允许 2 个并发请求。未来引入缓存时，键必须包含站点、接口、规范化参数以及地址/凭据配置版本，避免跨站点或跨配置串数据。
+当前每日新闻、Bilibili 热搜、知乎热榜、抖音热搜和今日头条热榜预览都不缓存，每次主动请求上游；共享客户端最多允许 2 个并发请求。未来引入缓存时，键必须包含站点、接口、规范化参数以及地址/凭据配置版本，避免跨站点或跨配置串数据。
 
 同次输出共享不可变快照；图片缓存额外包含模板版本、主题和分页参数。清理有容量/保留期，不能删除在途文件。
 
 ## 错误与恢复
 
-区分网络超时、HTTP/业务错误、非法 JSON、结构变化、响应过大、重定向、旧数据和空内容。内容预览失败不会保存站点、删除站点或进入站点写操作的未确认流程；旧内容、每日新闻空内容、Bilibili/知乎/抖音空列表仍是成功预览。部分栏目失败不等于整份成功。
+区分网络超时、HTTP/业务错误、非法 JSON、结构变化、响应过大、重定向、旧数据和空内容。内容预览失败不会保存站点、删除站点或进入站点写操作的未确认流程；旧内容、每日新闻空内容、Bilibili/知乎/抖音/今日头条空列表仍是成功预览。部分栏目失败不等于整份成功。
 
 执行键：任务 ID + 计划时间 UTC；发送记录细分目标 UMO + 页号。成功页不重发。
 
@@ -88,4 +89,4 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 每个 endpoint 定义 ID、中文名称、相对路径、参数校验、JSON 结构及缓存建议。只请求选中的接口；不把所有返回值当 data.news。
 
-文档存在、夹具通过、真实宿主通过和真实上游通过是不同状态。当前只适配每日新闻 `/v2/60s`、Bilibili 热搜 `/v2/bili`、知乎热榜 `/v2/zhihu` 和抖音热搜 `/v2/douyin`，不展示其他接口选项。新接口须补充正常/空数据/错误类型夹具、宿主预览和真实来源核验；不得把示例站点写成默认启用配置。
+文档存在、夹具通过、真实宿主通过和真实上游通过是不同状态。当前只适配每日新闻 `/v2/60s`、Bilibili 热搜 `/v2/bili`、知乎热榜 `/v2/zhihu`、抖音热搜 `/v2/douyin` 和今日头条热榜 `/v2/toutiao`，不展示其他接口选项。新接口须补充正常/空数据/错误类型夹具、宿主预览和真实来源核验；不得把示例站点写成默认启用配置。

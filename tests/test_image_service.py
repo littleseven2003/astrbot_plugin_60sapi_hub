@@ -140,6 +140,31 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
             state.release.set()
             await service.close()
 
+    async def test_cancel_while_waiting_for_admission_does_not_leak_slot(self) -> None:
+        state = RenderState(respect_cancel=False)
+        BlockingRenderer.state = state
+        service = ProfileImageService(
+            max_concurrent_renders=1,
+            max_queued_renders=0,
+            timeout_seconds=5,
+        )
+        try:
+            with patch("core.image_service.ProfileImageRenderer", BlockingRenderer):
+                running = asyncio.create_task(attempt(service))
+                await asyncio.to_thread(state.started.wait, 2)
+                waiting = asyncio.create_task(attempt(service))
+                await asyncio.sleep(0.02)
+                waiting.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await waiting
+                state.release.set()
+                await wait_for(lambda: service.active_renders == 0)
+                self.assertEqual(await service.render({}), [])
+                await running
+        finally:
+            state.release.set()
+            await service.close()
+
     async def test_close_releases_queued_and_waiting_requests(self) -> None:
         state = RenderState(respect_cancel=True)
         BlockingRenderer.state = state

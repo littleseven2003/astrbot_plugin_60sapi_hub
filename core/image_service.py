@@ -198,10 +198,11 @@ class ProfileImageService:
                 raise ImageServiceClosedError("图片服务当前不可用。")
             handoff = True
         finally:
-            for task in pending:
-                task.cancel()
-            closed_task.cancel()
-            await asyncio.gather(*pending, closed_task, return_exceptions=True)
+            tasks = {admission_task, closed_task, *pending}
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if not handoff:
                 if admission_task.done() and not admission_task.cancelled():
                     try:

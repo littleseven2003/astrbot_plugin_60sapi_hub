@@ -56,7 +56,7 @@ class ContentCacheTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second.hit)
         self.assertEqual(calls, 1)
         self.assertEqual(first.snapshot, second.snapshot)
-        self.assertNotEqual(first.expires_at, "")
+        self.assertEqual(first.expires_at, "2026-10-26T00:00:10+00:00")
 
         self.clock.advance(9.999)
         self.assertTrue((await self.cache.get(key, fetch)).hit)

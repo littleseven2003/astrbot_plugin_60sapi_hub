@@ -7,7 +7,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .news import NewsClientClosedError, NewsTimeoutError
@@ -247,7 +247,10 @@ class ContentCache:
 
             now = self._monotonic()
             expires_at = (
-                self._wall_clock()
+                (
+                    self._wall_clock()
+                    + timedelta(seconds=self._ttl_seconds)
+                )
                 .astimezone(timezone.utc)
                 .isoformat(timespec="seconds")
             )

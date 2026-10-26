@@ -69,7 +69,7 @@ git config core.hooksPath .githooks
 - 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
 - SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 的官方文档/源码和一次公开实例响应已核验；尚未遍历社区实例、不同部署版本，也未用真实实例完成浏览器全链路验证。
-- 其他 endpoint、图文渲染、发送和调度尚未实现；不要展示或宣称这些能力。内容组合持久化和组合预览已实现，但不能冒充文字/图片输出或发送。站点保存仍只做格式校验，不代替内容获取验证。
+- 其他 endpoint、图片渲染、发送和调度尚未实现；不要展示或宣称这些能力。内容组合持久化/预览和纯文字/Markdown 输出已实现，但不能冒充图片输出或发送。站点保存仍只做格式校验，不代替内容获取验证。
 
 ### 可复现的本地验证
 
@@ -159,7 +159,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 写请求的响应丢失、超时或连接中断进入“结果未确认”：页面保留表单/目标信息，禁用保存或删除、取消和关闭，只提供“重新读取最新列表”。重新读取失败继续保持未确认；读取成功后显示最新列表状态，并要求人工确认后再关闭。新增记录不按同名/同地址认领，只根据服务器列表和稳定 ID 展示实际状态；编辑/删除不自动重发。
 - 4.29.1 bridge 的失败对象只有 `Error.message`，不保留 HTTP 状态或响应 `data.code`。页面把已知的服务端拒绝消息视为明确失败，其余（含网络异常和未知 5xx）保守归为未确认。当前无需修改 API 契约；以后若增加机器可读错误码，应同步 bridge 能力和兼容性说明。
 - 页面不使用 CDN、外部字体、统计脚本或独立服务器；列表用 `textContent` 等 DOM API 渲染，不使用用户数据拼 `innerHTML`。
-- 当前包含五类内容单栏预览、缓存与预览和内容组合 CRUD/组合预览，不包含其他 endpoint、图片/Markdown 输出、发送或调度。内容组合只引用已保存站点和五个现有类型；不能扩展成任意 URL、跨站点或参数面板。站点保存和组合保存本身不发起上游请求。
+- 当前包含五类内容单栏预览、缓存与预览和内容组合 CRUD/组合预览，不包含其他 endpoint、图片/Markdown 输出、发送或调度。内容组合只引用已保存站点和五个现有类型；不能扩展成任意 URL、跨站点或参数面板。站点保存和组合保存本身不发起上游请求。组合预览成功后页面显示同源纯文字/Markdown，可复制或下载；格式切换、复制、下载不访问上游，不引入 HTML Markdown 渲染器。
 
 ## 内容获取与预览
 
@@ -212,7 +212,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
@@ -247,7 +247,8 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_content_cache.py`：首次未命中/命中/TTL 边界/过期、强制刷新、合法空值、错误不缓存、刷新失败保留旧缓存、键隔离、LRU/过期清理、同键合并、等待者取消、等待超时、共享失败重试、关闭/重开。
 - `tests/test_content_cache_integration.py`：五种内容缓存、daily 跨中国日期、名称/地址/凭据 revision、禁用/删除、在途配置变化、API 缓存元信息、严格 force_refresh、刷新失败保留旧缓存。
 - `tests/test_profiles.py`：模型/类型/重复/顺序/limit/params 校验、CRUD/revision、重开持久化、v1→v2 迁移、站点引用删除拒绝、并发删除/创建无悬空引用。
-- `tests/test_profile_api.py`：组合 CRUD/冲突、五类预览顺序、逐栏截取不污染完整缓存、缓存命中/刷新、station revision、部分失败/全部失败/空列表、错误脱敏、禁用站点和严格 force_refresh。
+- `tests/test_profile_api.py`：组合 CRUD/冲突、五类预览顺序、逐栏截取不污染完整缓存、缓存命中/刷新、station revision、部分失败/全部失败/空列表、错误脱敏、禁用站点和严格 force_refresh，以及成功/部分成功响应包含同源 outputs。
+- `tests/test_profile_render.py`：纯函数同源、不修改输入；文字字段/顺序/限制/日期提示/空栏目/零值热度/失败栏目；Markdown 转义标题、换行、HTML、围栏、链接括号/空格、非法链接降级和生成结构。
 
 - 宿主与浏览器验证使用本地模拟上游，覆盖每日新闻、Bilibili 热搜、知乎热榜、抖音热搜与今日头条热榜切换、正常、空内容、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后五种内容均恢复；不连接真实消息平台。
 - 官方公开实例 `https://60s.viki.moe/v2/60s` 只做一次低频 GET 核验：HTTP 200、`code=200`、内容日期与 15 条字符串新闻；保存的响应用解析器验证通过。没有把该实例写入默认配置，也没有用真实实例做浏览器全链路。

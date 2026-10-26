@@ -18,6 +18,7 @@ from .site_store import (
     SCHEMA_VERSION,
     SiteRecordNotFoundError,
     SiteRevisionConflictError,
+    SiteReferencedError,
     SiteStore,
     SiteStoreClosedError,
     SiteStoreError,
@@ -89,6 +90,18 @@ class SiteDisabledError(SiteError):
         super().__init__(f"站点 {site_id} 未启用。")
 
 
+class SiteReferencedProfilesError(SiteError):
+    """站点仍被内容组合引用，不能删除。"""
+
+    def __init__(self, site_id: str, profile_names: tuple[str, ...]) -> None:
+        self.site_id = site_id
+        self.profile_names = profile_names
+        names = "、".join(profile_names)
+        super().__init__(
+            f"站点 {site_id} 仍被内容组合引用，不能删除：{names}。",
+        )
+
+
 class CredentialAction(str, Enum):
     """编辑站点时对 Bearer 凭据的处理方式。"""
 
@@ -157,6 +170,11 @@ class SiteService:
     @property
     def database_path(self) -> Path:
         return self._store.database_path
+
+    @property
+    def store(self) -> SiteStore:
+        """同一 SQLite 存储，仅供同插件的内容组合服务复用。"""
+        return self._store
 
     @property
     def is_open(self) -> bool:
@@ -288,6 +306,11 @@ class SiteService:
             yield
         except SiteRecordNotFoundError as exc:
             raise SiteNotFoundError(exc.site_id) from exc
+        except SiteReferencedError as exc:
+            raise SiteReferencedProfilesError(
+                site_id,
+                exc.profile_names,
+            ) from exc
         except SiteRevisionConflictError as exc:
             if expected_revision is None:
                 raise SiteConflictError(site_id, 0, exc.actual_revision) from exc

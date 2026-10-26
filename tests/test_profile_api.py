@@ -181,6 +181,14 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
             sorted(set(self.calls)),
             ["/proxy/v2/60s", "/proxy/v2/douyin", "/proxy/v2/zhihu"],
         )
+        outputs = data["outputs"]
+        self.assertEqual(set(outputs), {"text", "markdown"})
+        self.assertIn("组合：组合", outputs["text"])
+        self.assertIn("【每日新闻】", outputs["text"])
+        self.assertIn("展示条数：2 / 3（最多 2 条）", outputs["text"])
+        self.assertIn("热度：1", outputs["text"])
+        self.assertTrue(outputs["markdown"].startswith("# 组合"))
+        self.assertIn("## 知乎热榜", outputs["markdown"])
         self.assertEqual(len(self.calls), 3)
         self.assertTrue(all(not section["cache"]["hit"] for section in data["sections"]))
 
@@ -272,6 +280,10 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]["content_type"], "zhihu_hot")
         self.assertEqual(failed[0]["code"], "upstream_http_error")
+        outputs = data["outputs"]
+        self.assertIn("获取失败", outputs["text"])
+        self.assertIn("知乎热榜", outputs["text"])
+        self.assertIn("## 知乎热榜", outputs["markdown"])
         serialized = json.dumps(partial.body, ensure_ascii=False)
         self.assertNotIn("profile-secret", serialized)
         self.assertNotIn("echo profile-secret", serialized)
@@ -291,6 +303,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
                 for section in all_failed.body["data"]["sections"]
             ),
         )
+        self.assertNotIn("outputs", all_failed.body["data"])
 
     async def test_all_five_types_and_legitimate_empty_section(self) -> None:
         created = await self._create(
@@ -324,6 +337,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(section["displayed_count"] == 0 for section in empty.body["data"]["sections"]),
         )
+        self.assertIn("（空列表，0 条）", empty.body["data"]["outputs"]["text"])
 
     async def test_disabled_site_rejects_before_upstream(self) -> None:
         created = await self._create()

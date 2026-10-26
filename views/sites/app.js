@@ -110,6 +110,10 @@ const elements = {
   profilePreviewCounts: document.getElementById("profile-preview-counts"),
   profilePreviewState: document.getElementById("profile-preview-state"),
   profilePreviewSections: document.getElementById("profile-preview-sections"),
+  profileCopyButton: document.getElementById("profile-copy-button"),
+  profileDownloadButton: document.getElementById("profile-download-button"),
+  profileOutputText: document.getElementById("profile-output-text"),
+  profileOutputHint: document.getElementById("profile-output-hint"),
 };
 
 const state = {
@@ -139,6 +143,10 @@ const state = {
   profilePreviewId: null,
   profilePreviewRequestId: 0,
   profilePreviewBaseline: null,
+  profilePreviewOutputs: null,
+  profilePreviewFormat: "text",
+  profileOutputEpoch: 0,
+  profileCopyOperationId: 0,
 };
 
 const CONTENT_LABELS = {
@@ -1228,10 +1236,125 @@ function setProfilePreviewBusy(busy) {
   elements.profilePreviewRefreshButton.disabled = busy || !hasProfile;
   elements.profilePreviewButton.textContent = busy ? "正在获取…" : "获取组合";
   elements.profilePreviewRefreshButton.textContent = busy ? "正在刷新…" : "刷新组合";
+  syncProfileOutputButtons();
+}
+
+function resetProfileOutput() {
+  state.profileOutputEpoch += 1;
+  state.profilePreviewOutputs = null;
+  state.profilePreviewFormat = "text";
+  elements.profileOutputText.value = "";
+  elements.profileOutputHint.textContent = "";
+  elements.profileOutputHint.hidden = true;
+  const textRadio = elements.profilePreviewResult?.querySelector(
+    'input[name="profile-output-format"][value="text"]',
+  );
+  if (textRadio) {
+    textRadio.checked = true;
+  }
+  syncProfileOutputButtons();
+}
+
+function selectedProfileOutput() {
+  if (!state.profilePreviewOutputs) {
+    return "";
+  }
+  return state.profilePreviewFormat === "markdown"
+    ? state.profilePreviewOutputs.markdown
+    : state.profilePreviewOutputs.text;
+}
+
+function syncProfileOutputButtons() {
+  const hasOutput = Boolean(selectedProfileOutput());
+  elements.profileCopyButton.disabled =
+    state.profilePreviewLoading || !hasOutput;
+  elements.profileDownloadButton.disabled =
+    state.profilePreviewLoading || !hasOutput;
+  elements.profileDownloadButton.textContent =
+    state.profilePreviewFormat === "markdown" ? "下载 .md" : "下载 .txt";
+}
+
+function renderProfileOutput() {
+  state.profileOutputEpoch += 1;
+  const output = selectedProfileOutput();
+  elements.profileOutputText.value = output;
+  elements.profileOutputHint.textContent = "";
+  elements.profileOutputHint.hidden = true;
+  syncProfileOutputButtons();
+}
+
+async function copyProfileOutput() {
+  const output = selectedProfileOutput();
+  if (!output || state.profilePreviewLoading) {
+    return;
+  }
+  const operation = {
+    id: ++state.profileCopyOperationId,
+    epoch: state.profileOutputEpoch,
+    format: state.profilePreviewFormat,
+    text: output,
+  };
+  const ownsOperation = () =>
+    operation.id === state.profileCopyOperationId &&
+    operation.epoch === state.profileOutputEpoch &&
+    operation.format === state.profilePreviewFormat &&
+    operation.text === selectedProfileOutput();
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      throw new Error("clipboard unavailable");
+    }
+    await navigator.clipboard.writeText(output);
+    if (!ownsOperation()) {
+      return;
+    }
+    elements.profileOutputHint.textContent =
+      `已复制${operation.format === "markdown" ? " Markdown 源码" : "纯文字"}。`;
+    elements.profileOutputHint.hidden = false;
+  } catch {
+    if (!ownsOperation()) {
+      return;
+    }
+    elements.profileOutputText.focus();
+    elements.profileOutputText.select();
+    elements.profileOutputHint.textContent =
+      "无法访问剪贴板，已选中当前文本，请手动复制。";
+    elements.profileOutputHint.hidden = false;
+  }
+}
+
+function downloadProfileOutput() {
+  const output = selectedProfileOutput();
+  if (!output || state.profilePreviewLoading) {
+    return;
+  }
+  state.profileOutputEpoch += 1;
+  const extension = state.profilePreviewFormat === "markdown" ? "md" : "txt";
+  const safeId = String(state.profilePreviewId || "profile")
+    .replace(/[^A-Za-z0-9_-]/g, "")
+    .slice(0, 64) || "profile";
+  const filename = `60sapi-profile-${safeId}.${extension}`;
+  try {
+    const blob = new Blob([output], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.rel = "noopener";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    elements.profileOutputHint.textContent = `已下载 ${filename}。`;
+    elements.profileOutputHint.hidden = false;
+  } catch {
+    elements.profileOutputHint.textContent = "无法生成下载文件。";
+    elements.profileOutputHint.hidden = false;
+  }
 }
 
 function clearProfilePreview() {
   elements.profilePreviewResult.hidden = true;
+  resetProfileOutput();
   elements.profilePreviewName.textContent = "";
   elements.profilePreviewSource.textContent = "";
   elements.profilePreviewCounts.textContent = "";
@@ -1903,6 +2026,25 @@ function renderProfilePreview(data) {
   for (const section of data.sections) {
     elements.profilePreviewSections.append(renderProfileSection(section));
   }
+  if (
+    !data.outputs ||
+    typeof data.outputs.text !== "string" ||
+    typeof data.outputs.markdown !== "string"
+  ) {
+    throw new Error("组合输出数据格式异常。");
+  }
+  state.profilePreviewOutputs = {
+    text: data.outputs.text,
+    markdown: data.outputs.markdown,
+  };
+  state.profilePreviewFormat = "text";
+  const textRadio = elements.profilePreviewResult.querySelector(
+    'input[name="profile-output-format"][value="text"]',
+  );
+  if (textRadio) {
+    textRadio.checked = true;
+  }
+  renderProfileOutput();
   elements.profilePreviewResult.hidden = false;
   const tone = data.status === "complete"
     ? "success"
@@ -2262,6 +2404,21 @@ function bindEvents() {
   elements.profilePreviewRefreshButton.addEventListener(
     "click",
     () => previewProfile(true),
+  );
+  elements.profilePreviewResult.addEventListener("change", (event) => {
+    if (
+      event.target instanceof HTMLInputElement &&
+      event.target.name === "profile-output-format"
+    ) {
+      state.profilePreviewFormat =
+        event.target.value === "markdown" ? "markdown" : "text";
+      renderProfileOutput();
+    }
+  });
+  elements.profileCopyButton.addEventListener("click", copyProfileOutput);
+  elements.profileDownloadButton.addEventListener(
+    "click",
+    downloadProfileOutput,
   );
   elements.profilePreviewSelect.addEventListener("change", () => {
     state.profilePreviewId = elements.profilePreviewSelect.value;

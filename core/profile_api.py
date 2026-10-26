@@ -18,6 +18,7 @@ from .news import (
     NewsTooLargeError,
     NewsTransportError,
 )
+from .profile_render import render_profile_outputs
 from .profiles import (
     ContentProfile,
     ContentProfileService,
@@ -295,6 +296,8 @@ class ProfileApi:
                 code="all_sections_failed",
                 data=data,
             )
+
+        data["outputs"] = render_profile_outputs(data)
         return _ok(data)
 
 

@@ -204,6 +204,38 @@
             </div>
           </div>
           <div id="profile-preview-sections" class="profile-sections"></div>
+          <div id="profile-output-panel" class="profile-output-panel">
+            <div class="profile-output-head">
+              <fieldset class="profile-output-format" aria-label="输出格式">
+                <legend>输出格式</legend>
+                <label class="radio">
+                  <input type="radio" name="profile-output-format" value="text" checked />
+                  <span>纯文字</span>
+                </label>
+                <label class="radio">
+                  <input type="radio" name="profile-output-format" value="markdown" />
+                  <span>Markdown 源码</span>
+                </label>
+              </fieldset>
+              <div class="profile-output-actions">
+                <button id="profile-copy-button" class="button button-secondary" type="button" disabled>
+                  复制
+                </button>
+                <button id="profile-download-button" class="button button-secondary" type="button" disabled>
+                  下载 .txt
+                </button>
+              </div>
+            </div>
+            <textarea
+              id="profile-output-text"
+              class="profile-output-text"
+              rows="14"
+              readonly
+              spellcheck="false"
+              aria-label="当前组合文字输出"
+            ></textarea>
+            <p id="profile-output-hint" class="help" hidden></p>
+          </div>
         </div>
       </section>
 

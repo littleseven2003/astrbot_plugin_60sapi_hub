@@ -333,8 +333,14 @@ class ProfileImageRenderer:
                     current = ""
                     continue
                 if token in _CLOSING_PUNCT and len(current) > 1:
-                    lines.append(current[:-1])
-                    current = current[-1] + token
+                    if current[-1].isascii() and current[-1].isalnum():
+                        # 不要把英文单词最后一个字母拆到下一行；让标点
+                        # 跟随当前行，最多超出内容宽度一个标点。
+                        lines.append(current + token)
+                        current = ""
+                    else:
+                        lines.append(current[:-1])
+                        current = current[-1] + token
                 else:
                     lines.append(current)
                     current = token

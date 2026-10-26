@@ -1,6 +1,6 @@
 # 架构设计
 
-当前已实现最小插件入口、站点存储、后台站点管理、每日新闻、Bilibili 热搜、知乎热榜、抖音热搜和今日头条热榜获取预览，其余业务模块仍为设计约定，在实现相应功能时按需建立。
+当前已实现最小插件入口、站点存储、后台站点管理、五类内容获取预览、有界缓存、内容组合持久化和组合预览，其余业务模块仍为设计约定，在实现相应功能时按需建立。
 
 ## 数据流
 
@@ -43,17 +43,21 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜内容模型、数组条目解析和 `/v2/toutiao` 获取。只使用 `title`、可选原始整数 `hot_value` 和可选 `link`；不渲染 `cover`，不生成排名、摘要、标签或更新时间。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定的 `content_type`（`daily_news`、`bilibili_hot`、`zhihu_hot`、`douyin_hot`、`toutiao_hot`）；未知类型在调用服务前拒绝，不能据此请求任意 URL。
 - `core/news_api.py` / `news_web.py`：保留每日新闻旧接口 `POST /<插件名>/daily-news/preview`，继续接受站点 ID 并返回原有每日新闻快照；页面使用统一接口。
+- `core/profiles.py`：内容组合领域模型、栏目校验、revision CRUD 和站点存在性检查；允许保存已停用站点，预览前再拒绝。
+- `core/profile_api.py` / `profile_web.py`：组合 CRUD、组合预览、部分/全部失败映射和后台 API 宿主适配。
+- `core/site_store.py`：同一 SQLite 连接管理站点、组合和栏目；schema v2 事务迁移、外键 `ON DELETE RESTRICT` 和站点引用删除拒绝。
+- 组合预览：`core/profile_api.py` 读取一份组合版本和站点，按栏目配置顺序调用 `ContentService.preview_cached`；只请求选中类型，复用缓存和并发预算，逐栏截取返回条数，不修改完整快照。
 - `views/sites/`：在站点管理页内提供“内容预览”，选择站点和内容类型后主动获取；结果用安全 DOM 文本渲染，不写入站点配置，也不进入站点写操作的未确认流程。
 
 公共快照字段为来源站点、内容类型、endpoint 和获取时间；每日新闻另有内容日期、旧/未知日期警告、有序新闻条目、微语和来源链接。Bilibili 热搜另有有序标题/链接条目和实际条数；知乎热榜另有有序标题、摘要、原始热度文本、链接和实际条数；抖音热搜另有有序标题、原始整数热度、链接和实际条数；今日头条热榜另有有序标题、原始整数热度、链接和实际条数，没有排名、摘要、标签或更新时间字段。五种快照不共享字段语义，不把抓取时间当内容日期或更新时间，也不把列表序号当排名。
 
-每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，今日头条热榜使用 `/v2/toutiao`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音/今日头条 `data: []` 都是合法空内容；必要结构错误则整次解析失败。预览内容不持久化到数据库或磁盘；当前使用进程内缓存，停用/重载清空，进程重启不会恢复。
+每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，今日头条热榜使用 `/v2/toutiao`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音/今日头条 `data: []` 都是合法空内容；必要结构错误则整次解析失败。预览内容不持久化到数据库或磁盘；当前使用进程内缓存，停用/重载清空，进程重启不会恢复。内容组合和栏目配置持久化在 SQLite schema v2；组合不复制内容快照。
 
 ## 实现默认选择
 
 - 异步 Python 3.12；AstrBot 基线 v4.29.1，详见开发手册的兼容性基线。
 - 使用一个异步 HTTP 客户端，明确依赖约束。
-- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合、任务、发送记录等实体尚未实现。
+- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；内容组合由 `core/profiles.py`、`core/profile_api.py`、`profile_web.py` 管理，数据复用同一 `SiteStore`；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合和站点引用关系已实现；任务、发送记录和图文输出尚未实现。
 - SQLite 存复杂业务实体与发送记录，位置在宿主插件数据目录。
 - 少量全局设置使用 AstrBot 配置 schema；业务实体只有一个持久化真源。
 - 后台使用宿主插件视图及 bridge，当前站点页采用简单 HTML/CSS/JS，不引入 CDN、外部字体或独立服务器。
@@ -66,7 +70,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 配置更新：验证并事务保存 → 更新受影响计划。失败不留下半配置。
 停用/重载：停止新执行 → 取消并等待旧任务 → 释放网络/渲染资源 → 关闭存储。
 
-当前站点存储在插件 `initialize()` 中打开并完成首次建库，随后打开共享内容 HTTP 客户端；任一打开失败都会关闭已创建资源，`terminate()` 先关闭内容客户端再关闭站点存储。站点与内容 Web API 在 `__init__` 中注册，初始化完成前置为未启用；停用时先置为未启用再关闭资源。这样停用后仍可能留在宿主注册表中的旧处理器不能继续读写或发出上游请求，重载时新实例以相同路由和方法替换旧处理器。真实宿主已验证停用返回 503、启用/重载后数据与预览恢复且没有重复可写处理器。渲染和调度尚未接入。
+当前站点/组合存储在插件 `initialize()` 中打开并完成首次建库或 v1→v2 迁移，随后打开共享内容 HTTP 客户端；任一打开失败都会关闭已创建资源，`terminate()` 先关闭内容客户端再关闭站点存储。站点与内容 Web API 在 `__init__` 中注册，初始化完成前置为未启用；停用时先置为未启用再关闭资源。这样停用后仍可能留在宿主注册表中的旧处理器不能继续读写或发出上游请求，重载时新实例以相同路由和方法替换旧处理器。真实宿主已验证停用返回 503、启用/重载后数据与预览恢复且没有重复可写处理器。渲染和调度尚未接入。
 
 4.29.1 的停用/重载会调用插件 `terminate()`（插件类自身定义 `__del__` 时优先）并解绑处理器；同路由同方法的 Web API 会替换。新增注册项仍须按目标版本源码和实测逐项核验。发送前重新检查任务状态和白名单，已移除目标不得继续接收剩余页。
 
@@ -74,7 +78,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 统一预览使用进程内缓存：默认 TTL 300 秒、最多 32 项、LRU 淘汰；仅缓存成功快照（含合法空列表），错误不缓存。键包含站点 ID、内容类型、明确空参数和站点 revision；凭据不进入键。站点停用/删除在读取前拒绝；配置修改增加 revision，旧版本快照不会被新版本复用。每日新闻跨中国日期后强制失效并重新获取。普通获取命中有效缓存时不请求上游；强制刷新绕过缓存但可复用同键在途获取。同键获取合并，等待者有上限，单个等待者取消不影响其他等待者；关闭时取消并等待缓存自有任务后清空。共享客户端最多允许 2 个并发请求。
 
-同次输出共享不可变快照；图片缓存额外包含模板版本、主题和分页参数。清理有容量/保留期，不能删除在途文件。
+组合预览按配置顺序返回栏目，逐栏按 `limit` 截取响应，不修改缓存中的完整快照；合法空列表算成功。部分栏目失败保留成功栏目并返回安全错误，全部失败返回 502 且不显示为空内容成功。同次输出共享不可变快照；图片缓存额外包含模板版本、主题和分页参数。清理有容量/保留期，不能删除在途文件。
 
 ## 错误与恢复
 

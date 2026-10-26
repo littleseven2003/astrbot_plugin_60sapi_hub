@@ -13,7 +13,10 @@ from .core.news_api import NewsApi
 from .core.site_api import SiteApi
 from .core.sites import SiteService
 from .news_web import NewsWeb
+from .profile_web import ProfileWeb
 from .site_web import SiteWeb
+from .core.profile_api import ProfileApi
+from .core.profiles import ContentProfileService
 
 PLUGIN_NAME = "astrbot_plugin_60sapi_hub"
 DATABASE_FILENAME = "sites.sqlite3"
@@ -28,6 +31,7 @@ class SixtySAPIHub(Star):
         data_dir = StarTools.get_data_dir(plugin_name)
         self.sites = SiteService(data_dir / DATABASE_FILENAME)
         self.content = ContentService(self.sites)
+        self.profiles = ContentProfileService(self.sites)
         self._active = False
         self._site_web = SiteWeb(
             SiteApi(self.sites),
@@ -44,9 +48,15 @@ class SixtySAPIHub(Star):
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
+        self._profile_web = ProfileWeb(
+            ProfileApi(self.profiles, self.content, self.sites),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
         self._site_web.register(context)
         self._news_web.register(context)
         self._content_web.register(context)
+        self._profile_web.register(context)
 
     async def initialize(self) -> None:
         await self.sites.open()

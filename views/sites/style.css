@@ -1194,3 +1194,59 @@ input:focus-visible,
     flex: 1;
   }
 }
+
+.profile-image-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line, #ddd);
+}
+
+.profile-image-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-image-pages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.profile-image-page {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+}
+
+.profile-image-page img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: #f7f4ee;
+}
+
+.profile-image-page figcaption {
+  margin: 8px 0;
+  color: var(--muted, #666);
+  font-size: 0.85rem;
+}
+
+.profile-image-page .button {
+  width: 100%;
+}
+
+@media (max-width: 700px) {
+  .profile-image-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .profile-image-pages {
+    grid-template-columns: 1fr;
+  }
+}

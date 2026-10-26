@@ -69,6 +69,47 @@ const elements = {
   ),
   deleteCancelButton: document.getElementById("delete-cancel-button"),
   deleteConfirmButton: document.getElementById("delete-confirm-button"),
+  profileCount: document.getElementById("profile-count"),
+  profilesList: document.getElementById("profiles-list"),
+  profileListState: document.getElementById("profile-list-state"),
+  profileListStateText: document.getElementById("profile-list-state-text"),
+  profileRetryButton: document.getElementById("profile-retry-button"),
+  profileEmptyState: document.getElementById("profile-empty-state"),
+  createProfileButton: document.getElementById("create-profile-button"),
+  profileDialog: document.getElementById("profile-dialog"),
+  profileForm: document.getElementById("profile-form"),
+  profileDialogTitle: document.getElementById("profile-dialog-title"),
+  profileName: document.getElementById("profile-name"),
+  profileSite: document.getElementById("profile-site"),
+  profileItemEditor: document.getElementById("profile-item-editor"),
+  profileFormError: document.getElementById("profile-form-error"),
+  profileWriteUncertain: document.getElementById("profile-write-uncertain"),
+  profileWriteUncertainText: document.getElementById("profile-write-uncertain-text"),
+  profileRecheckButton: document.getElementById("profile-recheck-button"),
+  profileReviewCloseButton: document.getElementById("profile-review-close-button"),
+  profileCloseDialogButton: document.getElementById("profile-close-dialog-button"),
+  profileCancelButton: document.getElementById("profile-cancel-button"),
+  profileSaveButton: document.getElementById("profile-save-button"),
+  profileDeleteDialog: document.getElementById("profile-delete-dialog"),
+  profileDeleteMessage: document.getElementById("profile-delete-message"),
+  profileDeleteError: document.getElementById("profile-delete-error"),
+  profileDeleteUncertain: document.getElementById("profile-delete-uncertain"),
+  profileDeleteUncertainText: document.getElementById("profile-delete-uncertain-text"),
+  profileDeleteRecheckButton: document.getElementById("profile-delete-recheck-button"),
+  profileDeleteReviewCloseButton: document.getElementById("profile-delete-review-close-button"),
+  profileDeleteCancelButton: document.getElementById("profile-delete-cancel-button"),
+  profileDeleteConfirmButton: document.getElementById("profile-delete-confirm-button"),
+  profilePreviewSelect: document.getElementById("profile-preview-select"),
+  profilePreviewButton: document.getElementById("profile-preview-button"),
+  profilePreviewRefreshButton: document.getElementById("profile-preview-refresh-button"),
+  profilePreviewHint: document.getElementById("profile-preview-hint"),
+  profilePreviewStatus: document.getElementById("profile-preview-status"),
+  profilePreviewResult: document.getElementById("profile-preview-result"),
+  profilePreviewName: document.getElementById("profile-preview-name"),
+  profilePreviewSource: document.getElementById("profile-preview-source"),
+  profilePreviewCounts: document.getElementById("profile-preview-counts"),
+  profilePreviewState: document.getElementById("profile-preview-state"),
+  profilePreviewSections: document.getElementById("profile-preview-sections"),
 };
 
 const state = {
@@ -84,6 +125,19 @@ const state = {
   previewLoading: false,
   previewSiteId: null,
   previewRequestId: 0,
+  profiles: [],
+  profileLoading: false,
+  profileSaving: false,
+  profileDeleting: false,
+  profileMode: "create",
+  editingProfileId: null,
+  editingProfileRevision: null,
+  profileDeleteTarget: null,
+  profilePending: null,
+  profileEditorItems: [],
+  profilePreviewLoading: false,
+  profilePreviewId: null,
+  profilePreviewRequestId: 0,
 };
 
 const CONTENT_LABELS = {
@@ -106,6 +160,10 @@ const EXPLICIT_WRITE_REJECTIONS = [
   /站点不存在或已被删除/,
   /已被其他操作修改/,
   /站点存储暂不可用/,
+  /仍被内容组合引用/,
+  /引用的站点不存在/,
+  /内容组合不存在/,
+  /内容组合存储暂不可用/,
 ];
 
 function showStatus(message, tone = "info") {
@@ -947,15 +1005,941 @@ function clearPendingPanels() {
   elements.deleteReviewCloseButton.hidden = true;
 }
 
-function blockIfPendingWrite() {
-  if (!state.pendingWrite) {
+function normalizeProfile(raw) {
+  if (!raw || typeof raw !== "object" || typeof raw.id !== "string") {
+    return null;
+  }
+  const items = Array.isArray(raw.items)
+    ? raw.items
+        .map((item) => {
+          if (!item || typeof item !== "object") {
+            return null;
+          }
+          const type = item.content_type;
+          if (typeof type !== "string" || !CONTENT_LABELS[type]) {
+            return null;
+          }
+          const limit = Number.isInteger(item.limit) && item.limit >= 1
+            ? item.limit
+            : null;
+          return { content_type: type, limit };
+        })
+        .filter(Boolean)
+    : [];
+  return {
+    id: raw.id,
+    name: typeof raw.name === "string" ? raw.name : "未命名组合",
+    site_id: typeof raw.site_id === "string" ? raw.site_id : "",
+    site_name: typeof raw.site_name === "string" ? raw.site_name : "未知站点",
+    site_enabled: raw.site_enabled === true,
+    items,
+    revision: Number.isInteger(raw.revision) ? raw.revision : 1,
+    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : "",
+  };
+}
+
+function profileSummary(profile) {
+  return profile.items
+    .map((item) => {
+      const label = CONTENT_LABELS[item.content_type] || item.content_type;
+      return item.limit === null ? label : `${label}（${item.limit} 条）`;
+    })
+    .join(" · ");
+}
+
+function renderProfile(profile) {
+  const row = document.createElement("li");
+  row.className = "site-row profile-row";
+  row.dataset.profileId = profile.id;
+
+  const main = document.createElement("div");
+  main.className = "site-main";
+  const titleLine = document.createElement("div");
+  titleLine.className = "site-title-line";
+  const name = document.createElement("h3");
+  name.className = "site-name";
+  name.textContent = profile.name;
+  const siteBadge = document.createElement("span");
+  siteBadge.className = "badge";
+  siteBadge.textContent = profile.site_name;
+  const enabledBadge = document.createElement("span");
+  enabledBadge.className = "badge";
+  enabledBadge.dataset.enabled = String(profile.site_enabled);
+  enabledBadge.textContent = profile.site_enabled ? "站点已启用" : "站点已停用";
+  titleLine.append(name, siteBadge, enabledBadge);
+
+  const summary = document.createElement("p");
+  summary.className = "site-meta profile-summary";
+  summary.textContent = profileSummary(profile) || "没有栏目";
+  const meta = document.createElement("p");
+  meta.className = "site-meta";
+  addMeta(meta, "栏目", `${profile.items.length} 项`);
+  addMeta(meta, "revision", String(profile.revision));
+  const updated = formatUpdatedAt(profile.updated_at);
+  if (updated) {
+    addMeta(meta, "最近更新", updated);
+  }
+  main.append(titleLine, summary, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "site-actions";
+  actions.append(
+    makeButton(
+      "编辑",
+      "button button-secondary",
+      () => openEditProfile(profile),
+      `编辑内容组合 ${profile.name}`,
+    ),
+    makeButton(
+      "删除",
+      "button button-danger",
+      () => openProfileDelete(profile),
+      `删除内容组合 ${profile.name}`,
+    ),
+  );
+  row.append(main, actions);
+  return row;
+}
+
+function renderProfiles() {
+  elements.profileCount.textContent = `${state.profiles.length} 个`;
+  elements.profilesList.replaceChildren();
+  if (state.profiles.length === 0) {
+    elements.profilesList.hidden = true;
+    elements.profileEmptyState.hidden = false;
+    clearProfileListState();
+    return;
+  }
+  elements.profileEmptyState.hidden = true;
+  elements.profilesList.hidden = false;
+  clearProfileListState();
+  for (const profile of state.profiles) {
+    elements.profilesList.append(renderProfile(profile));
+  }
+}
+
+function setProfileListState(message, showRetry) {
+  elements.profileListStateText.textContent = message;
+  elements.profileRetryButton.hidden = !showRetry;
+  elements.profileListState.hidden = false;
+}
+
+function clearProfileListState() {
+  elements.profileListStateText.textContent = "";
+  elements.profileRetryButton.hidden = true;
+  elements.profileListState.hidden = true;
+}
+
+async function loadProfiles() {
+  if (!bridge || state.profileLoading) {
     return false;
   }
-  showStatus(
-    "有写操作结果尚未确认。请先重新读取最新列表并关闭确认面板。",
-    "error",
+  state.profileLoading = true;
+  elements.profilesList.setAttribute("aria-busy", "true");
+  if (state.profiles.length === 0) {
+    elements.profileEmptyState.hidden = true;
+    elements.profilesList.hidden = true;
+    setProfileListState("正在读取内容组合…", false);
+  }
+  try {
+    const result = await bridge.apiGet("profiles");
+    const raw = result && Array.isArray(result.profiles) ? result.profiles : [];
+    state.profiles = raw.map(normalizeProfile).filter(Boolean);
+    renderProfiles();
+    syncProfilePreview();
+    return true;
+  } catch (error) {
+    showStatus(`读取内容组合失败：${friendlyErrorMessage(error)}`, "error");
+    if (state.profiles.length === 0) {
+      elements.profileEmptyState.hidden = true;
+      elements.profilesList.hidden = true;
+      setProfileListState("无法读取内容组合。请确认插件已启用，然后重试。", true);
+    }
+    return false;
+  } finally {
+    state.profileLoading = false;
+    elements.profilesList.setAttribute("aria-busy", "false");
+  }
+}
+
+function syncProfilePreview() {
+  const profiles = state.profiles;
+  if (!profiles.some((profile) => profile.id === state.profilePreviewId)) {
+    state.profilePreviewId = profiles.length ? profiles[0].id : null;
+  }
+  elements.profilePreviewSelect.replaceChildren();
+  if (profiles.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "没有已保存组合";
+    elements.profilePreviewSelect.append(option);
+    elements.profilePreviewSelect.disabled = true;
+    elements.profilePreviewButton.disabled = true;
+    elements.profilePreviewRefreshButton.disabled = true;
+    elements.profilePreviewHint.textContent =
+      "暂无内容组合。请先创建一个组合。";
+    elements.profilePreviewHint.hidden = false;
+    resetProfilePreview();
+    return;
+  }
+  for (const profile of profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.name;
+    elements.profilePreviewSelect.append(option);
+  }
+  elements.profilePreviewSelect.value = state.profilePreviewId;
+  elements.profilePreviewSelect.disabled = state.profilePreviewLoading;
+  elements.profilePreviewButton.disabled = state.profilePreviewLoading;
+  elements.profilePreviewRefreshButton.disabled = state.profilePreviewLoading;
+  elements.profilePreviewHint.hidden = true;
+}
+
+function setProfilePreviewBusy(busy) {
+  state.profilePreviewLoading = busy;
+  const hasProfile = Boolean(elements.profilePreviewSelect.value);
+  elements.profilePreviewSelect.disabled = busy || !hasProfile;
+  elements.profilePreviewButton.disabled = busy || !hasProfile;
+  elements.profilePreviewRefreshButton.disabled = busy || !hasProfile;
+  elements.profilePreviewButton.textContent = busy ? "正在获取…" : "获取组合";
+  elements.profilePreviewRefreshButton.textContent = busy ? "正在刷新…" : "刷新组合";
+}
+
+function clearProfilePreview() {
+  elements.profilePreviewResult.hidden = true;
+  elements.profilePreviewName.textContent = "";
+  elements.profilePreviewSource.textContent = "";
+  elements.profilePreviewCounts.textContent = "";
+  elements.profilePreviewState.textContent = "";
+  elements.profilePreviewSections.replaceChildren();
+  elements.profilePreviewStatus.hidden = true;
+  elements.profilePreviewStatus.textContent = "";
+  delete elements.profilePreviewStatus.dataset.tone;
+}
+
+function resetProfilePreview() {
+  state.profilePreviewRequestId += 1;
+  clearProfilePreview();
+}
+
+function profileSiteOptions(selectedId) {
+  elements.profileSite.replaceChildren();
+  if (state.sites.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "没有站点";
+    elements.profileSite.append(option);
+    elements.profileSite.disabled = true;
+    return;
+  }
+  for (const site of state.sites) {
+    const option = document.createElement("option");
+    option.value = site.id;
+    option.textContent = site.enabled ? site.name : `${site.name}（已停用）`;
+    elements.profileSite.append(option);
+  }
+  const target = state.sites.some((site) => site.id === selectedId)
+    ? selectedId
+    : (state.sites.find((site) => site.enabled) || state.sites[0]).id;
+  elements.profileSite.value = target;
+  elements.profileSite.disabled = false;
+}
+
+function renderProfileEditor() {
+  elements.profileItemEditor.replaceChildren();
+  const selectedTypes = new Set(
+    state.profileEditorItems.map((item) => item.content_type),
   );
-  return true;
+  const orderedTypes = [
+    ...state.profileEditorItems.map((item) => item.content_type),
+    ...Object.keys(CONTENT_LABELS).filter(
+      (type) => !selectedTypes.has(type),
+    ),
+  ];
+  for (const type of orderedTypes) {
+    const row = document.createElement("div");
+    row.className = "profile-editor-row";
+    row.dataset.contentType = type;
+    const toggle = document.createElement("label");
+    toggle.className = "profile-editor-toggle";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedTypes.has(type);
+    checkbox.setAttribute("aria-label", `选择${CONTENT_LABELS[type]}`);
+    const name = document.createElement("span");
+    name.textContent = CONTENT_LABELS[type];
+    toggle.append(checkbox, name);
+
+    const limit = document.createElement("input");
+    limit.type = "number";
+    limit.className = "profile-limit-input";
+    limit.min = "1";
+    limit.max = "1000";
+    limit.step = "1";
+    limit.placeholder = "全部";
+    limit.setAttribute("aria-label", `${CONTENT_LABELS[type]}最多展示条数`);
+    limit.disabled = !checkbox.checked;
+    const current = state.profileEditorItems.find(
+      (item) => item.content_type === type,
+    );
+    limit.value = current ? current.limitText : "";
+
+    const actions = document.createElement("div");
+    actions.className = "profile-order-actions";
+    const position = state.profileEditorItems.findIndex(
+      (item) => item.content_type === type,
+    );
+    const up = makeButton("上移", "button button-quiet", () => {
+      moveProfileItem(type, -1);
+    });
+    const down = makeButton("下移", "button button-quiet", () => {
+      moveProfileItem(type, 1);
+    });
+    up.disabled = !checkbox.checked || position <= 0;
+    down.disabled =
+      !checkbox.checked || position < 0 ||
+      position >= state.profileEditorItems.length - 1;
+    actions.append(up, down);
+
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        state.profileEditorItems.push({ content_type: type, limitText: "" });
+      } else {
+        state.profileEditorItems = state.profileEditorItems.filter(
+          (item) => item.content_type !== type,
+        );
+      }
+      renderProfileEditor();
+    });
+    limit.addEventListener("input", () => {
+      const entry = state.profileEditorItems.find(
+        (item) => item.content_type === type,
+      );
+      if (entry) {
+        entry.limitText = limit.value;
+      }
+    });
+    row.append(toggle, limit, actions);
+    elements.profileItemEditor.append(row);
+  }
+}
+
+function moveProfileItem(type, delta) {
+  const index = state.profileEditorItems.findIndex(
+    (item) => item.content_type === type,
+  );
+  const target = index + delta;
+  if (index < 0 || target < 0 || target >= state.profileEditorItems.length) {
+    return;
+  }
+  const [entry] = state.profileEditorItems.splice(index, 1);
+  state.profileEditorItems.splice(target, 0, entry);
+  renderProfileEditor();
+}
+
+function collectProfileItems() {
+  if (state.profileEditorItems.length === 0) {
+    throw new Error("请至少选择一个栏目。");
+  }
+  return state.profileEditorItems.map((entry) => {
+    const raw = entry.limitText.trim();
+    let limit = null;
+    if (raw !== "") {
+      if (!/^\d+$/.test(raw)) {
+        throw new Error(
+          `${CONTENT_LABELS[entry.content_type]}的条数必须是正整数或留空。`,
+        );
+      }
+      limit = Number(raw);
+      if (limit < 1 || limit > 1000) {
+        throw new Error(
+          `${CONTENT_LABELS[entry.content_type]}的条数必须在 1～1000 之间。`,
+        );
+      }
+    }
+    return {
+      content_type: entry.content_type,
+      params: {},
+      limit,
+    };
+  });
+}
+
+function showProfileFormError(message) {
+  elements.profileFormError.textContent = message;
+  elements.profileFormError.hidden = false;
+}
+
+function clearProfileFormError() {
+  elements.profileFormError.textContent = "";
+  elements.profileFormError.hidden = true;
+}
+
+function setProfileFormDisabled(disabled) {
+  for (const control of elements.profileForm.querySelectorAll(
+    "input, select, button",
+  )) {
+    control.disabled = disabled;
+  }
+  elements.profileForm.setAttribute("aria-busy", String(disabled));
+}
+
+function openCreateProfile() {
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearProfilePendingPanels();
+  state.profileMode = "create";
+  state.editingProfileId = null;
+  state.editingProfileRevision = null;
+  state.profileEditorItems = [{ content_type: "daily_news", limitText: "" }];
+  elements.profileForm.reset();
+  elements.profileDialogTitle.textContent = "新增组合";
+  elements.profileName.value = "";
+  profileSiteOptions(null);
+  clearProfileFormError();
+  setProfileFormDisabled(false);
+  if (state.sites.length === 0) {
+    showProfileFormError("请先创建至少一个站点。");
+    elements.profileSaveButton.disabled = true;
+  } else {
+    elements.profileSaveButton.textContent = "保存组合";
+  }
+  renderProfileEditor();
+  openDialog(elements.profileDialog);
+  elements.profileName.focus();
+}
+
+function openEditProfile(profile) {
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearProfilePendingPanels();
+  state.profileMode = "edit";
+  state.editingProfileId = profile.id;
+  state.editingProfileRevision = profile.revision;
+  state.profileEditorItems = profile.items.map((item) => ({
+    content_type: item.content_type,
+    limitText: item.limit === null ? "" : String(item.limit),
+  }));
+  elements.profileDialogTitle.textContent = "编辑组合";
+  elements.profileName.value = profile.name;
+  profileSiteOptions(profile.site_id);
+  clearProfileFormError();
+  setProfileFormDisabled(false);
+  elements.profileSaveButton.textContent = "保存更改";
+  renderProfileEditor();
+  openDialog(elements.profileDialog);
+  elements.profileName.focus();
+  elements.profileName.select();
+}
+
+async function handleProfileSave(event) {
+  event.preventDefault();
+  if (state.profileSaving || state.profilePending || state.pendingWrite) {
+    return;
+  }
+  clearProfileFormError();
+  if (!elements.profileForm.reportValidity()) {
+    return;
+  }
+  let items;
+  try {
+    items = collectProfileItems();
+  } catch (error) {
+    showProfileFormError(friendlyErrorMessage(error));
+    return;
+  }
+  if (!elements.profileSite.value) {
+    showProfileFormError("请选择站点。");
+    return;
+  }
+  state.profileSaving = true;
+  const idleLabel = state.profileMode === "create" ? "保存组合" : "保存更改";
+  elements.profileSaveButton.textContent = "保存中…";
+  setProfileFormDisabled(true);
+  try {
+    const payload = {
+      name: elements.profileName.value,
+      site_id: elements.profileSite.value,
+      items,
+    };
+    if (state.profileMode === "create") {
+      await bridge.apiPost("profiles", payload);
+    } else {
+      payload.expected_revision = state.editingProfileRevision;
+      await bridge.apiPost(
+        `profiles/${encodeURIComponent(state.editingProfileId)}/update`,
+        payload,
+      );
+    }
+    closeDialog(elements.profileDialog);
+    const reloaded = await loadProfiles();
+    showStatus(
+      reloaded ? "内容组合已保存。" : "内容组合已保存，但列表刷新失败，请重试。",
+      reloaded ? "success" : "error",
+    );
+  } catch (error) {
+    const message = friendlyErrorMessage(error);
+    if (state.profileMode === "edit" && isConflictMessage(message)) {
+      closeDialog(elements.profileDialog);
+      const reloaded = await loadProfiles();
+      showStatus(
+        reloaded
+          ? "该组合已被其他操作修改，已重新加载最新数据。请重新编辑。"
+          : "该组合已被其他操作修改，但列表刷新失败。",
+        "error",
+      );
+    } else if (message.includes("引用的站点不存在")) {
+      showProfileFormError(message);
+    } else if (isMissingMessage(message)) {
+      closeDialog(elements.profileDialog);
+      const reloaded = await loadProfiles();
+      showStatus(
+        reloaded
+          ? "该组合已被删除，已重新加载最新数据。"
+          : "该组合已被删除，但列表刷新失败。",
+        "error",
+      );
+    } else if (isExplicitWriteRejection(message)) {
+      showProfileFormError(message);
+    } else {
+      enterProfilePending(
+        state.profileMode,
+        writeFailureDetail(error),
+      );
+    }
+  } finally {
+    state.profileSaving = false;
+    if (!state.profilePending) {
+      setProfileFormDisabled(false);
+      elements.profileSaveButton.textContent = idleLabel;
+    }
+  }
+}
+
+function openProfileDelete(profile) {
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearProfilePendingPanels();
+  state.profileDeleteTarget = profile;
+  elements.profileDeleteMessage.textContent =
+    `确定删除“${profile.name}”吗？删除组合不会删除站点或内容缓存。`;
+  elements.profileDeleteError.textContent = "";
+  elements.profileDeleteError.hidden = true;
+  elements.profileDeleteCancelButton.disabled = false;
+  elements.profileDeleteConfirmButton.disabled = false;
+  elements.profileDeleteConfirmButton.textContent = "删除";
+  openDialog(elements.profileDeleteDialog);
+  elements.profileDeleteCancelButton.focus();
+}
+
+async function confirmProfileDelete() {
+  if (state.profileDeleting || state.profilePending || state.pendingWrite ||
+      !state.profileDeleteTarget) {
+    return;
+  }
+  const target = state.profileDeleteTarget;
+  state.profileDeleting = true;
+  elements.profileDeleteCancelButton.disabled = true;
+  elements.profileDeleteConfirmButton.disabled = true;
+  elements.profileDeleteConfirmButton.textContent = "删除中…";
+  try {
+    await bridge.apiPost(
+      `profiles/${encodeURIComponent(target.id)}/delete`,
+      { expected_revision: target.revision },
+    );
+    closeDialog(elements.profileDeleteDialog);
+    state.profileDeleteTarget = null;
+    const reloaded = await loadProfiles();
+    showStatus(
+      reloaded ? `已删除“${target.name}”。` : "组合已删除，但列表刷新失败。",
+      reloaded ? "success" : "error",
+    );
+  } catch (error) {
+    const message = friendlyErrorMessage(error);
+    if (isConflictMessage(message) || isMissingMessage(message)) {
+      closeDialog(elements.profileDeleteDialog);
+      state.profileDeleteTarget = null;
+      const reloaded = await loadProfiles();
+      showStatus(
+        reloaded
+          ? "该组合已被修改或删除，已重新加载最新数据。"
+          : "该组合已被修改或删除，但列表刷新失败。",
+        "error",
+      );
+    } else if (isExplicitWriteRejection(message)) {
+      elements.profileDeleteError.textContent = message;
+      elements.profileDeleteError.hidden = false;
+    } else {
+      enterProfilePending("profile_delete", writeFailureDetail(error), target);
+    }
+  } finally {
+    state.profileDeleting = false;
+    if (!state.profilePending) {
+      elements.profileDeleteCancelButton.disabled = false;
+      elements.profileDeleteConfirmButton.disabled = false;
+      elements.profileDeleteConfirmButton.textContent = "删除";
+    }
+  }
+}
+
+function profilePendingElements(pending) {
+  if (pending.kind === "profile_delete") {
+    return {
+      panel: elements.profileDeleteUncertain,
+      text: elements.profileDeleteUncertainText,
+      recheck: elements.profileDeleteRecheckButton,
+      review: elements.profileDeleteReviewCloseButton,
+    };
+  }
+  return {
+    panel: elements.profileWriteUncertain,
+    text: elements.profileWriteUncertainText,
+    recheck: elements.profileRecheckButton,
+    review: elements.profileReviewCloseButton,
+  };
+}
+
+function updateProfilePendingUI(text) {
+  const pending = state.profilePending;
+  if (!pending) {
+    return;
+  }
+  const ui = profilePendingElements(pending);
+  ui.panel.hidden = false;
+  ui.text.textContent = text;
+  if (pending.kind === "profile_delete") {
+    elements.profileDeleteCancelButton.disabled = true;
+    elements.profileDeleteConfirmButton.disabled = true;
+  } else {
+    setProfileFormDisabled(true);
+    elements.profileSaveButton.disabled = true;
+    elements.profileSaveButton.textContent = "等待确认结果";
+  }
+  if (pending.phase === "checking") {
+    ui.recheck.hidden = false;
+    ui.recheck.disabled = true;
+    ui.recheck.textContent = "正在重新读取…";
+    ui.review.hidden = true;
+  } else if (pending.phase === "review") {
+    ui.recheck.hidden = true;
+    ui.review.hidden = false;
+    ui.review.disabled = false;
+  } else {
+    ui.recheck.hidden = false;
+    ui.recheck.disabled = false;
+    ui.recheck.textContent = "重新读取最新组合";
+    ui.review.hidden = true;
+  }
+}
+
+function enterProfilePending(kind, detail, target) {
+  state.profilePending = {
+    kind,
+    phase: "unconfirmed",
+    targetId: target ? target.id : null,
+  };
+  if (kind === "profile_delete") {
+    elements.profileDeleteError.hidden = true;
+    elements.profileDeleteError.textContent = "";
+  } else {
+    clearProfileFormError();
+  }
+  updateProfilePendingUI(
+    "服务器可能已经完成，也可能没有收到请求。" +
+      "为避免重复写入，请先重新读取最新组合列表确认。" +
+      `\n\n错误信息：${detail}`,
+  );
+}
+
+function profilePendingReviewText(pending) {
+  if (pending.kind === "create") {
+    return (
+      `已重新读取最新组合列表，当前共有 ${state.profiles.length} 个组合。` +
+      "系统不能仅凭名称判断哪一条（如有）来自本次操作；" +
+      "请关闭对话框查看列表并人工确认。"
+    );
+  }
+  const profile = pending.targetId
+    ? state.profiles.find((item) => item.id === pending.targetId)
+    : null;
+  const current = profile
+    ? `仍在列表中：${profile.name}（revision ${profile.revision}）。`
+    : "不在列表中。";
+  return (
+    `已重新读取最新组合列表。该组合当前${current}` +
+    "请关闭对话框查看列表并判断是否符合预期；如需继续，请重新打开对应操作。"
+  );
+}
+
+async function recheckProfilePending() {
+  const pending = state.profilePending;
+  if (!pending || pending.phase === "checking") {
+    return;
+  }
+  pending.phase = "checking";
+  updateProfilePendingUI("正在重新读取最新组合…");
+  const succeeded = await loadProfiles();
+  if (state.profilePending !== pending) {
+    return;
+  }
+  if (succeeded) {
+    pending.phase = "review";
+    updateProfilePendingUI(profilePendingReviewText(pending));
+  } else {
+    pending.phase = "unconfirmed";
+    updateProfilePendingUI(
+      "仍无法确认结果：重新读取最新组合失败。请不要重复提交；" +
+        "保持此页面，稍后再次读取。",
+    );
+  }
+}
+
+function clearProfilePendingPanels() {
+  elements.profileWriteUncertain.hidden = true;
+  elements.profileWriteUncertainText.textContent = "";
+  elements.profileReviewCloseButton.hidden = true;
+  elements.profileDeleteUncertain.hidden = true;
+  elements.profileDeleteUncertainText.textContent = "";
+  elements.profileDeleteReviewCloseButton.hidden = true;
+}
+
+function finishProfilePendingReview() {
+  const pending = state.profilePending;
+  if (!pending || pending.phase !== "review") {
+    return;
+  }
+  const deleting = pending.kind === "profile_delete";
+  closeDialog(deleting ? elements.profileDeleteDialog : elements.profileDialog);
+  state.profilePending = null;
+  clearProfilePendingPanels();
+  if (deleting) {
+    state.profileDeleteTarget = null;
+  } else {
+    setProfileFormDisabled(false);
+    elements.profileSaveButton.textContent =
+      state.profileMode === "create" ? "保存组合" : "保存更改";
+  }
+  showStatus(
+    "已重新读取最新组合列表，并关闭未确认的操作。请根据列表判断结果。",
+    "info",
+  );
+}
+
+function profileSectionCacheText(section) {
+  const cache = section.cache && typeof section.cache === "object"
+    ? section.cache
+    : {};
+  return cache.hit === true ? "缓存命中" : "本次上游获取";
+}
+
+function appendProfileSectionItems(container, section) {
+  const items = Array.isArray(section.items) ? section.items : [];
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "preview-empty";
+    empty.textContent = "上游返回了合法的空列表（0 条）。";
+    container.append(empty);
+    return;
+  }
+  const list = document.createElement("ul");
+  list.className = "news-list";
+  for (const item of items) {
+    if (!item || typeof item !== "object" || typeof item.title !== "string" ||
+        !item.title.trim()) {
+      continue;
+    }
+    const row = document.createElement("li");
+    const title = document.createElement("p");
+    title.className = "news-title";
+    title.textContent = item.title;
+    row.append(title);
+    if (typeof item.detail === "string" && item.detail.trim()) {
+      const detail = document.createElement("p");
+      detail.className = "news-summary";
+      detail.textContent = item.detail;
+      row.append(detail);
+    }
+    if (typeof item.hot_value_desc === "string" && item.hot_value_desc.trim()) {
+      const heat = document.createElement("p");
+      heat.className = "news-heat";
+      heat.textContent = item.hot_value_desc;
+      row.append(heat);
+    }
+    if (Number.isInteger(item.hot_value) && item.hot_value >= 0) {
+      const heat = document.createElement("p");
+      heat.className = "news-heat";
+      heat.textContent = `热度：${item.hot_value}`;
+      row.append(heat);
+    }
+    if (typeof item.link === "string" && item.link) {
+      const link = document.createElement("p");
+      link.className = "news-link";
+      link.textContent = `链接：${item.link}`;
+      row.append(link);
+    }
+    list.append(row);
+  }
+  container.append(list);
+}
+
+function renderProfileSection(section) {
+  const article = document.createElement("article");
+  article.className = "profile-section";
+  article.dataset.status = section.status === "error" ? "error" : "ok";
+  const head = document.createElement("div");
+  head.className = "profile-section-head";
+  const title = document.createElement("h3");
+  title.textContent = section.label || CONTENT_LABELS[section.content_type] ||
+    section.content_type || "栏目";
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = section.status === "error" ? "获取失败" : "成功";
+  head.append(title, badge);
+  article.append(head);
+
+  if (section.status === "error") {
+    const error = document.createElement("p");
+    error.className = "profile-section-error";
+    error.textContent = `${section.message || "栏目获取失败。"}（${section.code || "error"}）`;
+    article.append(error);
+    return article;
+  }
+
+  const meta = document.createElement("p");
+  meta.className = "site-meta";
+  const endpoint = typeof section.endpoint === "string" ? section.endpoint : "—";
+  addMeta(meta, "接口", endpoint);
+  const total = Number.isInteger(section.total_item_count)
+    ? section.total_item_count
+    : (Array.isArray(section.items) ? section.items.length : 0);
+  const shown = Number.isInteger(section.displayed_count)
+    ? section.displayed_count
+    : (Array.isArray(section.items) ? section.items.length : 0);
+  addMeta(meta, "条数", section.limit === null
+    ? `${shown} / ${total}（全部）`
+    : `${shown} / ${total}（最多 ${section.limit}）`);
+  addMeta(meta, "缓存", profileSectionCacheText(section));
+  if (typeof section.content_date === "string" && section.content_date) {
+    addMeta(meta, "内容日期", section.content_date);
+  }
+  const fetched = formatUpdatedAt(
+    typeof section.fetched_at === "string" ? section.fetched_at : "",
+  );
+  if (fetched) {
+    addMeta(meta, "获取时间", fetched);
+  }
+  article.append(meta);
+  if (Array.isArray(section.warnings) && section.warnings.length > 0) {
+    const warning = document.createElement("p");
+    warning.className = "preview-warning";
+    warning.textContent = section.warnings.join("\n");
+    article.append(warning);
+  }
+  appendProfileSectionItems(article, section);
+  return article;
+}
+
+function renderProfilePreview(data) {
+  if (!data || !Array.isArray(data.sections)) {
+    throw new Error("组合预览数据格式异常。");
+  }
+  elements.profilePreviewName.textContent = data.profile_name || "未知组合";
+  elements.profilePreviewSource.textContent = data.site_name || "未知站点";
+  elements.profilePreviewCounts.textContent =
+    `${data.success_count || 0} 成功 / ${data.failure_count || 0} 失败`;
+  const stateText = data.status === "complete"
+    ? "完整成功"
+    : data.status === "partial"
+      ? "部分成功"
+      : "全部失败";
+  elements.profilePreviewState.textContent = stateText;
+  elements.profilePreviewSections.replaceChildren();
+  for (const section of data.sections) {
+    elements.profilePreviewSections.append(renderProfileSection(section));
+  }
+  elements.profilePreviewResult.hidden = false;
+  const tone = data.status === "complete"
+    ? "success"
+    : data.status === "partial"
+      ? "info"
+      : "error";
+  const message = data.status === "complete"
+    ? `组合预览完成：${data.success_count} 个栏目成功。`
+    : data.status === "partial"
+      ? `组合预览部分成功：${data.success_count} 个成功，${data.failure_count} 个失败。`
+      : "组合预览全部失败。";
+  showProfilePreviewStatus(message, tone);
+}
+
+function showProfilePreviewStatus(message, tone = "info") {
+  elements.profilePreviewStatus.textContent = message;
+  elements.profilePreviewStatus.dataset.tone = tone;
+  elements.profilePreviewStatus.hidden = false;
+}
+
+async function previewProfile(forceRefresh = false) {
+  if (!bridge || state.profilePreviewLoading) {
+    return;
+  }
+  const profileId = elements.profilePreviewSelect.value;
+  if (!profileId) {
+    showProfilePreviewStatus("请先选择一个已保存组合。", "error");
+    return;
+  }
+  const requestId = ++state.profilePreviewRequestId;
+  state.profilePreviewLoading = true;
+  clearProfilePreview();
+  showProfilePreviewStatus(
+    forceRefresh ? "正在刷新组合（跳过缓存）…" : "正在获取组合…",
+    "info",
+  );
+  setProfilePreviewBusy(true);
+  try {
+    const data = await bridge.apiPost(
+      `profiles/${encodeURIComponent(profileId)}/preview`,
+      { force_refresh: Boolean(forceRefresh) },
+    );
+    if (
+      requestId !== state.profilePreviewRequestId ||
+      elements.profilePreviewSelect.value !== profileId
+    ) {
+      return;
+    }
+    renderProfilePreview(data);
+  } catch (error) {
+    if (requestId === state.profilePreviewRequestId) {
+      clearProfilePreview();
+      showProfilePreviewStatus(
+        `组合获取失败：${friendlyErrorMessage(error)}`,
+        "error",
+      );
+    }
+  } finally {
+    state.profilePreviewLoading = false;
+    setProfilePreviewBusy(false);
+  }
+}
+
+
+function blockIfPendingWrite() {
+  if (state.pendingWrite) {
+    showStatus(
+      "有站点写操作结果尚未确认。请先重新读取最新列表并关闭确认面板。",
+      "error",
+    );
+    return true;
+  }
+  if (state.profilePending) {
+    showStatus(
+      "有内容组合写操作结果尚未确认。请先重新读取最新组合并关闭确认面板。",
+      "error",
+    );
+    return true;
+  }
+  return false;
 }
 
 function finishPendingReview() {
@@ -1192,9 +2176,79 @@ async function confirmDelete() {
   }
 }
 
+async function refreshAll() {
+  await Promise.all([loadSites(), loadProfiles()]);
+}
+
 function bindEvents() {
-  elements.refreshButton.addEventListener("click", loadSites);
-  elements.retryButton.addEventListener("click", loadSites);
+  elements.createProfileButton.addEventListener("click", openCreateProfile);
+  elements.profileRetryButton.addEventListener("click", loadProfiles);
+  elements.profilePreviewButton.addEventListener(
+    "click",
+    () => previewProfile(false),
+  );
+  elements.profilePreviewRefreshButton.addEventListener(
+    "click",
+    () => previewProfile(true),
+  );
+  elements.profilePreviewSelect.addEventListener("change", () => {
+    state.profilePreviewId = elements.profilePreviewSelect.value;
+    resetProfilePreview();
+    setProfilePreviewBusy(false);
+  });
+  elements.profileForm.addEventListener("submit", handleProfileSave);
+  elements.profileRecheckButton.addEventListener(
+    "click",
+    recheckProfilePending,
+  );
+  elements.profileReviewCloseButton.addEventListener(
+    "click",
+    finishProfilePendingReview,
+  );
+  elements.profileDeleteRecheckButton.addEventListener(
+    "click",
+    recheckProfilePending,
+  );
+  elements.profileDeleteReviewCloseButton.addEventListener(
+    "click",
+    finishProfilePendingReview,
+  );
+  elements.profileCloseDialogButton.addEventListener("click", () => {
+    if (!state.profileSaving && !state.profilePending) {
+      closeDialog(elements.profileDialog);
+    }
+  });
+  elements.profileCancelButton.addEventListener("click", () => {
+    if (!state.profileSaving && !state.profilePending) {
+      closeDialog(elements.profileDialog);
+    }
+  });
+  elements.profileDialog.addEventListener("cancel", (event) => {
+    if (state.profileSaving || state.profilePending) {
+      event.preventDefault();
+    }
+  });
+  elements.profileDeleteCancelButton.addEventListener("click", () => {
+    if (!state.profileDeleting && !state.profilePending) {
+      closeDialog(elements.profileDeleteDialog);
+    }
+  });
+  elements.profileDeleteConfirmButton.addEventListener(
+    "click",
+    confirmProfileDelete,
+  );
+  elements.profileDeleteDialog.addEventListener("cancel", (event) => {
+    if (state.profileDeleting || state.profilePending) {
+      event.preventDefault();
+    }
+  });
+  elements.profileDeleteDialog.addEventListener("close", () => {
+    if (!state.profilePending) {
+      state.profileDeleteTarget = null;
+    }
+  });
+  elements.refreshButton.addEventListener("click", refreshAll);
+  elements.retryButton.addEventListener("click", refreshAll);
   elements.createButton.addEventListener("click", openCreate);
   elements.emptyCreateButton.addEventListener("click", openCreate);
   elements.previewButton.addEventListener("click", () => previewContent(false));
@@ -1297,7 +2351,7 @@ async function init() {
   }
 
   bindEvents();
-  await loadSites();
+  await Promise.all([loadSites(), loadProfiles()]);
 }
 
 init();

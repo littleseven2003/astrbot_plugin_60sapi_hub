@@ -29,26 +29,16 @@ from .sites import (
 )
 from .zhihu import ZhihuHotSnapshot
 
-DAILY_NEWS = "daily_news"
-BILIBILI_HOT = "bilibili_hot"
-ZHIHU_HOT = "zhihu_hot"
-DOUYIN_HOT = "douyin_hot"
-TOUTIAO_HOT = "toutiao_hot"
-SUPPORTED_CONTENT_TYPES = (
-    DAILY_NEWS,
+from .content_types import (
     BILIBILI_HOT,
-    ZHIHU_HOT,
+    CONTENT_LABELS,
+    DAILY_NEWS,
     DOUYIN_HOT,
+    KNOWN_CONTENT_TYPES,
+    SUPPORTED_CONTENT_TYPES,
     TOUTIAO_HOT,
+    ZHIHU_HOT,
 )
-KNOWN_CONTENT_TYPES = frozenset(SUPPORTED_CONTENT_TYPES)
-CONTENT_LABELS = {
-    DAILY_NEWS: "每日新闻",
-    BILIBILI_HOT: "Bilibili 热搜",
-    ZHIHU_HOT: "知乎热榜",
-    DOUYIN_HOT: "抖音热搜",
-    TOUTIAO_HOT: "今日头条热榜",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,22 +166,28 @@ class ContentApi:
                 "internal_error",
             )
 
-        if content_type == DAILY_NEWS:
-            data = {**snapshot_dict(snapshot), "content_type": DAILY_NEWS}
-        elif content_type == BILIBILI_HOT:
-            data = _bili_snapshot_dict(snapshot)
-        elif content_type == ZHIHU_HOT:
-            data = _zhihu_snapshot_dict(snapshot)
-        elif content_type == DOUYIN_HOT:
-            data = _douyin_snapshot_dict(snapshot)
-        else:
-            data = _toutiao_snapshot_dict(snapshot)
+        data = content_snapshot_dict(content_type, snapshot)
         data["cache"] = {
             "hit": cached.hit,
             "expires_at": cached.expires_at,
             "ttl_seconds": self._service.cache_ttl_seconds,
         }
         return _ok(data)
+
+
+def content_snapshot_dict(content_type: str, snapshot: Any) -> dict[str, Any]:
+    """把领域快照转为统一 API 内容；不包含缓存元信息。"""
+    if content_type == DAILY_NEWS:
+        return {**snapshot_dict(snapshot), "content_type": DAILY_NEWS}
+    if content_type == BILIBILI_HOT:
+        return _bili_snapshot_dict(snapshot)
+    if content_type == ZHIHU_HOT:
+        return _zhihu_snapshot_dict(snapshot)
+    if content_type == DOUYIN_HOT:
+        return _douyin_snapshot_dict(snapshot)
+    if content_type == TOUTIAO_HOT:
+        return _toutiao_snapshot_dict(snapshot)
+    raise ValueError("unknown content type")
 
 
 def _bili_snapshot_dict(snapshot: BiliHotSnapshot) -> dict[str, Any]:
@@ -310,4 +306,5 @@ __all__ = [
     "ZHIHU_HOT",
     "ContentApi",
     "ContentApiResult",
+    "content_snapshot_dict",
 ]

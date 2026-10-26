@@ -13,7 +13,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -27,6 +27,42 @@ CREATE TABLE IF NOT EXISTS sites (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 )
+"""
+
+_CREATE_PROFILES_TABLE = """
+CREATE TABLE IF NOT EXISTS content_profiles (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE RESTRICT,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+_CREATE_PROFILE_ITEMS_TABLE = """
+CREATE TABLE IF NOT EXISTS content_profile_items (
+    profile_id TEXT NOT NULL REFERENCES content_profiles(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    content_type TEXT NOT NULL CHECK (
+        content_type IN (
+            'daily_news', 'bilibili_hot', 'zhihu_hot',
+            'douyin_hot', 'toutiao_hot'
+        )
+    ),
+    params_json TEXT NOT NULL,
+    limit_count INTEGER CHECK (
+        limit_count IS NULL
+        OR (limit_count >= 1 AND limit_count <= 1000)
+    ),
+    PRIMARY KEY (profile_id, position),
+    UNIQUE (profile_id, content_type)
+)
+"""
+
+_CREATE_PROFILE_SITE_INDEX = """
+CREATE INDEX IF NOT EXISTS content_profiles_site_id
+ON content_profiles (site_id)
 """
 
 
@@ -54,6 +90,30 @@ class SiteRevisionConflictError(SiteStoreError):
         super().__init__("站点 revision 冲突")
 
 
+class SiteReferencedError(SiteStoreError):
+    """站点仍被内容组合引用，不能删除。"""
+
+    def __init__(self, profile_names: tuple[str, ...]) -> None:
+        self.profile_names = profile_names
+        super().__init__("站点仍被内容组合引用")
+
+
+class ProfileRecordNotFoundError(SiteStoreError):
+    """按 ID 查找内容组合失败。"""
+
+    def __init__(self, profile_id: str) -> None:
+        self.profile_id = profile_id
+        super().__init__(f"内容组合 {profile_id} 不存在")
+
+
+class ProfileRevisionConflictError(SiteStoreError):
+    """内容组合写入 revision 冲突。"""
+
+    def __init__(self, actual_revision: int | None) -> None:
+        self.actual_revision = actual_revision
+        super().__init__("内容组合 revision 冲突")
+
+
 @dataclass(frozen=True, slots=True)
 class StoredSite:
     """存储层的站点记录；bearer_token 不出现在调试输出中。"""
@@ -67,6 +127,24 @@ class StoredSite:
     revision: int = 1
     created_at: str = ""
     updated_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class StoredProfileItem:
+    content_type: str
+    params_json: str = "{}"
+    limit: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredProfile:
+    id: str
+    name: str
+    site_id: str
+    items: tuple[StoredProfileItem, ...]
+    revision: int
+    created_at: str
+    updated_at: str
 
 
 class SiteStore:
@@ -111,21 +189,14 @@ class SiteStore:
                 connection.row_factory = aiosqlite.Row
                 async with connection.execute("PRAGMA busy_timeout = 5000"):
                     pass
+                await connection.execute("PRAGMA foreign_keys = ON")
 
                 async with connection.execute("PRAGMA user_version") as cursor:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version == 0:
-                    try:
-                        await connection.execute(_CREATE_SITES_TABLE)
-                        await connection.execute(
-                            f"PRAGMA user_version = {SCHEMA_VERSION}",
-                        )
-                        await connection.commit()
-                    except Exception:
-                        await self._rollback_quietly(connection)
-                        raise
+                if version in (0, 1):
+                    await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
                         f"不支持的站点数据库 schema 版本：{version}",
@@ -151,6 +222,27 @@ class SiteStore:
                 if isinstance(exc, SiteStoreError):
                     raise
                 raise SiteStoreError("无法初始化站点数据库") from exc
+
+    async def _migrate_schema(
+        self,
+        connection: aiosqlite.Connection,
+        version: int,
+    ) -> None:
+        """在同一事务中创建/升级 schema，失败保留旧版本数据。"""
+        try:
+            await connection.execute("BEGIN IMMEDIATE")
+            if version == 0:
+                await connection.execute(_CREATE_SITES_TABLE)
+            await connection.execute(_CREATE_PROFILES_TABLE)
+            await connection.execute(_CREATE_PROFILE_ITEMS_TABLE)
+            await connection.execute(_CREATE_PROFILE_SITE_INDEX)
+            await connection.execute(
+                f"PRAGMA user_version = {SCHEMA_VERSION}",
+            )
+            await connection.commit()
+        except BaseException:
+            await self._rollback_quietly(connection)
+            raise
 
     async def close(self) -> None:
         """关闭连接；可重复调用。"""
@@ -323,6 +415,14 @@ class SiteStore:
 
             async def perform() -> None:
                 cursor = await connection.execute(
+                    "SELECT name FROM content_profiles WHERE site_id = ? "
+                    "ORDER BY created_at, id",
+                    (site_id,),
+                )
+                names = tuple(row["name"] for row in await cursor.fetchall())
+                if names:
+                    raise SiteReferencedError(names)
+                cursor = await connection.execute(
                     "DELETE FROM sites WHERE id = ? AND revision = ?",
                     (site_id, expected_revision),
                 )
@@ -340,6 +440,240 @@ class SiteStore:
                 perform,
                 failure_message="删除站点失败",
             )
+
+    async def create_profile(
+        self,
+        *,
+        profile_id: str,
+        name: str,
+        site_id: str,
+        items: tuple[StoredProfileItem, ...],
+    ) -> StoredProfile:
+        async with self._lock:
+            connection = self._require_connection()
+            now = _utc_now()
+
+            async def perform() -> None:
+                await connection.execute(
+                    """
+                    INSERT INTO content_profiles (
+                        id, name, site_id, revision, created_at, updated_at
+                    ) VALUES (?, ?, ?, 1, ?, ?)
+                    """,
+                    (profile_id, name, site_id, now, now),
+                )
+                await self._insert_profile_items(
+                    connection,
+                    profile_id,
+                    items,
+                )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="保存内容组合失败",
+            )
+            return StoredProfile(
+                id=profile_id,
+                name=name,
+                site_id=site_id,
+                items=items,
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+
+    async def list_profiles(self) -> list[StoredProfile]:
+        async with self._lock:
+            connection = self._require_connection()
+            try:
+                async with connection.execute(
+                    """
+                    SELECT id, name, site_id, revision, created_at, updated_at
+                    FROM content_profiles
+                    ORDER BY created_at, id
+                    """,
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                items_by_profile = await self._load_profile_items(
+                    tuple(row["id"] for row in rows),
+                )
+            except SiteStoreError:
+                raise
+            except Exception as exc:
+                raise SiteStoreError("读取内容组合列表失败") from exc
+            return [
+                _row_to_profile(
+                    row,
+                    items_by_profile.get(row["id"], ()),
+                )
+                for row in rows
+            ]
+
+    async def get_profile(self, profile_id: str) -> StoredProfile:
+        async with self._lock:
+            try:
+                row = await self._fetchone_unlocked(
+                    """
+                    SELECT id, name, site_id, revision, created_at, updated_at
+                    FROM content_profiles
+                    WHERE id = ?
+                    """,
+                    (profile_id,),
+                )
+                if row is None:
+                    raise ProfileRecordNotFoundError(profile_id)
+                items = await self._load_profile_items((profile_id,))
+            except SiteStoreError:
+                raise
+            except Exception as exc:
+                raise SiteStoreError("读取内容组合失败") from exc
+            return _row_to_profile(row, items.get(profile_id, ()))
+
+    async def update_profile(
+        self,
+        profile_id: str,
+        *,
+        name: str,
+        site_id: str,
+        items: tuple[StoredProfileItem, ...],
+        expected_revision: int,
+    ) -> StoredProfile:
+        async with self._lock:
+            connection = self._require_connection()
+            now = _utc_now()
+
+            async def perform() -> None:
+                cursor = await connection.execute(
+                    """
+                    UPDATE content_profiles
+                    SET name = ?, site_id = ?, revision = revision + 1,
+                        updated_at = ?
+                    WHERE id = ? AND revision = ?
+                    """,
+                    (name, site_id, now, profile_id, expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    row = await self._fetchone_unlocked(
+                        "SELECT revision FROM content_profiles WHERE id = ?",
+                        (profile_id,),
+                    )
+                    if row is None:
+                        raise ProfileRecordNotFoundError(profile_id)
+                    raise ProfileRevisionConflictError(int(row["revision"]))
+                await connection.execute(
+                    "DELETE FROM content_profile_items WHERE profile_id = ?",
+                    (profile_id,),
+                )
+                await self._insert_profile_items(
+                    connection,
+                    profile_id,
+                    items,
+                )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="更新内容组合失败",
+            )
+            try:
+                row = await self._fetchone_unlocked(
+                    """
+                    SELECT id, name, site_id, revision, created_at, updated_at
+                    FROM content_profiles
+                    WHERE id = ?
+                    """,
+                    (profile_id,),
+                )
+            except SiteStoreError:
+                raise
+            except Exception as exc:
+                raise SiteStoreError("更新内容组合失败") from exc
+            if row is None:
+                raise ProfileRecordNotFoundError(profile_id)
+            return _row_to_profile(row, items)
+
+    async def delete_profile(
+        self,
+        profile_id: str,
+        *,
+        expected_revision: int,
+    ) -> None:
+        async with self._lock:
+            connection = self._require_connection()
+
+            async def perform() -> None:
+                cursor = await connection.execute(
+                    """
+                    DELETE FROM content_profiles
+                    WHERE id = ? AND revision = ?
+                    """,
+                    (profile_id, expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    row = await self._fetchone_unlocked(
+                        "SELECT revision FROM content_profiles WHERE id = ?",
+                        (profile_id,),
+                    )
+                    if row is None:
+                        raise ProfileRecordNotFoundError(profile_id)
+                    raise ProfileRevisionConflictError(int(row["revision"]))
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="删除内容组合失败",
+            )
+
+    async def _insert_profile_items(
+        self,
+        connection: aiosqlite.Connection,
+        profile_id: str,
+        items: tuple[StoredProfileItem, ...],
+    ) -> None:
+        for position, item in enumerate(items):
+            await connection.execute(
+                """
+                INSERT INTO content_profile_items (
+                    profile_id, position, content_type,
+                    params_json, limit_count
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    position,
+                    item.content_type,
+                    item.params_json,
+                    item.limit,
+                ),
+            )
+
+    async def _load_profile_items(
+        self,
+        profile_ids: tuple[str, ...],
+    ) -> dict[str, tuple[StoredProfileItem, ...]]:
+        if not profile_ids:
+            return {}
+        placeholders = ",".join("?" for _ in profile_ids)
+        async with self._require_connection().execute(
+            f"""
+            SELECT profile_id, content_type, params_json, limit_count
+            FROM content_profile_items
+            WHERE profile_id IN ({placeholders})
+            ORDER BY profile_id, position
+            """,
+            profile_ids,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[StoredProfileItem]] = {}
+        for row in rows:
+            grouped.setdefault(row["profile_id"], []).append(
+                _row_to_profile_item(row),
+            )
+        return {
+            profile_id: tuple(items)
+            for profile_id, items in grouped.items()
+        }
 
     def _require_connection(self) -> aiosqlite.Connection:
         if self._connection is None:
@@ -377,7 +711,13 @@ class SiteStore:
         except asyncio.CancelledError:
             await self._cleanup_cancelled_write(connection, commit_task)
             raise
-        except (SiteRecordNotFoundError, SiteRevisionConflictError):
+        except (
+            SiteRecordNotFoundError,
+            SiteRevisionConflictError,
+            SiteReferencedError,
+            ProfileRecordNotFoundError,
+            ProfileRevisionConflictError,
+        ):
             await self._rollback_for_error(connection)
             raise
         except SiteStoreClosedError:
@@ -466,6 +806,30 @@ class SiteStore:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _row_to_profile(
+    row: aiosqlite.Row,
+    items: tuple[StoredProfileItem, ...],
+) -> StoredProfile:
+    return StoredProfile(
+        id=row["id"],
+        name=row["name"],
+        site_id=row["site_id"],
+        items=items,
+        revision=int(row["revision"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_profile_item(row: aiosqlite.Row) -> StoredProfileItem:
+    limit = row["limit_count"]
+    return StoredProfileItem(
+        content_type=row["content_type"],
+        params_json=row["params_json"],
+        limit=None if limit is None else int(limit),
+    )
 
 
 def _row_to_site(row: aiosqlite.Row) -> StoredSite:

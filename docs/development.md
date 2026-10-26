@@ -69,7 +69,7 @@ git config core.hooksPath .githooks
 - 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
 - SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 的官方文档/源码和一次公开实例响应已核验；尚未遍历社区实例、不同部署版本，也未用真实实例完成浏览器全链路验证。
-- 每日新闻之外的 endpoint、内容组合、图文渲染、发送和调度尚未实现；不要展示或宣称这些能力。站点保存仍只做格式校验，不代替每日新闻获取验证。
+- 其他 endpoint、图文渲染、发送和调度尚未实现；不要展示或宣称这些能力。内容组合持久化和组合预览已实现，但不能冒充文字/图片输出或发送。站点保存仍只做格式校验，不代替内容获取验证。
 
 ### 可复现的本地验证
 
@@ -142,7 +142,8 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - SQLite 存储：`core/site_store.py`，使用 `aiosqlite` 异步访问，不阻塞事件循环。
 - 数据库位置：`main.py` 通过 `StarTools.get_data_dir(plugin_name)` 获取插件数据目录，再使用其中的 `sites.sqlite3`。
 - 生命周期：`initialize()` 打开数据库并完成首次建库，`terminate()` 关闭连接；打开失败会关闭已创建的连接，`close()` 可重复调用。
-- schema：首次打开创建 `sites` 表，并把 `PRAGMA user_version` 设为 1；遇到更高版本拒绝打开，不自动删除或覆盖数据库。
+- schema：当前版本为 2，包含 `sites`、`content_profiles`、`content_profile_items`。首次打开直接创建三张表；v1 数据库在同一事务中新增组合表并提升 `PRAGMA user_version=2`，失败回滚并保留站点、凭据和 revision；遇到更高版本拒绝打开，不自动删除或覆盖数据库。
+- 组合与站点共用一个 `SiteStore` 连接、锁和事务；不另建 SQLite 连接。站点删除在事务中检查引用并由外键 `ON DELETE RESTRICT` 兜底，不级联删除组合。
 - revision：新增为 1；编辑和删除必须传入期望 revision，冲突时抛出明确错误；成功编辑后加 1。
 - 取消写入：新增、编辑、删除被取消时保留 `CancelledError`，在释放锁前完成回滚或关闭；提交前取消会回滚，COMMIT 已完成时不承诺撤销；清理无法确认时关闭连接并标记存储不可用，需要重建实例。
 - 凭据：编辑使用 `keep`、`set`、`clear`；默认 `keep`，空白值不会清除原凭据。公开站点结构只有 `has_bearer_token`，输入对象和存储对象的调试输出也隐藏原文。
@@ -158,7 +159,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 写请求的响应丢失、超时或连接中断进入“结果未确认”：页面保留表单/目标信息，禁用保存或删除、取消和关闭，只提供“重新读取最新列表”。重新读取失败继续保持未确认；读取成功后显示最新列表状态，并要求人工确认后再关闭。新增记录不按同名/同地址认领，只根据服务器列表和稳定 ID 展示实际状态；编辑/删除不自动重发。
 - 4.29.1 bridge 的失败对象只有 `Error.message`，不保留 HTTP 状态或响应 `data.code`。页面把已知的服务端拒绝消息视为明确失败，其余（含网络异常和未知 5xx）保守归为未确认。当前无需修改 API 契约；以后若增加机器可读错误码，应同步 bridge 能力和兼容性说明。
 - 页面不使用 CDN、外部字体、统计脚本或独立服务器；列表用 `textContent` 等 DOM API 渲染，不使用用户数据拼 `innerHTML`。
-- 当前包含每日新闻、Bilibili 热搜、知乎热榜、抖音热搜和今日头条热榜五种内容预览，不包含其他 endpoint、内容组合、渲染、发送或调度；不要在这些功能实现前把页面按钮或说明扩展成未实现能力。站点保存本身不发起上游请求。
+- 当前包含五类内容单栏预览、缓存与预览和内容组合 CRUD/组合预览，不包含其他 endpoint、图片/Markdown 输出、发送或调度。内容组合只引用已保存站点和五个现有类型；不能扩展成任意 URL、跨站点或参数面板。站点保存和组合保存本身不发起上游请求。
 
 ## 内容获取与预览
 
@@ -211,7 +212,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
@@ -229,6 +230,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 普通获取命中有效缓存不请求上游；`force_refresh` 严格布尔，绕过已完成缓存但复用同键在途获取，不直接返回旧缓存。同键获取合并；单个等待者取消不影响其他等待者，最后一个取消才终止共享获取；等待有 130 秒上限。
 - 最后一个等待者退出时原子地移除同键在途记录并标记为已取消，之后同键请求创建新任务，不加入正在清理的旧任务；旧任务保留在缓存自有任务集合中，不能写入缓存或删除新记录，关闭时由 `close()` 取消并等待清理。
 - 刷新失败不缓存错误、不覆盖旧成功缓存；后续普通获取仍可命中旧缓存。响应独立返回 `cache.hit/expires_at/ttl_seconds`，不写入领域快照，不改变 `fetched_at`。
+- 组合页面维护“组合配置签名”（ID、revision、名称、站点、栏目顺序和 limit）与请求令牌。列表成功刷新、编辑/删除当前组合时签名变化则清除结果；预览响应只有在令牌、当前 ID、当前签名和响应 `profile_revision` 全部匹配时才渲染。旧请求 finally 仅在仍持有最新令牌时清理 busy，避免解锁新请求。
 - 关闭时缓存取消并等待自有在途任务、清空并拒绝新操作；不取消宿主无关任务，不留下后台任务或未处理异常。
 
 ### 测试与核验
@@ -244,6 +246,8 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_content_api.py`：五种内容成功映射、未知类型在任何请求前拒绝、Bilibili/知乎/抖音/今日头条空列表/顺序/无伪造指标、HTTP/业务错误回显 token 时无凭据、畸形链接不导致 500，以及严格 `force_refresh` 校验。
 - `tests/test_content_cache.py`：首次未命中/命中/TTL 边界/过期、强制刷新、合法空值、错误不缓存、刷新失败保留旧缓存、键隔离、LRU/过期清理、同键合并、等待者取消、等待超时、共享失败重试、关闭/重开。
 - `tests/test_content_cache_integration.py`：五种内容缓存、daily 跨中国日期、名称/地址/凭据 revision、禁用/删除、在途配置变化、API 缓存元信息、严格 force_refresh、刷新失败保留旧缓存。
+- `tests/test_profiles.py`：模型/类型/重复/顺序/limit/params 校验、CRUD/revision、重开持久化、v1→v2 迁移、站点引用删除拒绝、并发删除/创建无悬空引用。
+- `tests/test_profile_api.py`：组合 CRUD/冲突、五类预览顺序、逐栏截取不污染完整缓存、缓存命中/刷新、station revision、部分失败/全部失败/空列表、错误脱敏、禁用站点和严格 force_refresh。
 
 - 宿主与浏览器验证使用本地模拟上游，覆盖每日新闻、Bilibili 热搜、知乎热榜、抖音热搜与今日头条热榜切换、正常、空内容、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后五种内容均恢复；不连接真实消息平台。
 - 官方公开实例 `https://60s.viki.moe/v2/60s` 只做一次低频 GET 核验：HTTP 200、`code=200`、内容日期与 15 条字符串新闻；保存的响应用解析器验证通过。没有把该实例写入默认配置，也没有用真实实例做浏览器全链路。

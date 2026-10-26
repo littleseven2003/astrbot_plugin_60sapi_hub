@@ -136,8 +136,79 @@
         </div>
       </section>
 
+      <section class="profiles-section" aria-labelledby="profiles-heading">
+        <div class="section-head">
+          <h2 id="profiles-heading">内容组合</h2>
+          <span id="profile-count" class="count">0 个</span>
+        </div>
+        <p class="preview-lede">
+          内容组合引用一个站点并选择多个栏目；保存后可在下方主动预览。打开页面、保存、删除或切换组合不会自动请求上游。
+        </p>
+        <div class="profile-list-actions">
+          <button id="create-profile-button" class="button button-primary" type="button">
+            新增组合
+          </button>
+        </div>
+        <div id="profile-list-state" class="list-state" hidden>
+          <p id="profile-list-state-text"></p>
+          <button id="profile-retry-button" class="button button-secondary" type="button" hidden>
+            重试
+          </button>
+        </div>
+        <div id="profile-empty-state" class="profile-empty-state" hidden>
+          <p class="empty-title">还没有内容组合</p>
+          <p>创建一个组合，选择站点、栏目顺序和每栏展示条数。</p>
+        </div>
+        <ul id="profiles-list" class="sites-list profiles-list" aria-busy="true"></ul>
+      </section>
+
+      <section class="profile-preview-section" aria-labelledby="profile-preview-heading">
+        <div class="section-head">
+          <h2 id="profile-preview-heading">组合预览</h2>
+          <span class="count">已保存组合</span>
+        </div>
+        <p class="preview-lede">
+          选择已保存组合后主动获取；按组合配置顺序展示栏目，普通获取使用缓存，刷新组合会跳过已完成缓存。
+        </p>
+        <div class="preview-controls">
+          <label class="field preview-site-field">
+            <span>内容组合</span>
+            <select id="profile-preview-select" disabled></select>
+          </label>
+          <button id="profile-preview-button" class="button button-primary" type="button" disabled>
+            获取组合
+          </button>
+          <button id="profile-preview-refresh-button" class="button button-secondary" type="button" disabled>
+            刷新组合
+          </button>
+        </div>
+        <p id="profile-preview-hint" class="help" hidden></p>
+        <div id="profile-preview-status" class="status preview-status" role="status" aria-live="polite" hidden></div>
+        <div id="profile-preview-result" class="preview-result" hidden>
+          <div class="preview-meta">
+            <div class="preview-meta-item">
+              <span class="preview-label">组合</span>
+              <strong id="profile-preview-name"></strong>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">来源</span>
+              <span id="profile-preview-source"></span>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">栏目</span>
+              <span id="profile-preview-counts"></span>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">状态</span>
+              <span id="profile-preview-state"></span>
+            </div>
+          </div>
+          <div id="profile-preview-sections" class="profile-sections"></div>
+        </div>
+      </section>
+
       <p class="footnote">
-        站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。凭据保存后不会回显。
+        站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。内容组合引用已保存站点，不能填写任意 URL。凭据保存后不会回显。
       </p>
     </main>
 
@@ -291,6 +362,88 @@
             取消
           </button>
           <button id="delete-confirm-button" class="button button-danger" type="button">
+            删除
+          </button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-dialog-title">
+      <form id="profile-form" class="form">
+        <header class="dialog-head">
+          <h2 id="profile-dialog-title">新增组合</h2>
+          <button id="profile-close-dialog-button" class="icon-button" type="button" aria-label="关闭">
+            ×
+          </button>
+        </header>
+
+        <div id="profile-form-error" class="form-error" role="alert" hidden></div>
+
+        <div id="profile-write-uncertain" class="uncertain" role="alert" hidden>
+          <h3>保存结果未确认</h3>
+          <p id="profile-write-uncertain-text" class="uncertain-text"></p>
+          <div class="uncertain-actions">
+            <button id="profile-recheck-button" class="button button-primary" type="button">
+              重新读取最新组合
+            </button>
+            <button id="profile-review-close-button" class="button button-secondary" type="button" hidden>
+              关闭并查看最新组合
+            </button>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>组合名称</span>
+          <input id="profile-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览" />
+        </label>
+
+        <label class="field">
+          <span>站点</span>
+          <select id="profile-site" required></select>
+          <small>可以使用已停用站点保存组合，但预览会明确拒绝。</small>
+        </label>
+
+        <fieldset class="profile-items-fieldset">
+          <legend>栏目、顺序与每栏条数</legend>
+          <p class="help">至少选择一个栏目；全部内容留空表示展示全部，最多 1000 条。当前五类接口没有可配置参数。</p>
+          <div id="profile-item-editor" class="profile-item-editor"></div>
+        </fieldset>
+
+        <footer class="dialog-actions">
+          <button id="profile-cancel-button" class="button button-secondary" type="button">
+            取消
+          </button>
+          <button id="profile-save-button" class="button button-primary" type="submit">
+            保存组合
+          </button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="profile-delete-dialog" class="dialog dialog-small" aria-labelledby="profile-delete-title">
+      <div class="form">
+        <header class="dialog-head">
+          <h2 id="profile-delete-title">删除内容组合</h2>
+        </header>
+        <p id="profile-delete-message"></p>
+        <div id="profile-delete-error" class="form-error" role="alert" hidden></div>
+        <div id="profile-delete-uncertain" class="uncertain" role="alert" hidden>
+          <h3>删除结果未确认</h3>
+          <p id="profile-delete-uncertain-text" class="uncertain-text"></p>
+          <div class="uncertain-actions">
+            <button id="profile-delete-recheck-button" class="button button-primary" type="button">
+              重新读取最新组合
+            </button>
+            <button id="profile-delete-review-close-button" class="button button-secondary" type="button" hidden>
+              关闭并查看最新组合
+            </button>
+          </div>
+        </div>
+        <footer class="dialog-actions">
+          <button id="profile-delete-cancel-button" class="button button-secondary" type="button">
+            取消
+          </button>
+          <button id="profile-delete-confirm-button" class="button button-danger" type="button">
             删除
           </button>
         </footer>

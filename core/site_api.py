@@ -14,6 +14,7 @@ from .sites import (
     SiteConflictError,
     SiteCreate,
     SiteNotFoundError,
+    SiteReferencedProfilesError,
     SiteService,
     SiteStorageError,
     SiteUpdate,
@@ -126,6 +127,8 @@ class SiteApi:
             return _not_found_error()
         except SiteConflictError as exc:
             return _conflict_error(exc)
+        except SiteReferencedProfilesError as exc:
+            return _referenced_error(exc)
         except SiteStorageError:
             return _storage_error()
         except Exception:
@@ -204,6 +207,15 @@ def _conflict_error(exc: SiteConflictError) -> SiteApiResult:
             "expected_revision": exc.expected_revision,
             "actual_revision": exc.actual_revision,
         },
+    )
+
+
+def _referenced_error(exc: SiteReferencedProfilesError) -> SiteApiResult:
+    return _error(
+        409,
+        "站点仍被内容组合引用，请先删除或修改相关组合。",
+        code="site_referenced",
+        data={"profile_names": list(exc.profile_names)},
     )
 
 

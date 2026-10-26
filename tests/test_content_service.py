@@ -37,7 +37,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_four_content_types_share_one_client_and_budget(self) -> None:
+    async def test_five_content_types_share_one_client_and_budget(self) -> None:
         await self._site("共享预算站点", "shared-token")
         started = asyncio.Event()
         release = asyncio.Event()
@@ -68,6 +68,12 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
                     "message": "ok",
                     "data": [{"title": "抖音", "hot_value": 123}],
                 }
+            elif request.url.path.endswith("/v2/toutiao"):
+                body = {
+                    "code": 200,
+                    "message": "ok",
+                    "data": [{"title": "头条", "hot_value": 456}],
+                }
             else:
                 body = {
                     "code": 200,
@@ -95,14 +101,18 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             douyin_task = asyncio.create_task(content.preview_douyin(
                 (await self.sites.list_sites())[0].id,
             ))
+            toutiao_task = asyncio.create_task(content.preview_toutiao(
+                (await self.sites.list_sites())[0].id,
+            ))
             await asyncio.wait_for(started.wait(), timeout=1)
             await asyncio.sleep(0)
             release.set()
-            daily, bili, zhihu, douyin = await asyncio.gather(
+            daily, bili, zhihu, douyin, toutiao = await asyncio.gather(
                 daily_task,
                 bili_task,
                 zhihu_task,
                 douyin_task,
+                toutiao_task,
             )
         finally:
             await content.close()
@@ -114,6 +124,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
                 "/proxy/v2/bili",
                 "/proxy/v2/zhihu",
                 "/proxy/v2/douyin",
+                "/proxy/v2/toutiao",
             },
         )
         self.assertEqual(daily.items[0].title, "新闻")
@@ -122,15 +133,19 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(zhihu.items[0].hot_value_desc, "10 万热度")
         self.assertEqual(douyin.items[0].title, "抖音")
         self.assertEqual(douyin.items[0].hot_value, 123)
+        self.assertEqual(toutiao.items[0].title, "头条")
+        self.assertEqual(toutiao.items[0].hot_value, 456)
         self.assertIs(content.news._client, content.bili._client)
         self.assertIs(content.news._client, content.zhihu._client)
         self.assertIs(content.news._client, content.douyin._client)
+        self.assertIs(content.news._client, content.toutiao._client)
 
-    async def test_four_content_types_use_their_own_site_credentials(self) -> None:
+    async def test_five_content_types_use_their_own_site_credentials(self) -> None:
         daily_site = await self._site("每日新闻站点", "daily-token")
         bili_site = await self._site("B 站站点", "bili-token")
         zhihu_site = await self._site("知乎站点", "zhihu-token")
         douyin_site = await self._site("抖音站点", "douyin-token")
+        toutiao_site = await self._site("头条站点", "toutiao-token")
         seen: dict[str, str] = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -141,6 +156,8 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
                 body = {"code": 200, "data": [{"title": "知乎"}]}
             elif request.url.path.endswith("/v2/douyin"):
                 body = {"code": 200, "data": [{"title": "抖音"}]}
+            elif request.url.path.endswith("/v2/toutiao"):
+                body = {"code": 200, "data": [{"title": "头条"}]}
             else:
                 body = {"code": 200, "data": {"news": ["新闻"]}}
             return httpx.Response(200, content=json.dumps(body).encode())
@@ -153,9 +170,11 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             await content.preview_bili(bili_site.id)
             await content.preview_zhihu(zhihu_site.id)
             await content.preview_douyin(douyin_site.id)
+            await content.preview_toutiao(toutiao_site.id)
         finally:
             await content.close()
         self.assertEqual(seen["/proxy/v2/60s"], "Bearer daily-token")
         self.assertEqual(seen["/proxy/v2/bili"], "Bearer bili-token")
         self.assertEqual(seen["/proxy/v2/zhihu"], "Bearer zhihu-token")
         self.assertEqual(seen["/proxy/v2/douyin"], "Bearer douyin-token")
+        self.assertEqual(seen["/proxy/v2/toutiao"], "Bearer toutiao-token")

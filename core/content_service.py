@@ -13,6 +13,8 @@ from .douyin_service import DouyinHotService
 from .news import NewsSnapshot
 from .news_service import NewsService
 from .sites import SiteService
+from .toutiao import ToutiaoHotSnapshot
+from .toutiao_service import ToutiaoHotService
 from .zhihu import ZhihuHotSnapshot
 from .zhihu_service import ZhihuHotService
 
@@ -53,6 +55,12 @@ class ContentService:
             clock=clock,
             manage_client=False,
         )
+        self.toutiao = ToutiaoHotService(
+            sites,
+            client=self._client,
+            clock=clock,
+            manage_client=False,
+        )
 
     @property
     def client(self) -> ContentHttpClient:
@@ -79,6 +87,9 @@ class ContentService:
 
     async def preview_douyin(self, site_id: object) -> DouyinHotSnapshot:
         return await self.douyin.preview(site_id)
+
+    async def preview_toutiao(self, site_id: object) -> ToutiaoHotSnapshot:
+        return await self.toutiao.preview(site_id)
 
 
 __all__ = ["ContentService"]

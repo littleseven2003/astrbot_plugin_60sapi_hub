@@ -288,7 +288,7 @@ class ProfileApi:
         if success_count == 0:
             failed_labels = "、".join(
                 section["label"] for section in failures
-            )
+            ) or "未知栏目"
             return _error(
                 502,
                 f"所有栏目获取失败：{failed_labels}。",

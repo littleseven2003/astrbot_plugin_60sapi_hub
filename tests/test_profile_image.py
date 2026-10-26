@@ -148,3 +148,12 @@ class ProfileImageRendererTest(unittest.TestCase):
         event.set()
         with self.assertRaises(ImageRenderCancelled):
             ProfileImageRenderer().render(sample_data(items=1), cancel_event=event)
+    def test_single_long_item_continues_across_pages_without_error(self) -> None:
+        data = sample_data(items=1)
+        data["sections"][0]["items"][0]["detail"] = "超长单条摘要。" * 1200
+        data["sections"][0]["date_is_unknown"] = True
+        pages = ProfileImageRenderer(
+            limits=ImageRenderLimits(max_pages=12, max_total_pixels=20_000_000),
+        ).render(data, created_at="t")
+        self.assertGreaterEqual(len(pages), 2)
+        self.assertTrue(all(page.png.startswith(b"\x89PNG") for page in pages))

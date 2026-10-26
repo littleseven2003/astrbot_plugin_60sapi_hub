@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -320,15 +321,29 @@ class ProfileImageRenderer:
             return [""]
         lines: list[str] = []
         current = ""
-        for char in clean:
-            candidate = current + char
+        # 优先保留连续拉丁词，中文和标点仍可按字符换行；超长英文/URL
+        # 再退化为字符切分，保证不超出内容宽度。
+        for token in re.findall(r"[A-Za-z0-9]+|.", clean):
+            if not token:
+                continue
+            candidate = current + token
             if current and font.getlength(candidate) > width:
-                if char in _CLOSING_PUNCT and len(current) > 1:
+                if token == " ":
+                    lines.append(current)
+                    current = ""
+                    continue
+                if token in _CLOSING_PUNCT and len(current) > 1:
                     lines.append(current[:-1])
-                    current = current[-1] + char
+                    current = current[-1] + token
                 else:
                     lines.append(current)
-                    current = char
+                    current = token
+                while current and font.getlength(current) > width:
+                    cut = len(current) - 1
+                    while cut > 1 and font.getlength(current[:cut]) > width:
+                        cut -= 1
+                    lines.append(current[:cut])
+                    current = current[cut:]
             else:
                 current = candidate
         if current:

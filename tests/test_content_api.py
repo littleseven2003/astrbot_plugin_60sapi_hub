@@ -92,6 +92,8 @@ class ContentApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status_code, 400)
         self.assertEqual(result.body["data"]["code"], "unknown_content_type")
+        for label in ("每日新闻", "Bilibili 热搜", "知乎热榜"):
+            self.assertIn(label, result.body["message"])
         self.assertEqual(service.calls, [])
 
     async def test_missing_or_non_string_content_type_is_rejected(self) -> None:

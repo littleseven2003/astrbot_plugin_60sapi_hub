@@ -30,7 +30,8 @@ from .zhihu import ZhihuHotSnapshot
 DAILY_NEWS = "daily_news"
 BILIBILI_HOT = "bilibili_hot"
 ZHIHU_HOT = "zhihu_hot"
-KNOWN_CONTENT_TYPES = frozenset({DAILY_NEWS, BILIBILI_HOT, ZHIHU_HOT})
+SUPPORTED_CONTENT_TYPES = (DAILY_NEWS, BILIBILI_HOT, ZHIHU_HOT)
+KNOWN_CONTENT_TYPES = frozenset(SUPPORTED_CONTENT_TYPES)
 CONTENT_LABELS = {
     DAILY_NEWS: "每日新闻",
     BILIBILI_HOT: "Bilibili 热搜",
@@ -60,7 +61,8 @@ class ContentApi:
         if not isinstance(content_type, str) or content_type not in KNOWN_CONTENT_TYPES:
             return _error(
                 400,
-                "未知内容类型，只能选择每日新闻或 Bilibili 热搜。",
+                "未知内容类型，当前支持："
+                f"{'、'.join(CONTENT_LABELS[item] for item in SUPPORTED_CONTENT_TYPES)}。",
                 "unknown_content_type",
             )
         label = CONTENT_LABELS[content_type]
@@ -233,6 +235,7 @@ __all__ = [
     "CONTENT_LABELS",
     "DAILY_NEWS",
     "KNOWN_CONTENT_TYPES",
+    "SUPPORTED_CONTENT_TYPES",
     "ZHIHU_HOT",
     "ContentApi",
     "ContentApiResult",

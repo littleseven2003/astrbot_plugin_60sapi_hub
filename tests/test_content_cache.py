@@ -29,6 +29,11 @@ class FakeClock:
 
 
 class ContentCacheTest(unittest.IsolatedAsyncioTestCase):
+    def test_default_limits(self) -> None:
+        cache = ContentCache()
+        self.assertEqual(cache.ttl_seconds, 300)
+        self.assertEqual(cache.max_entries, 32)
+
     async def asyncSetUp(self) -> None:
         self.clock = FakeClock()
         self.cache = ContentCache(
@@ -276,28 +281,25 @@ class ContentCacheTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 2)
 
     async def test_wait_timeout_is_bounded(self) -> None:
-        key = CacheKey("site", "toutiao_hot", (), 1)
+        clock = FakeClock()
+        cache = ContentCache(
+            ttl_seconds=10,
+            max_entries=2,
+            monotonic=clock.monotonic,
+            wall_clock=clock.now,
+            wait_timeout_seconds=0.01,
+        )
+        await cache.open()
+        self.addAsyncCleanup(cache.close)
         started = asyncio.Event()
 
         async def fetch():
             started.set()
             await asyncio.Event().wait()
 
-        task = asyncio.create_task(self.cache.get(key, fetch))
-        await asyncio.wait_for(started.wait(), timeout=1)
-        # Configure a short timeout for this deterministic test.
-        self.cache._wait_timeout_seconds = 0.01
-        # The existing task was created with the long timeout; use a new key
-        # and a fresh task so the short bound applies.
-        task.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
-        self.cache._wait_timeout_seconds = 0.01
         with self.assertRaises(ContentCacheWaitTimeoutError):
-            await self.cache.get(
-                CacheKey("site", "toutiao_hot", (("fresh", "1"),), 1),
-                fetch,
-            )
+            await cache.get(CacheKey("site", "toutiao_hot", (), 1), fetch)
+        self.assertTrue(started.is_set())
 
     async def test_shared_failure_is_not_cached_and_can_retry(self) -> None:
         key = CacheKey("site", "bilibili_hot", (), 1)

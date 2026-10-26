@@ -1129,3 +1129,68 @@ input:focus-visible,
     padding: 12px;
   }
 }
+
+.profile-output-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line, #ddd);
+}
+
+.profile-output-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-output-format {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.profile-output-format legend {
+  float: left;
+  margin-right: 10px;
+  font-weight: 700;
+}
+
+.profile-output-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profile-output-text {
+  width: 100%;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--ink, #222);
+  font: 0.86rem/1.6 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  resize: vertical;
+}
+
+.profile-output-text:focus {
+  outline: 2px solid var(--accent, #2f6f5e);
+  outline-offset: 1px;
+}
+
+@media (max-width: 700px) {
+  .profile-output-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .profile-output-format {
+    flex-wrap: wrap;
+  }
+
+  .profile-output-actions .button {
+    flex: 1;
+  }
+}

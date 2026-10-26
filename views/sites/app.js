@@ -138,6 +138,7 @@ const state = {
   profilePreviewLoading: false,
   profilePreviewId: null,
   profilePreviewRequestId: 0,
+  profilePreviewBaseline: null,
 };
 
 const CONTENT_LABELS = {
@@ -1130,6 +1131,21 @@ function clearProfileListState() {
   elements.profileListState.hidden = true;
 }
 
+function profileSignature(profile) {
+  return JSON.stringify({
+    id: profile.id,
+    revision: profile.revision,
+    name: profile.name,
+    site_id: profile.site_id,
+    site_name: profile.site_name,
+    site_enabled: profile.site_enabled,
+    items: profile.items.map((item) => [
+      item.content_type,
+      item.limit,
+    ]),
+  });
+}
+
 async function loadProfiles() {
   if (!bridge || state.profileLoading) {
     return false;
@@ -1145,6 +1161,15 @@ async function loadProfiles() {
     const result = await bridge.apiGet("profiles");
     const raw = result && Array.isArray(result.profiles) ? result.profiles : [];
     state.profiles = raw.map(normalizeProfile).filter(Boolean);
+    const baseline = state.profilePreviewBaseline;
+    if (baseline) {
+      const current = state.profiles.find(
+        (profile) => profile.id === state.profilePreviewId,
+      );
+      if (!current || profileSignature(current) !== baseline) {
+        invalidateProfilePreview();
+      }
+    }
     renderProfiles();
     syncProfilePreview();
     return true;
@@ -1217,9 +1242,22 @@ function clearProfilePreview() {
   delete elements.profilePreviewStatus.dataset.tone;
 }
 
-function resetProfilePreview() {
+function invalidateProfilePreview() {
   state.profilePreviewRequestId += 1;
+  state.profilePreviewBaseline = null;
+  state.profilePreviewLoading = false;
   clearProfilePreview();
+  setProfilePreviewBusy(false);
+}
+
+function resetProfilePreview() {
+  invalidateProfilePreview();
+}
+
+function invalidateIfPreviewing(profileId) {
+  if (profileId && state.profilePreviewId === profileId) {
+    invalidateProfilePreview();
+  }
 }
 
 function profileSiteOptions(selectedId) {
@@ -1472,6 +1510,7 @@ async function handleProfileSave(event) {
         `profiles/${encodeURIComponent(state.editingProfileId)}/update`,
         payload,
       );
+      invalidateIfPreviewing(state.editingProfileId);
     }
     closeDialog(elements.profileDialog);
     const reloaded = await loadProfiles();
@@ -1482,6 +1521,7 @@ async function handleProfileSave(event) {
   } catch (error) {
     const message = friendlyErrorMessage(error);
     if (state.profileMode === "edit" && isConflictMessage(message)) {
+      invalidateIfPreviewing(state.editingProfileId);
       closeDialog(elements.profileDialog);
       const reloaded = await loadProfiles();
       showStatus(
@@ -1493,6 +1533,7 @@ async function handleProfileSave(event) {
     } else if (message.includes("引用的站点不存在")) {
       showProfileFormError(message);
     } else if (isMissingMessage(message)) {
+      invalidateIfPreviewing(state.editingProfileId);
       closeDialog(elements.profileDialog);
       const reloaded = await loadProfiles();
       showStatus(
@@ -1550,6 +1591,7 @@ async function confirmProfileDelete() {
       `profiles/${encodeURIComponent(target.id)}/delete`,
       { expected_revision: target.revision },
     );
+    invalidateIfPreviewing(target.id);
     closeDialog(elements.profileDeleteDialog);
     state.profileDeleteTarget = null;
     const reloaded = await loadProfiles();
@@ -1560,6 +1602,7 @@ async function confirmProfileDelete() {
   } catch (error) {
     const message = friendlyErrorMessage(error);
     if (isConflictMessage(message) || isMissingMessage(message)) {
+      invalidateIfPreviewing(target.id);
       closeDialog(elements.profileDeleteDialog);
       state.profileDeleteTarget = null;
       const reloaded = await loadProfiles();
@@ -1889,7 +1932,15 @@ async function previewProfile(forceRefresh = false) {
     showProfilePreviewStatus("请先选择一个已保存组合。", "error");
     return;
   }
+  const profile = state.profiles.find((item) => item.id === profileId);
+  if (!profile) {
+    showProfilePreviewStatus("组合不存在或已被删除，请重新选择。", "error");
+    return;
+  }
+  const requestSignature = profileSignature(profile);
+  const requestRevision = profile.revision;
   const requestId = ++state.profilePreviewRequestId;
+  state.profilePreviewBaseline = requestSignature;
   state.profilePreviewLoading = true;
   clearProfilePreview();
   showProfilePreviewStatus(
@@ -1902,24 +1953,44 @@ async function previewProfile(forceRefresh = false) {
       `profiles/${encodeURIComponent(profileId)}/preview`,
       { force_refresh: Boolean(forceRefresh) },
     );
+    const currentProfile = state.profiles.find(
+      (item) => item.id === profileId,
+    );
+    const currentSignature = currentProfile
+      ? profileSignature(currentProfile)
+      : null;
+    const revisionMatches =
+      currentProfile &&
+      currentProfile.revision === requestRevision &&
+      data &&
+      data.profile_revision === requestRevision;
     if (
       requestId !== state.profilePreviewRequestId ||
-      elements.profilePreviewSelect.value !== profileId
+      elements.profilePreviewSelect.value !== profileId ||
+      !currentProfile ||
+      currentSignature !== requestSignature ||
+      !revisionMatches
     ) {
+      if (requestId === state.profilePreviewRequestId) {
+        invalidateProfilePreview();
+      }
       return;
     }
     renderProfilePreview(data);
   } catch (error) {
     if (requestId === state.profilePreviewRequestId) {
-      clearProfilePreview();
+      state.profilePreviewBaseline = null;
+      invalidateProfilePreview();
       showProfilePreviewStatus(
         `组合获取失败：${friendlyErrorMessage(error)}`,
         "error",
       );
     }
   } finally {
-    state.profilePreviewLoading = false;
-    setProfilePreviewBusy(false);
+    if (requestId === state.profilePreviewRequestId) {
+      state.profilePreviewLoading = false;
+      setProfilePreviewBusy(false);
+    }
   }
 }
 

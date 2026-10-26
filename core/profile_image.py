@@ -378,16 +378,44 @@ class ProfileImageRenderer:
         pages: list[list[tuple[str, int, tuple[int, int, int], int]]] = [[]]
         y = first_start
         bottom = self._limits.page_height - self._margin() - 70
-        for line in lines:
+        for index, line in enumerate(lines):
             self._check_cancelled()
             spacing = 6
             height = line[1] + spacing
+            if self._is_section_label(line):
+                group_height = self._section_group_height(lines, index)
+                if pages[-1] and y + group_height > bottom:
+                    pages.append([])
+                    y = cont_start
             if pages[-1] and y + height > bottom:
                 pages.append([])
                 y = cont_start
             pages[-1].append(line)
             y += height
         return pages
+
+    def _is_section_label(
+        self,
+        line: tuple[str, int, tuple[int, int, int], int],
+    ) -> bool:
+        return line[1] == 30 and line[2] == _ACCENT
+
+    def _section_group_height(
+        self,
+        lines: list[tuple[str, int, tuple[int, int, int], int]],
+        start: int,
+    ) -> int:
+        total = lines[start][1] + 6
+        index = start + 1
+        while index < len(lines):
+            size = lines[index][1]
+            if size == 30 and lines[index][2] == _ACCENT:
+                break
+            total += size + 6
+            if size == 24:
+                break
+            index += 1
+        return total
 
     def _draw_page(
         self,

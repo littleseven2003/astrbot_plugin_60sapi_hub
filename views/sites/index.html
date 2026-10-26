@@ -16,7 +16,7 @@
           <p class="product">60sAPI Hub</p>
           <h1>站点管理</h1>
           <p class="lede">
-            维护 60s API 的基础地址、超时和访问凭据，并预览每日新闻、Bilibili 热搜、知乎热榜或抖音热搜。
+            维护 60s API 的基础地址、超时和访问凭据，并预览每日新闻、Bilibili 热搜、知乎热榜、抖音热搜或今日头条热榜。
           </p>
         </div>
         <div class="header-actions">
@@ -58,7 +58,7 @@
       <section class="preview-section" aria-labelledby="preview-heading">
         <div class="section-head">
           <h2 id="preview-heading">内容预览</h2>
-          <span class="count">4 种内容</span>
+          <span class="count">5 种内容</span>
         </div>
         <p class="preview-lede">
           选择已启用站点和内容类型后主动获取一次。打开页面、切换选项或保存站点不会请求上游。
@@ -75,6 +75,7 @@
               <option value="bilibili_hot">Bilibili 热搜</option>
               <option value="zhihu_hot">知乎热榜</option>
               <option value="douyin_hot">抖音热搜</option>
+              <option value="toutiao_hot">今日头条热榜</option>
             </select>
           </label>
           <button id="preview-button" class="button button-primary" type="button" disabled>
@@ -118,6 +119,7 @@
           <ul id="preview-bili-list" class="news-list bili-list" hidden></ul>
           <ul id="preview-zhihu-list" class="news-list zhihu-list" hidden></ul>
           <ul id="preview-douyin-list" class="news-list douyin-list" hidden></ul>
+          <ul id="preview-toutiao-list" class="news-list toutiao-list" hidden></ul>
           <p id="preview-tip" class="preview-tip" hidden></p>
           <p id="preview-source-link" class="preview-source-link" hidden></p>
         </div>

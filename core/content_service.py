@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from .bili import BiliHotSnapshot
 from .bili_service import BiliHotService
 from .content_client import ContentHttpClient
+from .douyin import DouyinHotSnapshot
+from .douyin_service import DouyinHotService
 from .news import NewsSnapshot
 from .news_service import NewsService
 from .sites import SiteService
@@ -45,6 +47,12 @@ class ContentService:
             clock=clock,
             manage_client=False,
         )
+        self.douyin = DouyinHotService(
+            sites,
+            client=self._client,
+            clock=clock,
+            manage_client=False,
+        )
 
     @property
     def client(self) -> ContentHttpClient:
@@ -68,6 +76,9 @@ class ContentService:
 
     async def preview_zhihu(self, site_id: object) -> ZhihuHotSnapshot:
         return await self.zhihu.preview(site_id)
+
+    async def preview_douyin(self, site_id: object) -> DouyinHotSnapshot:
+        return await self.douyin.preview(site_id)
 
 
 __all__ = ["ContentService"]

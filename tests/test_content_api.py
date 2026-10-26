@@ -14,6 +14,7 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.douyin import DouyinHotItem, DouyinHotSnapshot
 from core.news import NewsItem, NewsSnapshot
+from core.toutiao import ToutiaoHotItem, ToutiaoHotSnapshot
 from core.sites import SiteCreate, SiteService
 from core.zhihu import ZhihuHotItem, ZhihuHotSnapshot
 
@@ -26,12 +27,14 @@ class FakeContentService:
         bili=None,
         zhihu=None,
         douyin=None,
+        toutiao=None,
         error: Exception | None = None,
     ) -> None:
         self.daily = daily
         self.bili = bili
         self.zhihu = zhihu
         self.douyin = douyin
+        self.toutiao = toutiao
         self.error = error
         self.calls: list[tuple[str, object]] = []
 
@@ -58,6 +61,12 @@ class FakeContentService:
         if self.error:
             raise self.error
         return self.douyin
+
+    async def preview_toutiao(self, site_id):
+        self.calls.append(("toutiao", site_id))
+        if self.error:
+            raise self.error
+        return self.toutiao
 
 
 DAILY = NewsSnapshot(
@@ -91,6 +100,16 @@ DOUYIN = DouyinHotSnapshot(
         DouyinHotItem("第二热搜", None, None),
     ),
 )
+TOUTIAO = ToutiaoHotSnapshot(
+    site_id="site-1",
+    site_name="站点",
+    endpoint="/v2/toutiao",
+    fetched_at="2026-10-26T01:10:00+00:00",
+    items=(
+        ToutiaoHotItem("头条热搜", 112229604, "https://www.toutiao.com/trending/1"),
+        ToutiaoHotItem("第二头条", None, None),
+    ),
+)
 BILI = BiliHotSnapshot(
     site_id="site-1",
     site_name="站点",
@@ -111,7 +130,13 @@ class ContentApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status_code, 400)
         self.assertEqual(result.body["data"]["code"], "unknown_content_type")
-        for label in ("每日新闻", "Bilibili 热搜", "知乎热榜", "抖音热搜"):
+        for label in (
+            "每日新闻",
+            "Bilibili 热搜",
+            "知乎热榜",
+            "抖音热搜",
+            "今日头条热榜",
+        ):
             self.assertIn(label, result.body["message"])
         self.assertEqual(service.calls, [])
 
@@ -184,6 +209,27 @@ class ContentApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["items"][1]["hot_value"], None)
         serialized = json.dumps(data, ensure_ascii=False).lower()
         for key in ("rank", "ranking", "updated_at", "update_time", "cover"):
+            self.assertNotIn(key, serialized)
+
+    async def test_toutiao_preview_keeps_raw_hot_value(self) -> None:
+        result = await ContentApi(
+            FakeContentService(
+                daily=DAILY,
+                bili=BILI,
+                zhihu=ZHIHU,
+                douyin=DOUYIN,
+                toutiao=TOUTIAO,
+            ),
+        ).preview({"site_id": "site-1", "content_type": "toutiao_hot"})
+        self.assertEqual(result.status_code, 200)
+        data = result.body["data"]
+        self.assertEqual(data["content_type"], "toutiao_hot")
+        self.assertEqual(data["endpoint"], "/v2/toutiao")
+        self.assertEqual(data["item_count"], 2)
+        self.assertEqual(data["items"][0]["hot_value"], 112229604)
+        self.assertIsNone(data["items"][1]["hot_value"])
+        serialized = json.dumps(data, ensure_ascii=False).lower()
+        for key in ("rank", "ranking", "updated_at", "update_time", "cover", "label", "summary"):
             self.assertNotIn(key, serialized)
 
     async def test_invalid_body_is_rejected(self) -> None:
@@ -292,6 +338,20 @@ class ContentApiSecretLeakTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.token, serialized)
         self.assertNotIn("upstream echoed", serialized)
 
+    async def test_http_error_does_not_echo_toutiao_token(self) -> None:
+        result = await self._preview("http", "toutiao_hot")
+        self.assertEqual(result.status_code, 502)
+        serialized = json.dumps(result.body, ensure_ascii=False)
+        self.assertNotIn(self.token, serialized)
+        self.assertNotIn("upstream echoed", serialized)
+
+    async def test_business_error_does_not_echo_toutiao_token(self) -> None:
+        result = await self._preview("business", "toutiao_hot")
+        self.assertEqual(result.status_code, 502)
+        serialized = json.dumps(result.body, ensure_ascii=False)
+        self.assertNotIn(self.token, serialized)
+        self.assertNotIn("upstream echoed", serialized)
+
 
 class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -351,6 +411,27 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
                         },
                         {
                             "title": "抖音三",
+                            "hot_value": 0,
+                            "link": "http://[::1]:8080/hot",
+                        },
+                    ],
+                }
+            elif request.url.path.endswith("/v2/toutiao"):
+                body = {
+                    "code": 200,
+                    "data": [
+                        {
+                            "title": "头条一",
+                            "hot_value": 112229604,
+                            "link": "http://[::1",
+                        },
+                        {
+                            "title": "头条二",
+                            "hot_value": "not-a-number",
+                            "link": "http://a\u2100b.example",
+                        },
+                        {
+                            "title": "头条三",
                             "hot_value": 0,
                             "link": "http://[::1]:8080/hot",
                         },
@@ -421,19 +502,23 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
             douyin = await api.preview(
                 {"site_id": self.site.id, "content_type": "douyin_hot"},
             )
+            toutiao = await api.preview(
+                {"site_id": self.site.id, "content_type": "toutiao_hot"},
+            )
             missing = await api.preview(
-                {"site_id": self.site.id, "content_type": "douyin_hot"},
+                {"site_id": self.site.id, "content_type": "toutiao_hot"},
             ) if mode == "missing_title" else None
         finally:
             await content.close()
-        return daily, bili, zhihu, douyin, missing
+        return daily, bili, zhihu, douyin, toutiao, missing
 
     async def test_all_content_types_survive_malformed_links(self) -> None:
-        daily, bili, zhihu, douyin, _ = await self._run("normal")
+        daily, bili, zhihu, douyin, toutiao, _ = await self._run("normal")
         self.assertEqual(daily.status_code, 200)
         self.assertEqual(bili.status_code, 200)
         self.assertEqual(zhihu.status_code, 200)
         self.assertEqual(douyin.status_code, 200)
+        self.assertEqual(toutiao.status_code, 200)
         daily_data = daily.body["data"]
         bili_data = bili.body["data"]
         self.assertEqual(
@@ -478,17 +563,32 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
             [item["hot_value"] for item in douyin_data["items"]],
             [12189774, None, 0],
         )
+        toutiao_data = toutiao.body["data"]
+        self.assertEqual(
+            [item["title"] for item in toutiao_data["items"]],
+            ["头条一", "头条二", "头条三"],
+        )
+        self.assertEqual(
+            [item["link"] for item in toutiao_data["items"]],
+            [None, None, "http://[::1]:8080/hot"],
+        )
+        self.assertEqual(
+            [item["hot_value"] for item in toutiao_data["items"]],
+            [112229604, None, 0],
+        )
 
     async def test_missing_title_is_still_a_structure_error(self) -> None:
-        daily, bili, zhihu, douyin, missing = await self._run("missing_title")
+        daily, bili, zhihu, douyin, toutiao, missing = await self._run("missing_title")
         self.assertEqual(daily.status_code, 502)
         self.assertEqual(bili.status_code, 502)
         self.assertEqual(zhihu.status_code, 502)
         self.assertEqual(douyin.status_code, 502)
+        self.assertEqual(toutiao.status_code, 502)
         self.assertEqual(daily.body["data"]["code"], "upstream_structure")
         self.assertEqual(bili.body["data"]["code"], "upstream_structure")
         self.assertEqual(zhihu.body["data"]["code"], "upstream_structure")
         self.assertEqual(douyin.body["data"]["code"], "upstream_structure")
+        self.assertEqual(toutiao.body["data"]["code"], "upstream_structure")
         self.assertIsNotNone(missing)
         self.assertEqual(missing.status_code, 502)
         self.assertEqual(missing.body["data"]["code"], "upstream_structure")

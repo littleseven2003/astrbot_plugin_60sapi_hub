@@ -12,6 +12,7 @@ const elements = {
   previewSite: document.getElementById("preview-site"),
   previewContentType: document.getElementById("preview-content-type"),
   previewButton: document.getElementById("preview-button"),
+  previewRefreshButton: document.getElementById("preview-refresh-button"),
   previewHint: document.getElementById("preview-hint"),
   previewStatus: document.getElementById("preview-status"),
   previewResult: document.getElementById("preview-result"),
@@ -22,6 +23,8 @@ const elements = {
   previewContentDate: document.getElementById("preview-content-date"),
   previewItemCount: document.getElementById("preview-item-count"),
   previewFetchedAt: document.getElementById("preview-fetched-at"),
+  previewCacheState: document.getElementById("preview-cache-state"),
+  previewCacheExpires: document.getElementById("preview-cache-expires"),
   previewWarnings: document.getElementById("preview-warnings"),
   previewEmpty: document.getElementById("preview-empty"),
   previewEmptyText: document.getElementById("preview-empty-text"),
@@ -429,6 +432,8 @@ function clearPreviewResult() {
   elements.previewItemCount.textContent = "";
   elements.previewFetchedAt.textContent = "";
   elements.previewFetchedAt.removeAttribute("datetime");
+  elements.previewCacheState.textContent = "";
+  elements.previewCacheExpires.textContent = "";
   elements.previewWarnings.textContent = "";
   elements.previewWarnings.hidden = true;
   elements.previewEmpty.hidden = true;
@@ -471,6 +476,7 @@ function syncPreviewSites() {
     elements.previewSite.disabled = true;
     elements.previewContentType.disabled = true;
     elements.previewButton.disabled = true;
+    elements.previewRefreshButton.disabled = true;
     elements.previewHint.textContent =
       "暂无已启用站点。请先在站点列表中启用一个站点。";
     elements.previewHint.hidden = false;
@@ -487,6 +493,7 @@ function syncPreviewSites() {
   elements.previewSite.disabled = state.previewLoading;
   elements.previewContentType.disabled = state.previewLoading;
   elements.previewButton.disabled = state.previewLoading;
+  elements.previewRefreshButton.disabled = state.previewLoading;
   elements.previewHint.hidden = true;
 }
 
@@ -496,7 +503,9 @@ function setPreviewBusy(busy) {
   elements.previewSite.disabled = busy || !hasSite;
   elements.previewContentType.disabled = busy || !hasSite;
   elements.previewButton.disabled = busy || !hasSite;
+  elements.previewRefreshButton.disabled = busy || !hasSite;
   elements.previewButton.textContent = busy ? "正在获取…" : "获取内容";
+  elements.previewRefreshButton.textContent = busy ? "正在刷新…" : "刷新上游";
   elements.previewSite.setAttribute("aria-busy", String(busy));
   elements.previewContentType.setAttribute("aria-busy", String(busy));
 }
@@ -545,6 +554,18 @@ function renderPreview(snapshot) {
       : "未知"
     : "";
   elements.previewItemCount.textContent = `${snapshot.items.length} 条`;
+  const cache =
+    snapshot.cache && typeof snapshot.cache === "object"
+      ? snapshot.cache
+      : {};
+  const cacheHit = cache.hit === true;
+  elements.previewCacheState.textContent = cacheHit
+    ? "缓存命中"
+    : "本次上游获取";
+  const cacheExpires = formatUpdatedAt(
+    typeof cache.expires_at === "string" ? cache.expires_at : "",
+  );
+  elements.previewCacheExpires.textContent = cacheExpires || "未知";
   const fetchedAt =
     typeof snapshot.fetched_at === "string" ? snapshot.fetched_at : "";
   const displayFetchedAt = formatUpdatedAt(fetchedAt);
@@ -667,23 +688,24 @@ function renderPreview(snapshot) {
   }
 
   elements.previewResult.hidden = false;
+  const sourceState = cacheHit ? "缓存命中" : "本次上游获取";
   showPreviewStatus(
     empty
       ? isToutiao
-        ? "已获取，上游返回了合法的空今日头条热榜列表。"
+        ? `已获取，上游返回了合法的空今日头条热榜列表（${sourceState}）。`
         : isDouyin
-          ? "已获取，上游返回了合法的空抖音热搜列表。"
+          ? `已获取，上游返回了合法的空抖音热搜列表（${sourceState}）。`
           : isZhihu
-            ? "已获取，上游返回了合法的空知乎热榜列表。"
+            ? `已获取，上游返回了合法的空知乎热榜列表（${sourceState}）。`
             : isBili
-              ? "已获取，上游返回了合法的空 Bilibili 热搜列表。"
-              : "已获取，上游返回了合法的空内容（0 条新闻）。"
-      : `已获取：${label} ${snapshot.items.length} 条。`,
+              ? `已获取，上游返回了合法的空 Bilibili 热搜列表（${sourceState}）。`
+              : `已获取，上游返回了合法的空内容（0 条新闻，${sourceState}）。`
+      : `已获取：${label} ${snapshot.items.length} 条（${sourceState}）。`,
     "success",
   );
 }
 
-async function previewContent() {
+async function previewContent(forceRefresh = false) {
   if (!bridge || state.previewLoading) {
     return;
   }
@@ -702,13 +724,20 @@ async function previewContent() {
   const requestId = ++state.previewRequestId;
   state.previewLoading = true;
   clearPreviewResult();
-  showPreviewStatus(`正在获取${label}…`, "info");
+  showPreviewStatus(
+    forceRefresh ? `正在刷新${label}（跳过缓存）…` : `正在获取${label}…`,
+    "info",
+  );
   setPreviewBusy(true);
 
   try {
     const snapshot = await bridge.apiPost(
       "content/preview",
-      { site_id: siteId, content_type: contentType },
+      {
+        site_id: siteId,
+        content_type: contentType,
+        force_refresh: Boolean(forceRefresh),
+      },
     );
     if (
       requestId !== state.previewRequestId ||
@@ -1168,7 +1197,11 @@ function bindEvents() {
   elements.retryButton.addEventListener("click", loadSites);
   elements.createButton.addEventListener("click", openCreate);
   elements.emptyCreateButton.addEventListener("click", openCreate);
-  elements.previewButton.addEventListener("click", previewContent);
+  elements.previewButton.addEventListener("click", () => previewContent(false));
+  elements.previewRefreshButton.addEventListener(
+    "click",
+    () => previewContent(true),
+  );
   elements.previewSite.addEventListener("change", () => {
     state.previewSiteId = elements.previewSite.value;
     resetPreviewResult();

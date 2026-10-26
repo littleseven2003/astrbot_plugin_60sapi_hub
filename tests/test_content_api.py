@@ -10,6 +10,7 @@ import httpx
 
 from core.bili import BiliHotItem, BiliHotSnapshot
 from core.content_api import ContentApi
+from core.content_cache import CacheResult
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.douyin import DouyinHotItem, DouyinHotSnapshot
@@ -37,6 +38,7 @@ class FakeContentService:
         self.toutiao = toutiao
         self.error = error
         self.calls: list[tuple[str, object]] = []
+        self.cache_ttl_seconds = 300.0
 
     async def preview_daily(self, site_id):
         self.calls.append(("daily", site_id))
@@ -67,6 +69,27 @@ class FakeContentService:
         if self.error:
             raise self.error
         return self.toutiao
+
+    async def preview_cached(
+        self,
+        content_type,
+        site_id,
+        *,
+        force_refresh=False,
+    ):
+        methods = {
+            "daily_news": self.preview_daily,
+            "bilibili_hot": self.preview_bili,
+            "zhihu_hot": self.preview_zhihu,
+            "douyin_hot": self.preview_douyin,
+            "toutiao_hot": self.preview_toutiao,
+        }
+        snapshot = await methods[content_type](site_id)
+        return CacheResult(
+            snapshot=snapshot,
+            hit=False,
+            expires_at="2026-10-26T05:00:00+00:00",
+        )
 
 
 DAILY = NewsSnapshot(
@@ -231,6 +254,24 @@ class ContentApiTest(unittest.IsolatedAsyncioTestCase):
         serialized = json.dumps(data, ensure_ascii=False).lower()
         for key in ("rank", "ranking", "updated_at", "update_time", "cover", "label", "summary"):
             self.assertNotIn(key, serialized)
+
+    async def test_force_refresh_must_be_strict_boolean(self) -> None:
+        for value in ("true", 1, 0, None, []):
+            with self.subTest(value=value):
+                service = FakeContentService(daily=DAILY)
+                result = await ContentApi(service).preview(
+                    {
+                        "site_id": "site-1",
+                        "content_type": "daily_news",
+                        "force_refresh": value,
+                    },
+                )
+                self.assertEqual(result.status_code, 400)
+                self.assertEqual(
+                    result.body["data"]["code"],
+                    "invalid_force_refresh",
+                )
+                self.assertEqual(service.calls, [])
 
     async def test_invalid_body_is_rejected(self) -> None:
         result = await ContentApi(FakeContentService()).preview([])

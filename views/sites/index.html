@@ -61,7 +61,7 @@
           <span class="count">5 种内容</span>
         </div>
         <p class="preview-lede">
-          选择已启用站点和内容类型后主动获取一次。打开页面、切换选项或保存站点不会请求上游。
+          选择已启用站点和内容类型后主动获取；再次获取优先使用未过期缓存，刷新上游会跳过缓存。打开页面、切换选项或保存站点不会请求上游。
         </p>
         <div class="preview-controls">
           <label class="field preview-site-field">
@@ -80,6 +80,9 @@
           </label>
           <button id="preview-button" class="button button-primary" type="button" disabled>
             获取内容
+          </button>
+          <button id="preview-refresh-button" class="button button-secondary" type="button" disabled>
+            刷新上游
           </button>
         </div>
         <p id="preview-hint" class="help" hidden></p>
@@ -110,6 +113,14 @@
               <span class="preview-label">获取时间</span>
               <time id="preview-fetched-at"></time>
             </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">缓存</span>
+              <span id="preview-cache-state"></span>
+            </div>
+            <div class="preview-meta-item">
+              <span class="preview-label">缓存有效至</span>
+              <span id="preview-cache-expires"></span>
+            </div>
           </div>
           <div id="preview-warnings" class="preview-warning" role="note" hidden></div>
           <div id="preview-empty" class="preview-empty" hidden>
@@ -126,7 +137,7 @@
       </section>
 
       <p class="footnote">
-        站点保存只做格式校验；内容预览会按所选类型主动请求一次上游。凭据保存后不会回显。
+        站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。凭据保存后不会回显。
       </p>
     </main>
 

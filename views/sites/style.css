@@ -544,7 +544,8 @@ input:focus-visible,
 }
 
 .bili-list,
-.zhihu-list {
+.zhihu-list,
+.douyin-list {
   list-style: none;
   padding-left: 0;
 }

@@ -47,6 +47,12 @@ class ProfileWeb:
                 ["POST"],
                 "获取内容组合预览",
             ),
+            (
+                "profiles/<profile_id>/image",
+                self.generate_image,
+                ["POST"],
+                "生成内容组合图片",
+            ),
         )
         for path, handler, methods, desc in routes:
             context.register_web_api(
@@ -96,7 +102,25 @@ class ProfileWeb:
         payload = await request.json(default=None)
         if isinstance(payload, dict):
             payload = {**payload, "profile_id": profile_id}
-        return self._respond(await self._api.preview_profile(payload))
+        return self._respond(
+            await self._api.preview_profile(
+                payload,
+                owner=request.username,
+            ),
+        )
+
+    async def generate_image(self, profile_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(
+            await self._api.generate_image(
+                profile_id,
+                payload,
+                owner=request.username,
+            ),
+        )
 
     def _guard(self):
         if not request.username:

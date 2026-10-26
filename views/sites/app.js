@@ -1963,6 +1963,7 @@ async function previewProfile(forceRefresh = false) {
       currentProfile &&
       currentProfile.revision === requestRevision &&
       data &&
+      data.profile_id === profileId &&
       data.profile_revision === requestRevision;
     if (
       requestId !== state.profilePreviewRequestId ||

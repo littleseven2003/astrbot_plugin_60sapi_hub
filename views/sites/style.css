@@ -990,6 +990,12 @@ input:focus-visible,
   }
 }
 
+.profiles-section {
+  margin-top: 34px;
+  padding-top: 28px;
+  border-top: 1px solid var(--border);
+}
+
 .profile-list-actions {
   display: flex;
   justify-content: flex-end;

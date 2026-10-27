@@ -259,6 +259,48 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
 
 
+    async def test_v2_task_migration_failure_rolls_back(self) -> None:
+        import core.site_store as store_module
+
+        await self._create("回滚前任务")
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("DROP TABLE push_task_umos")
+            raw.execute("DROP TABLE push_tasks")
+            raw.execute("PRAGMA user_version = 2")
+            raw.commit()
+        finally:
+            raw.close()
+        original = store_module._CREATE_TASK_UMOS_TABLE
+        store_module._CREATE_TASK_UMOS_TABLE = "CREATE TABLE broken ("
+        reopened = SiteService(self.db_path)
+        try:
+            with self.assertRaises(Exception):
+                await reopened.open()
+        finally:
+            store_module._CREATE_TASK_UMOS_TABLE = original
+            await reopened.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            self.assertEqual(
+                raw.execute("PRAGMA user_version").fetchone()[0],
+                2,
+            )
+            self.assertEqual(
+                raw.execute("SELECT COUNT(*) FROM content_profiles").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                raw.execute(
+                    "SELECT COUNT(*) FROM sqlite_master "
+                    "WHERE type='table' AND name='push_tasks'",
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            raw.close()
+
 class TaskConcurrencyTest(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_task_create_and_profile_delete_no_dangling(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -118,6 +118,37 @@ const elements = {
   profileImageState: document.getElementById("profile-image-state"),
   profileImageHint: document.getElementById("profile-image-hint"),
   profileImagePages: document.getElementById("profile-image-pages"),
+  taskCount: document.getElementById("task-count"),
+  tasksList: document.getElementById("tasks-list"),
+  taskListState: document.getElementById("task-list-state"),
+  taskListStateText: document.getElementById("task-list-state-text"),
+  taskRetryButton: document.getElementById("task-retry-button"),
+  taskEmptyState: document.getElementById("task-empty-state"),
+  createTaskButton: document.getElementById("create-task-button"),
+  taskDialog: document.getElementById("task-dialog"),
+  taskForm: document.getElementById("task-form"),
+  taskDialogTitle: document.getElementById("task-dialog-title"),
+  taskName: document.getElementById("task-name"),
+  taskProfile: document.getElementById("task-profile"),
+  taskOutputFormat: document.getElementById("task-output-format"),
+  taskUmos: document.getElementById("task-umos"),
+  taskFormError: document.getElementById("task-form-error"),
+  taskWriteUncertain: document.getElementById("task-write-uncertain"),
+  taskWriteUncertainText: document.getElementById("task-write-uncertain-text"),
+  taskRecheckButton: document.getElementById("task-recheck-button"),
+  taskReviewCloseButton: document.getElementById("task-review-close-button"),
+  taskCloseDialogButton: document.getElementById("task-close-dialog-button"),
+  taskCancelButton: document.getElementById("task-cancel-button"),
+  taskSaveButton: document.getElementById("task-save-button"),
+  taskDeleteDialog: document.getElementById("task-delete-dialog"),
+  taskDeleteMessage: document.getElementById("task-delete-message"),
+  taskDeleteError: document.getElementById("task-delete-error"),
+  taskDeleteUncertain: document.getElementById("task-delete-uncertain"),
+  taskDeleteUncertainText: document.getElementById("task-delete-uncertain-text"),
+  taskDeleteRecheckButton: document.getElementById("task-delete-recheck-button"),
+  taskDeleteReviewCloseButton: document.getElementById("task-delete-review-close-button"),
+  taskDeleteCancelButton: document.getElementById("task-delete-cancel-button"),
+  taskDeleteConfirmButton: document.getElementById("task-delete-confirm-button"),
 };
 
 const state = {
@@ -154,6 +185,22 @@ const state = {
   profileImageSnapshotId: null,
   profileImageRequestId: 0,
   profileImageLoading: false,
+  tasks: [],
+  taskMode: "create",
+  editingTaskId: null,
+  editingTaskRevision: null,
+  taskDeleteTarget: null,
+  taskSaving: false,
+  taskDeleting: false,
+  taskLoadRequestId: 0,
+  taskSaveRequestId: 0,
+  taskPending: null,
+};
+
+const TASK_OUTPUT_LABELS = {
+  text: "纯文字",
+  markdown: "Markdown",
+  image: "图片",
 };
 
 const CONTENT_LABELS = {
@@ -177,6 +224,7 @@ const EXPLICIT_WRITE_REJECTIONS = [
   /已被其他操作修改/,
   /站点存储暂不可用/,
   /仍被内容组合引用/,
+  /仍被推送任务引用/,
   /引用的站点不存在/,
   /内容组合不存在/,
   /内容组合存储暂不可用/,
@@ -2566,11 +2614,548 @@ async function confirmDelete() {
   }
 }
 
+
+function taskProfileOptions(selectedId) {
+  elements.taskProfile.replaceChildren();
+  if (state.profiles.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "没有已保存组合";
+    elements.taskProfile.append(option);
+    elements.taskProfile.disabled = true;
+    return;
+  }
+  elements.taskProfile.disabled = false;
+  for (const profile of state.profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    const stateText = profile.site_enabled ? "" : "（站点已停用）";
+    option.textContent = `${profile.name}${stateText}`;
+    if (profile.id === selectedId) {
+      option.selected = true;
+    }
+    elements.taskProfile.append(option);
+  }
+  if (!selectedId && state.profiles.length > 0) {
+    elements.taskProfile.value = state.profiles[0].id;
+  }
+}
+
+function renderTasks() {
+  elements.taskCount.textContent = `${state.tasks.length} 个`;
+  elements.tasksList.replaceChildren();
+  elements.tasksList.setAttribute("aria-busy", "false");
+  if (state.tasks.length === 0) {
+    elements.tasksList.hidden = true;
+    elements.taskEmptyState.hidden = false;
+    clearTaskListState();
+    return;
+  }
+  elements.taskEmptyState.hidden = true;
+  elements.tasksList.hidden = false;
+  clearTaskListState();
+  for (const task of state.tasks) {
+    const card = document.createElement("li");
+    card.className = "site-card profile-card";
+    const head = document.createElement("div");
+    head.className = "site-card-head";
+    const title = document.createElement("h3");
+    title.textContent = task.name;
+    const revision = document.createElement("span");
+    revision.className = "badge";
+    revision.textContent = `revision ${task.revision}`;
+    head.append(title, revision);
+
+    const meta = document.createElement("div");
+    meta.className = "site-meta";
+    const profile = document.createElement("span");
+    profile.textContent = `组合：${task.profile_name}`;
+    if (!task.site_enabled) {
+      profile.textContent += "（站点已停用，仅保存配置）";
+    }
+    const output = document.createElement("span");
+    output.textContent = `输出：${task.output_label}`;
+    const targets = document.createElement("span");
+    targets.textContent = `目标数量：${task.target_count} 个 UMO`;
+    const disabled = document.createElement("span");
+    disabled.className = "task-disabled";
+    disabled.textContent = "未启用 · 发送功能未实现";
+    meta.append(profile, output, targets, disabled);
+
+    const actions = document.createElement("div");
+    actions.className = "profile-card-actions";
+    const edit = makeButton("编辑", "button button-secondary", () =>
+      openTaskEditor(task), `编辑推送任务 ${task.name}`);
+    const remove = makeButton("删除", "button button-danger", () =>
+      openTaskDelete(task), `删除推送任务 ${task.name}`);
+    actions.append(edit, remove);
+    card.append(head, meta, actions);
+    elements.tasksList.append(card);
+  }
+}
+
+function setTaskListState(message, showRetry) {
+  elements.taskListStateText.textContent = message;
+  elements.taskRetryButton.hidden = !showRetry;
+  elements.taskListState.hidden = false;
+}
+
+function clearTaskListState() {
+  elements.taskListStateText.textContent = "";
+  elements.taskRetryButton.hidden = true;
+  elements.taskListState.hidden = true;
+}
+
+async function loadTasks() {
+  if (!bridge) {
+    return false;
+  }
+  const requestId = ++state.taskLoadRequestId;
+  elements.tasksList.setAttribute("aria-busy", "true");
+  try {
+    const result = await bridge.apiGet("tasks");
+    if (requestId !== state.taskLoadRequestId) {
+      return false;
+    }
+    const raw = result && Array.isArray(result.tasks) ? result.tasks : [];
+    state.tasks = raw.filter((task) => task && typeof task.id === "string");
+    renderTasks();
+    return true;
+  } catch (error) {
+    if (requestId !== state.taskLoadRequestId) {
+      return false;
+    }
+    if (state.tasks.length === 0) {
+      elements.tasksList.hidden = true;
+      elements.taskEmptyState.hidden = true;
+      setTaskListState("无法读取推送任务。请确认插件已启用，然后重试。", true);
+    }
+    showStatus(`读取推送任务失败：${friendlyErrorMessage(error)}`, "error");
+    return false;
+  } finally {
+    if (requestId === state.taskLoadRequestId) {
+      elements.tasksList.setAttribute("aria-busy", "false");
+    }
+  }
+}
+
+function clearTaskFormError() {
+  elements.taskFormError.textContent = "";
+  elements.taskFormError.hidden = true;
+}
+
+function showTaskFormError(message) {
+  elements.taskFormError.textContent = message;
+  elements.taskFormError.hidden = false;
+}
+
+function setTaskFormDisabled(disabled) {
+  for (const control of elements.taskForm.querySelectorAll(
+    "input, select, textarea, button",
+  )) {
+    control.disabled = disabled;
+  }
+  elements.taskForm.setAttribute("aria-busy", String(disabled));
+}
+
+function openCreateTask() {
+  if (state.taskSaving || state.taskDeleting || state.taskPending) {
+    return;
+  }
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearTaskPendingPanels();
+  state.taskMode = "create";
+  state.editingTaskId = null;
+  state.editingTaskRevision = null;
+  elements.taskForm.reset();
+  elements.taskDialogTitle.textContent = "新增推送任务";
+  taskProfileOptions(null);
+  clearTaskFormError();
+  setTaskFormDisabled(false);
+  elements.taskSaveButton.textContent = "保存任务";
+  if (state.profiles.length === 0) {
+    showTaskFormError("请先创建至少一个内容组合。");
+    elements.taskSaveButton.disabled = true;
+  }
+  openDialog(elements.taskDialog);
+  elements.taskName.focus();
+}
+
+function openTaskEditor(task) {
+  if (state.taskSaving || state.taskDeleting || state.taskPending) {
+    return;
+  }
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearTaskPendingPanels();
+  state.taskMode = "edit";
+  state.editingTaskId = task.id;
+  state.editingTaskRevision = task.revision;
+  elements.taskDialogTitle.textContent = "编辑推送任务";
+  elements.taskName.value = task.name;
+  taskProfileOptions(task.profile_id);
+  elements.taskOutputFormat.value = task.output_format;
+  elements.taskUmos.value = Array.isArray(task.umos) ? task.umos.join("\n") : "";
+  clearTaskFormError();
+  setTaskFormDisabled(false);
+  elements.taskSaveButton.textContent = "保存更改";
+  openDialog(elements.taskDialog);
+  elements.taskName.focus();
+  elements.taskName.select();
+}
+
+function collectTaskUmos() {
+  return elements.taskUmos.value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+async function handleTaskSave(event) {
+  event.preventDefault();
+  if (state.taskSaving || state.taskPending || state.pendingWrite) {
+    return;
+  }
+  clearTaskFormError();
+  if (!elements.taskForm.reportValidity()) {
+    return;
+  }
+  if (!elements.taskProfile.value) {
+    showTaskFormError("请选择内容组合。");
+    return;
+  }
+  const requestId = ++state.taskSaveRequestId;
+  state.taskSaving = true;
+  elements.taskSaveButton.textContent = "保存中…";
+  setTaskFormDisabled(true);
+  const payload = {
+    name: elements.taskName.value,
+    profile_id: elements.taskProfile.value,
+    output_format: elements.taskOutputFormat.value,
+    umos: collectTaskUmos(),
+  };
+  try {
+    if (state.taskMode === "create") {
+      await bridge.apiPost("tasks", payload);
+    } else {
+      payload.expected_revision = state.editingTaskRevision;
+      await bridge.apiPost(
+        `tasks/${encodeURIComponent(state.editingTaskId)}/update`,
+        payload,
+      );
+    }
+    if (requestId !== state.taskSaveRequestId) {
+      return;
+    }
+    closeDialog(elements.taskDialog);
+    const reloaded = await loadTasks();
+    showStatus(
+      reloaded ? "推送任务配置已保存；任务仍未启用，未发送消息。" : "任务已保存，但列表刷新失败，请重试。",
+      reloaded ? "success" : "error",
+    );
+  } catch (error) {
+    if (requestId !== state.taskSaveRequestId) {
+      return;
+    }
+    const message = friendlyErrorMessage(error);
+    if (
+      state.taskMode === "edit" &&
+      (isConflictMessage(message) || isMissingMessage(message))
+    ) {
+      closeDialog(elements.taskDialog);
+      const reloaded = await loadTasks();
+      showStatus(
+        reloaded
+          ? "该任务已被修改或删除，已重新加载最新数据。请重新编辑。"
+          : "该任务已被修改或删除，但列表刷新失败。",
+        "error",
+      );
+    } else if (isExplicitWriteRejection(message)) {
+      showTaskFormError(message);
+    } else {
+      enterTaskPending(
+        state.taskMode,
+        writeFailureDetail(error),
+        state.editingTaskId,
+      );
+    }
+  } finally {
+    if (requestId === state.taskSaveRequestId) {
+      state.taskSaving = false;
+      if (!state.taskPending) {
+        setTaskFormDisabled(false);
+        elements.taskSaveButton.textContent =
+          state.taskMode === "create" ? "保存任务" : "保存更改";
+      }
+    }
+  }
+}
+
+function openTaskDelete(task) {
+  if (state.taskSaving || state.taskDeleting || state.taskPending) {
+    return;
+  }
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  clearTaskPendingPanels();
+  state.taskDeleteTarget = task;
+  elements.taskDeleteMessage.textContent =
+    `确定删除“${task.name}”吗？删除任务不会删除其内容组合或站点。`;
+  elements.taskDeleteError.textContent = "";
+  elements.taskDeleteError.hidden = true;
+  elements.taskDeleteCancelButton.disabled = false;
+  elements.taskDeleteConfirmButton.disabled = false;
+  elements.taskDeleteConfirmButton.textContent = "删除";
+  openDialog(elements.taskDeleteDialog);
+  elements.taskDeleteCancelButton.focus();
+}
+
+async function confirmTaskDelete() {
+  if (state.taskDeleting || state.taskPending || state.pendingWrite ||
+      !state.taskDeleteTarget) {
+    return;
+  }
+  const target = state.taskDeleteTarget;
+  state.taskDeleting = true;
+  elements.taskDeleteCancelButton.disabled = true;
+  elements.taskDeleteConfirmButton.disabled = true;
+  elements.taskDeleteConfirmButton.textContent = "删除中…";
+  try {
+    await bridge.apiPost(
+      `tasks/${encodeURIComponent(target.id)}/delete`,
+      { expected_revision: target.revision },
+    );
+    closeDialog(elements.taskDeleteDialog);
+    state.taskDeleteTarget = null;
+    const reloaded = await loadTasks();
+    showStatus(
+      reloaded ? `已删除“${target.name}”。` : "任务已删除，但列表刷新失败。",
+      reloaded ? "success" : "error",
+    );
+  } catch (error) {
+    const message = friendlyErrorMessage(error);
+    if (isConflictMessage(message) || isMissingMessage(message)) {
+      closeDialog(elements.taskDeleteDialog);
+      state.taskDeleteTarget = null;
+      const reloaded = await loadTasks();
+      showStatus(
+        reloaded
+          ? "该任务已被修改或删除，已重新加载最新数据。"
+          : "该任务已被修改或删除，但列表刷新失败。",
+        "error",
+      );
+    } else if (
+      message.includes("仍被推送任务引用") ||
+      isExplicitWriteRejection(message)
+    ) {
+      elements.taskDeleteError.textContent = message;
+      elements.taskDeleteError.hidden = false;
+    } else {
+      enterTaskPending("task_delete", writeFailureDetail(error), target.id);
+    }
+  } finally {
+    state.taskDeleting = false;
+    if (!state.taskPending) {
+      elements.taskDeleteCancelButton.disabled = false;
+      elements.taskDeleteConfirmButton.disabled = false;
+      elements.taskDeleteConfirmButton.textContent = "删除";
+    }
+  }
+}
+
+function taskPendingElements(pending) {
+  if (pending.kind === "task_delete") {
+    return {
+      panel: elements.taskDeleteUncertain,
+      text: elements.taskDeleteUncertainText,
+      recheck: elements.taskDeleteRecheckButton,
+      review: elements.taskDeleteReviewCloseButton,
+    };
+  }
+  return {
+    panel: elements.taskWriteUncertain,
+    text: elements.taskWriteUncertainText,
+    recheck: elements.taskRecheckButton,
+    review: elements.taskReviewCloseButton,
+  };
+}
+
+function updateTaskPendingUI(text) {
+  const pending = state.taskPending;
+  if (!pending) {
+    return;
+  }
+  const ui = taskPendingElements(pending);
+  ui.panel.hidden = false;
+  ui.text.textContent = text;
+  if (pending.kind === "task_delete") {
+    elements.taskDeleteCancelButton.disabled = true;
+    elements.taskDeleteConfirmButton.disabled = true;
+  } else {
+    setTaskFormDisabled(true);
+    elements.taskSaveButton.disabled = true;
+    elements.taskSaveButton.textContent = "等待确认结果";
+  }
+  if (pending.phase === "checking") {
+    ui.recheck.hidden = false;
+    ui.recheck.disabled = true;
+    ui.recheck.textContent = "正在重新读取…";
+    ui.review.hidden = true;
+  } else if (pending.phase === "review") {
+    ui.recheck.hidden = true;
+    ui.review.hidden = false;
+    ui.review.disabled = false;
+  } else {
+    ui.recheck.hidden = false;
+    ui.recheck.disabled = false;
+    ui.recheck.textContent = "重新读取最新任务";
+    ui.review.hidden = true;
+  }
+}
+
+function enterTaskPending(kind, detail, targetId) {
+  state.taskPending = {
+    kind,
+    phase: "unconfirmed",
+    targetId: targetId || null,
+  };
+  if (kind === "task_delete") {
+    elements.taskDeleteError.hidden = true;
+    elements.taskDeleteError.textContent = "";
+  } else {
+    clearTaskFormError();
+  }
+  updateTaskPendingUI(
+    "服务器可能已经完成，也可能没有收到请求。" +
+      "为避免重复写入，请先重新读取最新任务列表确认。" +
+      `\n\n错误信息：${detail}`,
+  );
+}
+
+function taskPendingReviewText(pending) {
+  if (pending.kind === "create") {
+    return (
+      `已重新读取最新任务列表，当前共有 ${state.tasks.length} 个任务。` +
+      "系统不能仅凭名称判断哪一条（如有）来自本次操作；" +
+      "请关闭对话框查看列表并人工确认。"
+    );
+  }
+  const task = pending.targetId
+    ? state.tasks.find((item) => item.id === pending.targetId)
+    : null;
+  const current = task
+    ? `仍在列表中：${task.name}（revision ${task.revision}）。`
+    : "不在列表中。";
+  return (
+    `已重新读取最新任务列表。该任务当前${current}` +
+    "请关闭对话框查看列表并判断是否符合预期；如需继续，请重新打开对应操作。"
+  );
+}
+
+async function recheckTaskPending() {
+  const pending = state.taskPending;
+  if (!pending || pending.phase === "checking") {
+    return;
+  }
+  pending.phase = "checking";
+  updateTaskPendingUI("正在重新读取最新任务…");
+  const succeeded = await loadTasks();
+  if (state.taskPending !== pending) {
+    return;
+  }
+  if (succeeded) {
+    pending.phase = "review";
+    updateTaskPendingUI(taskPendingReviewText(pending));
+  } else {
+    pending.phase = "unconfirmed";
+    updateTaskPendingUI(
+      "仍无法确认结果：重新读取最新任务失败。请不要重复提交；" +
+        "保持此页面，稍后再次读取。",
+    );
+  }
+}
+
+function clearTaskPendingPanels() {
+  elements.taskWriteUncertain.hidden = true;
+  elements.taskWriteUncertainText.textContent = "";
+  elements.taskReviewCloseButton.hidden = true;
+  elements.taskDeleteUncertain.hidden = true;
+  elements.taskDeleteUncertainText.textContent = "";
+  elements.taskDeleteReviewCloseButton.hidden = true;
+}
+
+function finishTaskPendingReview() {
+  const pending = state.taskPending;
+  if (!pending || pending.phase !== "review") {
+    return;
+  }
+  const deleting = pending.kind === "task_delete";
+  closeDialog(deleting ? elements.taskDeleteDialog : elements.taskDialog);
+  state.taskPending = null;
+  clearTaskPendingPanels();
+  if (deleting) {
+    state.taskDeleteTarget = null;
+  } else {
+    setTaskFormDisabled(false);
+    elements.taskSaveButton.textContent =
+      state.taskMode === "create" ? "保存任务" : "保存更改";
+  }
+  showStatus(
+    "已重新读取最新任务列表，并关闭未确认的操作。请根据列表判断结果。",
+    "info",
+  );
+}
+
 async function refreshAll() {
-  await Promise.all([loadSites(), loadProfiles()]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks()]);
 }
 
 function bindEvents() {
+  elements.createTaskButton.addEventListener("click", openCreateTask);
+  elements.taskRetryButton.addEventListener("click", loadTasks);
+  elements.taskForm.addEventListener("submit", handleTaskSave);
+  elements.taskDeleteConfirmButton.addEventListener("click", confirmTaskDelete);
+  elements.taskRecheckButton.addEventListener("click", recheckTaskPending);
+  elements.taskReviewCloseButton.addEventListener("click", finishTaskPendingReview);
+  elements.taskDeleteRecheckButton.addEventListener("click", recheckTaskPending);
+  elements.taskDeleteReviewCloseButton.addEventListener(
+    "click",
+    finishTaskPendingReview,
+  );
+  elements.taskCancelButton.addEventListener("click", () => {
+    if (!state.taskSaving && !state.taskPending) {
+      closeDialog(elements.taskDialog);
+    }
+  });
+  elements.taskCloseDialogButton.addEventListener("click", () => {
+    if (!state.taskSaving && !state.taskPending) {
+      closeDialog(elements.taskDialog);
+    }
+  });
+  elements.taskDialog.addEventListener("cancel", (event) => {
+    if (state.taskSaving || state.taskPending) {
+      event.preventDefault();
+    }
+  });
+  elements.taskDeleteCancelButton.addEventListener("click", () => {
+    if (!state.taskDeleting && !state.taskPending) {
+      closeDialog(elements.taskDeleteDialog);
+    }
+  });
+  elements.taskDeleteDialog.addEventListener("cancel", (event) => {
+    if (state.taskDeleting || state.taskPending) {
+      event.preventDefault();
+    }
+  });
+  elements.taskDeleteDialog.addEventListener("close", () => {
+    if (!state.taskPending) {
+      state.taskDeleteTarget = null;
+    }
+  });
   elements.createProfileButton.addEventListener("click", openCreateProfile);
   elements.profileRetryButton.addEventListener("click", loadProfiles);
   elements.profilePreviewButton.addEventListener(
@@ -2757,7 +3342,7 @@ async function init() {
   }
 
   bindEvents();
-  await Promise.all([loadSites(), loadProfiles()]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks()]);
 }
 
 init();

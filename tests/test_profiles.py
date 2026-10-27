@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from core.site_store import SCHEMA_VERSION
 from core.profiles import (
     ContentProfileService,
     ProfileConflictError,
@@ -264,7 +265,7 @@ class ProfileMigrationTest(unittest.IsolatedAsyncioTestCase):
                     "PRAGMA user_version",
                 ) as cursor:
                     version = (await cursor.fetchone())[0]
-                self.assertEqual(version, 2)
+                self.assertEqual(version, SCHEMA_VERSION)
             finally:
                 await sites.close()
 

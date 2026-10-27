@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from .content_types import CONTENT_LABELS, KNOWN_CONTENT_TYPES
 from .site_store import (
     ProfileRecordNotFoundError,
+    ProfileReferencedError as StoreProfileReferencedError,
     ProfileRevisionConflictError,
     StoredProfile,
     StoredProfileItem,
@@ -72,6 +73,15 @@ class ProfileConflictError(ProfileError):
 
 class ProfileStorageError(ProfileError):
     """内容组合存储不可用。"""
+
+
+class ProfileReferencedError(ProfileError):
+    """内容组合仍被推送任务引用。"""
+
+    def __init__(self, task_names: tuple[str, ...]) -> None:
+        self.task_names = task_names
+        names = "、".join(task_names)
+        super().__init__(f"内容组合仍被推送任务引用：{names}。")
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +216,8 @@ class ContentProfileService:
                 normalized_revision,
                 exc.actual_revision,
             ) from exc
+        except StoreProfileReferencedError as exc:
+            raise ProfileReferencedError(exc.task_names) from exc
         except Exception as exc:
             raise ProfileStorageError("删除内容组合失败。") from exc
 

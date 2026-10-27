@@ -1,6 +1,6 @@
 # 架构设计
 
-当前已实现最小插件入口、站点存储、后台站点管理、五类内容获取预览、有界缓存、内容组合持久化/预览、组合纯文字/Markdown 输出及分页中文图片，其余业务模块仍为设计约定，在实现相应功能时按需建立。
+当前已实现最小插件入口、站点存储、后台站点管理、五类内容获取预览、有界缓存、内容组合持久化/预览、组合纯文字/Markdown 输出、分页中文图片及推送任务配置，其余业务模块仍为设计约定，在实现相应功能时按需建立。
 
 ## 数据流
 
@@ -48,8 +48,10 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/profile_render.py`：纯函数文字/Markdown 渲染，不依赖 AstrBot、HTTP、数据库或浏览器；只读取已截取的预览响应，不修改快照或缓存。
 - `core/image_snapshots.py`：进程内短期图片快照，TTL 300 秒/最多 32 个/总 8 MiB；保存已验证的截图输入、组合/站点 revision 和用户归属，不保存 HTML、URL 或文件路径。
 - `core/profile_image.py`：Pillow 固定样式中文分页渲染器；只读快照数据，按字符宽度换行并逐行分页，生成 900×1200 RGB PNG，不加载远程资源。
+- `core/tasks.py`：推送任务领域模型、输出方式、完整 UMO 校验、revision CRUD 和组合引用保护；不持有 HTTP 客户端或发送接口。
+- `core/task_api.py` / `task_web.py`：任务 CRUD 的安全 API 映射和 Dashboard 宿主适配；明确拒绝启用、调度或发送字段。
 - `core/image_service.py`：受限线程池（最多 2 执行、4 排队，准入 6）、20 秒总超时、取消事件和关闭等待；后台任务结束前持续占用准入名额，避免超时后无界积压。
-- `core/site_store.py`：同一 SQLite 连接管理站点、组合和栏目；schema v2 事务迁移、外键 `ON DELETE RESTRICT` 和站点引用删除拒绝。
+- `core/site_store.py`：同一 SQLite 连接管理站点、组合、栏目、推送任务和任务 UMO；schema v3 事务迁移、外键 `ON DELETE RESTRICT`、组合引用删除拒绝和任务 revision 控制。
 - 组合预览：`core/profile_api.py` 读取一份组合版本和站点，按栏目配置顺序调用 `ContentService.preview_cached`；只请求选中类型，复用缓存和并发预算，逐栏截取返回条数，不修改完整快照。
 - 组合文字输出：预览成功或部分成功后，`core/profile_render.py` 基于同一份响应生成 `outputs.text` 和 `outputs.markdown`；后台只切换/复制/下载已接受响应，不再次获取。全部失败不生成输出。
 - 组合图片：预览成功后，`core/profile_api.py` 将同一次响应的结构化栏目保存到 `ImageSnapshotStore` 并返回不透明 ID。生成时根据 ID 取回快照，校验用户、组合/站点 revision 和启用状态，再由 `ProfileImageService` 在线程池中调用 `ProfileImageRenderer`；不重新请求上游、不读取后续缓存。图片以认证 JSON 的 PNG base64 返回，后台用 data URL 展示和逐页下载，不使用静态文件路径。
@@ -57,14 +59,14 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 公共快照字段为来源站点、内容类型、endpoint 和获取时间；每日新闻另有内容日期、旧/未知日期警告、有序新闻条目、微语和来源链接。Bilibili 热搜另有有序标题/链接条目和实际条数；知乎热榜另有有序标题、摘要、原始热度文本、链接和实际条数；抖音热搜另有有序标题、原始整数热度、链接和实际条数；今日头条热榜另有有序标题、原始整数热度、链接和实际条数，没有排名、摘要、标签或更新时间字段。五种快照不共享字段语义，不把抓取时间当内容日期或更新时间，也不把列表序号当排名。
 
-每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，今日头条热榜使用 `/v2/toutiao`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音/今日头条 `data: []` 都是合法空内容；必要结构错误则整次解析失败。预览内容不持久化到数据库或磁盘；当前使用进程内缓存，停用/重载清空，进程重启不会恢复。内容组合和栏目配置持久化在 SQLite schema v2；组合不复制内容快照。
+每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，今日头条热榜使用 `/v2/toutiao`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音/今日头条 `data: []` 都是合法空内容；必要结构错误则整次解析失败。预览内容不持久化到数据库或磁盘；当前使用进程内缓存，停用/重载清空，进程重启不会恢复。内容组合、栏目、推送任务和任务 UMO 持久化在 SQLite schema v3；组合不复制内容快照，任务不复制组合内容。
 
 ## 实现默认选择
 
 - 异步 Python 3.12；AstrBot 基线 v4.29.1，详见开发手册的兼容性基线。
 - 使用一个异步 HTTP 客户端，明确依赖约束。
 - 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；内容组合由 `core/profiles.py`、`core/profile_api.py`、`profile_web.py` 管理，数据复用同一 `SiteStore`；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合和站点引用关系已实现；任务、发送记录和消息发送尚未实现；组合文字/Markdown 和分页图片已实现。
-- SQLite 存已实现的站点/组合实体；发送记录为后续设计，位置在宿主插件数据目录。
+- SQLite 存已实现的站点、组合和任务实体；发送记录为后续设计，位置在宿主插件数据目录。
 - 少量全局设置使用 AstrBot 配置 schema；业务实体只有一个持久化真源。
 - 后台使用宿主插件视图及 bridge，当前站点页采用简单 HTML/CSS/JS，不引入 CDN、外部字体或独立服务器。
 - 图片使用 Pillow 和宿主可验证的 CJK 字体，渲染器不调用宿主 Web/消息 API；字体环境缺失时明确报错，文字/Markdown 保持可用。

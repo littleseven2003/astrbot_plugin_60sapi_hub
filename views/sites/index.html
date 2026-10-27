@@ -162,6 +162,32 @@
         <ul id="profiles-list" class="sites-list profiles-list" aria-busy="true"></ul>
       </section>
 
+      <section class="tasks-section" aria-labelledby="tasks-heading">
+        <div class="section-head">
+          <h2 id="tasks-heading">推送任务</h2>
+          <span id="task-count" class="count">0 个</span>
+        </div>
+        <p class="preview-lede">
+          本轮只保存推送任务配置，不发送消息、不请求上游、不执行调度。任务保持未启用；请使用对应会话的 /sid 获取完整 UMO，不能直接填写裸群号或 UID。
+        </p>
+        <div class="profile-list-actions">
+          <button id="create-task-button" class="button button-primary" type="button">
+            新增任务
+          </button>
+        </div>
+        <div id="task-list-state" class="list-state" hidden>
+          <p id="task-list-state-text"></p>
+          <button id="task-retry-button" class="button button-secondary" type="button" hidden>
+            重试
+          </button>
+        </div>
+        <div id="task-empty-state" class="profile-empty-state" hidden>
+          <p class="empty-title">还没有推送任务</p>
+          <p>创建一个任务，引用已有内容组合并填写独立的 UMO 白名单。保存不会发送消息。</p>
+        </div>
+        <ul id="tasks-list" class="sites-list profiles-list" aria-busy="true"></ul>
+      </section>
+
       <section class="profile-preview-section" aria-labelledby="profile-preview-heading">
         <div class="section-head">
           <h2 id="profile-preview-heading">组合预览</h2>
@@ -252,6 +278,91 @@
       <p class="footnote">
         站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。内容组合引用已保存站点，不能填写任意 URL。凭据保存后不会回显。
       </p>
+
+    <dialog id="task-dialog" class="dialog" aria-labelledby="task-dialog-title">
+      <form id="task-form" class="form">
+        <header class="dialog-head">
+          <h2 id="task-dialog-title">新增推送任务</h2>
+          <button id="task-close-dialog-button" class="icon-button" type="button" aria-label="关闭">
+            ×
+          </button>
+        </header>
+
+        <div id="task-form-error" class="form-error" role="alert" hidden></div>
+
+        <div id="task-write-uncertain" class="uncertain" role="alert" hidden>
+          <h3>保存结果未确认</h3>
+          <p id="task-write-uncertain-text" class="uncertain-text"></p>
+          <div class="uncertain-actions">
+            <button id="task-recheck-button" class="button button-primary" type="button">
+              重新读取最新任务
+            </button>
+            <button id="task-review-close-button" class="button button-secondary" type="button" hidden>
+              关闭并查看最新任务
+            </button>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>任务名称</span>
+          <input id="task-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览推送" />
+        </label>
+
+        <label class="field">
+          <span>内容组合</span>
+          <select id="task-profile" required></select>
+          <small>必须引用已保存组合；可以引用站点已停用的组合，保存不会发送。</small>
+        </label>
+
+        <label class="field">
+          <span>输出方式</span>
+          <select id="task-output-format">
+            <option value="text">纯文字</option>
+            <option value="markdown">Markdown</option>
+            <option value="image">图片</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>UMO 白名单（一行一个）</span>
+          <textarea id="task-umos" rows="6" spellcheck="false" placeholder="aiocqhttp:GroupMessage:123456789&#10;aiocqhttp:FriendMessage:987654321"></textarea>
+          <small>
+            在目标会话中发送 /sid 获取完整 UMO。格式为平台适配器实例 ID:消息类型:完整会话 ID；
+            只接受 GroupMessage 或 FriendMessage，不能填写裸群号或 UID。群成员隔离标识会原样保留，不会自动改写为群级目标。
+            留空表示白名单为空，可以保存但不能投递。
+          </small>
+        </label>
+
+        <p class="help">任务保存后仍保持未启用；本轮没有发送、启用或调度入口。</p>
+
+        <footer class="dialog-actions">
+          <button id="task-cancel-button" class="button button-secondary" type="button">取消</button>
+          <button id="task-save-button" class="button button-primary" type="submit">保存任务</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="task-delete-dialog" class="dialog dialog-small" aria-labelledby="task-delete-title">
+      <div class="form">
+        <header class="dialog-head">
+          <h2 id="task-delete-title">删除推送任务</h2>
+        </header>
+        <p id="task-delete-message"></p>
+        <div id="task-delete-error" class="form-error" role="alert" hidden></div>
+        <div id="task-delete-uncertain" class="uncertain" role="alert" hidden>
+          <h3>删除结果未确认</h3>
+          <p id="task-delete-uncertain-text" class="uncertain-text"></p>
+          <div class="uncertain-actions">
+            <button id="task-delete-recheck-button" class="button button-primary" type="button">重新读取最新任务</button>
+            <button id="task-delete-review-close-button" class="button button-secondary" type="button" hidden>关闭并查看最新任务</button>
+          </div>
+        </div>
+        <footer class="dialog-actions">
+          <button id="task-delete-cancel-button" class="button button-secondary" type="button">取消</button>
+          <button id="task-delete-confirm-button" class="button button-danger" type="button">删除</button>
+        </footer>
+      </div>
+    </dialog>
     </main>
 
     <dialog id="site-dialog" class="dialog" aria-labelledby="dialog-title">

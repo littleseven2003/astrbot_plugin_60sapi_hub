@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。M1、M2、M3 已通过 AstrBot v4.29.1 / Python 3.12.13 基线验收，当前包括插件入口、站点与组合持久化、五类内容获取、共享缓存/手动刷新、后台预览、组合文字/Markdown 和分页图片。消息发送和调度尚未实现；代码、依赖和测试目录随后续功能按需创建。验收范围见 [测试手册](testing.md#m3-验收基线)。
+本项目按个人开源项目维护。M1、M2、M3 已通过 AstrBot v4.29.1 / Python 3.12.13 基线验收；当前包括插件入口、站点/组合/推送任务持久化、五类内容获取、共享缓存/手动刷新、后台预览、组合文字/Markdown 和分页图片。M4 正在实现任务配置与 UMO 白名单，消息发送和调度尚未实现；代码、依赖和测试目录随后续功能按需创建。验收范围见 [测试手册](testing.md#m3-验收基线)。
 
 ## 获取与本地设置
 
@@ -71,7 +71,7 @@ git config core.hooksPath .githooks
 - 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
 - SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 的官方文档/源码和一次公开实例响应已核验；尚未遍历社区实例、不同部署版本，也未用真实实例完成浏览器全链路验证。
-- 其他 endpoint、消息发送和调度尚未实现；不要展示或宣称这些能力。组合持久化/预览、纯文字/Markdown 和固定样式分页图片已实现，但不能冒充消息发送或主题编辑。站点保存仍只做格式校验，不代替内容获取验证。
+- 其他 endpoint、消息发送、启用和调度尚未实现；不要展示或宣称这些能力。组合持久化/预览、纯文字/Markdown、固定样式分页图片和推送任务配置已实现，但不能冒充消息发送、任务启用或主题编辑。站点保存仍只做格式校验，不代替内容获取验证。
 
 ### 可复现的本地验证
 
@@ -214,7 +214,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。

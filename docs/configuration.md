@@ -184,35 +184,35 @@
 
 ## 推送任务
 
-设置名称、内容组合、白名单、输出策略、计划和时区。
+本轮只实现任务配置和 UMO 白名单，不发送消息、不启用任务、不调度、不请求上游。任务固定为未启用；后端没有启用、调度或发送接口。
 
-- 每日：HH:mm。
-- 每周：时间和星期，界面使用明确的周一至周日。
-- 间隔：持续时间及持久化的下一执行点，重载不重置为立即发送。
-- Cron：五段表达式；具体方言和夏令时处理随采用的调度库公布。
-- 默认时区 Asia/Shanghai；记录 UTC，界面显示配置时区。
-- 默认停用，空名单允许保存但不能启用发送。
+任务字段：稳定 ID、名称（沿用站点名称规则，最多 80 字符）、一个已保存内容组合 ID、输出方式（`text`、`markdown`、`image`）、独立 UMO 白名单、revision、创建/修改时间。允许空白名单；允许组合引用的站点已停用；必须引用实际存在的内容组合。配置可保存不代表可投递。
+
+| 方法与路径 | 用途 |
+|---|---|
+| `GET /<插件名>/tasks` | 列出任务及组合名称、站点启用状态、目标数量 |
+| `POST /<插件名>/tasks` | 新增任务 |
+| `GET /<插件名>/tasks/<id>` | 读取任务 |
+| `POST /<插件名>/tasks/<id>/update` | 按 expected_revision 编辑任务 |
+| `POST /<插件名>/tasks/<id>/delete` | 按 expected_revision 删除任务 |
+
+请求中出现 `enabled`、`schedule` 或 `next_run` 返回 400 `unsupported_enable_request`，不会写入。任务响应固定返回 `enabled=false`、`can_send=false`。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
 
 ## 推送白名单
 
-每项一个完整 UMO，格式为：`平台实例ID:消息类型:会话ID`。
+每项一个完整 UMO：`平台适配器实例ID:消息类型:完整会话ID`。只在**前两个**冒号处分割，会话 ID 内部的冒号保留；只去首尾空白、按完整字符串精确去重并保留首次出现顺序，不改大小写或改写内部内容。
 
-| 类型 | 虚构示例 |
-|---|---|
-| 群聊 | demo_bot:GroupMessage:10001 |
-| 私聊 | demo_bot:FriendMessage:20001 |
-
-在对应会话发送 /sid，复制 UMO，不复制 UID。平台实例 ID 使用实际值，不固定写 qq 或 telegram。
-
-允许群聊、私聊混合；只去首尾空白和精确去重，不改大小写或截断会话内容。裸群号缺少出站平台上下文，不能猜测目标。
-
-开启群成员隔离时，需核验群级发送标识；不能把成员隔离会话未经验证地视为整个群。
-
-每任务名单独立。插件名单表示主动推送接收者，与 AstrBot 入站访问白名单用途不同，不自动导入或修改全局名单。
+- 平台字段是 AstrBot 平台适配器实例 ID（例如 `aiocqhttp`、`qq_official`），不是固定平台类型名；不能包含冒号、感叹号或空白，最多 128 字符。
+- 消息类型只接受 `GroupMessage` 和 `FriendMessage`；`OtherMessage` 等拒绝。
+- 会话 ID 不能为空，最多 384 字符；完整 UMO 最多 512 字符。
+- 每任务最多 20 个输入项；空白名单合法。拒绝裸群号、裸 UID、缺字段、空字段、非法类型、控制字符、平台 ID 含冒号/感叹号、超出长度或数量限制。
+- 支持群聊和私聊混合；格式合法但平台适配器当前未连接的配置可以保存，保存成功不代表已确认可发送。
+- `unique_session` 下的群成员隔离会话 ID 原样保留，不擅自改成群级目标；如需群级目标，应按 AstrBot `/sid` 的提示核对并手工填写，不自动猜测。
+- 后台提示使用对应会话的 `/sid` 获取完整 UMO，不把 UID 当 UMO；一行一个，后端统一接收字符串数组。名单按任务独立保存，不导入、继承或修改 AstrBot 全局入站白名单，不增加绑定指令。
 
 ## 失败策略
 
-- 部分栏目失败：发送可用栏目或跳过整次，并留下记录。
+- 部分栏目失败：发送可用栏目或跳过整次，并留下记录；本轮没有发送实现。
 - 图片生成失败：按设置跳过或降级文字。
 - 今日新闻未更新：跳过，或在截止时间前重试。
 - 发送结果未知：明确标记，不盲目自动重发。
@@ -220,10 +220,8 @@
 
 ## 数据与升级
 
-站点和内容组合保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 2：`sites`、`content_profiles` 和 `content_profile_items`。首次建库直接创建三张表；旧 v1 数据库在同一事务中新增组合表并提升 `user_version=2`，失败回滚，保留原站点、凭据和 revision。
+站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 3：`sites`、`content_profiles`、`content_profile_items`、`push_tasks` 和 `push_task_umos`。首次建库直接创建五张表；旧 v1/v2 数据库在同一事务中补齐组合/任务表并提升 `user_version=3`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
 
-更新、删除按期望 revision 执行，冲突时报错而不覆盖；写入失败回滚；停用或重载关闭连接但不删除数据库。组合与站点共用同一个 `SiteStore` 连接、锁和事务，不复制第二套连接管理。站点删除在事务中检查组合引用，并由外键 `ON DELETE RESTRICT` 兜底。
+任务与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；删除组合在事务中检查任务引用并由外键兜底；删除任务不级联删除组合。写入失败回滚，取消后下一次正常操作不受影响。
 
-站点数据只有一个持久化来源，不复制到 `_conf_schema.json` 或另一份 JSON 文件。运行依赖 `aiosqlite` 和 `httpx` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。
-
-组合 CRUD 和站点引用关系已实现；任务和发送状态仍为设计说明。内容快照仍只在进程内缓存，不持久化；执行与投递状态尚未实现。更新前备份，迁移失败保留可恢复数据；代码目录不存生产配置或数据库。
+运行依赖 `aiosqlite`、`httpx` 和 `Pillow` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。内容快照仍只在进程内缓存；任务配置和 UMO 持久化，执行/发送状态尚未实现。

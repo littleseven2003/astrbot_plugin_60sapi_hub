@@ -175,7 +175,7 @@ class PushTaskService:
         data: TaskUpdate,
     ) -> PushTask:
         normalized_id = normalize_task_id(task_id)
-        expected_revision = normalize_revision(data.expected_revision)
+        expected_revision = _normalize_expected_revision(data.expected_revision)
         name = _normalize_task_name(data.name)
         profile_id = _normalize_profile_id(data.profile_id)
         output_format = normalize_output_format(data.output_format)
@@ -208,7 +208,7 @@ class PushTaskService:
         expected_revision: object,
     ) -> None:
         normalized_id = normalize_task_id(task_id)
-        normalized_revision = normalize_revision(expected_revision)
+        normalized_revision = _normalize_expected_revision(expected_revision)
         try:
             await self._store.delete_task(
                 normalized_id,
@@ -325,6 +325,13 @@ def normalize_umo(value: object, *, field: str = "umo") -> str:
     # 不重新拼接字段：保存值严格等于整条输入去掉首尾空白后的内容。
     # 因此 session_id 的前导空白、内部空白、冒号和大小写都不会被改写。
     return raw
+
+
+def _normalize_expected_revision(value: object) -> int:
+    try:
+        return normalize_revision(value)
+    except SiteValidationError as exc:
+        raise TaskValidationError("expected_revision", exc.reason) from exc
 
 
 def _normalize_task_name(value: object) -> str:

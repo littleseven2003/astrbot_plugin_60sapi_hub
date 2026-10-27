@@ -94,6 +94,50 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing.body["data"]["code"], "profile_not_found")
 
+    async def test_invalid_expected_revision_returns_400_and_no_write(self) -> None:
+        created = await self.api.create_task(self.payload)
+        task = created.body["data"]
+        invalid = [None, True, False, 0, -1, 1.0, 1.5, "1", "", []]
+        for value in invalid:
+            with self.subTest(kind="update", value=value):
+                body = {**self.payload, "name": "不能写入", "expected_revision": value}
+                result = await self.api.update_task(task["id"], body)
+                self.assertEqual(result.status_code, 400, result.body)
+                self.assertEqual(result.body["data"]["code"], "validation_error")
+                self.assertEqual(result.body["data"]["field"], "expected_revision")
+            with self.subTest(kind="delete", value=value):
+                result = await self.api.delete_task(
+                    task["id"],
+                    {"expected_revision": value},
+                )
+                self.assertEqual(result.status_code, 400, result.body)
+                self.assertEqual(result.body["data"]["code"], "validation_error")
+                self.assertEqual(result.body["data"]["field"], "expected_revision")
+            current = await self.api.get_task(task["id"])
+            self.assertEqual(current.body["data"]["name"], "API任务")
+        missing = await self.api.delete_task(task["id"], {})
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(missing.body["data"]["field"], "expected_revision")
+        legal = await self.api.update_task(
+            task["id"],
+            {
+                **self.payload,
+                "name": "合法修改",
+                "expected_revision": task["revision"],
+            },
+        )
+        self.assertEqual(legal.status_code, 200)
+        stale = await self.api.update_task(
+            task["id"],
+            {
+                **self.payload,
+                "name": "过期",
+                "expected_revision": task["revision"],
+            },
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.body["data"]["code"], "revision_conflict")
+
     async def test_validation_and_not_found(self) -> None:
         for payload in (
             {**self.payload, "output_format": "pdf"},

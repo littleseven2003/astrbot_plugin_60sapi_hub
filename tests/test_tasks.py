@@ -241,6 +241,55 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             self.sites.store._lock.release()
         self.assertEqual(await self.tasks.list_tasks(), [])
 
+    async def test_invalid_expected_revision_is_task_validation_and_no_write(self) -> None:
+        task = await self._create("revision任务")
+        invalid = [None, True, False, 0, -1, 1.0, 1.5, "1", "", []]
+        for value in invalid:
+            with self.subTest(kind="update", value=value):
+                with self.assertRaises(TaskValidationError) as caught:
+                    await self.tasks.update_task(
+                        task.id,
+                        TaskUpdate(
+                            name="不应写入",
+                            profile_id=self.profile.id,
+                            output_format="text",
+                            umos=[],
+                            expected_revision=value,
+                        ),
+                    )
+                self.assertEqual(caught.exception.field, "expected_revision")
+            with self.subTest(kind="delete", value=value):
+                with self.assertRaises(TaskValidationError) as caught:
+                    await self.tasks.delete_task(task.id, value)
+                self.assertEqual(caught.exception.field, "expected_revision")
+            self.assertEqual(
+                (await self.tasks.get_task(task.id)).name,
+                "revision任务",
+            )
+            self.assertEqual(len(await self.tasks.list_tasks()), 1)
+        updated = await self.tasks.update_task(
+            task.id,
+            TaskUpdate(
+                name="合法写入",
+                profile_id=self.profile.id,
+                output_format="text",
+                umos=[],
+                expected_revision=task.revision,
+            ),
+        )
+        self.assertEqual(updated.name, "合法写入")
+        with self.assertRaises(TaskConflictError):
+            await self.tasks.update_task(
+                task.id,
+                TaskUpdate(
+                    name="过期整数",
+                    profile_id=self.profile.id,
+                    output_format="text",
+                    umos=[],
+                    expected_revision=task.revision,
+                ),
+            )
+
     async def test_missing_profile_missing_task_and_validation(self) -> None:
         with self.assertRaises(Exception):
             await self.tasks.create_task(

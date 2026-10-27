@@ -15,6 +15,8 @@ from .core.sites import SiteService
 from .news_web import NewsWeb
 from .profile_web import ProfileWeb
 from .site_web import SiteWeb
+from .core.image_service import ProfileImageService
+from .core.image_snapshots import ImageSnapshotStore
 from .core.profile_api import ProfileApi
 from .core.profiles import ContentProfileService
 
@@ -32,6 +34,8 @@ class SixtySAPIHub(Star):
         self.sites = SiteService(data_dir / DATABASE_FILENAME)
         self.content = ContentService(self.sites)
         self.profiles = ContentProfileService(self.sites)
+        self.image_snapshots = ImageSnapshotStore()
+        self.image_service = ProfileImageService()
         self._active = False
         self._site_web = SiteWeb(
             SiteApi(self.sites),
@@ -49,7 +53,13 @@ class SixtySAPIHub(Star):
             is_active=lambda: self._active,
         )
         self._profile_web = ProfileWeb(
-            ProfileApi(self.profiles, self.content, self.sites),
+            ProfileApi(
+                self.profiles,
+                self.content,
+                self.sites,
+                image_snapshots=self.image_snapshots,
+                image_service=self.image_service,
+            ),
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
@@ -64,13 +74,21 @@ class SixtySAPIHub(Star):
             await self.content.open()
         except Exception:
             await self.content.close()
-            await self.sites.close()
+            try:
+                await self.image_service.close()
+            finally:
+                self.image_snapshots.close()
+                await self.sites.close()
             raise
         self._active = True
 
     async def terminate(self) -> None:
         self._active = False
         try:
-            await self.content.close()
+            await self.image_service.close()
         finally:
-            await self.sites.close()
+            self.image_snapshots.close()
+            try:
+                await self.content.close()
+            finally:
+                await self.sites.close()

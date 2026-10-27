@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。M1、M2 已通过 AstrBot v4.29.1 / Python 3.12.13 基线验收，当前包括插件入口、站点与组合持久化、五类内容获取、共享缓存/手动刷新和后台预览。图文输出、消息发送和调度尚未实现；代码、依赖和测试目录随后续功能按需创建。验收范围见 [测试手册](testing.md#m2-验收基线)。
+本项目按个人开源项目维护。M1、M2 已通过 AstrBot v4.29.1 / Python 3.12.13 基线验收，当前包括插件入口、站点与组合持久化、五类内容获取、共享缓存/手动刷新、后台预览、组合文字/Markdown 和分页图片。消息发送和调度尚未实现；代码、依赖和测试目录随后续功能按需创建。验收范围见 [测试手册](testing.md#m2-验收基线)。
 
 ## 获取与本地设置
 
@@ -16,7 +16,9 @@ git config core.hooksPath .githooks
 
 当前验证基线为 AstrBot v4.29.1 和 Python 3.12，依据与核验范围见下文“AstrBot 兼容性基线”。使用独立虚拟环境和独立 `ASTRBOT_ROOT`，不要改动正在使用的 AstrBot 实例。
 
-运行依赖随实现添加，不提前安装整个依赖集合，不把 AstrBot 本体加入插件 requirements。当前运行依赖为 `aiosqlite`（异步 SQLite）和 `httpx`（异步 HTTP），约束见 [requirements.txt](../requirements.txt)；AstrBot 本体由宿主提供，不作为插件依赖安装。`httpx` 只由插件自身使用，不依赖宿主碰巧安装的版本。
+运行依赖随实现添加，不提前安装整个依赖集合，不把 AstrBot 本体加入插件 requirements。当前运行依赖为 `aiosqlite`（异步 SQLite）、`httpx`（异步 HTTP）和 `Pillow`（本地中文图片渲染），约束见 [requirements.txt](../requirements.txt)；AstrBot 本体由宿主提供，不作为插件依赖安装。`httpx` 只由插件自身使用，不依赖宿主碰巧安装的版本。`Pillow` 只用于服务端绘制图片，按项目依赖安装；它不安装 AstrBot 本体。
+
+图片中文字体不随仓库分发，按系统路径发现（macOS 实测 `Hiragino Sans GB`；Linux 可检测 Noto Sans CJK/WenQuanYi）；也可设置 `ASTRBOT_60SAPI_FONT` 指向管理员提供的字体文件。自动发现和显式路径都会用实际字形覆盖检查常见中文字符，缺少中文覆盖的字体（例如 Arial）会被跳过或拒绝。字体仍受其自身许可约束，插件不复制或再分发系统字体；缺少字体时返回 `font_unavailable`，不生成伪造或缺字图片。
 
 测试宿主、凭据、运行数据库、图片缓存和未脱敏日志不提交到仓库。需要真实平台测试时使用专用测试账号/群。
 
@@ -69,7 +71,7 @@ git config core.hooksPath .githooks
 - 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
 - SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 的官方文档/源码和一次公开实例响应已核验；尚未遍历社区实例、不同部署版本，也未用真实实例完成浏览器全链路验证。
-- 其他 endpoint、图片渲染、发送和调度尚未实现；不要展示或宣称这些能力。内容组合持久化/预览和纯文字/Markdown 输出已实现，但不能冒充图片输出或发送。站点保存仍只做格式校验，不代替内容获取验证。
+- 其他 endpoint、消息发送和调度尚未实现；不要展示或宣称这些能力。组合持久化/预览、纯文字/Markdown 和固定样式分页图片已实现，但不能冒充消息发送或主题编辑。站点保存仍只做格式校验，不代替内容获取验证。
 
 ### 可复现的本地验证
 
@@ -159,7 +161,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 写请求的响应丢失、超时或连接中断进入“结果未确认”：页面保留表单/目标信息，禁用保存或删除、取消和关闭，只提供“重新读取最新列表”。重新读取失败继续保持未确认；读取成功后显示最新列表状态，并要求人工确认后再关闭。新增记录不按同名/同地址认领，只根据服务器列表和稳定 ID 展示实际状态；编辑/删除不自动重发。
 - 4.29.1 bridge 的失败对象只有 `Error.message`，不保留 HTTP 状态或响应 `data.code`。页面把已知的服务端拒绝消息视为明确失败，其余（含网络异常和未知 5xx）保守归为未确认。当前无需修改 API 契约；以后若增加机器可读错误码，应同步 bridge 能力和兼容性说明。
 - 页面不使用 CDN、外部字体、统计脚本或独立服务器；列表用 `textContent` 等 DOM API 渲染，不使用用户数据拼 `innerHTML`。
-- 当前包含五类内容单栏预览、缓存与预览和内容组合 CRUD/组合预览，不包含其他 endpoint、图片输出、发送或调度。内容组合只引用已保存站点和五个现有类型；不能扩展成任意 URL、跨站点或参数面板。站点保存和组合保存本身不发起上游请求。组合预览成功后页面显示同源纯文字/Markdown，可复制或下载；格式切换、复制、下载不访问上游，不引入 HTML Markdown 渲染器。
+- 当前包含五类内容单栏预览、缓存与预览、内容组合 CRUD/组合预览、文字/Markdown 和固定样式分页图片，不包含其他 endpoint、发送或调度。内容组合只引用已保存站点和五个现有类型；不能扩展成任意 URL、跨站点或参数面板。站点保存和组合保存本身不发起上游请求。组合预览成功后页面显示同源纯文字/Markdown，可复制或下载；格式切换、复制、下载不访问上游，不引入 HTML Markdown 渲染器。图片由服务端短期快照显式生成，逐页 base64 PNG 展示/下载；不重新请求上游，不使用 HTML 模板或远程资源。
 
 ## 内容获取与预览
 
@@ -212,7 +214,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
@@ -250,6 +252,10 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_profiles.py`：模型/类型/重复/顺序/limit/params 校验、CRUD/revision、重开持久化、v1→v2 迁移、站点引用删除拒绝、并发删除/创建无悬空引用。
 - `tests/test_profile_api.py`：组合 CRUD/冲突、五类预览顺序、逐栏截取不污染完整缓存、缓存命中/刷新、station revision、部分失败/全部失败/空列表、错误脱敏、禁用站点和严格 force_refresh，以及成功/部分成功响应包含同源 outputs。
 - `tests/test_profile_render.py`：纯函数同源、不修改输入；文字字段/顺序/限制/日期提示/空栏目/零值热度/失败栏目；Markdown 转义标题、换行、HTML、围栏、链接括号/空格、非法链接降级和生成结构。
+- `tests/test_image_snapshots.py`：TTL、LRU/数量、总字节、单快照大小、关闭后拒绝访问。
+- `tests/test_profile_image.py`：真实 PNG、长内容多页、同快照确定性、空列表/热度 0/部分失败、页数/字节/字体/取消限制。
+- `tests/test_image_service.py`：排队/准入上限、总超时、线程不响应取消、取消后新请求、关闭期间排队请求、准入清理期间首次/再次取消、多轮取消容量稳定、关闭与取消交错和资源释放。
+- `tests/test_profile_image_api.py`：同预览快照、图片不增加上游请求、后改数据不改变同快照图片、归属/过期/修改/删除/停用失效、全部失败无快照、图片超限仍保留文字。
 
 - 宿主与浏览器验证使用本地模拟上游，覆盖每日新闻、Bilibili 热搜、知乎热榜、抖音热搜与今日头条热榜切换、正常、空内容、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后五种内容均恢复；不连接真实消息平台。
 - 官方公开实例 `https://60s.viki.moe/v2/60s` 只做一次低频 GET 核验：HTTP 200、`code=200`、内容日期与 15 条字符串新闻；保存的响应用解析器验证通过。没有把该实例写入默认配置，也没有用真实实例做浏览器全链路。

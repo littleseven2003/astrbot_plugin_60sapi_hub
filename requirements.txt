@@ -1,3 +1,4 @@
-# 异步 SQLite 存储与异步 HTTP 客户端；AstrBot 本体由宿主提供，不作为插件依赖安装。
+# 异步 SQLite 存储、异步 HTTP 与本地中文图片渲染；AstrBot 本体由宿主提供，不作为插件依赖安装。
 aiosqlite>=0.21,<1
 httpx>=0.27,<1
+Pillow>=10,<15

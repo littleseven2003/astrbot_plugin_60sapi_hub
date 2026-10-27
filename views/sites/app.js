@@ -114,6 +114,10 @@ const elements = {
   profileDownloadButton: document.getElementById("profile-download-button"),
   profileOutputText: document.getElementById("profile-output-text"),
   profileOutputHint: document.getElementById("profile-output-hint"),
+  profileImageButton: document.getElementById("profile-image-button"),
+  profileImageState: document.getElementById("profile-image-state"),
+  profileImageHint: document.getElementById("profile-image-hint"),
+  profileImagePages: document.getElementById("profile-image-pages"),
 };
 
 const state = {
@@ -147,6 +151,9 @@ const state = {
   profilePreviewFormat: "text",
   profileOutputEpoch: 0,
   profileCopyOperationId: 0,
+  profileImageSnapshotId: null,
+  profileImageRequestId: 0,
+  profileImageLoading: false,
 };
 
 const CONTENT_LABELS = {
@@ -1237,6 +1244,159 @@ function setProfilePreviewBusy(busy) {
   elements.profilePreviewButton.textContent = busy ? "正在获取…" : "获取组合";
   elements.profilePreviewRefreshButton.textContent = busy ? "正在刷新…" : "刷新组合";
   syncProfileOutputButtons();
+  syncProfileImageButton();
+}
+
+function resetProfileImages() {
+  state.profileImageRequestId += 1;
+  state.profileImageLoading = false;
+  state.profileImageSnapshotId = null;
+  elements.profileImagePages.replaceChildren();
+  elements.profileImageState.textContent = "";
+  elements.profileImageState.hidden = true;
+  elements.profileImageHint.textContent = "";
+  elements.profileImageHint.hidden = true;
+  syncProfileImageButton();
+}
+
+function syncProfileImageButton() {
+  const hasImageContext = Boolean(
+    state.profilePreviewOutputs &&
+    state.profileImageSnapshotId &&
+    state.profilePreviewId,
+  );
+  elements.profileImageButton.disabled =
+    state.profilePreviewLoading ||
+    state.profileImageLoading ||
+    !hasImageContext;
+  elements.profileImageButton.textContent =
+    state.profileImageLoading ? "正在生成…" : "生成图片";
+}
+
+function renderProfileImages(data) {
+  if (!data || !Array.isArray(data.pages) || data.pages.length === 0) {
+    throw new Error("图片数据格式异常。");
+  }
+  elements.profileImagePages.replaceChildren();
+  const total = data.pages.length;
+  for (const page of data.pages) {
+    if (
+      !page ||
+      typeof page.png_base64 !== "string" ||
+      !Number.isInteger(page.index) ||
+      !Number.isInteger(page.width) ||
+      !Number.isInteger(page.height)
+    ) {
+      throw new Error("图片分页数据格式异常。");
+    }
+    const figure = document.createElement("figure");
+    figure.className = "profile-image-page";
+    const image = document.createElement("img");
+    image.src = `data:image/png;base64,${page.png_base64}`;
+    image.alt = `组合图片第 ${page.index} 页`;
+    image.width = page.width;
+    image.height = page.height;
+    image.loading = "lazy";
+    const caption = document.createElement("figcaption");
+    caption.textContent =
+      `第 ${page.index} / ${total} 页 · ${page.width}×${page.height}`;
+    const download = makeButton(
+      `下载第 ${page.index} 页 PNG`,
+      "button button-secondary",
+      () => downloadProfileImagePage(page, data.profile_id),
+      `下载组合图片第 ${page.index} 页`,
+    );
+    figure.append(image, caption, download);
+    elements.profileImagePages.append(figure);
+  }
+  elements.profileImageState.textContent = `已生成 ${total} 页`;
+  elements.profileImageState.hidden = false;
+  elements.profileImageHint.textContent = "";
+  elements.profileImageHint.hidden = true;
+}
+
+function downloadProfileImagePage(page, profileId) {
+  try {
+    const raw = atob(page.png_base64);
+    const bytes = new Uint8Array(raw.length);
+    for (let index = 0; index < raw.length; index += 1) {
+      bytes[index] = raw.charCodeAt(index);
+    }
+    if (bytes[0] !== 0x89 || bytes[1] !== 0x50 ||
+        bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+      throw new Error("not a png");
+    }
+    const safeId = String(profileId || state.profilePreviewId || "profile")
+      .replace(/[^A-Za-z0-9_-]/g, "")
+      .slice(0, 64) || "profile";
+    const filename =
+      `60sapi-profile-${safeId}-page-${page.index}.png`;
+    const blob = new Blob([bytes], { type: "image/png" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.rel = "noopener";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    elements.profileImageHint.textContent = `已下载 ${filename}。`;
+    elements.profileImageHint.hidden = false;
+  } catch {
+    elements.profileImageHint.textContent = "图片下载失败，请重新生成。";
+    elements.profileImageHint.hidden = false;
+  }
+}
+
+async function generateProfileImage() {
+  if (
+    !bridge ||
+    state.profileImageLoading ||
+    state.profilePreviewLoading ||
+    !state.profileImageSnapshotId ||
+    !state.profilePreviewOutputs
+  ) {
+    return;
+  }
+  const profileId = state.profilePreviewId;
+  const snapshotId = state.profileImageSnapshotId;
+  const requestId = ++state.profileImageRequestId;
+  state.profileImageLoading = true;
+  elements.profileImagePages.replaceChildren();
+  elements.profileImageHint.textContent = "";
+  elements.profileImageHint.hidden = true;
+  elements.profileImageState.textContent = "正在生成图片…";
+  elements.profileImageState.hidden = false;
+  syncProfileImageButton();
+  try {
+    const data = await bridge.apiPost(
+      `profiles/${encodeURIComponent(profileId)}/image`,
+      { snapshot_id: snapshotId },
+    );
+    if (
+      requestId !== state.profileImageRequestId ||
+      snapshotId !== state.profileImageSnapshotId ||
+      profileId !== state.profilePreviewId ||
+      !state.profilePreviewOutputs
+    ) {
+      return;
+    }
+    renderProfileImages(data);
+  } catch (error) {
+    if (requestId === state.profileImageRequestId) {
+      elements.profileImageState.textContent = "";
+      elements.profileImageState.hidden = true;
+      elements.profileImageHint.textContent =
+        `图片生成失败：${friendlyErrorMessage(error)}；文字和 Markdown 仍可使用。`;
+      elements.profileImageHint.hidden = false;
+    }
+  } finally {
+    if (requestId === state.profileImageRequestId) {
+      state.profileImageLoading = false;
+      syncProfileImageButton();
+    }
+  }
 }
 
 function resetProfileOutput() {
@@ -1355,6 +1515,7 @@ function downloadProfileOutput() {
 function clearProfilePreview() {
   elements.profilePreviewResult.hidden = true;
   resetProfileOutput();
+  resetProfileImages();
   elements.profilePreviewName.textContent = "";
   elements.profilePreviewSource.textContent = "";
   elements.profilePreviewCounts.textContent = "";
@@ -2045,6 +2206,20 @@ function renderProfilePreview(data) {
     textRadio.checked = true;
   }
   renderProfileOutput();
+  resetProfileImages();
+  const snapshot = data.image_snapshot && typeof data.image_snapshot === "object"
+    ? data.image_snapshot
+    : null;
+  state.profileImageSnapshotId =
+    snapshot && typeof snapshot.id === "string" && snapshot.id
+      ? snapshot.id
+      : null;
+  if (!state.profileImageSnapshotId) {
+    elements.profileImageHint.textContent =
+      "本次预览未保留图片快照，可能超过大小限制；文字和 Markdown 仍可使用。";
+    elements.profileImageHint.hidden = false;
+  }
+  syncProfileImageButton();
   elements.profilePreviewResult.hidden = false;
   const tone = data.status === "complete"
     ? "success"
@@ -2074,6 +2249,7 @@ async function previewProfile(forceRefresh = false) {
     showProfilePreviewStatus("请先选择一个已保存组合。", "error");
     return;
   }
+  state.profilePreviewId = profileId;
   const profile = state.profiles.find((item) => item.id === profileId);
   if (!profile) {
     showProfilePreviewStatus("组合不存在或已被删除，请重新选择。", "error");
@@ -2416,6 +2592,7 @@ function bindEvents() {
     }
   });
   elements.profileCopyButton.addEventListener("click", copyProfileOutput);
+  elements.profileImageButton.addEventListener("click", generateProfileImage);
   elements.profileDownloadButton.addEventListener(
     "click",
     downloadProfileOutput,

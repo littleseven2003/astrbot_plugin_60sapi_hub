@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +19,22 @@ from .news import (
     NewsTimeoutError,
     NewsTooLargeError,
     NewsTransportError,
+)
+from .image_service import (
+    ImageRenderFailedError,
+    ImageServiceClosedError,
+    ImageTimeoutError,
+    ProfileImageService,
+)
+from .image_snapshots import (
+    ImageSnapshotClosedError,
+    ImageSnapshotError,
+    ImageSnapshotStore,
+)
+from .profile_image import (
+    FontUnavailableError,
+    ImageLimitError,
+    ProfileImageError,
 )
 from .profile_render import render_profile_outputs
 from .profiles import (
@@ -53,10 +71,15 @@ class ProfileApi:
         profiles: ContentProfileService,
         content: ContentService,
         sites: SiteService,
+        *,
+        image_snapshots: ImageSnapshotStore | None = None,
+        image_service: ProfileImageService | None = None,
     ) -> None:
         self._profiles = profiles
         self._content = content
         self._sites = sites
+        self._image_snapshots = image_snapshots
+        self._image_service = image_service
 
     async def list_profiles(self) -> ProfileApiResult:
         try:
@@ -177,7 +200,12 @@ class ProfileApi:
             return _internal_error()
         return _ok({"deleted_id": profile_id})
 
-    async def preview_profile(self, payload: object) -> ProfileApiResult:
+    async def preview_profile(
+        self,
+        payload: object,
+        *,
+        owner: str | None = None,
+    ) -> ProfileApiResult:
         data = _payload_dict(payload)
         if data is None:
             return _invalid_body_error()
@@ -298,7 +326,171 @@ class ProfileApi:
             )
 
         data["outputs"] = render_profile_outputs(data)
+        if self._image_snapshots is not None:
+            try:
+                snapshot = self._image_snapshots.put(
+                    owner=owner or "",
+                    profile_id=profile.id,
+                    profile_revision=profile.revision,
+                    site_id=site.id,
+                    site_revision=site.revision,
+                    data=_image_snapshot_data(data),
+                )
+            except ImageSnapshotError:
+                snapshot = None
+            if snapshot is not None:
+                data["image_snapshot"] = {
+                    "id": snapshot.id,
+                    "expires_at": snapshot.expires_at,
+                }
         return _ok(data)
+
+    async def generate_image(
+        self,
+        profile_id: str,
+        payload: object,
+        *,
+        owner: str | None = None,
+    ) -> ProfileApiResult:
+        data = _payload_dict(payload)
+        if data is None:
+            return _invalid_body_error()
+        snapshot_id = data.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+            return _error(
+                400,
+                "snapshot_id 必须是非空字符串。",
+                code="invalid_snapshot_id",
+            )
+        if self._image_snapshots is None or self._image_service is None:
+            return _error(
+                503,
+                "图片渲染当前不可用。",
+                code="image_unavailable",
+            )
+        try:
+            snapshot = self._image_snapshots.get(snapshot_id.strip())
+        except ImageSnapshotClosedError:
+            return _error(
+                503,
+                "图片快照当前不可用。",
+                code="snapshot_unavailable",
+            )
+        if snapshot is None:
+            return _error(
+                410,
+                "图片快照已过期或被淘汰，请重新预览组合。",
+                code="snapshot_expired",
+            )
+        if (owner or "") != snapshot.owner:
+            return _error(
+                403,
+                "无权使用该图片快照。",
+                code="forbidden",
+            )
+        if snapshot.profile_id != profile_id:
+            return _error(
+                404,
+                "图片快照不属于该组合。",
+                code="snapshot_not_found",
+            )
+        try:
+            profile = await self._profiles.get_profile(profile_id)
+        except ProfileNotFoundError:
+            return _stale_snapshot_error()
+        except (ProfileStorageError, ProfileValidationError):
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if (
+            profile.revision != snapshot.profile_revision
+            or profile.site_id != snapshot.site_id
+        ):
+            return _stale_snapshot_error()
+        try:
+            site = await self._sites.get_site(profile.site_id)
+        except SiteNotFoundError:
+            return _stale_snapshot_error()
+        except SiteStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if not site.enabled or site.revision != snapshot.site_revision:
+            return _stale_snapshot_error()
+
+        try:
+            pages = await self._image_service.render(
+                snapshot.data,
+                created_at=snapshot.created_at,
+            )
+        except ImageTimeoutError:
+            return _error(
+                504,
+                "图片生成超时，请稍后重试。",
+                code="image_timeout",
+            )
+        except FontUnavailableError:
+            return _error(
+                503,
+                "宿主缺少可用的中文字体，无法生成图片。",
+                code="font_unavailable",
+            )
+        except ImageLimitError:
+            return _error(
+                422,
+                "图片内容超过页数或大小限制，请缩小组合或条数后重试。",
+                code="image_limit_exceeded",
+            )
+        except ImageServiceClosedError:
+            return _error(
+                503,
+                "图片渲染当前不可用。",
+                code="image_unavailable",
+            )
+        except (ImageRenderFailedError, ProfileImageError):
+            return _error(
+                422,
+                "图片渲染失败，文字和 Markdown 仍可使用。",
+                code="image_render_failed",
+            )
+        except Exception:
+            return _error(
+                500,
+                "图片渲染失败，文字和 Markdown 仍可使用。",
+                code="image_internal_error",
+            )
+
+        page_payloads: list[dict[str, Any]] = []
+        total_base64 = 0
+        for page in pages:
+            encoded = base64.b64encode(page.png).decode("ascii")
+            total_base64 += len(encoded)
+            page_payloads.append(
+                {
+                    "index": page.index,
+                    "width": page.width,
+                    "height": page.height,
+                    "sha256": hashlib.sha256(page.png).hexdigest(),
+                    "png_base64": encoded,
+                },
+            )
+        if total_base64 > 16 * 1024 * 1024:
+            return _error(
+                422,
+                "图片响应超过大小限制，请缩小组合或条数后重试。",
+                code="image_limit_exceeded",
+            )
+        return _ok(
+            {
+                "snapshot_id": snapshot.id,
+                "profile_id": profile.id,
+                "profile_revision": profile.revision,
+                "page_count": len(page_payloads),
+                "width": pages[0].width if pages else 0,
+                "height": pages[0].height if pages else 0,
+                "pages": page_payloads,
+            },
+        )
 
 
 def _section_error(
@@ -353,6 +545,26 @@ async def _safe_site(
         return await sites.get_site(site_id)
     except Exception:
         return None
+
+
+def _image_snapshot_data(data: dict[str, Any]) -> dict[str, Any]:
+    """只保存渲染需要的已验证数据，不保存 HTML 或前端路径。"""
+    return {
+        "profile_name": data.get("profile_name"),
+        "site_name": data.get("site_name"),
+        "status": data.get("status"),
+        "success_count": data.get("success_count"),
+        "failure_count": data.get("failure_count"),
+        "sections": data.get("sections"),
+    }
+
+
+def _stale_snapshot_error() -> ProfileApiResult:
+    return _error(
+        409,
+        "组合或站点配置已变化，请重新预览后再生成图片。",
+        code="snapshot_stale",
+    )
 
 
 def _profile_dict(

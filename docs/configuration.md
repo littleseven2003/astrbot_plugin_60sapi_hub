@@ -196,11 +196,11 @@
 | `POST /<插件名>/tasks/<id>/update` | 按 expected_revision 编辑任务 |
 | `POST /<插件名>/tasks/<id>/delete` | 按 expected_revision 删除任务 |
 
-请求中出现 `enabled`、`schedule` 或 `next_run` 返回 400 `unsupported_enable_request`，不会写入。任务响应固定返回 `enabled=false`、`can_send=false`。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
+请求中出现 `enabled`、`schedule` 或 `next_run` 返回 400 `unsupported_enable_request`，不会写入。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应固定返回 `enabled=false`、`can_send=false`。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
 
 ## 推送白名单
 
-每项一个完整 UMO：`平台适配器实例ID:消息类型:完整会话ID`。只在**前两个**冒号处分割，会话 ID 内部的冒号保留；只去首尾空白、按完整字符串精确去重并保留首次出现顺序，不改大小写或改写内部内容。
+每项一个完整 UMO：`平台适配器实例ID:消息类型:完整会话ID`。只在**前两个**冒号处分割，会话 ID 内部的冒号保留；只对整条输入去首尾空白，平台字段、消息类型和会话 ID 内部内容不做 trim。平台字段含任何空白直接拒绝；会话 ID 的前导/内部空白和内部冒号原样保留。按规范化后的完整字符串精确去重并保留首次出现顺序，不改大小写或改写内部内容。合法保存值严格等于整条输入 strip 后的值。
 
 - 平台字段是 AstrBot 平台适配器实例 ID（例如 `aiocqhttp`、`qq_official`），不是固定平台类型名；不能包含冒号、感叹号或空白，最多 128 字符。
 - 消息类型只接受 `GroupMessage` 和 `FriendMessage`；`OtherMessage` 等拒绝。

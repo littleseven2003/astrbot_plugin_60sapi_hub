@@ -15,10 +15,13 @@ from .core.sites import SiteService
 from .news_web import NewsWeb
 from .profile_web import ProfileWeb
 from .site_web import SiteWeb
+from .task_web import TaskWeb
 from .core.image_service import ProfileImageService
 from .core.image_snapshots import ImageSnapshotStore
 from .core.profile_api import ProfileApi
 from .core.profiles import ContentProfileService
+from .core.task_api import TaskApi
+from .core.tasks import PushTaskService
 
 PLUGIN_NAME = "astrbot_plugin_60sapi_hub"
 DATABASE_FILENAME = "sites.sqlite3"
@@ -34,6 +37,7 @@ class SixtySAPIHub(Star):
         self.sites = SiteService(data_dir / DATABASE_FILENAME)
         self.content = ContentService(self.sites)
         self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.profiles, self.sites.store)
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
         self._active = False
@@ -52,6 +56,11 @@ class SixtySAPIHub(Star):
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
+        self._task_web = TaskWeb(
+            TaskApi(self.tasks, self.profiles, self.sites),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
         self._profile_web = ProfileWeb(
             ProfileApi(
                 self.profiles,
@@ -66,6 +75,7 @@ class SixtySAPIHub(Star):
         self._site_web.register(context)
         self._news_web.register(context)
         self._content_web.register(context)
+        self._task_web.register(context)
         self._profile_web.register(context)
 
     async def initialize(self) -> None:

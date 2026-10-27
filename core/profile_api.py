@@ -43,6 +43,7 @@ from .profiles import (
     ProfileConflictError,
     ProfileCreate,
     ProfileNotFoundError,
+    ProfileReferencedError,
     ProfileStorageError,
     ProfileUpdate,
     ProfileValidationError,
@@ -194,6 +195,15 @@ class ProfileApi:
             return _not_found_error()
         except ProfileConflictError as exc:
             return _conflict_error(exc)
+        except ProfileReferencedError as exc:
+            return _error(
+                409,
+                "内容组合仍被推送任务引用，不能删除："
+                + "、".join(exc.task_names)
+                + "。",
+                code="profile_referenced",
+                data={"task_names": list(exc.task_names)},
+            )
         except ProfileStorageError:
             return _storage_error()
         except Exception:

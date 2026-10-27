@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from core.profiles import ContentProfileService, ProfileCreate, ProfileReferencedError
+from core.site_store import SCHEMA_VERSION, SiteStore
+from core.sites import SiteCreate, SiteService
+from core.tasks import (
+    PushTaskService,
+    TaskConflictError,
+    TaskCreate,
+    TaskNotFoundError,
+    TaskUpdate,
+    TaskValidationError,
+    normalize_umo,
+    normalize_umos,
+)
+
+
+def item(content_type="daily_news", limit=None):
+    return {"content_type": content_type, "params": {}, "limit": limit}
+
+
+class UmoValidationTest(unittest.TestCase):
+    def test_group_and_friend_umo_mixed_dedupe_and_colons(self) -> None:
+        raw = [
+            " aiocqhttp:GroupMessage:123:456 ",
+            "aiocqhttp:FriendMessage:User:With:Colons",
+            "aiocqhttp:GroupMessage:123:456",
+            "lark:GroupMessage:g1",
+        ]
+        self.assertEqual(
+            normalize_umos(raw),
+            (
+                "aiocqhttp:GroupMessage:123:456",
+                "aiocqhttp:FriendMessage:User:With:Colons",
+                "lark:GroupMessage:g1",
+            ),
+        )
+        self.assertEqual(normalize_umos([]), ())
+        self.assertEqual(
+            normalize_umo("aiocqhttp:GroupMessage:Case:Kept"),
+            "aiocqhttp:GroupMessage:Case:Kept",
+        )
+
+    def test_rejects_bare_ids_bad_types_empty_and_controls(self) -> None:
+        invalid = [
+            "12345",
+            "12345:GroupMessage",
+            "aiocqhttp:GroupMessage:",
+            ":GroupMessage:123",
+            "aiocqhttp::123",
+            "aiocqhttp:OtherMessage:123",
+            "aiocqhttp:groupmessage:123",
+            "aiocqhttp:GroupMessage:123\n",
+            "aiocqhttp:GroupMessage:123\x00",
+            "aiocqhttp!:GroupMessage:123",
+            ":GroupMessage:123",
+            "aiocqhttp:GroupMessage:  ",
+        ]
+        for value in invalid:
+            with self.subTest(value=value):
+                with self.assertRaises(TaskValidationError):
+                    normalize_umo(value)
+        with self.assertRaises(TaskValidationError):
+            normalize_umos(["a:GroupMessage:1"] * 21)
+        with self.assertRaises(TaskValidationError):
+            normalize_umos("a:GroupMessage:1")
+        with self.assertRaises(TaskValidationError):
+            normalize_umos([1])
+
+    def test_length_limits(self) -> None:
+        with self.assertRaises(TaskValidationError):
+            normalize_umo("a" * 129 + ":GroupMessage:x")
+        with self.assertRaises(TaskValidationError):
+            normalize_umo("a:GroupMessage:" + "x" * 385)
+        with self.assertRaises(TaskValidationError):
+            normalize_umo("a:GroupMessage:" + "x" * 500)
+
+
+class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "plugin.sqlite3"
+        self.sites = SiteService(self.db_path)
+        await self.sites.open()
+        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.site = await self.sites.create_site(
+            SiteCreate(
+                name="任务站点",
+                base_url="http://example.test/proxy",
+                enabled=False,
+                timeout_seconds=5,
+            ),
+        )
+        self.profile = await self.profiles.create_profile(
+            ProfileCreate(
+                name="任务组合",
+                site_id=self.site.id,
+                items=[item()],
+            ),
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.sites.close()
+        self.tmp.cleanup()
+
+    async def _create(self, name="任务"):
+        return await self.tasks.create_task(
+            TaskCreate(
+                name=name,
+                profile_id=self.profile.id,
+                output_format="image",
+                umos=[
+                    "aiocqhttp:GroupMessage:g:1",
+                    "aiocqhttp:FriendMessage:u1",
+                ],
+            ),
+        )
+
+    async def test_create_read_update_delete_and_restart(self) -> None:
+        task = await self._create()
+        self.assertEqual(task.profile_id, self.profile.id)
+        self.assertEqual(task.output_format, "image")
+        self.assertEqual(task.umos, (
+            "aiocqhttp:GroupMessage:g:1",
+            "aiocqhttp:FriendMessage:u1",
+        ))
+        self.assertFalse(task.enabled)
+        self.assertEqual([x.id for x in await self.tasks.list_tasks()], [task.id])
+        self.assertEqual((await self.tasks.get_task(task.id)).name, "任务")
+
+        updated = await self.tasks.update_task(
+            task.id,
+            TaskUpdate(
+                name="改名任务",
+                profile_id=self.profile.id,
+                output_format="markdown",
+                umos=[],
+                expected_revision=task.revision,
+            ),
+        )
+        self.assertEqual(updated.name, "改名任务")
+        self.assertEqual(updated.umos, ())
+        self.assertEqual(updated.output_format, "markdown")
+        with self.assertRaises(TaskConflictError):
+            await self.tasks.update_task(
+                task.id,
+                TaskUpdate(
+                    name="冲突",
+                    profile_id=self.profile.id,
+                    output_format="text",
+                    umos=[],
+                    expected_revision=task.revision,
+                ),
+            )
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            tasks = PushTaskService(
+                ContentProfileService(reopened),
+                reopened.store,
+            )
+            loaded = await tasks.get_task(task.id)
+            self.assertEqual(loaded.name, "改名任务")
+            self.assertEqual(loaded.output_format, "markdown")
+            self.assertEqual(loaded.umos, ())
+        finally:
+            await reopened.close()
+
+    async def test_profile_delete_protection_and_delete_task(self) -> None:
+        task = await self._create()
+        with self.assertRaises(ProfileReferencedError) as caught:
+            await self.profiles.delete_profile(self.profile.id, self.profile.revision)
+        self.assertEqual(caught.exception.task_names, ("任务",))
+        await self.tasks.delete_task(task.id, task.revision)
+        with self.assertRaises(TaskNotFoundError):
+            await self.tasks.get_task(task.id)
+        await self.profiles.delete_profile(self.profile.id, self.profile.revision)
+
+    async def test_cancelled_create_does_not_persist(self) -> None:
+        await self.sites.store._lock.acquire()
+        try:
+            task = asyncio.create_task(
+                self.tasks.create_task(
+                    TaskCreate(
+                        name="取消任务",
+                        profile_id=self.profile.id,
+                        output_format="text",
+                        umos=[],
+                    ),
+                ),
+            )
+            await asyncio.sleep(0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        finally:
+            self.sites.store._lock.release()
+        self.assertEqual(await self.tasks.list_tasks(), [])
+
+    async def test_missing_profile_missing_task_and_validation(self) -> None:
+        with self.assertRaises(Exception):
+            await self.tasks.create_task(
+                TaskCreate(
+                    name="坏任务",
+                    profile_id="missing",
+                    output_format="text",
+                    umos=[],
+                ),
+            )
+        with self.assertRaises(TaskValidationError):
+            await self.tasks.create_task(
+                TaskCreate(
+                    name="坏格式",
+                    profile_id=self.profile.id,
+                    output_format="pdf",
+                    umos=[],
+                ),
+            )
+        with self.assertRaises(TaskNotFoundError):
+            await self.tasks.get_task("missing")
+
+    async def test_v2_database_migrates_tasks_without_losing_data(self) -> None:
+        await self._create("迁移任务")
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("DROP TABLE push_task_umos")
+            raw.execute("DROP TABLE push_tasks")
+            raw.execute("PRAGMA user_version = 2")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            with sqlite3.connect(self.db_path) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+                self.assertEqual(
+                    check.execute("SELECT COUNT(*) FROM content_profiles").fetchone()[0],
+                    1,
+                )
+            tasks = PushTaskService(
+                ContentProfileService(reopened),
+                reopened.store,
+            )
+            self.assertEqual(await tasks.list_tasks(), [])
+        finally:
+            await reopened.close()
+
+
+class TaskConcurrencyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_task_create_and_profile_delete_no_dangling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "plugin.sqlite3"
+            sites = SiteService(db)
+            await sites.open()
+            profiles = ContentProfileService(sites)
+            tasks = PushTaskService(profiles, sites.store)
+            site = await sites.create_site(
+                SiteCreate(
+                    name="并发站点",
+                    base_url="http://example.test/proxy",
+                    enabled=True,
+                    timeout_seconds=5,
+                ),
+            )
+            profile = await profiles.create_profile(
+                ProfileCreate(name="并发组合", site_id=site.id, items=[item()]),
+            )
+            async def create():
+                try:
+                    return await tasks.create_task(
+                        TaskCreate(
+                            name="并发任务",
+                            profile_id=profile.id,
+                            output_format="text",
+                            umos=[],
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    return exc
+            async def delete():
+                try:
+                    await profiles.delete_profile(profile.id, profile.revision)
+                    return "deleted"
+                except Exception as exc:  # noqa: BLE001
+                    return exc
+            created, deleted = await asyncio.gather(create(), delete())
+            if isinstance(created, Exception):
+                self.assertIsInstance(deleted, str)
+            else:
+                self.assertIsInstance(deleted, Exception)
+            await sites.close()

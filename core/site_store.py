@@ -13,7 +13,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -65,6 +65,36 @@ CREATE INDEX IF NOT EXISTS content_profiles_site_id
 ON content_profiles (site_id)
 """
 
+_CREATE_TASKS_TABLE = """
+CREATE TABLE IF NOT EXISTS push_tasks (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    profile_id TEXT NOT NULL REFERENCES content_profiles(id) ON DELETE RESTRICT,
+    output_format TEXT NOT NULL CHECK (
+        output_format IN ('text', 'markdown', 'image')
+    ),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled = 0),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+_CREATE_TASK_UMOS_TABLE = """
+CREATE TABLE IF NOT EXISTS push_task_umos (
+    task_id TEXT NOT NULL REFERENCES push_tasks(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    umo TEXT NOT NULL,
+    PRIMARY KEY (task_id, position),
+    UNIQUE (task_id, umo)
+)
+"""
+
+_CREATE_TASK_PROFILE_INDEX = """
+CREATE INDEX IF NOT EXISTS push_tasks_profile_id
+ON push_tasks (profile_id)
+"""
+
 
 class SiteStoreError(Exception):
     """站点存储错误基类。"""
@@ -114,6 +144,30 @@ class ProfileRevisionConflictError(SiteStoreError):
         super().__init__("内容组合 revision 冲突")
 
 
+class ProfileReferencedError(SiteStoreError):
+    """内容组合仍被推送任务引用，不能删除。"""
+
+    def __init__(self, task_names: tuple[str, ...]) -> None:
+        self.task_names = task_names
+        super().__init__("内容组合仍被推送任务引用")
+
+
+class TaskRecordNotFoundError(SiteStoreError):
+    """按 ID 查找推送任务失败。"""
+
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        super().__init__(f"推送任务 {task_id} 不存在")
+
+
+class TaskRevisionConflictError(SiteStoreError):
+    """推送任务写入 revision 冲突。"""
+
+    def __init__(self, actual_revision: int | None) -> None:
+        self.actual_revision = actual_revision
+        super().__init__("推送任务 revision 冲突")
+
+
 @dataclass(frozen=True, slots=True)
 class StoredSite:
     """存储层的站点记录；bearer_token 不出现在调试输出中。"""
@@ -134,6 +188,19 @@ class StoredProfileItem:
     content_type: str
     params_json: str = "{}"
     limit: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredTask:
+    id: str
+    name: str
+    profile_id: str
+    output_format: str
+    umos: tuple[str, ...]
+    enabled: bool
+    revision: int
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +262,7 @@ class SiteStore:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version in (0, 1):
+                if version in (0, 1, 2):
                     await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
@@ -236,6 +303,9 @@ class SiteStore:
             await connection.execute(_CREATE_PROFILES_TABLE)
             await connection.execute(_CREATE_PROFILE_ITEMS_TABLE)
             await connection.execute(_CREATE_PROFILE_SITE_INDEX)
+            await connection.execute(_CREATE_TASKS_TABLE)
+            await connection.execute(_CREATE_TASK_UMOS_TABLE)
+            await connection.execute(_CREATE_TASK_PROFILE_INDEX)
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -604,6 +674,14 @@ class SiteStore:
 
             async def perform() -> None:
                 cursor = await connection.execute(
+                    "SELECT name FROM push_tasks WHERE profile_id = ? "
+                    "ORDER BY created_at, id",
+                    (profile_id,),
+                )
+                task_names = tuple(row["name"] for row in await cursor.fetchall())
+                if task_names:
+                    raise ProfileReferencedError(task_names)
+                cursor = await connection.execute(
                     """
                     DELETE FROM content_profiles
                     WHERE id = ? AND revision = ?
@@ -624,6 +702,220 @@ class SiteStore:
                 perform,
                 failure_message="删除内容组合失败",
             )
+
+    async def create_task(
+        self,
+        *,
+        task_id: str,
+        name: str,
+        profile_id: str,
+        output_format: str,
+        umos: tuple[str, ...],
+    ) -> StoredTask:
+        async with self._lock:
+            connection = self._require_connection()
+            now = _utc_now()
+
+            async def perform() -> None:
+                await connection.execute(
+                    """
+                    INSERT INTO push_tasks (
+                        id, name, profile_id, output_format, enabled,
+                        revision, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 0, 1, ?, ?)
+                    """,
+                    (task_id, name, profile_id, output_format, now, now),
+                )
+                await self._insert_task_umos(connection, task_id, umos)
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="保存推送任务失败",
+            )
+            return StoredTask(
+                id=task_id,
+                name=name,
+                profile_id=profile_id,
+                output_format=output_format,
+                umos=umos,
+                enabled=False,
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+
+    async def list_tasks(self) -> list[StoredTask]:
+        async with self._lock:
+            connection = self._require_connection()
+            try:
+                async with connection.execute(
+                    """
+                    SELECT id, name, profile_id, output_format, enabled,
+                           revision, created_at, updated_at
+                    FROM push_tasks
+                    ORDER BY created_at, id
+                    """,
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                umos = await self._load_task_umos(
+                    tuple(row["id"] for row in rows),
+                )
+            except SiteStoreError:
+                raise
+            except Exception as exc:
+                raise SiteStoreError("读取推送任务列表失败") from exc
+            return [
+                _row_to_task(row, umos.get(row["id"], ()))
+                for row in rows
+            ]
+
+    async def get_task(self, task_id: str) -> StoredTask:
+        async with self._lock:
+            try:
+                row = await self._fetchone_unlocked(
+                    """
+                    SELECT id, name, profile_id, output_format, enabled,
+                           revision, created_at, updated_at
+                    FROM push_tasks
+                    WHERE id = ?
+                    """,
+                    (task_id,),
+                )
+                if row is None:
+                    raise TaskRecordNotFoundError(task_id)
+                umos = await self._load_task_umos((task_id,))
+            except SiteStoreError:
+                raise
+            except Exception as exc:
+                raise SiteStoreError("读取推送任务失败") from exc
+            return _row_to_task(row, umos.get(task_id, ()))
+
+    async def update_task(
+        self,
+        task_id: str,
+        *,
+        name: str,
+        profile_id: str,
+        output_format: str,
+        umos: tuple[str, ...],
+        expected_revision: int,
+    ) -> StoredTask:
+        async with self._lock:
+            connection = self._require_connection()
+            now = _utc_now()
+
+            async def perform() -> None:
+                cursor = await connection.execute(
+                    """
+                    UPDATE push_tasks
+                    SET name = ?, profile_id = ?, output_format = ?,
+                        enabled = 0, revision = revision + 1, updated_at = ?
+                    WHERE id = ? AND revision = ?
+                    """,
+                    (
+                        name,
+                        profile_id,
+                        output_format,
+                        now,
+                        task_id,
+                        expected_revision,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    row = await self._fetchone_unlocked(
+                        "SELECT revision FROM push_tasks WHERE id = ?",
+                        (task_id,),
+                    )
+                    if row is None:
+                        raise TaskRecordNotFoundError(task_id)
+                    raise TaskRevisionConflictError(int(row["revision"]))
+                await connection.execute(
+                    "DELETE FROM push_task_umos WHERE task_id = ?",
+                    (task_id,),
+                )
+                await self._insert_task_umos(connection, task_id, umos)
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="更新推送任务失败",
+            )
+            row = await self._fetchone_unlocked(
+                """
+                SELECT id, name, profile_id, output_format, enabled,
+                       revision, created_at, updated_at
+                FROM push_tasks WHERE id = ?
+                """,
+                (task_id,),
+            )
+            if row is None:
+                raise TaskRecordNotFoundError(task_id)
+            return _row_to_task(row, umos)
+
+    async def delete_task(self, task_id: str, *, expected_revision: int) -> None:
+        async with self._lock:
+            connection = self._require_connection()
+
+            async def perform() -> None:
+                cursor = await connection.execute(
+                    "DELETE FROM push_tasks WHERE id = ? AND revision = ?",
+                    (task_id, expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    row = await self._fetchone_unlocked(
+                        "SELECT revision FROM push_tasks WHERE id = ?",
+                        (task_id,),
+                    )
+                    if row is None:
+                        raise TaskRecordNotFoundError(task_id)
+                    raise TaskRevisionConflictError(int(row["revision"]))
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="删除推送任务失败",
+            )
+
+    async def _insert_task_umos(
+        self,
+        connection: aiosqlite.Connection,
+        task_id: str,
+        umos: tuple[str, ...],
+    ) -> None:
+        for position, umo in enumerate(umos):
+            await connection.execute(
+                """
+                INSERT INTO push_task_umos (task_id, position, umo)
+                VALUES (?, ?, ?)
+                """,
+                (task_id, position, umo),
+            )
+
+    async def _load_task_umos(
+        self,
+        task_ids: tuple[str, ...],
+    ) -> dict[str, tuple[str, ...]]:
+        if not task_ids:
+            return {}
+        placeholders = ",".join("?" for _ in task_ids)
+        async with self._require_connection().execute(
+            f"""
+            SELECT task_id, umo
+            FROM push_task_umos
+            WHERE task_id IN ({placeholders})
+            ORDER BY task_id, position
+            """,
+            task_ids,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(row["task_id"], []).append(row["umo"])
+        return {
+            task_id: tuple(umos)
+            for task_id, umos in grouped.items()
+        }
 
     async def _insert_profile_items(
         self,
@@ -717,6 +1009,9 @@ class SiteStore:
             SiteReferencedError,
             ProfileRecordNotFoundError,
             ProfileRevisionConflictError,
+            ProfileReferencedError,
+            TaskRecordNotFoundError,
+            TaskRevisionConflictError,
         ):
             await self._rollback_for_error(connection)
             raise
@@ -817,6 +1112,23 @@ def _row_to_profile(
         name=row["name"],
         site_id=row["site_id"],
         items=items,
+        revision=int(row["revision"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_task(
+    row: aiosqlite.Row,
+    umos: tuple[str, ...],
+) -> StoredTask:
+    return StoredTask(
+        id=row["id"],
+        name=row["name"],
+        profile_id=row["profile_id"],
+        output_format=row["output_format"],
+        umos=umos,
+        enabled=bool(row["enabled"]),
         revision=int(row["revision"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],

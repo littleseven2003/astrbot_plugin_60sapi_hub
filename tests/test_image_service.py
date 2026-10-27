@@ -73,6 +73,19 @@ async def wait_for(predicate, timeout=3.0) -> None:
     raise AssertionError("condition not reached")
 
 
+async def wait_until(predicate, timeout=2.0) -> None:
+    """Yield to the event loop until predicate is true, with a hard timeout."""
+
+    async def poll() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(poll(), timeout)
+    except asyncio.TimeoutError as exc:
+        raise AssertionError("condition not reached") from exc
+
+
 class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_keeps_admission_until_worker_exits(self) -> None:
         state = RenderState(respect_cancel=False)
@@ -290,14 +303,24 @@ class AdmissionCancellationTest(unittest.IsolatedAsyncioTestCase):
             max_queued_renders=0,
             timeout_seconds=2,
         )
+        initial_capacity = service._admission._value
         try:
             for _ in range(3):
                 await self._run_cancel_during_cleanup(service)
-                self.assertEqual(service._admission._value, 1)
+                self.assertEqual(service._admission._value, initial_capacity)
             with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
                 for _ in range(3):
                     self.assertEqual(await service.render({}), [])
-            self.assertEqual(service._admission._value, 1)
+            await wait_until(
+                lambda: (
+                    service.active_renders == 0
+                    and len(service._futures) == 0
+                    and service._admission._value == initial_capacity
+                ),
+            )
+            self.assertEqual(service._admission._value, initial_capacity)
+            self.assertEqual(service.active_renders, 0)
+            self.assertEqual(len(service._futures), 0)
         finally:
             await service.close()
 

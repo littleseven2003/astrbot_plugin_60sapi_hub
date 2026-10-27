@@ -11,9 +11,9 @@ flowchart LR
     C --> D[统一内容快照]
     D --> E[文字和 Markdown]
     D --> F[图片模板与分页]
-    E --> G[AstrBot 消息发送]
+    E --> G[AstrBot 消息发送（后续）]
     F --> G
-    G --> H[逐目标逐页记录]
+    G --> H[逐目标逐页记录（后续）]
 ```
 
 ## 模块边界
@@ -63,22 +63,22 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 - 异步 Python 3.12；AstrBot 基线 v4.29.1，详见开发手册的兼容性基线。
 - 使用一个异步 HTTP 客户端，明确依赖约束。
-- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；内容组合由 `core/profiles.py`、`core/profile_api.py`、`profile_web.py` 管理，数据复用同一 `SiteStore`；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合和站点引用关系已实现；任务、发送记录和图文输出尚未实现。
-- SQLite 存复杂业务实体与发送记录，位置在宿主插件数据目录。
+- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；内容组合由 `core/profiles.py`、`core/profile_api.py`、`profile_web.py` 管理，数据复用同一 `SiteStore`；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合和站点引用关系已实现；任务、发送记录和消息发送尚未实现；组合文字/Markdown 和分页图片已实现。
+- SQLite 存已实现的站点/组合实体；发送记录为后续设计，位置在宿主插件数据目录。
 - 少量全局设置使用 AstrBot 配置 schema；业务实体只有一个持久化真源。
 - 后台使用宿主插件视图及 bridge，当前站点页采用简单 HTML/CSS/JS，不引入 CDN、外部字体或独立服务器。
 - 图片使用 Pillow 和宿主可验证的 CJK 字体，渲染器不调用宿主 Web/消息 API；字体环境缺失时明确报错，文字/Markdown 保持可用。
-- 单实例确定性调度，不依赖大模型任务工具。
+- 调度尚未实现；设计上采用单实例确定性调度，不依赖大模型任务工具。
 
 ## 生命周期
 
-启动：验证 → 数据迁移 → 客户端/宿主集成 → 恢复未来计划。
-配置更新：验证并事务保存 → 更新受影响计划。失败不留下半配置。
-停用/重载：停止新执行 → 取消并等待旧任务 → 释放网络/渲染资源 → 关闭存储。
+启动：验证 → 数据迁移 → 打开内容客户端 → 宿主集成。当前没有调度恢复流程。
+配置更新：验证并事务保存；当前只有站点/组合配置，不涉及执行计划。
+停用/重载：置为未启用 → 关闭图片服务（取消/等待渲染线程）→ 清空图片快照 → 关闭内容客户端 → 关闭存储。
 
-当前站点/组合存储在插件 `initialize()` 中打开并完成首次建库或 v1→v2 迁移，随后打开共享内容 HTTP 客户端；任一打开失败都会关闭已创建资源，`terminate()` 先关闭内容客户端再关闭站点存储。站点与内容 Web API 在 `__init__` 中注册，初始化完成前置为未启用；停用时先置为未启用再关闭资源。这样停用后仍可能留在宿主注册表中的旧处理器不能继续读写或发出上游请求，重载时新实例以相同路由和方法替换旧处理器。真实宿主已验证停用返回 503、启用/重载后数据与预览恢复且没有重复可写处理器。图片渲染服务在初始化时创建，停用/重载时先取消渲染等待并关闭线程池，再清空快照；调度尚未接入。
+当前站点/组合存储在插件 `initialize()` 中打开并完成首次建库或 v1→v2 迁移，随后打开共享内容 HTTP 客户端；任一打开失败都会按已创建资源逆序清理：内容客户端、图片服务、图片快照、站点存储。`terminate()` 先将插件置为未启用，再关闭图片服务（取消/等待自有渲染线程）、清空图片快照、关闭内容客户端，最后关闭站点存储。站点与内容 Web API 在 `__init__` 中注册，初始化完成前置为未启用；停用时先置为未启用再关闭资源。这样停用后仍可能留在宿主注册表中的旧处理器不能继续读写或发出上游请求，重载时新实例以相同路由和方法替换旧处理器。真实宿主已验证停用返回 503、启用/重载后数据与预览恢复且没有重复可写处理器。图片渲染服务在初始化时创建；停用/重载时先关闭图片服务并等待线程池结束，再清空快照。调度尚未接入。
 
-4.29.1 的停用/重载会调用插件 `terminate()`（插件类自身定义 `__del__` 时优先）并解绑处理器；同路由同方法的 Web API 会替换。新增注册项仍须按目标版本源码和实测逐项核验。发送前重新检查任务状态和白名单，已移除目标不得继续接收剩余页。
+4.29.1 的停用/重载会调用插件 `terminate()`（插件类自身定义 `__del__` 时优先）并解绑处理器；同路由同方法的 Web API 会替换。新增注册项仍须按目标版本源码和实测逐项核验。发送接入后需在发送前重新检查任务状态和白名单，已移除目标不得继续接收剩余页。
 
 ## 缓存与快照
 

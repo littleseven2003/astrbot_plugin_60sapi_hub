@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from core.profiles import ContentProfileService, ProfileCreate, ProfileReferencedError
@@ -326,7 +327,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            with sqlite3.connect(self.db_path) as check:
+            with closing(sqlite3.connect(self.db_path)) as check:
                 self.assertEqual(
                     check.execute("PRAGMA user_version").fetchone()[0],
                     SCHEMA_VERSION,

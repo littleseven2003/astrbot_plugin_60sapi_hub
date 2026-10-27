@@ -17,7 +17,7 @@
 
 ## M3 验收基线
 
-2026-10-27 验收通过，最终代码提交 `7b48ee6`，PR #10 合并提交 `78da616`，插件版本仍为 `v0.1.0-dev.1`。宿主基线为 AstrBot v4.29.1，Python 为 3.12.13 和 3.13.13；浏览器为 Chromium。
+2026-10-27 验收通过，最终代码提交 `7b48ee6`，PR #10 合并提交 `78da616`，插件版本仍为 `v0.1.0-dev.1`。宿主为 AstrBot v4.29.1，浏览器为 Chromium；自动化测试分别使用 Python 3.12.13 和 3.13.13，两个版本的测试通过不等于完整宿主兼容性验收。
 
 - 自动化：两个 Python 版本各 227 项完整测试通过；`test_multi_round_cancel_does_not_change_capacity` 在两版本各重复 50 次通过；`node --check views/sites/app.js` 和 `git diff --check` 通过。
 - 同快照：同一次组合预览的文字、Markdown 和图片共享组合/站点 revision、栏目顺序、截取条目、来源时间；图片生成和下载不增加上游请求，后续上游变化不替换已保存快照。

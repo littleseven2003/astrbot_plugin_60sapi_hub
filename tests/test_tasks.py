@@ -47,6 +47,42 @@ class UmoValidationTest(unittest.TestCase):
             "aiocqhttp:GroupMessage:Case:Kept",
         )
 
+    def test_internal_whitespace_and_exact_value_preservation(self) -> None:
+        # Only the whole UMO is stripped. A leading space in session_id is
+        # internal, so it must be preserved rather than silently removed.
+        source = " DemoBot:GroupMessage: user:member "
+        self.assertEqual(
+            normalize_umo(source),
+            "DemoBot:GroupMessage: user:member",
+        )
+        self.assertEqual(
+            normalize_umos([source, " DemoBot:GroupMessage: user:member "]),
+            ("DemoBot:GroupMessage: user:member",),
+        )
+        # Session IDs are case-sensitive and include all internal colons.
+        self.assertEqual(
+            normalize_umos([
+                "DemoBot:GroupMessage:User:One",
+                "DemoBot:GroupMessage:user:one",
+            ]),
+            (
+                "DemoBot:GroupMessage:User:One",
+                "DemoBot:GroupMessage:user:one",
+            ),
+        )
+        # Platform edge/internal whitespace is rejected, never trimmed.
+        for value in (
+            "DemoBot :GroupMessage:user",
+            "DemoBot:GroupMessage: user",
+            "Demo Bot:GroupMessage:user",
+            "DemoBot: GroupMessage:user",
+        ):
+            if value == "DemoBot:GroupMessage: user":
+                continue
+            with self.subTest(value=value):
+                with self.assertRaises(TaskValidationError):
+                    normalize_umo(value)
+
     def test_rejects_bare_ids_bad_types_empty_and_controls(self) -> None:
         invalid = [
             "12345",

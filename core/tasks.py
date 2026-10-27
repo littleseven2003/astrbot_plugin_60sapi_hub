@@ -301,12 +301,8 @@ def normalize_umo(value: object, *, field: str = "umo") -> str:
             "必须是 platform_id:MessageType:session_id 格式，不能填写裸群号或 UID",
         )
     platform_id, message_type, session_id = parts
-    platform_id = platform_id.strip()
-    session_id = session_id.strip()
     if not platform_id or not message_type or not session_id:
         raise TaskValidationError(field, "平台、消息类型和会话 ID 都不能为空")
-    if not platform_id:
-        raise TaskValidationError(field, "平台适配器实例 ID 不能为空")
     if ":" in platform_id or "!" in platform_id:
         raise TaskValidationError(field, "平台适配器实例 ID 不能包含冒号或感叹号")
     if any(char.isspace() for char in platform_id):
@@ -326,7 +322,9 @@ def normalize_umo(value: object, *, field: str = "umo") -> str:
             field,
             f"会话 ID 不能超过 {MAX_SESSION_ID_LENGTH} 个字符",
         )
-    return f"{platform_id}:{message_type}:{session_id}"
+    # 不重新拼接字段：保存值严格等于整条输入去掉首尾空白后的内容。
+    # 因此 session_id 的前导空白、内部空白、冒号和大小写都不会被改写。
+    return raw
 
 
 def _normalize_task_name(value: object) -> str:

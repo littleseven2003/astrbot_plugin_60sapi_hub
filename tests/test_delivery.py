@@ -623,9 +623,12 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.pages[0].status, "skipped")
 
     async def test_queue_capacity_and_deadline_are_bounded(self) -> None:
+        from dataclasses import replace
+        from core.delivery import DeliveryCapacityError, DeliveryTimeoutError
+
         limited = DeliveryLimits(
             max_concurrent_executions=1, max_pending_executions=1,
-            max_execution_seconds=0.2, sender_timeout_seconds=5,
+            max_execution_seconds=5, sender_timeout_seconds=5,
         )
         service = DeliveryService(
             tasks=self.tasks, profiles=self.profiles, sites=self.sites,
@@ -636,19 +639,38 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         first = await self._task(["aiocqhttp:GroupMessage:g1"])
         second = await self._task(["aiocqhttp:GroupMessage:g2"])
         third = await self._task(["aiocqhttp:GroupMessage:g3"])
+        queued = asyncio.Event()
+        original_wait = service._admission_condition.wait
+
+        async def signal_queue_wait():
+            queued.set()
+            return await original_wait()
+
+        service._admission_condition.wait = signal_queue_wait
         running = asyncio.create_task(service.execute(first.id, "queue-1"))
-        await self.sender.started.wait()
-        waiting = asyncio.create_task(service.execute(second.id, "queue-2"))
-        await asyncio.sleep(0)
-        from core.delivery import DeliveryCapacityError
-        with self.assertRaises(DeliveryCapacityError):
-            await service.execute(third.id, "queue-3")
-        outcome = (await asyncio.gather(waiting, return_exceptions=True))[0]
-        self.assertIsInstance(outcome, Exception)
-        self.sender.block = False
-        self.sender.release.set()
-        await running
-        await service.close()
+        try:
+            await asyncio.wait_for(self.sender.started.wait(), 2)
+            # The running execution already captured its longer deadline.
+            # Keep it occupying the only slot while the waiter times out.
+            service._limits = replace(limited, max_execution_seconds=0.05)
+            waiting = asyncio.create_task(service.execute(second.id, "queue-2"))
+            await asyncio.wait_for(queued.wait(), 2)
+            with self.assertRaises(DeliveryCapacityError):
+                await service.execute(third.id, "queue-3")
+            with self.assertRaises(DeliveryTimeoutError):
+                await waiting
+            self.assertEqual(len(self.sender.calls), 1)
+            self.assertEqual(service._pending, 0)
+            self.assertEqual(service._running, 1)
+            self.sender.block = False
+            self.sender.release.set()
+            await running
+            self.assertEqual(service._pending, 0)
+            self.assertEqual(service._running, 0)
+        finally:
+            self.sender.release.set()
+            await service.close()
+            await asyncio.gather(running, return_exceptions=True)
 
     async def test_cancel_marks_only_started_pages_unknown_and_pending_skipped(self) -> None:
         task = await self._task([

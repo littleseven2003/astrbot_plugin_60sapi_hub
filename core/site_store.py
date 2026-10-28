@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -95,6 +96,69 @@ CREATE INDEX IF NOT EXISTS push_tasks_profile_id
 ON push_tasks (profile_id)
 """
 
+_CREATE_DELIVERY_EXECUTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS delivery_executions (
+    id TEXT PRIMARY KEY NOT NULL,
+    task_id TEXT NOT NULL,
+    task_name TEXT NOT NULL,
+    task_revision INTEGER NOT NULL,
+    profile_id TEXT NOT NULL,
+    profile_revision INTEGER NOT NULL,
+    site_id TEXT NOT NULL,
+    site_revision INTEGER NOT NULL,
+    output_format TEXT NOT NULL CHECK (
+        output_format IN ('text', 'markdown', 'image')
+    ),
+    content_hash TEXT,
+    content_status TEXT,
+    failed_sections_json TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('preparing', 'running', 'success', 'partial',
+                   'failed', 'unknown', 'no_targets', 'stopped')
+    ),
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+_CREATE_DELIVERY_TARGETS_TABLE = """
+CREATE TABLE IF NOT EXISTS delivery_targets (
+    execution_id TEXT NOT NULL REFERENCES delivery_executions(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    umo TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('pending', 'sending', 'success', 'partial', 'failed',
+                   'unknown', 'skipped')
+    ),
+    error_code TEXT,
+    PRIMARY KEY (execution_id, position),
+    UNIQUE (execution_id, umo)
+)
+"""
+
+_CREATE_DELIVERY_PAGES_TABLE = """
+CREATE TABLE IF NOT EXISTS delivery_pages (
+    execution_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    page_index INTEGER NOT NULL CHECK (page_index >= 1),
+    status TEXT NOT NULL CHECK (
+        status IN ('pending', 'sending', 'success', 'partial', 'failed',
+                   'unknown', 'skipped')
+    ),
+    error_code TEXT,
+    PRIMARY KEY (execution_id, position, page_index),
+    FOREIGN KEY (execution_id, position)
+        REFERENCES delivery_targets(execution_id, position)
+        ON DELETE CASCADE
+)
+"""
+
+_CREATE_DELIVERY_EXECUTION_INDEX = """
+CREATE INDEX IF NOT EXISTS delivery_executions_task_id
+ON delivery_executions (task_id)
+"""
+
 
 class SiteStoreError(Exception):
     """站点存储错误基类。"""
@@ -168,6 +232,22 @@ class TaskRevisionConflictError(SiteStoreError):
         super().__init__("推送任务 revision 冲突")
 
 
+class DeliveryExecutionExistsError(SiteStoreError):
+    """执行标识已存在。"""
+
+    def __init__(self, execution_id: str) -> None:
+        self.execution_id = execution_id
+        super().__init__("投递执行标识已存在")
+
+
+class DeliveryRecordNotFoundError(SiteStoreError):
+    """投递记录不存在。"""
+
+    def __init__(self, execution_id: str) -> None:
+        self.execution_id = execution_id
+        super().__init__("投递记录不存在")
+
+
 @dataclass(frozen=True, slots=True)
 class StoredSite:
     """存储层的站点记录；bearer_token 不出现在调试输出中。"""
@@ -188,6 +268,46 @@ class StoredProfileItem:
     content_type: str
     params_json: str = "{}"
     limit: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredDeliveryTarget:
+    execution_id: str
+    position: int
+    umo: str
+    status: str
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredDeliveryPage:
+    execution_id: str
+    position: int
+    page_index: int
+    status: str
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredDeliveryExecution:
+    id: str
+    task_id: str
+    task_name: str
+    task_revision: int
+    profile_id: str
+    profile_revision: int
+    site_id: str
+    site_revision: int
+    output_format: str
+    content_hash: str | None
+    content_status: str | None
+    failed_sections_json: str | None
+    status: str
+    error_code: str | None
+    created_at: str
+    updated_at: str
+    targets: tuple[StoredDeliveryTarget, ...] = ()
+    pages: tuple[StoredDeliveryPage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,13 +382,14 @@ class SiteStore:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version in (0, 1, 2):
+                if version in (0, 1, 2, 3):
                     await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
                         f"不支持的站点数据库 schema 版本：{version}",
                     )
 
+                await self._recover_delivery(connection)
                 self._connection = connection
                 connection = None
             except asyncio.CancelledError:
@@ -306,6 +427,10 @@ class SiteStore:
             await connection.execute(_CREATE_TASKS_TABLE)
             await connection.execute(_CREATE_TASK_UMOS_TABLE)
             await connection.execute(_CREATE_TASK_PROFILE_INDEX)
+            await connection.execute(_CREATE_DELIVERY_EXECUTIONS_TABLE)
+            await connection.execute(_CREATE_DELIVERY_TARGETS_TABLE)
+            await connection.execute(_CREATE_DELIVERY_PAGES_TABLE)
+            await connection.execute(_CREATE_DELIVERY_EXECUTION_INDEX)
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -877,6 +1002,286 @@ class SiteStore:
                 failure_message="删除推送任务失败",
             )
 
+    async def create_delivery_execution(
+        self,
+        *,
+        execution_id: str,
+        task_id: str,
+        task_name: str,
+        task_revision: int,
+        profile_id: str,
+        profile_revision: int,
+        site_id: str,
+        site_revision: int,
+        output_format: str,
+        umos: tuple[str, ...],
+    ) -> None:
+        async with self._lock:
+            connection = self._require_connection()
+            now = _utc_now()
+
+            async def perform() -> None:
+                try:
+                    await connection.execute(
+                        """
+                        INSERT INTO delivery_executions (
+                            id, task_id, task_name, task_revision,
+                            profile_id, profile_revision, site_id, site_revision,
+                            output_format, content_hash, content_status,
+                            failed_sections_json, status, error_code,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+                                  NULL, 'preparing', NULL, ?, ?)
+                        """,
+                        (
+                            execution_id, task_id, task_name, task_revision,
+                            profile_id, profile_revision, site_id, site_revision,
+                            output_format, now, now,
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise DeliveryExecutionExistsError(execution_id) from exc
+                for position, umo in enumerate(umos):
+                    await connection.execute(
+                        """
+                        INSERT INTO delivery_targets (
+                            execution_id, position, umo, status, error_code
+                        ) VALUES (?, ?, ?, 'pending', NULL)
+                        """,
+                        (execution_id, position, umo),
+                    )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="保存投递执行失败",
+            )
+
+    async def get_delivery_execution(
+        self,
+        execution_id: str,
+    ) -> StoredDeliveryExecution:
+        async with self._lock:
+            row = await self._fetchone_unlocked(
+                "SELECT * FROM delivery_executions WHERE id = ?",
+                (execution_id,),
+            )
+            if row is None:
+                raise DeliveryRecordNotFoundError(execution_id)
+            async with self._require_connection().execute(
+                "SELECT * FROM delivery_targets WHERE execution_id = ? "
+                "ORDER BY position",
+                (execution_id,),
+            ) as cursor:
+                target_rows = await cursor.fetchall()
+            async with self._require_connection().execute(
+                "SELECT * FROM delivery_pages WHERE execution_id = ? "
+                "ORDER BY position, page_index",
+                (execution_id,),
+            ) as cursor:
+                page_rows = await cursor.fetchall()
+            return _row_to_delivery(row, target_rows, page_rows)
+
+    async def set_delivery_content(
+        self,
+        execution_id: str,
+        *,
+        content_hash: str,
+        content_status: str,
+        failed_sections_json: str | None,
+        status: str,
+    ) -> None:
+        await self._update_delivery_row(
+            "delivery_executions",
+            execution_id,
+            {
+                "content_hash": content_hash,
+                "content_status": content_status,
+                "failed_sections_json": failed_sections_json,
+                "status": status,
+            },
+        )
+
+    async def set_delivery_execution_status(
+        self,
+        execution_id: str,
+        *,
+        status: str,
+        error_code: str | None = None,
+    ) -> None:
+        await self._update_delivery_row(
+            "delivery_executions",
+            execution_id,
+            {"status": status, "error_code": error_code},
+        )
+
+    async def set_delivery_target_status(
+        self,
+        execution_id: str,
+        position: int,
+        *,
+        status: str,
+        error_code: str | None = None,
+    ) -> None:
+        await self._update_delivery_row(
+            "delivery_targets",
+            execution_id,
+            {"status": status, "error_code": error_code},
+            extra_where=" AND position = ?",
+            extra_params=(position,),
+            id_column="execution_id",
+        )
+
+    async def set_delivery_page_status(
+        self,
+        execution_id: str,
+        position: int,
+        page_index: int,
+        *,
+        status: str,
+        error_code: str | None = None,
+    ) -> None:
+        await self._update_delivery_row(
+            "delivery_pages",
+            execution_id,
+            {"status": status, "error_code": error_code},
+            extra_where=" AND position = ? AND page_index = ?",
+            extra_params=(position, page_index),
+            id_column="execution_id",
+        )
+
+    async def add_delivery_pages(
+        self,
+        execution_id: str,
+        *,
+        position: int,
+        page_count: int,
+    ) -> None:
+        async with self._lock:
+            connection = self._require_connection()
+
+            async def perform() -> None:
+                for page_index in range(1, page_count + 1):
+                    await connection.execute(
+                        """
+                        INSERT INTO delivery_pages (
+                            execution_id, position, page_index, status, error_code
+                        ) VALUES (?, ?, ?, 'pending', NULL)
+                        """,
+                        (execution_id, position, page_index),
+                    )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="保存投递页失败",
+            )
+
+    async def _update_delivery_row(
+        self,
+        table: str,
+        execution_id: str,
+        values: dict[str, object],
+        *,
+        extra_where: str = "",
+        extra_params: tuple[object, ...] = (),
+        id_column: str = "id",
+    ) -> None:
+        allowed = {
+            "delivery_executions": {
+                "content_hash", "content_status", "failed_sections_json",
+                "status", "error_code",
+            },
+            "delivery_targets": {"status", "error_code"},
+            "delivery_pages": {"status", "error_code"},
+        }
+        if table not in allowed or not set(values).issubset(allowed[table]):
+            raise SiteStoreError("投递记录更新字段不合法")
+        assignments = ", ".join(f"{name} = ?" for name in values)
+        params = (*values.values(), execution_id, *extra_params)
+        async with self._lock:
+            connection = self._require_connection()
+
+            async def perform() -> None:
+                cursor = await connection.execute(
+                    f"UPDATE {table} SET {assignments} WHERE {id_column} = ?"
+                    + extra_where,
+                    params,
+                )
+                if cursor.rowcount != 1:
+                    raise DeliveryRecordNotFoundError(execution_id)
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="更新投递记录失败",
+            )
+
+    async def mark_delivery_incomplete(self, execution_id: str) -> None:
+        """取消/超时/关闭时保守归类，不把未开始条目当作已发送。"""
+        async with self._lock:
+            connection = self._require_connection()
+
+            async def perform() -> None:
+                await connection.execute(
+                    """
+                    UPDATE delivery_pages SET status = 'unknown', error_code = 'interrupted'
+                    WHERE execution_id = ? AND status IN ('pending', 'sending')
+                    """,
+                    (execution_id,),
+                )
+                await connection.execute(
+                    """
+                    UPDATE delivery_targets SET status = 'unknown', error_code = 'interrupted'
+                    WHERE execution_id = ? AND status IN ('pending', 'sending')
+                    """,
+                    (execution_id,),
+                )
+                await connection.execute(
+                    """
+                    UPDATE delivery_executions
+                    SET status = 'unknown', error_code = 'interrupted', updated_at = ?
+                    WHERE id = ? AND status IN ('preparing', 'running')
+                    """,
+                    (_utc_now(), execution_id),
+                )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="标记投递中断失败",
+            )
+
+    async def _recover_delivery(self, connection: aiosqlite.Connection) -> None:
+        async with connection.execute("BEGIN IMMEDIATE"):
+            pass
+        try:
+            now = _utc_now()
+            await connection.execute(
+                """
+                UPDATE delivery_pages SET status = 'unknown', error_code = 'restart'
+                WHERE status IN ('pending', 'sending')
+                """,
+            )
+            await connection.execute(
+                """
+                UPDATE delivery_targets SET status = 'unknown', error_code = 'restart'
+                WHERE status IN ('pending', 'sending')
+                """,
+            )
+            await connection.execute(
+                """
+                UPDATE delivery_executions
+                SET status = 'unknown', error_code = 'restart', updated_at = ?
+                WHERE status IN ('preparing', 'running')
+                """,
+                (now,),
+            )
+            await connection.commit()
+        except BaseException:
+            await self._rollback_quietly(connection)
+            raise
+
     async def _insert_task_umos(
         self,
         connection: aiosqlite.Connection,
@@ -1012,6 +1417,7 @@ class SiteStore:
             ProfileReferencedError,
             TaskRecordNotFoundError,
             TaskRevisionConflictError,
+            DeliveryExecutionExistsError,
         ):
             await self._rollback_for_error(connection)
             raise
@@ -1115,6 +1521,38 @@ def _row_to_profile(
         revision=int(row["revision"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_delivery(
+    row: aiosqlite.Row,
+    target_rows: list[aiosqlite.Row],
+    page_rows: list[aiosqlite.Row],
+) -> StoredDeliveryExecution:
+    return StoredDeliveryExecution(
+        id=row["id"], task_id=row["task_id"], task_name=row["task_name"],
+        task_revision=int(row["task_revision"]),
+        profile_id=row["profile_id"],
+        profile_revision=int(row["profile_revision"]),
+        site_id=row["site_id"], site_revision=int(row["site_revision"]),
+        output_format=row["output_format"], content_hash=row["content_hash"],
+        content_status=row["content_status"],
+        failed_sections_json=row["failed_sections_json"],
+        status=row["status"], error_code=row["error_code"],
+        created_at=row["created_at"], updated_at=row["updated_at"],
+        targets=tuple(
+            StoredDeliveryTarget(
+                execution_id=r["execution_id"], position=int(r["position"]),
+                umo=r["umo"], status=r["status"], error_code=r["error_code"],
+            ) for r in target_rows
+        ),
+        pages=tuple(
+            StoredDeliveryPage(
+                execution_id=r["execution_id"], position=int(r["position"]),
+                page_index=int(r["page_index"]), status=r["status"],
+                error_code=r["error_code"],
+            ) for r in page_rows
+        ),
     )
 
 

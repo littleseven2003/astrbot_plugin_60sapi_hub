@@ -116,11 +116,14 @@ node tests/browser/manual_delivery_query.js
 该回归拦截 preview/submit/detail，不发送真实消息，验证：
 
 - localStorage 对插件 key 抛 SecurityError 时未确认标识进入内存；
-- 首次提交响应丢失后，按钮只 GET 本次 execution_id；
-- test POST 次数仍为 1；
-- 重新打开/查询不会再取 preview。
+- 捕获提交 POST 的 execution_id，断言详情 GET 的实际路径与本次 ID 完全一致；
+- 首次提交响应丢失后只查询本次 ID，test POST 次数仍为 1，重新打开/查询不再取 preview；
+- 先查看历史 A，再提交 B 并响应丢失，查询只请求 B；
+- 历史 A 查询失败后重试仍请求 A，并保持只读模式；
+- 分别延迟旧查询的成功、失败响应，关闭并切换到新确认弹窗后释放，当前标题、结果区、查询目标和确认按钮不被旧响应覆盖；
+- 通过 request/response/selector 事件等待，不以固定 200ms 作为请求完成判据。
 
-未覆盖的浏览器路径（历史 A 查询失败重试、21 条以上 UI 翻页）继续在测试手册边界中明确标注；静态语法检查不作为浏览器通过。
+21 条以上 UI 翻页仍由服务端分页测试覆盖，未在浏览器脚本中构造；静态语法检查不作为浏览器通过。
 
 ## 当前检查
 

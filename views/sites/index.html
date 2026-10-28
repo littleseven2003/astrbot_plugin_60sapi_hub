@@ -196,11 +196,12 @@
         <p class="preview-lede">
           手动测试只由管理员显式提交；不会启用任务或自动推送。确认后按当前保存配置获取最新内容。unknown 表示结果不确定，不会自动重发。
         </p>
+        <button id="delivery-show-pending-button" class="button button-secondary" type="button" hidden>查看未确认执行</button>
         <div id="delivery-pending-panel" class="uncertain" hidden>
           <h3>有未确认的执行</h3>
           <p id="delivery-pending-text"></p>
+          <div id="delivery-pending-list" class="delivery-targets"></div>
           <div class="uncertain-actions">
-            <button id="delivery-query-pending-button" class="button button-primary" type="button">查询该执行标识</button>
             <button id="delivery-clear-pending-button" class="button button-secondary" type="button">仅隐藏提示（保留未确认记录）</button>
           </div>
         </div>

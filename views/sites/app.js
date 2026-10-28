@@ -155,7 +155,8 @@ const elements = {
   deliveryRefreshButton: document.getElementById("delivery-refresh-button"),
   deliveryPendingPanel: document.getElementById("delivery-pending-panel"),
   deliveryPendingText: document.getElementById("delivery-pending-text"),
-  deliveryQueryPendingButton: document.getElementById("delivery-query-pending-button"),
+  deliveryShowPendingButton: document.getElementById("delivery-show-pending-button"),
+  deliveryPendingList: document.getElementById("delivery-pending-list"),
   deliveryClearPendingButton: document.getElementById("delivery-clear-pending-button"),
   deliveryDialog: document.getElementById("delivery-dialog"),
   deliveryDialogTitle: document.getElementById("delivery-dialog-title"),
@@ -228,6 +229,7 @@ const state = {
   deliveryMode: "confirm",
   deliveryPreviewRequestId: 0,
   deliveryQueryRequestId: 0,
+  deliveryQueryTarget: null,
   deliveryHistoryExecutionId: null,
   deliveryAttempt: null,
   deliveryHistory: [],
@@ -3186,31 +3188,57 @@ function readStoredDeliveryPending() {
   return null;
 }
 
-function currentDeliveryPending() {
-  if (state.deliveryPendingMemory) {
-    return state.deliveryPendingMemory;
+function readStoredDeliveryPendingMap() {
+  try {
+    const raw = localStorage.getItem(DELIVERY_PENDING_KEY);
+    const value = raw ? JSON.parse(raw) : null;
+    if (value && typeof value.executionId === "string" &&
+        typeof value.taskId === "string") {
+      return { [value.taskId]: { executionId: value.executionId, taskId: value.taskId } };
+    }
+    if (value && typeof value === "object") {
+      const result = {};
+      for (const [taskId, item] of Object.entries(value)) {
+        if (item && typeof item.executionId === "string" &&
+            typeof item.taskId === "string" && item.taskId === taskId) {
+          result[taskId] = { executionId: item.executionId, taskId };
+        }
+      }
+      return result;
+    }
+  } catch {
+    state.deliveryStorageAvailable = false;
   }
-  const stored = readStoredDeliveryPending();
-  state.deliveryPendingMemory = stored;
-  return stored;
+  return {};
+}
+
+function currentDeliveryPendingMap() {
+  if (!state.deliveryPendingMemory) {
+    state.deliveryPendingMemory = readStoredDeliveryPendingMap();
+  }
+  return state.deliveryPendingMemory;
+}
+
+function deliveryPendingForTask(taskId) {
+  return currentDeliveryPendingMap()[taskId] || null;
 }
 
 function setDeliveryPending(value) {
-  state.deliveryPendingMemory = value
-    ? { executionId: value.executionId, taskId: value.taskId }
-    : null;
+  const map = { ...currentDeliveryPendingMap() };
+  if (value) {
+    map[value.taskId] = {
+      executionId: value.executionId, taskId: value.taskId,
+    };
+  } else {
+    return;
+  }
+  state.deliveryPendingMemory = map;
   try {
-    if (value) {
-      localStorage.setItem(DELIVERY_PENDING_KEY, JSON.stringify({
-        executionId: value.executionId, taskId: value.taskId,
-      }));
-    } else {
-      localStorage.removeItem(DELIVERY_PENDING_KEY);
-    }
+    localStorage.setItem(DELIVERY_PENDING_KEY, JSON.stringify(map));
     state.deliveryStorageAvailable = true;
   } catch {
-    // SecurityError/sandboxed iframe: keep the in-memory marker. The current
-    // session can still query it; after refresh only the server history remains.
+    // SecurityError/sandboxed iframe: keep the in-memory map. The current
+    // session can still query; after refresh only server history remains.
     state.deliveryStorageAvailable = false;
   }
   state.deliveryPendingHiddenFor = null;
@@ -3218,29 +3246,76 @@ function setDeliveryPending(value) {
 }
 
 function confirmDeliveryPending(executionId) {
-  const pending = currentDeliveryPending();
-  if (pending && pending.executionId === executionId) {
-    setDeliveryPending(null);
+  const map = { ...currentDeliveryPendingMap() };
+  const entry = Object.values(map).find(
+    (item) => item.executionId === executionId,
+  );
+  if (!entry) {
+    return;
   }
+  delete map[entry.taskId];
+  state.deliveryPendingMemory = map;
+  try {
+    localStorage.setItem(DELIVERY_PENDING_KEY, JSON.stringify(map));
+    state.deliveryStorageAvailable = true;
+  } catch {
+    state.deliveryStorageAvailable = false;
+  }
+  if (state.deliveryPendingHiddenFor === executionId) {
+    state.deliveryPendingHiddenFor = null;
+  }
+  syncDeliveryPendingPanel();
 }
 
 function syncDeliveryPendingPanel() {
-  const pending = currentDeliveryPending();
-  state.deliveryPending = pending;
-  const hidden = !pending ||
-    state.deliveryPendingHiddenFor === pending.executionId;
+  const entries = Object.values(currentDeliveryPendingMap());
+  elements.deliveryPendingList.replaceChildren();
+  elements.deliveryShowPendingButton.hidden = entries.length === 0;
+  const hidden = entries.length === 0 ||
+    state.deliveryPendingHiddenFor === "__all__";
   elements.deliveryPendingPanel.hidden = hidden;
-  if (!pending) {
-    elements.deliveryPendingText.textContent = "";
-    return;
+  elements.deliveryPendingText.textContent = entries.length === 0
+    ? ""
+    : `${entries.length} 个执行结果尚未确认。系统不会自动重发；请按执行标识查询。` +
+      (state.deliveryStorageAvailable
+        ? " 刷新页面后仍可尝试恢复这些标识。"
+        : " 当前 iframe 禁止本地存储：标识仅在当前页面内存中；刷新后需从执行记录人工核对，不能据此自动重发。");
+  for (const pending of entries) {
+    const row = document.createElement("div");
+    row.className = "delivery-target";
+    const code = document.createElement("code");
+    code.textContent = pending.executionId;
+    const action = makeButton("查询", "button button-secondary",
+      () => queryPendingDelivery(pending.executionId),
+      `查询未确认执行 ${pending.executionId}`);
+    row.append(code, action);
+    elements.deliveryPendingList.append(row);
   }
-  elements.deliveryPendingText.textContent =
-    `执行 ${pending.executionId} 的结果尚未确认。系统不会自动重发；请只查询该标识。` +
-    (state.deliveryStorageAvailable
-      ? " 刷新页面后仍可尝试恢复该标识。"
-      : " 当前 iframe 禁止本地存储：本标识仅保存在当前页面内存；刷新后需从执行记录人工核对，不能据此自动重发。");
 }
 
+function queryPendingDelivery(executionId = null) {
+  const entries = Object.values(currentDeliveryPendingMap());
+  const target = executionId
+    ? entries.find((item) => item.executionId === executionId)
+    : entries[0];
+  if (!target) {
+    syncDeliveryPendingPanel();
+    return;
+  }
+  state.deliveryMode = "pending";
+  state.deliveryAttempt = {
+    executionId: target.executionId, taskId: target.taskId, status: "unknown",
+  };
+  state.deliveryHistoryExecutionId = null;
+  elements.deliveryDialogTitle.textContent = "查询未确认执行";
+  elements.deliveryConfirmButton.hidden = true;
+  elements.deliveryCancelButton.textContent = "关闭";
+  elements.deliveryError.hidden = true;
+  elements.deliveryResult.hidden = true;
+  elements.deliveryUncertain.hidden = true;
+  openDialog(elements.deliveryDialog);
+  return queryDelivery(target.executionId);
+}
 function deliveryTargetText(target) {
   if (!target || target.valid === false) {
     return `不可投递${target && target.reason ? `（${target.reason}）` : ""}`;
@@ -3309,6 +3384,11 @@ function resetDeliveryDialog(task, mode) {
 
 async function openDelivery(task) {
   if (state.deliveryBusy || blockIfPendingWrite()) {
+    return;
+  }
+  const pending = deliveryPendingForTask(task.id);
+  if (pending) {
+    await queryPendingDelivery(pending.executionId);
     return;
   }
   const token = ++state.deliveryPreviewRequestId;
@@ -3469,6 +3549,7 @@ async function submitDelivery(event) {
 
 async function queryDelivery(executionId, options = {}) {
   const history = Boolean(options.history);
+  state.deliveryQueryTarget = executionId;
   const requestId = ++state.deliveryQueryRequestId;
   if (history) {
     state.deliveryMode = "history";
@@ -3507,21 +3588,14 @@ async function queryDelivery(executionId, options = {}) {
   }
 }
 
-async function queryPendingDelivery() {
-  const pending = currentDeliveryPending();
-  if (!pending) {
-    syncDeliveryPendingPanel();
+async function retryDeliveryQuery() {
+  const executionId = state.deliveryQueryTarget;
+  if (!executionId) {
     return;
   }
-  state.deliveryMode = "pending";
-  state.deliveryAttempt = {
-    executionId: pending.executionId, taskId: pending.taskId, status: "unknown",
-  };
-  elements.deliveryDialogTitle.textContent = "查询未确认执行";
-  elements.deliveryConfirmButton.hidden = true;
-  elements.deliveryCancelButton.textContent = "关闭";
-  openDialog(elements.deliveryDialog);
-  await queryDelivery(pending.executionId);
+  await queryDelivery(executionId, {
+    history: state.deliveryMode === "history",
+  });
 }
 
 async function openDeliveryHistory(execution) {
@@ -3619,13 +3693,15 @@ function bindEvents() {
   elements.deliveryRefreshButton.addEventListener("click", () => loadDeliveries(true));
   elements.deliveryLoadMoreButton.addEventListener("click", () => loadDeliveries(false));
   elements.deliveryForm.addEventListener("submit", submitDelivery);
-  elements.deliveryQueryButton.addEventListener("click", queryPendingDelivery);
-  elements.deliveryQueryPendingButton.addEventListener("click", queryPendingDelivery);
+  elements.deliveryQueryButton.addEventListener("click", retryDeliveryQuery);
+  elements.deliveryShowPendingButton.addEventListener("click", () => {
+    state.deliveryPendingHiddenFor = null;
+    syncDeliveryPendingPanel();
+  });
   elements.deliveryClearPendingButton.addEventListener("click", () => {
-    const pending = currentDeliveryPending();
-    if (pending) {
-      // Hide only; the unknown execution remains tracked and queryable.
-      state.deliveryPendingHiddenFor = pending.executionId;
+    if (Object.keys(currentDeliveryPendingMap()).length) {
+      // Hide only; the tracked executions and the permanent show entry remain.
+      state.deliveryPendingHiddenFor = "__all__";
       syncDeliveryPendingPanel();
     }
   });

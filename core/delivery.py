@@ -10,6 +10,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -303,6 +304,14 @@ class DeliveryService:
 
     @staticmethod
     def _validate_limits(limits: DeliveryLimits) -> None:
+        def valid_timeout(value: object) -> bool:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False
+            try:
+                return value > 0 and math.isfinite(value)
+            except OverflowError:
+                return False
+
         if (
             type(limits.max_targets) is not int or limits.max_targets < 1
             or type(limits.max_pages) is not int or limits.max_pages < 1
@@ -310,12 +319,8 @@ class DeliveryService:
             or limits.max_concurrent_executions < 1
             or type(limits.max_pending_executions) is not int
             or limits.max_pending_executions < 0
-            or not isinstance(limits.max_execution_seconds, (int, float))
-            or isinstance(limits.max_execution_seconds, bool)
-            or limits.max_execution_seconds <= 0
-            or not isinstance(limits.sender_timeout_seconds, (int, float))
-            or isinstance(limits.sender_timeout_seconds, bool)
-            or limits.sender_timeout_seconds <= 0
+            or not valid_timeout(limits.max_execution_seconds)
+            or not valid_timeout(limits.sender_timeout_seconds)
         ):
             raise DeliveryValidationError("limits", "容量/超时配置不合法")
 

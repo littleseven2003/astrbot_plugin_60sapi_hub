@@ -1208,3 +1208,18 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "success")
         self.assertEqual(len(self.sender.calls), 1)
         await limited.close()
+
+    async def test_rejects_non_finite_and_overflowing_timeouts(self) -> None:
+        from core.delivery import DeliveryValidationError
+
+        for field in ("max_execution_seconds", "sender_timeout_seconds"):
+            for value in (float("nan"), float("inf"), float("-inf"), 10 ** 400):
+                with self.subTest(field=field, kind=type(value).__name__):
+                    with self.assertRaises(DeliveryValidationError) as caught:
+                        DeliveryService(
+                            tasks=self.tasks, profiles=self.profiles,
+                            sites=self.sites, profile_api=self.api,
+                            store=self.sites.store, sender=self.sender,
+                            limits=DeliveryLimits(**{field: value}),
+                        )
+                    self.assertEqual(caught.exception.field, "limits")

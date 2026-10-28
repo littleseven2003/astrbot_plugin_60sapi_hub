@@ -214,7 +214,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/delivery.py`：一次共享内容准备、注入式发送器、逐目标逐页状态、配置复核、取消/关闭和保守恢复；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/delivery.py`：一次共享内容准备、注入式发送器、逐目标逐页状态、配置复核、取消/关闭和保守恢复；`core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp 发送适配（精确实例、真实 Context 路由、内存图片、拒绝不支持适配器）；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
@@ -256,6 +256,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_profile_image.py`：真实 PNG、长内容多页、同快照确定性、空列表/热度 0/部分失败、页数/字节/字体/取消限制。
 - `tests/test_image_service.py`：排队/准入上限、总超时、线程不响应取消、取消后新请求、关闭期间排队请求、准入清理期间首次/再次取消、多轮取消容量稳定、关闭与取消交错和资源释放。
 - `tests/test_profile_image_api.py`：同预览快照、图片不增加上游请求、后改数据不改变同快照图片、归属/过期/修改/删除/停用失效、全部失败无快照、图片超限仍保留文字。
+- `tests/test_astrbot_sender.py`：真实宿主源码/Context/MessageSession/MessageChain/aiocqhttp 路由，假机器人边界；实例隔离、群聊/私聊、成员隔离、文本/Markdown/PNG、非法目标、未知/不支持实例、异常/取消、投递核心端到端。常规无宿主环境自动跳过。
 - `tests/test_delivery.py`：空名单零获取/零投递、共享内容、文/图页顺序、成功/失败/unknown/超时/取消/部分成功、同标识/并发幂等、发送前/成功后写库失败、配置删除/移除目标/修改组合/停用站点、关闭与无关任务、崩溃重开、schema v3/v4→v5 迁移和失败回滚、部分栏目记录、关闭/排队/准备/配置读取竞态、容量与总截止、pending/sending 状态区分、错误码归一化和跨任务同标识冲突。
 - `tests/test_tasks.py` / `tests/test_task_api.py`：任务模型、UMO 整条首尾规范化与内部原样保存、群聊/私聊/空名单/去重/冒号/控制字符/长度/数量、CRUD/revision、非法 `expected_revision` 400、过期 409、v2→v3 迁移回滚、重启、取消、组合引用保护和并发引用。
 

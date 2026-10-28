@@ -210,6 +210,19 @@
 - `unique_session` 下的群成员隔离会话 ID 原样保留，不擅自改成群级目标；如需群级目标，应按 AstrBot `/sid` 的提示核对并手工填写，不自动猜测。
 - 后台提示使用对应会话的 `/sid` 获取完整 UMO，不把 UID 当 UMO；一行一个，后端统一接收字符串数组。名单按任务独立保存，不导入、继承或修改 AstrBot 全局入站白名单，不增加绑定指令。
 
+## AstrBot 发送适配层（内部，无后台入口）
+
+本轮支持 **仅 AstrBot v4.29.1 的 aiocqhttp/OneBot v11 适配器**，其他适配器明确返回 `sender_not_supported`，不声称全平台兼容。
+
+- 按已保存完整 UMO 中的平台实例 ID 精确调用 `Context.get_platform_inst()`；实例 ID 可以是 `demo_qq_01` 等任意配置值，不使用平台类型名代替。
+- 通过真实 `Context.send_message()`、`MessageSession`、`MessageChain` 和 aiocqhttp `send_by_session()` 路由；群成员隔离会话按宿主规则处理，不自行统一截取或改写 UMO。
+- 群聊/私聊目标必须是 OneBot 可接受的 ASCII 数字；群成员隔离 ID 的最后一段由宿主实际路由，非法会话在调用前拒绝。
+- text 使用 `Plain`；Markdown 作为普通文本源码发送，不宣称原生富文本；image 只接受有效 PNG bytes（签名、Pillow 校验、8 MiB 上限），用 `Image.fromBytes`/base64 内存传递，不创建公开 URL、不读文件路径、不请求网络。
+- 未找到实例、非 aiocqhttp、非法 UMO/目标/载荷在外部调用前返回 FAILED；已进入 `Context.send_message` 后的异常或无法确定结果返回 UNKNOWN；`CancelledError` 继续传播；不自动重试。
+- 成功表示真实宿主路由方法正常完成并调用了支持的 aiocqhttp 发送路径，不保证平台已读、绝对送达或平台 API 回执成功。异常正文/平台响应/凭据不落库、不打印 UMO/正文/PNG。
+- 插件启动不装配该发送器；没有后台发送按钮、公开投递 API、聊天命令、启用或调度。
+- 适配层验证使用真实 AstrBot v4.29.1 源码、真实 Context/aiocqhttp 路由/消息转换，最终机器人网络边界替换为隔离假机器人；未连接真实平台。
+
 ## 投递核心（内部，无后台入口）
 
 本轮提供可独立测试的投递服务和执行记录，不注册后台发送按钮或公开 Web API，也不在插件启动时装配真实发送器。调用方只能提供已保存任务 ID 和执行标识；组合、输出方式、UMO、正文和图片均从已保存任务和现有预览生成，不能由调用方传入 URL、正文、UMO 或文件路径。

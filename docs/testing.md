@@ -60,6 +60,27 @@
 
 边界：真实平台适配器、真实群聊/私聊投递、后台发送入口、任务启用、调度和重启恢复发送未实现/未验证。投递核心通过不代表真实平台可用。
 
+## M4 aiocqhttp 发送适配层验证
+
+本轮支持范围仅 AstrBot v4.29.1 aiocqhttp/OneBot v11；其他适配器明确拒绝。测试不连接真实平台，也不装配默认发送器。
+
+- 使用真实 AstrBot v4.29.1 源码，不伪造 `astrbot` 模块；使用真实 `Context.send_message()`、`get_platform_inst()`、`MessageSession`、`MessageChain` 和 aiocqhttp `send_by_session()`/消息转换路径。
+- 最终网络边界替换为隔离假机器人，记录群号/QQ 号、消息段和 base64 图片；宿主遥测 `Metric.upload` 替换为空实现。
+- 覆盖同类型不同实例精确路由、群聊/私聊、成员隔离会话、非法目标零调用、未知实例/不支持适配器、普通文本/Markdown 源码/有效 PNG、非法 PNG、特殊字符、异常/取消、畸形 Context 返回。
+- 投递核心端到端：已保存任务 → 共享内容准备 → DeliveryService → 真实宿主路由/转换 → 假机器人边界；断言实际群目标、文本组件和成功/None 错误码。
+- 成功仅表示宿主路由方法完成并进入支持的 aiocqhttp 发送路径，不表示平台已读或 API 回执成功；异常映射 UNKNOWN，取消继续传播。
+
+宿主集成运行方式：
+
+```bash
+PYTHONPATH=/tmp/astrbot-src-m4:<host-python-site-packages> \
+  <host-python> -m unittest tests.test_astrbot_sender
+```
+
+无真实宿主源码时该测试文件自动跳过；完整回归仍运行其余测试。
+
+边界：真实 QQ/OneBot 账号、真实网络发送、平台回执、后台入口、调度和任务启用未验证。
+
 ## 当前检查
 
 - 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。

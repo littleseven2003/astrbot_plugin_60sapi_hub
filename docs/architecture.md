@@ -1,6 +1,6 @@
 # 架构设计
 
-当前已实现最小插件入口、站点存储、后台站点管理、五类内容获取预览、有界缓存、内容组合持久化/预览、组合纯文字/Markdown 输出、分页中文图片、推送任务配置及假发送器投递核心，其余业务模块仍为设计约定，在实现相应功能时按需建立。
+当前已实现最小插件入口、站点存储、后台站点管理、五类内容获取预览、有界缓存、内容组合持久化/预览、组合纯文字/Markdown 输出、分页中文图片、推送任务配置、假发送器投递核心及 aiocqhttp 发送适配层，其余业务模块仍为设计约定，在实现相应功能时按需建立。
 
 ## 数据流
 
@@ -51,6 +51,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/tasks.py`：推送任务领域模型、输出方式、完整 UMO 校验、revision CRUD 和组合引用保护；不持有 HTTP 客户端或发送接口。
 - `core/task_api.py` / `task_web.py`：任务 CRUD 的安全 API 映射和 Dashboard 宿主适配；明确拒绝启用、调度或发送字段。
 - `core/delivery.py`：手动投递核心。只接受已保存任务 ID 和执行标识，读取组合/输出/白名单；复用 ProfileApi 的预览与图片快照，一次准备共享内容；调用注入的 `DeliverySender`，逐目标逐页持久化状态。插件启动不装配真实发送器，不注册公开投递入口。
+- `core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp/OneBot v11 适配。按 UMO 平台实例 ID 精确查找实例，用真实 `Context.send_message`/`MessageSession`/`MessageChain` 路由；仅接受 aiocqhttp，其他适配器前置拒绝；图片用内存 PNG bytes，Markdown 以 Plain 源码发送。
 - `core/image_service.py`：受限线程池（最多 2 执行、4 排队，准入 6）、20 秒总超时、取消事件和关闭等待；后台任务结束前持续占用准入名额，避免超时后无界积压。
 - `core/site_store.py`：同一 SQLite 连接管理站点、组合、栏目、推送任务、任务 UMO 和投递执行/目标/页；schema v5 事务迁移、外键 `ON DELETE RESTRICT`、组合引用删除拒绝、任务 revision 控制和投递状态恢复。
 - 组合预览：`core/profile_api.py` 读取一份组合版本和站点，按栏目配置顺序调用 `ContentService.preview_cached`；只请求选中类型，复用缓存和并发预算，逐栏截取返回条数，不修改完整快照。

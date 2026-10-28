@@ -210,6 +210,24 @@
 - `unique_session` 下的群成员隔离会话 ID 原样保留，不擅自改成群级目标；如需群级目标，应按 AstrBot `/sid` 的提示核对并手工填写，不自动猜测。
 - 后台提示使用对应会话的 `/sid` 获取完整 UMO，不把 UID 当 UMO；一行一个，后端统一接收字符串数组。名单按任务独立保存，不导入、继承或修改 AstrBot 全局入站白名单，不增加绑定指令。
 
+## 投递核心（内部，无后台入口）
+
+本轮提供可独立测试的投递服务和执行记录，不注册后台发送按钮或公开 Web API，也不在插件启动时装配真实发送器。调用方只能提供已保存任务 ID 和执行标识；组合、输出方式、UMO、正文和图片均从已保存任务和现有预览生成，不能由调用方传入 URL、正文、UMO 或文件路径。
+
+- 空名单在内容获取/渲染前结束，发送器调用零次。
+- 一次执行只准备一份内容；文字/Markdown 为一个逻辑消息，图片按现有分页顺序逐页处理。
+- 站点不存在/停用、组合不存在、全部栏目失败或图片生成失败时不调用发送器；本轮没有自动降级。
+- 部分栏目失败沿用带失败提示的结果，缺失栏目记录在执行中；不自动改成全部成功。
+- 发送前先落库目标和页的 `sending` 状态；外部发送不在数据库事务或存储锁内。
+- 只有发送器明确 `success` 才记成功。明确 `failed` 记失败；普通异常、超时和取消保守记 `unknown`。
+- 某目标出现失败/unknown 后停止该目标剩余页；其他目标继续。成功、失败、unknown、跳过分别记录，不把部分成功汇总成全部成功。
+- 每次发送前重新核对任务、组合、站点 revision、目标仍存在且站点启用；变化后停止尚未开始的投递，不加入新目标，不替换内容。已进入外部调用的结果按实际/unknown 记录。
+- 发送成功后写库失败不能变成安全重试；重复执行标识只返回已有状态，不自动重试、不自动恢复、不重启补发。
+- 执行记录保留任务/组合/站点快照 revision、输出格式、内容哈希、时间、目标和页；不保存完整新闻正文或 PNG。删除任务不级联删除历史投递记录。
+- 关闭/取消标记未完成状态为 unknown；重新打开数据库把遗留 `preparing/running/pending/sending` 记录归为 unknown，不补发。
+
+默认上限：最多 20 个目标、6 个图片页、2 个并发执行、单次执行 60 秒、单次发送器调用 15 秒。服务层还会拒绝超过任务/图片既有上限的配置。
+
 ## 失败策略
 
 - 部分栏目失败：发送可用栏目或跳过整次，并留下记录；本轮没有发送实现。
@@ -220,8 +238,8 @@
 
 ## 数据与升级
 
-站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 3：`sites`、`content_profiles`、`content_profile_items`、`push_tasks` 和 `push_task_umos`。首次建库直接创建五张表；旧 v1/v2 数据库在同一事务中补齐组合/任务表并提升 `user_version=3`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
+站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 4：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库直接创建八张表；旧 v1/v2/v3 数据库在同一事务中补齐组合/任务/投递表并提升 `user_version=4`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
 
-任务与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；删除组合在事务中检查任务引用并由外键兜底；删除任务不级联删除组合。写入失败回滚，取消后下一次正常操作不受影响。
+任务、投递记录与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；删除组合在事务中检查任务引用并由外键兜底；删除任务不级联删除组合。写入失败回滚，取消后下一次正常操作不受影响。
 
 运行依赖 `aiosqlite`、`httpx` 和 `Pillow` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。内容快照仍只在进程内缓存；任务配置和 UMO 持久化，执行/发送状态尚未实现。

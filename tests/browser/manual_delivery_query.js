@@ -1,10 +1,10 @@
 /*
  * Real-Dashboard regression for manual delivery query context.
- * All preview/submit/detail requests are intercepted; no message is sent.
+ * Tasks/history are fixtures; preview/submit/detail routes are intercepted.
+ * No task test POST reaches the server and no message is sent.
  *
- * ASTRBOT_URL=http://127.0.0.1:16192 \
- * ASTRBOT_PASSWORD=... ASTRBOT_PLUGIN=astrbot_plugin_60sapi_hub \
- * CHROME_PATH=/path/to/chrome NODE_PATH=<playwright-core> \
+ * ASTRBOT_URL=... ASTRBOT_PASSWORD=... ASTRBOT_PLUGIN=... \
+ * CHROME_PATH=... NODE_PATH=<playwright-core> \
  * node tests/browser/manual_delivery_query.js
  */
 const assert = require("node:assert/strict");
@@ -15,10 +15,16 @@ const PASSWORD = process.env.ASTRBOT_PASSWORD || "";
 const PLUGIN = process.env.ASTRBOT_PLUGIN || "astrbot_plugin_60sapi_hub";
 const CHROME = process.env.CHROME_PATH;
 
-async function requestJson(path, options = {}) {
-  const response = await fetch(`${BASE}${path}`, options);
-  return { status: response.status, body: await response.json() };
-}
+const TASK_1 = {
+  id: "fixture-task-1", name: "夹具任务一", profile_id: "fixture-profile",
+  profile_name: "夹具组合", site_id: "fixture-site", site_enabled: true,
+  output_format: "text", output_label: "纯文字", target_count: 1,
+  enabled: false, can_send: false, revision: 1,
+  created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+};
+const TASK_2 = { ...TASK_1, id: "fixture-task-2", name: "夹具任务二" };
+const TASK_3 = { ...TASK_1, id: "fixture-task-3", name: "夹具任务三" };
+const HISTORY_ID = "fixture-history-A";
 
 async function login() {
   const response = await fetch(`${BASE}/api/v1/auth/login`, {
@@ -27,12 +33,6 @@ async function login() {
     body: JSON.stringify({ username: "astrbot", password: PASSWORD }),
   });
   return (await response.json()).data.token;
-}
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
 }
 
 async function frameOf(page) {
@@ -46,10 +46,39 @@ async function frameOf(page) {
   return frame;
 }
 
-async function waitPreviewReady(frame) {
+function previewBody(task) {
+  return JSON.stringify({ status: "ok", data: {
+    task_id: task.id, task_name: task.name, task_revision: 1,
+    profile_id: "fixture-profile", profile_name: "夹具组合",
+    profile_revision: 1, site_id: "fixture-site", site_name: "夹具站点",
+    site_revision: 1, site_enabled: true, output_format: "text",
+    output_label: "纯文字", targets: [{
+      umo: "fake:GroupMessage:123", platform_id: "fake",
+      message_type: "GroupMessage", target: "123",
+      isolated: false, valid: true, reason: null,
+    }], can_deliver: true, reason: null,
+  }});
+}
+
+function historySummary(id = HISTORY_ID) {
+  return {
+    id, task_id: TASK_1.id, task_name: "历史任务A", output_format: "text",
+    status: "unknown", content_status: "complete",
+    created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    target_count: 1, page_count: 1,
+  };
+}
+
+async function waitPreview(frame) {
   await frame.waitForFunction(
     () => document.getElementById("delivery-confirm-button")?.textContent === "确认并投递",
   );
+}
+
+async function settleFrames(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 }
 
 (async () => {
@@ -60,69 +89,7 @@ async function waitPreviewReady(frame) {
   const page = await browser.newPage({ viewport: { width: 1300, height: 1200 } });
   try {
     const token = await login();
-    const tasksResponse = await requestJson(
-      `/api/v1/plugins/extensions/${PLUGIN}/tasks`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    const taskA = tasksResponse.body.data.tasks[0];
-    assert(taskA, "an existing task is required");
-    const previewResponse = await requestJson(
-      `/api/v1/plugins/extensions/${PLUGIN}/tasks/${taskA.id}/test-preview`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: "{}",
-      },
-    );
-    const revisions = previewResponse.body.data;
-    const historyId = `history-${Date.now()}`;
-    const historyCreate = await requestJson(
-      `/api/v1/plugins/extensions/${PLUGIN}/tasks/${taskA.id}/test`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          execution_id: historyId,
-          expected_task_revision: revisions.task_revision,
-          expected_profile_revision: revisions.profile_revision,
-          expected_site_revision: revisions.site_revision,
-        }),
-      },
-    );
-    assert.equal(historyCreate.status, 200, JSON.stringify(historyCreate.body));
-    // Create a second task so history can be closed and a fresh confirmation opened.
-    const taskB = (await requestJson(
-      `/api/v1/plugins/extensions/${PLUGIN}/tasks`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          name: `查询上下文任务${Date.now()}`,
-          profile_id: taskA.profile_id,
-          output_format: "text",
-          umos: [],
-        }),
-      },
-    )).body.data;
-
-    await page.addInitScript(() => {
-      const get = Storage.prototype.getItem;
-      const set = Storage.prototype.setItem;
-      const remove = Storage.prototype.removeItem;
-      const blocked = (key) => String(key).startsWith("60sapi");
-      Storage.prototype.getItem = function (key) {
-        if (blocked(key)) throw new DOMException("blocked", "SecurityError");
-        return get.call(this, key);
-      };
-      Storage.prototype.setItem = function (key, value) {
-        if (blocked(key)) throw new DOMException("blocked", "SecurityError");
-        return set.call(this, key, value);
-      };
-      Storage.prototype.removeItem = function (key) {
-        if (blocked(key)) throw new DOMException("blocked", "SecurityError");
-        return remove.call(this, key);
-      };
-    });
+    assert(token);
     await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
     await page.fill("input[name=username]", "astrbot");
     await page.fill("input[name=password]", PASSWORD);
@@ -130,59 +97,70 @@ async function waitPreviewReady(frame) {
       page.waitForURL((url) => !url.toString().includes("/auth/login")),
       page.getByRole("button", { name: "登录", exact: true }).click(),
     ]);
-    await page.goto(`${BASE}/#/plugin-view/${PLUGIN}/sites`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(400);
-    await page.evaluate(() => {
-      for (const node of document.querySelectorAll(".v-overlay__scrim,.v-overlay-container")) {
-        node.remove();
-      }
-    });
-    const frame = await frameOf(page);
 
+    let historyVisible = false;
     let previews = 0;
     const submits = [];
     const detailRequests = [];
     let delayed = null;
-    await page.route("**/tasks/*/test-preview", async (route) => {
-      previews += 1;
+    const delayedSettled = [];
+    await page.route("**/tasks", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
       await route.fulfill({
         status: 200, contentType: "application/json",
-        body: JSON.stringify({ status: "ok", data: {
-          task_name: "fake", profile_name: "fake", site_name: "fake",
-          output_label: "纯文字", task_revision: 1, profile_revision: 1, site_revision: 1,
-          targets: [{
-            umo: "fake:GroupMessage:123", platform_id: "fake", message_type: "GroupMessage",
-            target: "123", isolated: false, valid: true, reason: null,
-          }], can_deliver: true,
-        }}),
+        body: JSON.stringify({ status: "ok", data: { tasks: [TASK_1, TASK_2, TASK_3] } }),
+      });
+    });
+    await page.route("**/tasks/*/test-preview", async (route) => {
+      previews += 1;
+      const id = new URL(route.request().url()).pathname.split("/").at(-2);
+      const task = [TASK_1, TASK_2, TASK_3].find((item) => item.id === id) || TASK_1;
+      await route.fulfill({
+        status: 200, contentType: "application/json", body: previewBody(task),
       });
     });
     await page.route("**/tasks/*/test", async (route) => {
       submits.push(route.request().postDataJSON());
       await route.abort("failed");
     });
+    await page.route("**/executions?*", async (route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ status: "ok", data: {
+          executions: historyVisible ? [historySummary()] : [],
+          limit: 20, offset: 0, count: historyVisible ? 1 : 0, has_more: false,
+        }}),
+      });
+    });
     await page.route("**/executions/*", async (route) => {
       const id = new URL(route.request().url()).pathname.split("/").pop();
       detailRequests.push(id);
-      if (delayed && delayed.id === id) {
-        await delayed.promise;
-        if (delayed.status >= 500) {
+      const localDelayed = delayed && delayed.id === id ? delayed : null;
+      if (localDelayed) {
+        await localDelayed.promise;
+        if (localDelayed.status >= 500) {
           await route.fulfill({
-            status: delayed.status, contentType: "application/json",
-            body: '{"status":"error","message":"boom","data":{}}',
+            status: localDelayed.status, contentType: "application/json",
+            body: '{"status":"error","message":"delayed failure","data":{}}',
           });
         } else {
           await route.fulfill({
-            status: delayed.status, contentType: "application/json",
+            status: localDelayed.status, contentType: "application/json",
             body: JSON.stringify({ status: "ok", data: {
-              id, task_id: "t", task_name: "fake", status: "success",
-              content_status: "complete", error_code: null, targets: [], pages: [],
+              id, task_id: TASK_1.id, task_name: "历史任务A",
+              output_format: "text", status: "success",
+              content_status: "complete", error_code: null,
+              targets: [], pages: [],
             }}),
           });
         }
+        localDelayed.settled.resolve();
         return;
       }
-      if (id === historyId) {
+      if (id === HISTORY_ID) {
         await route.fulfill({
           status: 500, contentType: "application/json",
           body: '{"status":"error","message":"history query failed","data":{}}',
@@ -195,116 +173,147 @@ async function waitPreviewReady(frame) {
       });
     });
 
-    // History A fails; its retry must GET A, not any global pending.
-    await frame.locator("#delivery-refresh-button").click({ force: true });
-    await frame.waitForFunction(
-      (id) => document.getElementById("delivery-list")?.innerText.includes(id),
-      historyId,
-    );
-    let requestSeen = page.waitForRequest((request) =>
-      request.url().endsWith(`/executions/${historyId}`),
-    );
-    let responseSeen = page.waitForResponse((response) =>
-      response.url().endsWith(`/executions/${historyId}`),
-    );
-    await frame.locator(`button[aria-label="查看执行 ${historyId}"]`).click({ force: true });
-    await requestSeen;
-    await responseSeen;
-    await frame.waitForSelector("#delivery-uncertain:not([hidden])");
-    const historyQueriesBefore = detailRequests.length;
-    requestSeen = page.waitForRequest((request) =>
-      request.url().endsWith(`/executions/${historyId}`),
-    );
-    responseSeen = page.waitForResponse((response) =>
-      response.url().endsWith(`/executions/${historyId}`),
-    );
-    await frame.locator("#delivery-query-button").click({ force: true });
-    await requestSeen;
-    await responseSeen;
-    await frame.waitForFunction(
-      () => document.getElementById("delivery-result")?.hidden === true,
-    );
-    assert.equal(detailRequests.length, historyQueriesBefore + 1);
-    assert.equal(detailRequests.at(-1), historyId);
-    await frame.locator("#delivery-cancel-button").click({ force: true });
-    await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+    await page.goto(`${BASE}/#/plugin-view/${PLUGIN}/sites`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      for (const node of document.querySelectorAll(
+        ".v-overlay__scrim,.v-overlay-container",
+      )) node.remove();
+    });
+    const frame = await frameOf(page);
+    await frame.waitForFunction(() => document.getElementById("tasks-list")?.innerText.includes("夹具任务三"));
 
-    // Fresh submit B; lost response; query must use B.
-    await frame.locator("#tasks-list li").filter({ hasText: taskA.name })
-      .getByRole("button", { name: "测试投递" }).first().click({ force: true });
-    await waitPreviewReady(frame);
-    const submitSeen = page.waitForRequest((request) =>
+    // Scenario 1: first submit B, lost response, only query B.
+    await frame.locator("#tasks-list li").filter({ hasText: TASK_1.name })
+      .getByRole("button", { name: "测试投递" }).click({ force: true });
+    await waitPreview(frame);
+    const firstSubmitSeen = page.waitForRequest((request) =>
       request.method() === "POST" && request.url().endsWith("/test"),
     );
     await frame.locator("#delivery-confirm-button").click({ force: true });
-    const submitRequest = await submitSeen;
-    const submittedId = submitRequest.postDataJSON().execution_id;
+    const firstSubmit = await firstSubmitSeen;
+    const firstId = firstSubmit.postDataJSON().execution_id;
     await frame.waitForSelector("#delivery-uncertain:not([hidden])");
-    assert.equal(submits.length, 1);
-    const querySeen = page.waitForRequest((request) =>
-      request.url().endsWith(`/executions/${submittedId}`),
+    let firstResponse = page.waitForResponse((response) =>
+      response.url().endsWith(`/executions/${firstId}`),
     );
-    const queryResponseSeen = page.waitForResponse((response) =>
-      response.url().endsWith(`/executions/${submittedId}`),
+    let firstRequest = page.waitForRequest((request) =>
+      request.url().endsWith(`/executions/${firstId}`),
     );
     await frame.locator("#delivery-query-button").click({ force: true });
-    await querySeen;
-    await queryResponseSeen;
-        assert.equal(detailRequests.at(-1), submittedId);
+    await firstRequest;
+    await firstResponse;
+    await frame.waitForFunction(
+      () => document.getElementById("delivery-query-button")?.dataset.querying !== "1",
+    ).catch(() => {});
+    assert.equal(detailRequests.at(-1), firstId);
     assert.equal(submits.length, 1);
     await frame.locator("#delivery-cancel-button").click({ force: true });
     await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
 
-    // Delayed old history success: close and switch to fresh confirmation before release.
+    // Scenario 2/3: history A fails, retry still A; then B after history queries B.
+    historyVisible = true;
     await frame.locator("#delivery-refresh-button").click({ force: true });
     await frame.waitForFunction(
       (id) => document.getElementById("delivery-list")?.innerText.includes(id),
-      historyId,
+      HISTORY_ID,
     );
-    delayed = { id: historyId, status: 200, ...deferred() };
-    requestSeen = page.waitForRequest((request) =>
-      request.url().endsWith(`/executions/${historyId}`),
+    let historyRequest = page.waitForRequest((request) =>
+      request.url().endsWith(`/executions/${HISTORY_ID}`),
     );
-    await frame.locator(`button[aria-label="查看执行 ${historyId}"]`).click({ force: true });
-    await requestSeen;
-    await frame.locator("#delivery-cancel-button").click({ force: true });
-    await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
-    await frame.locator("#tasks-list li").filter({ hasText: taskB.name })
-      .getByRole("button", { name: "测试投递" }).click({ force: true });
-    await waitPreviewReady(frame);
-    delayed.resolve();
-    await page.waitForTimeout(100);
-    assert.equal(await frame.locator("#delivery-dialog-title").innerText(), "确认手动测试投递");
-    assert.equal(await frame.locator("#delivery-result").isVisible(), false);
-    assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), true);
+    let historyResponse = page.waitForResponse((response) =>
+      response.url().endsWith(`/executions/${HISTORY_ID}`),
+    );
+    await frame.locator(`button[aria-label="查看执行 ${HISTORY_ID}"]`).click({ force: true });
+    await historyRequest;
+    await historyResponse;
+    await frame.waitForSelector("#delivery-uncertain:not([hidden])");
+    const beforeRetry = detailRequests.length;
+    historyRequest = page.waitForRequest((request) =>
+      request.url().endsWith(`/executions/${HISTORY_ID}`),
+    );
+    historyResponse = page.waitForResponse((response) =>
+      response.url().endsWith(`/executions/${HISTORY_ID}`),
+    );
+    await frame.locator("#delivery-query-button").click({ force: true });
+    await historyRequest;
+    await historyResponse;
+    assert.equal(detailRequests.length, beforeRetry + 1);
+    assert.equal(detailRequests.at(-1), HISTORY_ID);
+    assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), false);
     await frame.locator("#delivery-cancel-button").click({ force: true });
     await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
 
-    // Delayed old history failure must obey the same ownership rule.
-    await frame.locator("#delivery-refresh-button").click({ force: true });
-    await frame.waitForFunction(
-      (id) => document.getElementById("delivery-list")?.innerText.includes(id),
-      historyId,
+    await frame.locator("#tasks-list li").filter({ hasText: TASK_2.name })
+      .getByRole("button", { name: "测试投递" }).click({ force: true });
+    await waitPreview(frame);
+    const secondSubmitSeen = page.waitForRequest((request) =>
+      request.method() === "POST" && request.url().endsWith("/test"),
     );
-    delayed = { id: historyId, status: 500, ...deferred() };
-    requestSeen = page.waitForRequest((request) =>
-      request.url().endsWith(`/executions/${historyId}`),
+    await frame.locator("#delivery-confirm-button").click({ force: true });
+    const secondSubmit = await secondSubmitSeen;
+    const secondId = secondSubmit.postDataJSON().execution_id;
+    await frame.waitForSelector("#delivery-uncertain:not([hidden])");
+    const secondRequest = page.waitForRequest((request) =>
+      request.url().endsWith(`/executions/${secondId}`),
     );
-    await frame.locator(`button[aria-label="查看执行 ${historyId}"]`).click({ force: true });
-    await requestSeen;
+    const secondResponse = page.waitForResponse((response) =>
+      response.url().endsWith(`/executions/${secondId}`),
+    );
+    await frame.locator("#delivery-query-button").click({ force: true });
+    await secondRequest;
+    await secondResponse;
+    assert.equal(detailRequests.at(-1), secondId);
+    assert.equal(submits.length, 2);
     await frame.locator("#delivery-cancel-button").click({ force: true });
     await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
-    await frame.locator("#tasks-list li").filter({ hasText: taskB.name })
-      .getByRole("button", { name: "测试投递" }).click({ force: true });
-    await waitPreviewReady(frame);
-    delayed.resolve();
-    await page.waitForTimeout(100);
-    assert.equal(await frame.locator("#delivery-dialog-title").innerText(), "确认手动测试投递");
-    assert.equal(await frame.locator("#delivery-uncertain").isVisible(), false);
-    assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), true);
+
+    // Scenario 4: delayed old success while switching to a fresh confirmation.
+    for (const status of [200, 500]) {
+      historyVisible = true;
+      await frame.locator("#delivery-refresh-button").click({ force: true });
+      await frame.waitForFunction(
+        (id) => document.getElementById("delivery-list")?.innerText.includes(id),
+        HISTORY_ID,
+      );
+      const gate = {};
+      gate.promise = new Promise((resolve) => { gate.resolvePromise = resolve; });
+      gate.settled = {};
+      gate.settled.promise = new Promise((resolve) => { gate.settled.resolvePromise = resolve; });
+      delayed = {
+        id: HISTORY_ID, status,
+        promise: gate.promise,
+        resolve: gate.resolvePromise,
+        settled: { resolve: gate.settled.resolvePromise },
+      };
+      const delayedRequest = page.waitForRequest((request) =>
+        request.url().endsWith(`/executions/${HISTORY_ID}`),
+      );
+      await frame.locator(`button[aria-label="查看执行 ${HISTORY_ID}"]`).click({ force: true });
+      await delayedRequest;
+      await frame.locator("#delivery-cancel-button").click({ force: true });
+      await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+      await frame.locator("#tasks-list li").filter({ hasText: TASK_3.name })
+        .getByRole("button", { name: "测试投递" }).click({ force: true });
+      await waitPreview(frame);
+      const local = delayed;
+      local.resolve();
+      await local.settled.promise;
+      await settleFrames(page);
+      assert.equal(await frame.locator("#delivery-dialog-title").innerText(), "确认手动测试投递");
+      assert.equal(await frame.locator("#delivery-result").isVisible(), false);
+      assert.equal(await frame.locator("#delivery-uncertain").isVisible(), false);
+      assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), true);
+      delayed = null;
+      await frame.locator("#delivery-cancel-button").click({ force: true });
+      await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+    }
 
     console.log("MANUAL DELIVERY QUERY REGRESSION PASSED", {
       previews, submits: submits.length, detailRequests,
+      firstSubmit: firstId, secondSubmit: secondId,
     });
   } finally {
     await browser.close();

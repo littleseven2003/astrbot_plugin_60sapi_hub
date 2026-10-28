@@ -100,6 +100,28 @@ PYTHONPATH=<astrbot-source>:<matching-host-venv>/lib/pythonX.Y/site-packages \
 - UI 浏览器验证仅在可用的本地 Playwright 环境执行；环境不可用时明确报告未验证，不把静态检查当作浏览器通过。
 - 真实发送只在 AstrBot v4.29.1 + 假机器人环境验证；未连接真实账号。
 
+## 手动投递查询上下文回归
+
+在真实 Dashboard iframe bridge 下运行（Playwright 可选依赖，不随插件分发）：
+
+```bash
+ASTRBOT_URL=<isolated-host-url> \
+ASTRBOT_PASSWORD=<test-dashboard-password> \
+ASTRBOT_PLUGIN=astrbot_plugin_60sapi_hub \
+CHROME_PATH=<chromium> \
+NODE_PATH=<playwright-core-node-modules> \
+node tests/browser/manual_delivery_query.js
+```
+
+该回归拦截 preview/submit/detail，不发送真实消息，验证：
+
+- localStorage 对插件 key 抛 SecurityError 时未确认标识进入内存；
+- 首次提交响应丢失后，按钮只 GET 本次 execution_id；
+- test POST 次数仍为 1；
+- 重新打开/查询不会再取 preview。
+
+未覆盖的浏览器路径（历史 A 查询失败重试、21 条以上 UI 翻页）继续在测试手册边界中明确标注；静态语法检查不作为浏览器通过。
+
 ## 当前检查
 
 - 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。

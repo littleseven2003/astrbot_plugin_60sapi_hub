@@ -81,25 +81,67 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function resetBridgeResponseCounter(frame) {
-  await frame.evaluate(() => {
-    window.__manualDeliveryBridgeResponses = 0;
-    if (!window.__manualDeliveryBridgeListener) {
-      window.__manualDeliveryBridgeListener = (event) => {
-        if (event.data && event.data.channel && event.data.kind === "response") {
-          window.__manualDeliveryBridgeResponses += 1;
+async function resetBridgeTracking(page, frame) {
+  await page.evaluate(() => {
+    window.__manualBridgeRequests = [];
+    if (!window.__manualBridgeRequestListener) {
+      window.__manualBridgeRequestListener = (event) => {
+        const data = event.data;
+        if (data && data.channel && data.kind === "request") {
+          window.__manualBridgeRequests.push({
+            requestId: data.requestId,
+            action: data.action,
+            endpoint: data.endpoint,
+          });
         }
       };
-      window.addEventListener("message", window.__manualDeliveryBridgeListener);
+      window.addEventListener("message", window.__manualBridgeRequestListener);
+    }
+  });
+  await frame.evaluate(() => {
+    window.__manualBridgeResponses = {};
+    if (!window.__manualBridgeResponseListener) {
+      window.__manualBridgeResponseListener = (event) => {
+        const data = event.data;
+        if (data && data.channel && data.kind === "response") {
+          window.__manualBridgeResponses[data.requestId] = data.ok;
+        }
+      };
+      window.addEventListener("message", window.__manualBridgeResponseListener);
     }
   });
 }
 
-async function waitBridgeResponse(frame, minimum = 1) {
-  await frame.waitForFunction(
-    (count) => (window.__manualDeliveryBridgeResponses || 0) >= count,
-    minimum,
+async function waitBridgeRequest(page, endpoint, action = "api:get") {
+  return page.waitForFunction(
+    ({ endpoint, action }) => {
+      const found = (window.__manualBridgeRequests || []).find(
+        (item) => item.endpoint === endpoint && item.action === action,
+      );
+      return found ? found.requestId : false;
+    },
+    { endpoint, action },
+  ).then((handle) => handle.jsonValue());
+}
+
+async function bridgeResponseReceived(frame, requestId) {
+  return frame.evaluate(
+    (id) => Object.prototype.hasOwnProperty.call(
+      window.__manualBridgeResponses || {}, id,
+    ),
+    requestId,
   );
+}
+
+async function waitBridgeResponse(frame, requestId) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (await bridgeResponseReceived(frame, requestId)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`bridge response ${requestId} did not reach the iframe`);
 }
 
 (async () => {
@@ -124,7 +166,7 @@ async function waitBridgeResponse(frame, minimum = 1) {
     const submits = [];
     const detailRequests = [];
     let delayed = null;
-    const delayedSettled = [];
+    const delayedChecks = [];
     await page.route("**/tasks", async (route) => {
       if (route.request().method() !== "GET") {
         await route.continue();
@@ -307,12 +349,16 @@ async function waitBridgeResponse(frame, minimum = 1) {
         resolve: releaseGate.resolve,
         settled: settledGate,
       };
-      await resetBridgeResponseCounter(frame);
-      const delayedRequest = page.waitForRequest((request) =>
-        request.url().endsWith(`/executions/${HISTORY_ID}`),
-      );
+      await resetBridgeTracking(page, frame);
       await frame.locator(`button[aria-label="查看执行 ${HISTORY_ID}"]`).click({ force: true });
-      await delayedRequest;
+      const bridgeRequestId = await waitBridgeRequest(
+        page, `executions/${HISTORY_ID}`,
+      );
+      assert.equal(
+        await bridgeResponseReceived(frame, bridgeRequestId),
+        false,
+        "delayed response must not have arrived before release",
+      );
       await frame.locator("#delivery-cancel-button").click({ force: true });
       await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
       await frame.locator("#tasks-list li").filter({ hasText: TASK_3.name })
@@ -321,11 +367,21 @@ async function waitBridgeResponse(frame, minimum = 1) {
       const local = delayed;
       local.resolve();
       await local.settled.promise;
-      await waitBridgeResponse(frame);
+      await waitBridgeResponse(frame, bridgeRequestId);
+      assert.equal(await bridgeResponseReceived(frame, bridgeRequestId), true);
+      const responseOk = await frame.evaluate(
+        (id) => window.__manualBridgeResponses[id],
+        bridgeRequestId,
+      );
+      assert.equal(responseOk, status < 400);
       assert.equal(await frame.locator("#delivery-dialog-title").innerText(), "确认手动测试投递");
       assert.equal(await frame.locator("#delivery-result").isVisible(), false);
       assert.equal(await frame.locator("#delivery-uncertain").isVisible(), false);
       assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), true);
+      delayedChecks.push({
+        status, requestId: bridgeRequestId,
+        beforeRelease: false, afterRelease: true, responseOk,
+      });
       delayed = null;
       await frame.locator("#delivery-cancel-button").click({ force: true });
       await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
@@ -333,7 +389,7 @@ async function waitBridgeResponse(frame, minimum = 1) {
 
     console.log("MANUAL DELIVERY QUERY REGRESSION PASSED", {
       previews, submits: submits.length, detailRequests,
-      firstSubmit: firstId, secondSubmit: secondId,
+      firstSubmit: firstId, secondSubmit: secondId, delayedChecks,
     });
   } finally {
     await browser.close();

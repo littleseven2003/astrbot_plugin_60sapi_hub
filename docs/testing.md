@@ -73,9 +73,15 @@
 宿主集成运行方式：
 
 ```bash
-PYTHONPATH=/tmp/astrbot-src-m4:<host-python-site-packages> \
-  <host-python> -m unittest tests.test_astrbot_sender
+ASTRBOT_ROOT=<isolated-host-root> \
+PYTHONPATH=<astrbot-source>:<matching-host-venv>/lib/pythonX.Y/site-packages \
+  <matching-host-python> -m unittest tests.test_astrbot_sender
 ```
+
+- 无 `astrbot` 源码/包：7 项集成测试明确跳过，其余回归继续。
+- 找到源码但依赖缺失/导入失败：测试导入直接失败，保留真实 `ModuleNotFoundError`/导入错误，不转为跳过；不捕获 `KeyboardInterrupt`/`SystemExit`。
+- 完整匹配的宿主源码与对应 Python 依赖：7 项全部实际执行，不使用固定开发者 `/tmp` 路径或混用其他 Python 版本的 site-packages。
+- `ASTRBOT_ROOT` 必须指向独立测试根目录；不连接真实账号或真实群聊/私聊。
 
 无真实宿主源码时该测试文件自动跳过；完整回归仍运行其余测试。
 

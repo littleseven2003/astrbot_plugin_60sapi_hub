@@ -216,7 +216,7 @@
 
 - 按已保存完整 UMO 中的平台实例 ID 精确调用 `Context.get_platform_inst()`；实例 ID 可以是 `demo_qq_01` 等任意配置值，不使用平台类型名代替。
 - 通过真实 `Context.send_message()`、`MessageSession`、`MessageChain` 和 aiocqhttp `send_by_session()` 路由；群成员隔离会话按宿主规则处理，不自行统一截取或改写 UMO。
-- 群聊/私聊目标必须是 OneBot 可接受的 ASCII 数字；群成员隔离 ID 的最后一段由宿主实际路由，非法会话在调用前拒绝。
+- 普通群聊会话必须是纯 ASCII 数字 group_id；成员隔离会话必须是 AstrBot aiocqhttp 入站构造的 `sender_id_group_id`，即恰好一个下划线且两段均为完整 ASCII 数字。私聊必须是纯 ASCII 数字，不含下划线或冒号。空前缀、非数字字段、多余下划线、混入冒号等无法确认的格式在调用宿主前拒绝，不通过“取最后一段”把畸形输入变成另一目标。
 - text 使用 `Plain`；Markdown 作为普通文本源码发送，不宣称原生富文本；image 只接受有效 PNG bytes（签名、Pillow 校验、8 MiB 上限），用 `Image.fromBytes`/base64 内存传递，不创建公开 URL、不读文件路径、不请求网络。
 - 未找到实例、非 aiocqhttp、非法 UMO/目标/载荷在外部调用前返回 FAILED；已进入 `Context.send_message` 后的异常或无法确定结果返回 UNKNOWN；`CancelledError` 继续传播；不自动重试。
 - 成功表示真实宿主路由方法正常完成并调用了支持的 aiocqhttp 发送路径，不保证平台已读、绝对送达或平台 API 回执成功。异常正文/平台响应/凭据不落库、不打印 UMO/正文/PNG。

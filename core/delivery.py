@@ -457,6 +457,7 @@ class DeliveryService:
             except Exception as exc:
                 raise DeliveryStorageError("无法保存发送计划。") from exc
             target_status = "success"
+            target_success_pages = 0
             for page_index, page in enumerate(prepared.pages, start=1):
                 if page_index > 1:
                     unchanged = await self._config_unchanged(
@@ -491,11 +492,14 @@ class DeliveryService:
                         execution_id, position, len(prepared.pages),
                         "skipped", "config_changed", start=page_index,
                     )
+                    final_target_status = (
+                        "partial" if target_success_pages else "skipped"
+                    )
                     await self._mark_target_safely(
-                        execution_id, position, status="skipped",
+                        execution_id, position, status=final_target_status,
                         error_code="config_changed",
                     )
-                    target_status = "skipped"
+                    target_status = final_target_status
                     break
                 try:
                     result = await self._call_sender(message)
@@ -524,6 +528,7 @@ class DeliveryService:
                             "发送成功后写入投递记录失败。",
                         ) from exc
                     any_success = True
+                    target_success_pages += 1
                     continue
                 error_code = result.code or (
                     "send_unknown" if result.status is SendStatus.UNKNOWN

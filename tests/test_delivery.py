@@ -863,3 +863,37 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_code, "interrupted")
         self.assertEqual(len(self.sender.calls), 1)
         await service.close()
+
+async def test_final_check_after_second_page_marks_target_partial(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        original = self.sites.store.set_delivery_page_status
+        changed = False
+
+        async def remove_after_second_page(*args, **kwargs):
+            nonlocal changed
+            result = await original(*args, **kwargs)
+            if kwargs.get("status") == "sending" and args[2] == 2 and not changed:
+                changed = True
+                from core.tasks import TaskUpdate
+                await self.tasks.update_task(
+                    task.id,
+                    TaskUpdate(
+                        name=task.name, profile_id=task.profile_id,
+                        output_format=task.output_format, umos=[],
+                        expected_revision=task.revision,
+                    ),
+                )
+            return result
+
+        self.sites.store.set_delivery_page_status = remove_after_second_page
+        try:
+            result = await self.service.execute(task.id, "target-partial-1")
+        finally:
+            self.sites.store.set_delivery_page_status = original
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual([p.status for p in result.pages], ["success", "skipped"])
+        self.assertEqual(len(self.sender.calls), 1)
+        repeated = await self.service.execute(task.id, "target-partial-1")
+        self.assertEqual(repeated.status, "partial")
+        self.assertEqual(len(self.sender.calls), 1)

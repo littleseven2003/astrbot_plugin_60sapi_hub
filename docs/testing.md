@@ -123,7 +123,7 @@ node tests/browser/manual_delivery_query.js
 - 分别延迟旧查询的成功、失败响应，关闭并切换到新确认弹窗后释放，当前标题、结果区、查询目标和确认按钮不被旧响应覆盖；
 - 通过 request/response/selector 事件等待，不以固定 200ms 作为请求完成判据。
 
-21 条以上 UI 翻页仍由服务端分页测试覆盖，未在浏览器脚本中构造；延迟旧响应测试使用完整 deferred 对象，等待路由处理器实际完成、对应 bridge response 到达插件 iframe 后再断言，不使用固定 100ms 或仅父页面动画帧。静态语法检查不作为浏览器通过。
+21 条以上 UI 翻页仍由服务端分页测试覆盖，未在浏览器脚本中构造；延迟旧响应测试使用完整 deferred 对象；从父页面捕获旧历史查询的 bridge `requestId`（匹配 `channel`、`api:get` 和 `executions/<id>` endpoint），释放前断言 iframe 尚未收到该 requestId 的 response（新 preview 响应不能替代），释放后等待路由完成及同一 requestId 的 response 到达，再断言新弹窗状态。成功和失败 response 分别覆盖；不使用固定 100ms 或仅父页面动画帧。静态语法检查不作为浏览器通过。
 
 ## 当前检查
 

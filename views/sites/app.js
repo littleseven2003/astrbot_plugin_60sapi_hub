@@ -149,6 +149,27 @@ const elements = {
   taskDeleteReviewCloseButton: document.getElementById("task-delete-review-close-button"),
   taskDeleteCancelButton: document.getElementById("task-delete-cancel-button"),
   taskDeleteConfirmButton: document.getElementById("task-delete-confirm-button"),
+  deliveryList: document.getElementById("delivery-list"),
+  deliveryListState: document.getElementById("delivery-list-state"),
+  deliveryListStateText: document.getElementById("delivery-list-state-text"),
+  deliveryRefreshButton: document.getElementById("delivery-refresh-button"),
+  deliveryPendingPanel: document.getElementById("delivery-pending-panel"),
+  deliveryPendingText: document.getElementById("delivery-pending-text"),
+  deliveryQueryPendingButton: document.getElementById("delivery-query-pending-button"),
+  deliveryClearPendingButton: document.getElementById("delivery-clear-pending-button"),
+  deliveryDialog: document.getElementById("delivery-dialog"),
+  deliveryForm: document.getElementById("delivery-form"),
+  deliveryConfirmInfo: document.getElementById("delivery-confirm-info"),
+  deliveryTargets: document.getElementById("delivery-targets"),
+  deliveryError: document.getElementById("delivery-error"),
+  deliveryResult: document.getElementById("delivery-result"),
+  deliveryUncertain: document.getElementById("delivery-uncertain"),
+  deliveryUncertainText: document.getElementById("delivery-uncertain-text"),
+  deliveryExecutionId: document.getElementById("delivery-execution-id"),
+  deliveryConfirmButton: document.getElementById("delivery-confirm-button"),
+  deliveryCancelButton: document.getElementById("delivery-cancel-button"),
+  deliveryCloseButton: document.getElementById("delivery-close-button"),
+  deliveryQueryButton: document.getElementById("delivery-query-button"),
 };
 
 const state = {
@@ -195,6 +216,13 @@ const state = {
   taskLoadRequestId: 0,
   taskSaveRequestId: 0,
   taskPending: null,
+  deliveryTask: null,
+  deliveryPreview: null,
+  deliveryBusy: false,
+  deliveryRequestId: 0,
+  deliveryLoadRequestId: 0,
+  deliveryPending: null,
+  deliveryResult: null,
 };
 
 const TASK_OUTPUT_LABELS = {
@@ -2679,16 +2707,18 @@ function renderTasks() {
     targets.textContent = `目标数量：${task.target_count} 个 UMO`;
     const disabled = document.createElement("span");
     disabled.className = "task-disabled";
-    disabled.textContent = "未启用 · 发送功能未实现";
+    disabled.textContent = "未启用 · 仅管理员手动测试";
     meta.append(profile, output, targets, disabled);
 
     const actions = document.createElement("div");
     actions.className = "profile-card-actions";
     const edit = makeButton("编辑", "button button-secondary", () =>
       openTaskEditor(task), `编辑推送任务 ${task.name}`);
+    const test = makeButton("测试投递", "button button-primary", () =>
+      openDelivery(task), `手动测试投递 ${task.name}`);
     const remove = makeButton("删除", "button button-danger", () =>
       openTaskDelete(task), `删除推送任务 ${task.name}`);
-    actions.append(edit, remove);
+    actions.append(test, edit, remove);
     card.append(head, meta, actions);
     elements.tasksList.append(card);
   }
@@ -3110,12 +3140,364 @@ function finishTaskPendingReview() {
   );
 }
 
+
+function isDeliveryFinal(status) {
+  return ["success", "partial", "failed", "no_targets", "stopped"].includes(status);
+}
+
+function deliveryStatusLabel(status) {
+  return ({
+    preparing: "准备中", running: "运行中", success: "成功",
+    partial: "部分成功", failed: "失败", unknown: "结果未知",
+    no_targets: "空名单", stopped: "已停止",
+  })[status] || status;
+}
+
+function deliveryPendingStorageKey() {
+  return "60sapi.pendingDelivery";
+}
+
+function readDeliveryPending() {
+  try {
+    const raw = localStorage.getItem(deliveryPendingStorageKey());
+    const value = raw ? JSON.parse(raw) : null;
+    if (value && typeof value.executionId === "string" &&
+        typeof value.taskId === "string") {
+      return value;
+    }
+  } catch {
+    // Ignore malformed local markers; they are not proof of delivery.
+  }
+  return null;
+}
+
+function writeDeliveryPending(value) {
+  try {
+    if (value) {
+      localStorage.setItem(deliveryPendingStorageKey(), JSON.stringify({
+        executionId: value.executionId, taskId: value.taskId,
+      }));
+    } else {
+      localStorage.removeItem(deliveryPendingStorageKey());
+    }
+  } catch {
+    // Storage is optional; do not claim a result if it is unavailable.
+  }
+}
+
+function syncDeliveryPendingPanel() {
+  state.deliveryPending = readDeliveryPending();
+  elements.deliveryPendingPanel.hidden = !state.deliveryPending;
+  elements.deliveryPendingText.textContent = state.deliveryPending
+    ? `执行 ${state.deliveryPending.executionId} 的结果尚未确认。` +
+      "系统不会自动重发；请只查询该标识。"
+    : "";
+}
+
+function deliveryTargetText(target) {
+  if (!target || target.valid === false) {
+    return `不可投递${target && target.reason ? `（${target.reason}）` : ""}`;
+  }
+  const kind = target.message_type === "GroupMessage" ? "群聊" : "私聊";
+  const isolated = target.isolated ? " · 成员隔离实际路由到群" : "";
+  return `${kind} · 实际目标 ${target.target}${isolated}`;
+}
+
+function renderDeliveryPreview(data) {
+  elements.deliveryConfirmInfo.replaceChildren();
+  const lines = [
+    ["任务", data.task_name],
+    ["组合", data.profile_name],
+    ["来源站点", data.site_name],
+    ["输出方式", data.output_label],
+    ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision} · 站点 ${data.site_revision}`],
+    ["内容策略", "确认后获取最新内容，不复用页面旧预览"],
+  ];
+  for (const [label, value] of lines) {
+    const p = document.createElement("p");
+    p.textContent = `${label}：${value}`;
+    elements.deliveryConfirmInfo.append(p);
+  }
+  elements.deliveryTargets.replaceChildren();
+  for (const target of data.targets || []) {
+    const row = document.createElement("div");
+    row.className = "delivery-target";
+    const umo = document.createElement("code");
+    umo.textContent = target.umo;
+    const detail = document.createElement("span");
+    detail.textContent = deliveryTargetText(target);
+    row.append(umo, detail);
+    elements.deliveryTargets.append(row);
+  }
+  if (!(data.targets || []).length) {
+    const p = document.createElement("p");
+    p.className = "form-error";
+    p.textContent = "空白名单：不会获取内容，也不会发送。";
+    elements.deliveryTargets.append(p);
+  }
+  elements.deliveryConfirmButton.disabled = !data.can_deliver;
+  elements.deliveryConfirmButton.textContent = data.can_deliver ? "确认并投递" : "不可投递";
+}
+
+async function openDelivery(task) {
+  if (state.deliveryBusy || blockIfPendingWrite()) {
+    return;
+  }
+  state.deliveryBusy = true;
+  state.deliveryTask = task;
+  state.deliveryPreview = null;
+  elements.deliveryError.hidden = true;
+  elements.deliveryResult.hidden = true;
+  elements.deliveryUncertain.hidden = true;
+  elements.deliveryConfirmInfo.textContent = "正在读取最新任务配置…";
+  elements.deliveryTargets.replaceChildren();
+  elements.deliveryConfirmButton.disabled = true;
+  elements.deliveryConfirmButton.textContent = "读取中…";
+  openDialog(elements.deliveryDialog);
+  try {
+    const result = await bridge.apiPost(
+      `tasks/${encodeURIComponent(task.id)}/test-preview`, {},
+    );
+    if (!state.deliveryBusy || state.deliveryTask !== task) {
+      return;
+    }
+    state.deliveryPreview = result;
+    renderDeliveryPreview(result);
+    syncDeliveryPendingPanel();
+  } catch (error) {
+    elements.deliveryError.textContent = `无法读取确认信息：${friendlyErrorMessage(error)}`;
+    elements.deliveryError.hidden = false;
+    elements.deliveryConfirmInfo.textContent = "";
+    elements.deliveryConfirmButton.disabled = true;
+    elements.deliveryConfirmButton.textContent = "不可投递";
+  } finally {
+    state.deliveryBusy = false;
+  }
+}
+
+function newDeliveryExecutionId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `manual-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function renderDeliveryExecution(execution) {
+  elements.deliveryResult.hidden = false;
+  elements.deliveryResult.replaceChildren();
+  const title = document.createElement("h3");
+  title.textContent = `执行结果：${deliveryStatusLabel(execution.status)}`;
+  const id = document.createElement("p");
+  id.textContent = `执行标识：${execution.id}`;
+  const content = document.createElement("p");
+  content.textContent = `内容状态：${execution.content_status || "未知"} · ` +
+    (execution.error_code ? `错误码：${execution.error_code}` : "无执行级错误");
+  elements.deliveryResult.append(title, id, content);
+  if (execution.status === "unknown") {
+    const note = document.createElement("p");
+    note.className = "task-disabled";
+    note.textContent = "结果不确定，不会自动重发；请人工确认后再决定是否新建测试。";
+    elements.deliveryResult.append(note);
+  }
+  for (const target of execution.targets || []) {
+    const row = document.createElement("div");
+    row.className = "delivery-target";
+    const umo = document.createElement("code");
+    umo.textContent = target.umo;
+    const detail = document.createElement("span");
+    const pages = (target.pages || []).map((page) =>
+      `第 ${page.page_index} 页 ${deliveryStatusLabel(page.status)}` +
+      (page.error_code ? `（${page.error_code}）` : "")
+    ).join("；");
+    detail.textContent = `${deliveryStatusLabel(target.status)} · ${pages}`;
+    row.append(umo, detail);
+    elements.deliveryResult.append(row);
+  }
+}
+
+async function submitDelivery(event) {
+  event.preventDefault();
+  if (state.deliveryBusy || !state.deliveryPreview ||
+      !state.deliveryPreview.can_deliver) {
+    return;
+  }
+  const preview = state.deliveryPreview;
+  const task = state.deliveryTask;
+  const executionId = newDeliveryExecutionId();
+  const requestId = ++state.deliveryRequestId;
+  state.deliveryBusy = true;
+  elements.deliveryConfirmButton.disabled = true;
+  elements.deliveryConfirmButton.textContent = "提交中…";
+  elements.deliveryError.hidden = true;
+  elements.deliveryUncertain.hidden = true;
+  // Persist the stable execution id before the write response can be lost.
+  writeDeliveryPending({ executionId, taskId: task.id });
+  try {
+    const execution = await bridge.apiPost(
+      `tasks/${encodeURIComponent(task.id)}/test`,
+      {
+        execution_id: executionId,
+        expected_task_revision: preview.task_revision,
+        expected_profile_revision: preview.profile_revision,
+        expected_site_revision: preview.site_revision,
+      },
+    );
+    if (requestId !== state.deliveryRequestId) {
+      return;
+    }
+    renderDeliveryExecution(execution);
+    if (isDeliveryFinal(execution.status)) {
+      writeDeliveryPending(null);
+    }
+    await loadDeliveries();
+  } catch (error) {
+    if (requestId !== state.deliveryRequestId) {
+      return;
+    }
+    const message = friendlyErrorMessage(error);
+    if (isExplicitWriteRejection(message)) {
+      writeDeliveryPending(null);
+      elements.deliveryError.textContent = message;
+      elements.deliveryError.hidden = false;
+    } else {
+      elements.deliveryUncertain.hidden = false;
+      elements.deliveryExecutionId.textContent = executionId;
+      elements.deliveryUncertainText.textContent =
+        "请求可能已被服务器接收，也可能没有。系统不会自动重发；请只查询该执行标识。";
+    }
+    syncDeliveryPendingPanel();
+  } finally {
+    state.deliveryBusy = false;
+    if (requestId === state.deliveryRequestId) {
+      elements.deliveryConfirmButton.disabled = false;
+      elements.deliveryConfirmButton.textContent = "确认并投递";
+    }
+  }
+}
+
+async function queryDelivery(executionId) {
+  try {
+    const execution = await bridge.apiGet(
+      `executions/${encodeURIComponent(executionId)}`,
+    );
+    renderDeliveryExecution(execution);
+    elements.deliveryError.hidden = true;
+    elements.deliveryUncertain.hidden = true;
+    if (isDeliveryFinal(execution.status)) {
+      writeDeliveryPending(null);
+    }
+    syncDeliveryPendingPanel();
+    await loadDeliveries();
+    return true;
+  } catch (error) {
+    const message = friendlyErrorMessage(error);
+    elements.deliveryUncertain.hidden = false;
+    elements.deliveryExecutionId.textContent = executionId;
+    elements.deliveryUncertainText.textContent =
+      `暂时无法确认执行结果：${message}。查询不到记录不等于没有发送；不会自动重发。`;
+    return false;
+  }
+}
+
+async function queryPendingDelivery() {
+  const pending = readDeliveryPending();
+  if (!pending) {
+    syncDeliveryPendingPanel();
+    return;
+  }
+  await queryDelivery(pending.executionId);
+}
+
+function renderDeliveries(executions) {
+  elements.deliveryList.replaceChildren();
+  if (!executions.length) {
+    elements.deliveryListStateText.textContent = "还没有手动测试记录。";
+    elements.deliveryListState.hidden = false;
+    return;
+  }
+  elements.deliveryListState.hidden = true;
+  for (const execution of executions) {
+    const card = document.createElement("li");
+    card.className = "site-card";
+    const head = document.createElement("div");
+    head.className = "site-card-head";
+    const title = document.createElement("h3");
+    title.textContent = execution.task_name;
+    const status = document.createElement("span");
+    status.className = "badge";
+    status.textContent = deliveryStatusLabel(execution.status);
+    head.append(title, status);
+    const meta = document.createElement("div");
+    meta.className = "site-meta";
+    const id = document.createElement("span");
+    id.textContent = `执行：${execution.id}`;
+    const counts = document.createElement("span");
+    counts.textContent = `目标 ${execution.target_count} · 页 ${execution.page_count}`;
+    const time = document.createElement("span");
+    time.textContent = execution.created_at;
+    meta.append(id, counts, time);
+    const actions = document.createElement("div");
+    actions.className = "profile-card-actions";
+    actions.append(makeButton("查看详情", "button button-secondary", async () => {
+      await queryDelivery(execution.id);
+      openDialog(elements.deliveryDialog);
+    }, `查看执行 ${execution.id}`));
+    card.append(head, meta, actions);
+    elements.deliveryList.append(card);
+  }
+}
+
+async function loadDeliveries() {
+  const requestId = ++state.deliveryLoadRequestId;
+  elements.deliveryList.setAttribute("aria-busy", "true");
+  try {
+    const result = await bridge.apiGet("executions?limit=20&offset=0");
+    if (requestId !== state.deliveryLoadRequestId) {
+      return;
+    }
+    renderDeliveries(Array.isArray(result.executions) ? result.executions : []);
+  } catch (error) {
+    if (requestId !== state.deliveryLoadRequestId) {
+      return;
+    }
+    elements.deliveryListStateText.textContent =
+      `读取执行记录失败：${friendlyErrorMessage(error)}`;
+    elements.deliveryListState.hidden = false;
+  } finally {
+    if (requestId === state.deliveryLoadRequestId) {
+      elements.deliveryList.setAttribute("aria-busy", "false");
+    }
+  }
+}
 async function refreshAll() {
-  await Promise.all([loadSites(), loadProfiles(), loadTasks()]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries()]);
 }
 
 function bindEvents() {
   elements.createTaskButton.addEventListener("click", openCreateTask);
+  elements.deliveryRefreshButton.addEventListener("click", loadDeliveries);
+  elements.deliveryForm.addEventListener("submit", submitDelivery);
+  elements.deliveryQueryButton.addEventListener("click", queryPendingDelivery);
+  elements.deliveryQueryPendingButton.addEventListener("click", queryPendingDelivery);
+  elements.deliveryClearPendingButton.addEventListener("click", () => {
+    writeDeliveryPending(null);
+    syncDeliveryPendingPanel();
+  });
+  elements.deliveryCancelButton.addEventListener("click", () => {
+    if (!state.deliveryBusy) {
+      closeDialog(elements.deliveryDialog);
+    }
+  });
+  elements.deliveryCloseButton.addEventListener("click", () => {
+    if (!state.deliveryBusy) {
+      closeDialog(elements.deliveryDialog);
+    }
+  });
+  elements.deliveryDialog.addEventListener("cancel", (event) => {
+    if (state.deliveryBusy) {
+      event.preventDefault();
+    }
+  });
   elements.taskRetryButton.addEventListener("click", loadTasks);
   elements.taskForm.addEventListener("submit", handleTaskSave);
   elements.taskDeleteConfirmButton.addEventListener("click", confirmTaskDelete);
@@ -3342,7 +3724,8 @@ async function init() {
   }
 
   bindEvents();
-  await Promise.all([loadSites(), loadProfiles(), loadTasks()]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries()]);
+  syncDeliveryPendingPanel();
 }
 
 init();

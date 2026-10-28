@@ -16,7 +16,7 @@ from core.delivery import (
 )
 from core.profile_api import ProfileApiResult
 from core.profiles import ContentProfileService, ProfileCreate
-from core.site_store import SiteStoreError
+from core.site_store import SCHEMA_VERSION, SiteStoreError
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 
@@ -484,7 +484,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         try:
             store = reopened.store
             with sqlite3.connect(self.db) as check:
-                self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 4)
+                self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
                 self.assertEqual(check.execute("SELECT COUNT(*) FROM sites").fetchone()[0], 1)
                 self.assertEqual(check.execute("SELECT COUNT(*) FROM push_tasks").fetchone()[0], 1)
                 self.assertEqual(
@@ -864,7 +864,107 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.sender.calls), 1)
         await service.close()
 
-async def test_final_check_after_second_page_marks_target_partial(self) -> None:
+    async def test_duplicate_waiter_cancel_does_not_mark_owner(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        self.sender.block = True
+        original_run = asyncio.create_task(
+            self.service.execute(task.id, "owner-cancel-1"),
+        )
+        await self.sender.started.wait()
+        original_get = self.sites.store.get_delivery_execution
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        blocked = False
+
+        async def gated(execution_id):
+            nonlocal blocked
+            if execution_id == "owner-cancel-1" and not blocked:
+                blocked = True
+                entered.set()
+                await release.wait()
+            return await original_get(execution_id)
+
+        self.sites.store.get_delivery_execution = gated
+        duplicate = asyncio.create_task(
+            self.service.execute(task.id, "owner-cancel-1"),
+        )
+        await entered.wait()
+        duplicate.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await duplicate
+        release.set()
+        self.sender.block = False
+        self.sender.release.set()
+        result = await original_run
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.pages[0].status, "success")
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_cross_task_same_id_cancel_does_not_mark_owner(self) -> None:
+        from core.delivery import DeliveryValidationError
+        first = await self._task(["aiocqhttp:GroupMessage:g1"])
+        second = await self._task(["aiocqhttp:FriendMessage:u1"])
+        self.sender.block = True
+        original_run = asyncio.create_task(
+            self.service.execute(first.id, "owner-cross-1"),
+        )
+        await self.sender.started.wait()
+        with self.assertRaises(DeliveryValidationError):
+            await self.service.execute(second.id, "owner-cross-1")
+        self.sender.block = False
+        self.sender.release.set()
+        result = await original_run
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_admission_happens_before_initial_reads(self) -> None:
+        from core.delivery import DeliveryCapacityError
+        limited = DeliveryLimits(
+            max_concurrent_executions=2, max_pending_executions=4,
+            max_execution_seconds=10, sender_timeout_seconds=5,
+        )
+        service = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=limited,
+        )
+        tasks = [
+            await self._task([f"aiocqhttp:GroupMessage:g{i}"])
+            for i in range(12)
+        ]
+        original = self.tasks.get_task
+        release = asyncio.Event()
+        entered = 0
+        all_entered = asyncio.Event()
+
+        async def blocked(task_id):
+            nonlocal entered
+            if entered < 2:
+                entered += 1
+                if entered == 2:
+                    all_entered.set()
+                await release.wait()
+            return await original(task_id)
+
+        self.tasks.get_task = blocked
+        running = [
+            asyncio.create_task(service.execute(task.id, f"admit-{i}"))
+            for i, task in enumerate(tasks)
+        ]
+        await all_entered.wait()
+        await asyncio.sleep(0)
+        self.assertEqual(service._running, 2)
+        self.assertEqual(service._pending, 4)
+        release.set()
+        outcomes = await asyncio.gather(*running, return_exceptions=True)
+        rejected = [x for x in outcomes if isinstance(x, DeliveryCapacityError)]
+        successes = [x for x in outcomes if not isinstance(x, Exception)]
+        self.assertGreaterEqual(len(rejected), 6)
+        self.assertLessEqual(len(successes), 6)
+        self.assertEqual(len(self.sender.calls), len(successes))
+        await service.close()
+
+    async def test_final_check_after_second_page_marks_target_partial(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
         original = self.sites.store.set_delivery_page_status
         changed = False
@@ -897,3 +997,29 @@ async def test_final_check_after_second_page_marks_target_partial(self) -> None:
         repeated = await self.service.execute(task.id, "target-partial-1")
         self.assertEqual(repeated.status, "partial")
         self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_cancel_after_create_commit_marks_stopped(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        original = self.sites.store.create_delivery_execution
+        committed = asyncio.Event()
+        release = asyncio.Event()
+
+        async def commit_then_block(**kwargs):
+            result = await original(**kwargs)
+            committed.set()
+            await release.wait()
+            return result
+
+        self.sites.store.create_delivery_execution = commit_then_block
+        running = asyncio.create_task(
+            self.service.execute(task.id, "create-commit-1"),
+        )
+        await committed.wait()
+        running.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await running
+        release.set()
+        result = await self.sites.store.get_delivery_execution("create-commit-1")
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.targets[0].status, "skipped")
+        self.assertEqual(len(self.sender.calls), 0)

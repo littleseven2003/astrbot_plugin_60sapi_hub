@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS delivery_executions (
     output_format TEXT NOT NULL CHECK (
         output_format IN ('text', 'markdown', 'image')
     ),
+    owner_token TEXT,
     content_hash TEXT,
     content_status TEXT,
     failed_sections_json TEXT,
@@ -299,6 +300,7 @@ class StoredDeliveryExecution:
     site_id: str
     site_revision: int
     output_format: str
+    owner_token: str | None
     content_hash: str | None
     content_status: str | None
     failed_sections_json: str | None
@@ -382,7 +384,7 @@ class SiteStore:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version in (0, 1, 2, 3):
+                if version in (0, 1, 2, 3, 4):
                     await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
@@ -431,6 +433,12 @@ class SiteStore:
             await connection.execute(_CREATE_DELIVERY_TARGETS_TABLE)
             await connection.execute(_CREATE_DELIVERY_PAGES_TABLE)
             await connection.execute(_CREATE_DELIVERY_EXECUTION_INDEX)
+            if version == 4:
+                # v4 已有投递表，仅补执行所有者标记。
+                await connection.execute(
+                    "ALTER TABLE delivery_executions "
+                    "ADD COLUMN owner_token TEXT",
+                )
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -1015,6 +1023,7 @@ class SiteStore:
         site_revision: int,
         output_format: str,
         umos: tuple[str, ...],
+        owner_token: str | None = None,
     ) -> None:
         async with self._lock:
             connection = self._require_connection()
@@ -1027,16 +1036,16 @@ class SiteStore:
                         INSERT INTO delivery_executions (
                             id, task_id, task_name, task_revision,
                             profile_id, profile_revision, site_id, site_revision,
-                            output_format, content_hash, content_status,
-                            failed_sections_json, status, error_code,
-                            created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+                            output_format, owner_token, content_hash,
+                            content_status, failed_sections_json, status,
+                            error_code, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
                                   NULL, 'preparing', NULL, ?, ?)
                         """,
                         (
                             execution_id, task_id, task_name, task_revision,
                             profile_id, profile_revision, site_id, site_revision,
-                            output_format, now, now,
+                            output_format, owner_token, now, now,
                         ),
                     )
                 except sqlite3.IntegrityError as exc:
@@ -1619,7 +1628,8 @@ def _row_to_delivery(
         profile_id=row["profile_id"],
         profile_revision=int(row["profile_revision"]),
         site_id=row["site_id"], site_revision=int(row["site_revision"]),
-        output_format=row["output_format"], content_hash=row["content_hash"],
+        output_format=row["output_format"], owner_token=row["owner_token"],
+        content_hash=row["content_hash"],
         content_status=row["content_status"],
         failed_sections_json=row["failed_sections_json"],
         status=row["status"], error_code=row["error_code"],

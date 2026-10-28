@@ -10,6 +10,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -157,6 +158,7 @@ class DeliveryService:
         self._admission_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
         self._pending = 0
+        self._running = 0
         self._semaphore = asyncio.Semaphore(
             self._limits.max_concurrent_executions,
         )
@@ -225,16 +227,17 @@ class DeliveryService:
         await start_gate.wait()
         if self._closed:
             raise DeliveryClosedError("投递服务已关闭。")
+        owner_token = uuid.uuid4().hex
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             raise DeliveryTimeoutError("投递总耗时已超限。")
         try:
             return await asyncio.wait_for(
-                self._execute_work(task_key, execution_key),
+                self._execute_work(task_key, execution_key, owner_token),
                 timeout=remaining,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-            await self._mark_incomplete_safely(execution_key)
+            await self._mark_incomplete_if_owner(execution_key, owner_token)
             if isinstance(exc, asyncio.TimeoutError):
                 existing = await self._read_optional(execution_key)
                 if existing is not None:
@@ -246,13 +249,14 @@ class DeliveryService:
         self,
         task_key: str,
         execution_key: str,
+        owner_token: str,
     ) -> StoredDeliveryExecution:
-        existing = await self._existing_for_task(execution_key, task_key)
-        if existing is not None:
-            return existing
-        task = await self._load_task(task_key)
-        profile, site = await self._load_config(task)
         async with self._admission():
+            existing = await self._existing_for_task(execution_key, task_key)
+            if existing is not None:
+                return existing
+            task = await self._load_task(task_key)
+            profile, site = await self._load_config(task)
             if self._closed:
                 raise DeliveryClosedError("投递服务已关闭。")
             existing = await self._existing_for_task(execution_key, task_key)
@@ -270,6 +274,7 @@ class DeliveryService:
                     site_revision=site.revision,
                     output_format=task.output_format,
                     umos=task.umos,
+                    owner_token=owner_token,
                 )
             except DeliveryExecutionExistsError:
                 return await self._existing_for_task(execution_key, task_key)
@@ -289,10 +294,14 @@ class DeliveryService:
         try:
             await self._semaphore.acquire()
             acquired = True
+            async with self._admission_lock:
+                self._running += 1
             yield
         finally:
             if acquired:
-                self._semaphore.release()
+                async with self._admission_lock:
+                    self._running -= 1
+                    self._semaphore.release()
             async with self._admission_lock:
                 self._pending -= 1
 
@@ -686,8 +695,15 @@ class DeliveryService:
         except Exception:
             pass
 
-    async def _mark_incomplete_safely(self, execution_id: str) -> None:
+    async def _mark_incomplete_if_owner(
+        self,
+        execution_id: str,
+        owner_token: str,
+    ) -> None:
         try:
+            existing = await self._read_optional(execution_id)
+            if existing is None or existing.owner_token != owner_token:
+                return
             await asyncio.shield(self._store.mark_delivery_incomplete(execution_id))
         except BaseException:
             pass

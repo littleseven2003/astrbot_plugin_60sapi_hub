@@ -7,7 +7,7 @@
 ### 新增
 
 - 新增手动投递核心：只读取已保存任务/组合/UMO，一次准备共享内容，复用现有预览和图片渲染；注入式发送器边界，逐目标逐页持久化发送前计划、成功、失败、unknown 和 skipped。
-- SQLite schema v4 新增投递执行/目标/页记录；同执行标识幂等、并发去重、任务归属校验、配置 revision 复核、关闭/取消清理、重开遗留 pending 记 skipped、sending 记 unknown，不自动重试或补发。真实平台发送、后台发送入口、启用和调度仍未接入。
+- SQLite schema v5 新增投递执行/目标/页记录；同执行标识幂等、并发去重、任务归属校验、配置 revision 复核、关闭/取消清理、重开遗留 pending 记 skipped、sending 记 unknown，不自动重试或补发。真实平台发送、后台发送入口、启用和调度仍未接入。
 
 - 推送任务配置 CRUD 与后台管理：任务名称、已保存组合、纯文字/Markdown/图片输出、独立 UMO 白名单、revision 和时间；任务固定未启用，不发送、不调度、不请求上游。
 - UMO 白名单按 AstrBot v4.29.1 的 `platform_id:message_type:session_id` 语义校验：支持群聊/私聊混合、空名单、去重保序和会话 ID 内冒号；拒绝裸 ID、非法类型、控制字符、超长和超量输入；群成员隔离会话原样保留。

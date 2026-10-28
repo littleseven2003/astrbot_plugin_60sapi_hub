@@ -218,13 +218,15 @@
 - 一次执行只准备一份内容；文字/Markdown 为一个逻辑消息，图片按现有分页顺序逐页处理。
 - 站点不存在/停用、组合不存在、全部栏目失败或图片生成失败时不调用发送器；本轮没有自动降级。
 - 部分栏目失败沿用带失败提示的结果，缺失栏目记录在执行中；不自动改成全部成功。
-- 发送前先落库目标和页的 `sending` 状态；外部发送不在数据库事务或存储锁内。
+- 服务的并发/等待准入在读取任务和组合之前执行；满额明确拒绝，不把积压移到读锁之后。执行总数不超过并发+等待上限的上界。
+- 发送前先落库目标和页的 `sending` 状态；记录写入后、外部调用前再执行最终配置/生命周期校验，之后不再写入。外部发送不在数据库事务或存储锁内。
 - 只有发送器明确 `success` 才记成功。明确 `failed` 记失败；普通异常、超时和取消保守记 `unknown`。
 - 某目标出现失败/unknown 后停止该目标剩余页；其他目标继续。成功、失败、unknown、跳过分别记录，不把部分成功汇总成全部成功。
 - 每次发送前重新核对任务、组合、站点 revision、目标仍存在且站点启用；变化后停止尚未开始的投递，不加入新目标，不替换内容。已进入外部调用的结果按实际/unknown 记录。
 - 发送成功后写库失败不能变成安全重试；重复执行标识只返回已有状态，不自动重试、不自动恢复、不重启补发。
-- 执行记录保留任务/组合/站点快照 revision、输出格式、内容哈希、时间、目标和页；不保存完整新闻正文或 PNG。删除任务不级联删除历史投递记录。
-- 关闭/取消及重开数据库时：尚未进入发送的 `pending` 页/目标终态为 `skipped`（原因 `never_started`）；已落库为 `sending`、可能已进入外部调用的页/目标才归 `unknown`；已知成功/失败保持原状态，执行按页汇总为 stopped/unknown/partial/failed。不补发。
+- 每个执行记录带创建者 owner token；取消/超时/关闭时只有实际创建该记录的工作者能将其标记为 incomplete，重复查询者、创建竞争失败者和其他任务不得修改原执行。
+- 执行记录保留任务/组合/站点快照 revision、输出格式、内容哈希、时间、目标和页，以及创建者 owner token；不保存完整新闻正文或 PNG。删除任务不级联删除历史投递记录。
+- 关闭/取消及重开数据库时：尚未进入发送的 `pending` 页/目标终态为 `skipped`（原因 `never_started`）；已落库为 `sending`、可能已进入外部调用的页/目标才归 `unknown`；已知成功/失败保持原状态，执行按页汇总为 stopped/unknown/partial/failed。目标有成功页但剩余页 skipped 时目标为 partial，完全未投递才是 skipped。不补发。
 
 默认上限：最多 20 个目标、6 个图片页、2 个并发执行、4 个等待执行、单次执行总截止 60 秒（覆盖准入、排队、准备和发送）、单次发送器调用 15 秒。满额时明确抛出容量错误，不无限排队。服务层还会拒绝超过任务/图片既有上限的配置。
 
@@ -238,7 +240,7 @@
 
 ## 数据与升级
 
-站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 4：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库直接创建八张表；旧 v1/v2/v3 数据库在同一事务中补齐组合/任务/投递表并提升 `user_version=4`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
+站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 5：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库直接创建八张表；旧 v1/v2/v3/v4 数据库在同一事务中补齐组合/任务/投递表并提升 `user_version=5`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
 
 任务、投递记录与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；删除组合在事务中检查任务引用并由外键兜底；删除任务不级联删除组合。写入失败回滚，取消后下一次正常操作不受影响。
 

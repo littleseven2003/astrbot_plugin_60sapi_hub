@@ -87,6 +87,14 @@ PYTHONPATH=<astrbot-source>:<matching-host-venv>/lib/pythonX.Y/site-packages \
 
 边界：真实 QQ/OneBot 账号、真实网络发送、平台回执、后台入口、调度和任务启用未验证。
 
+## M4 手动投递验证
+
+- 后台手动确认页覆盖最新配置、目标实际路由、空名单、无效目标、revision 冲突和取消零发送。
+- 重复点击/旧响应/响应丢失：稳定执行标识、查询 only、不自动重发；unknown 不自动重试。
+- API 覆盖未登录/停用、非法分页、任务筛选、执行列表/详情、删除任务后历史保留和公开投影不含 owner_token。
+- 宿主：启动/重载/停用零发送，投递服务先于图片/内容/数据库关闭；历史记录保留。
+- 真实发送只在 AstrBot v4.29.1 + 假机器人环境验证；未连接真实账号。
+
 ## 当前检查
 
 - 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。

@@ -62,6 +62,16 @@ class DeliveryCapacityError(DeliveryError):
     """排队/执行容量已满。"""
 
 
+class DeliveryRevisionConflictError(DeliveryError):
+    """确认的配置版本已变化。"""
+
+    def __init__(self, field: str, expected: int, actual: int) -> None:
+        self.field = field
+        self.expected = expected
+        self.actual = actual
+        super().__init__(f"{field} 配置版本已变化")
+
+
 class DeliveryTimeoutError(DeliveryError):
     """执行在总截止时间内未完成。"""
 
@@ -172,6 +182,10 @@ class DeliveryService:
         self,
         task_id: object,
         execution_id: object,
+        *,
+        expected_task_revision: int | None = None,
+        expected_profile_revision: int | None = None,
+        expected_site_revision: int | None = None,
     ) -> StoredDeliveryExecution:
         if self._closed:
             raise DeliveryClosedError("投递服务已关闭。")
@@ -182,6 +196,9 @@ class DeliveryService:
         owned = asyncio.create_task(
             self._owned_execute(
                 task_key, execution_key, deadline, start_gate,
+                expected_task_revision,
+                expected_profile_revision,
+                expected_site_revision,
             ),
             name=f"delivery-{execution_key}",
         )
@@ -228,6 +245,9 @@ class DeliveryService:
         execution_key: str,
         deadline: float,
         start_gate: asyncio.Event,
+        expected_task_revision: int | None = None,
+        expected_profile_revision: int | None = None,
+        expected_site_revision: int | None = None,
     ) -> StoredDeliveryExecution:
         await start_gate.wait()
         if self._closed:
@@ -238,7 +258,12 @@ class DeliveryService:
             raise DeliveryTimeoutError("投递总耗时已超限。")
         try:
             return await asyncio.wait_for(
-                self._execute_work(task_key, execution_key, owner_token),
+                self._execute_work(
+                    task_key, execution_key, owner_token,
+                    expected_task_revision,
+                    expected_profile_revision,
+                    expected_site_revision,
+                ),
                 timeout=remaining,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
@@ -257,6 +282,9 @@ class DeliveryService:
         task_key: str,
         execution_key: str,
         owner_token: str,
+        expected_task_revision: int | None = None,
+        expected_profile_revision: int | None = None,
+        expected_site_revision: int | None = None,
     ) -> StoredDeliveryExecution:
         async with self._admission():
             existing = await self._existing_for_task(execution_key, task_key)
@@ -264,6 +292,12 @@ class DeliveryService:
                 return existing
             task = await self._load_task(task_key)
             profile, site = await self._load_config(task)
+            self._check_revisions(
+                task, profile, site,
+                expected_task_revision,
+                expected_profile_revision,
+                expected_site_revision,
+            )
             if self._closed:
                 raise DeliveryClosedError("投递服务已关闭。")
             existing = await self._existing_for_task(execution_key, task_key)
@@ -329,6 +363,24 @@ class DeliveryService:
             or not valid_timeout(limits.sender_timeout_seconds)
         ):
             raise DeliveryValidationError("limits", "容量/超时配置不合法")
+
+    @staticmethod
+    def _check_revisions(
+        task: PushTask,
+        profile: object,
+        site: object,
+        task_revision: int | None,
+        profile_revision: int | None,
+        site_revision: int | None,
+    ) -> None:
+        checks = (
+            ("task_revision", task_revision, task.revision),
+            ("profile_revision", profile_revision, profile.revision),
+            ("site_revision", site_revision, site.revision),
+        )
+        for field, expected, actual in checks:
+            if expected is not None and expected != actual:
+                raise DeliveryRevisionConflictError(field, expected, actual)
 
     async def _existing_for_task(
         self,

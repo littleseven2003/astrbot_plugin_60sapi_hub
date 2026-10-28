@@ -126,11 +126,6 @@ async function login() {
     await frame.waitForFunction(
       () => document.getElementById("delivery-confirm-button")?.textContent === "确认并投递",
     );
-    const executionId = await frame.evaluate(() => {
-      const original = globalThis.crypto.randomUUID;
-      return original ? original() : null;
-    });
-    void executionId;
     await frame.locator("#delivery-confirm-button").click({ force: true });
     await frame.waitForSelector("#delivery-uncertain:not([hidden])");
     assert.match(await frame.locator("#delivery-pending-text").innerText(), /禁止本地存储/);

@@ -97,11 +97,24 @@ class AstrBotAiocqhttpSender:
         from astrbot.core.message.message_event_result import MessageChain
 
         if session.message_type.value == "GroupMessage":
-            target = session.session_id.rsplit("_", 1)[-1]
+            # aiocqhttp 入站隔离 ID 为 sender_id + "_" + group_id；
+            # 普通群聊只有 group_id。两者都必须是完整 ASCII 数字字段。
+            parts = session.session_id.split("_")
+            if len(parts) not in (1, 2) or any(
+                not part or not all("0" <= char <= "9" for char in part)
+                for part in parts
+            ):
+                raise ValueError("invalid group target")
         else:
-            target = session.session_id
-        if not target or not all("0" <= char <= "9" for char in target):
-            raise ValueError("invalid numeric target")
+            if (
+                not session.session_id
+                or "_" in session.session_id
+                or ":" in session.session_id
+                or not all(
+                    "0" <= char <= "9" for char in session.session_id
+                )
+            ):
+                raise ValueError("invalid private target")
         if message.kind in ("text", "markdown"):
             if (
                 not isinstance(message.text, str)

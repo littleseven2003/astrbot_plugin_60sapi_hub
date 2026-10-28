@@ -129,14 +129,14 @@ class AstrBotAiocqhttpSenderTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_member_isolated_group_and_markdown_source(self) -> None:
         message = DeliveryMessage(
-            umo="demo_qq_01:GroupMessage:sender_123_456",
+            umo="demo_qq_01:GroupMessage:123456_789",
             kind="markdown", page_index=1, page_count=1,
             text="# title\n<script>alert(1)</script> [CQ:at,qq=1]",
         )
         result = await self.sender.send(message)
         self.assertEqual(result.status, SendStatus.SUCCESS)
         call = self.bot1.calls[0][1]
-        self.assertEqual(call["group_id"], 456)
+        self.assertEqual(call["group_id"], 789)
         self.assertEqual(call["message"][0]["type"], "text")
         self.assertEqual(
             call["message"][0]["data"]["text"],
@@ -166,10 +166,18 @@ class AstrBotAiocqhttpSenderTest(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_routes_never_call_bot(self) -> None:
         cases = [
             ("demo_qq_01:GroupMessage:abc", "sender_invalid_payload"),
+            ("demo_qq_01:GroupMessage:bad_123", "sender_invalid_payload"),
+            ("demo_qq_01:GroupMessage:_123", "sender_invalid_payload"),
+            ("demo_qq_01:GroupMessage:123_", "sender_invalid_payload"),
+            ("demo_qq_01:GroupMessage:sender_123_456", "sender_invalid_payload"),
+            ("demo_qq_01:GroupMessage:123__456", "sender_invalid_payload"),
+            ("demo_qq_01:GroupMessage:not:a:session_456", "sender_invalid_payload"),
             ("missing:GroupMessage:123", "sender_not_found"),
             ("telegram_01:GroupMessage:123", "sender_not_supported"),
             ("demo_qq_01:OtherMessage:123", "sender_invalid_payload"),
             ("demo_qq_01:FriendMessage:abc", "sender_invalid_payload"),
+            ("demo_qq_01:FriendMessage:123_456", "sender_invalid_payload"),
+            ("demo_qq_01:FriendMessage:123:456", "sender_invalid_payload"),
         ]
         for umo, code in cases:
             result = await self.sender.send(DeliveryMessage(

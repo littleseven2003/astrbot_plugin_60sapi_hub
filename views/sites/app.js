@@ -158,6 +158,7 @@ const elements = {
   deliveryQueryPendingButton: document.getElementById("delivery-query-pending-button"),
   deliveryClearPendingButton: document.getElementById("delivery-clear-pending-button"),
   deliveryDialog: document.getElementById("delivery-dialog"),
+  deliveryDialogTitle: document.getElementById("delivery-dialog-title"),
   deliveryForm: document.getElementById("delivery-form"),
   deliveryConfirmInfo: document.getElementById("delivery-confirm-info"),
   deliveryTargets: document.getElementById("delivery-targets"),
@@ -170,6 +171,7 @@ const elements = {
   deliveryCancelButton: document.getElementById("delivery-cancel-button"),
   deliveryCloseButton: document.getElementById("delivery-close-button"),
   deliveryQueryButton: document.getElementById("delivery-query-button"),
+  deliveryLoadMoreButton: document.getElementById("delivery-load-more-button"),
 };
 
 const state = {
@@ -223,6 +225,17 @@ const state = {
   deliveryLoadRequestId: 0,
   deliveryPending: null,
   deliveryResult: null,
+  deliveryMode: "confirm",
+  deliveryPreviewRequestId: 0,
+  deliveryQueryRequestId: 0,
+  deliveryHistoryExecutionId: null,
+  deliveryAttempt: null,
+  deliveryHistory: [],
+  deliveryOffset: 0,
+  deliveryHasMore: false,
+  deliveryPendingMemory: null,
+  deliveryStorageAvailable: true,
+  deliveryPendingHiddenFor: null,
 };
 
 const TASK_OUTPUT_LABELS = {
@@ -256,6 +269,9 @@ const EXPLICIT_WRITE_REJECTIONS = [
   /引用的站点不存在/,
   /内容组合不存在/,
   /内容组合存储暂不可用/,
+  /确认的配置版本已变化/,
+  /投递容量已满/,
+  /当前无法开始投递/,
 ];
 
 function showStatus(message, tone = "info") {
@@ -3141,6 +3157,9 @@ function finishTaskPendingReview() {
 }
 
 
+const DELIVERY_PAGE_SIZE = 20;
+const DELIVERY_PENDING_KEY = "60sapi.pendingDelivery";
+
 function isDeliveryFinal(status) {
   return ["success", "partial", "failed", "no_targets", "stopped"].includes(status);
 }
@@ -3153,45 +3172,73 @@ function deliveryStatusLabel(status) {
   })[status] || status;
 }
 
-function deliveryPendingStorageKey() {
-  return "60sapi.pendingDelivery";
-}
-
-function readDeliveryPending() {
+function readStoredDeliveryPending() {
   try {
-    const raw = localStorage.getItem(deliveryPendingStorageKey());
+    const raw = localStorage.getItem(DELIVERY_PENDING_KEY);
     const value = raw ? JSON.parse(raw) : null;
     if (value && typeof value.executionId === "string" &&
         typeof value.taskId === "string") {
-      return value;
+      return { executionId: value.executionId, taskId: value.taskId };
     }
   } catch {
-    // Ignore malformed local markers; they are not proof of delivery.
+    state.deliveryStorageAvailable = false;
   }
   return null;
 }
 
-function writeDeliveryPending(value) {
+function currentDeliveryPending() {
+  if (state.deliveryPendingMemory) {
+    return state.deliveryPendingMemory;
+  }
+  const stored = readStoredDeliveryPending();
+  state.deliveryPendingMemory = stored;
+  return stored;
+}
+
+function setDeliveryPending(value) {
+  state.deliveryPendingMemory = value
+    ? { executionId: value.executionId, taskId: value.taskId }
+    : null;
   try {
     if (value) {
-      localStorage.setItem(deliveryPendingStorageKey(), JSON.stringify({
+      localStorage.setItem(DELIVERY_PENDING_KEY, JSON.stringify({
         executionId: value.executionId, taskId: value.taskId,
       }));
     } else {
-      localStorage.removeItem(deliveryPendingStorageKey());
+      localStorage.removeItem(DELIVERY_PENDING_KEY);
     }
+    state.deliveryStorageAvailable = true;
   } catch {
-    // Storage is optional; do not claim a result if it is unavailable.
+    // SecurityError/sandboxed iframe: keep the in-memory marker. The current
+    // session can still query it; after refresh only the server history remains.
+    state.deliveryStorageAvailable = false;
+  }
+  state.deliveryPendingHiddenFor = null;
+  syncDeliveryPendingPanel();
+}
+
+function confirmDeliveryPending(executionId) {
+  const pending = currentDeliveryPending();
+  if (pending && pending.executionId === executionId) {
+    setDeliveryPending(null);
   }
 }
 
 function syncDeliveryPendingPanel() {
-  state.deliveryPending = readDeliveryPending();
-  elements.deliveryPendingPanel.hidden = !state.deliveryPending;
-  elements.deliveryPendingText.textContent = state.deliveryPending
-    ? `执行 ${state.deliveryPending.executionId} 的结果尚未确认。` +
-      "系统不会自动重发；请只查询该标识。"
-    : "";
+  const pending = currentDeliveryPending();
+  state.deliveryPending = pending;
+  const hidden = !pending ||
+    state.deliveryPendingHiddenFor === pending.executionId;
+  elements.deliveryPendingPanel.hidden = hidden;
+  if (!pending) {
+    elements.deliveryPendingText.textContent = "";
+    return;
+  }
+  elements.deliveryPendingText.textContent =
+    `执行 ${pending.executionId} 的结果尚未确认。系统不会自动重发；请只查询该标识。` +
+    (state.deliveryStorageAvailable
+      ? " 刷新页面后仍可尝试恢复该标识。"
+      : " 当前 iframe 禁止本地存储：本标识仅保存在当前页面内存；刷新后需从执行记录人工核对，不能据此自动重发。");
 }
 
 function deliveryTargetText(target) {
@@ -3203,17 +3250,18 @@ function deliveryTargetText(target) {
   return `${kind} · 实际目标 ${target.target}${isolated}`;
 }
 
-function renderDeliveryPreview(data) {
+function renderDeliveryPreview(data, token) {
+  if (token !== state.deliveryPreviewRequestId ||
+      state.deliveryMode !== "confirm") {
+    return;
+  }
   elements.deliveryConfirmInfo.replaceChildren();
-  const lines = [
-    ["任务", data.task_name],
-    ["组合", data.profile_name],
-    ["来源站点", data.site_name],
-    ["输出方式", data.output_label],
+  for (const [label, value] of [
+    ["任务", data.task_name], ["组合", data.profile_name],
+    ["来源站点", data.site_name], ["输出方式", data.output_label],
     ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision} · 站点 ${data.site_revision}`],
     ["内容策略", "确认后获取最新内容，不复用页面旧预览"],
-  ];
-  for (const [label, value] of lines) {
+  ]) {
     const p = document.createElement("p");
     p.textContent = `${label}：${value}`;
     elements.deliveryConfirmInfo.append(p);
@@ -3235,43 +3283,65 @@ function renderDeliveryPreview(data) {
     p.textContent = "空白名单：不会获取内容，也不会发送。";
     elements.deliveryTargets.append(p);
   }
+  elements.deliveryConfirmButton.hidden = false;
   elements.deliveryConfirmButton.disabled = !data.can_deliver;
   elements.deliveryConfirmButton.textContent = data.can_deliver ? "确认并投递" : "不可投递";
+}
+
+function resetDeliveryDialog(task, mode) {
+  state.deliveryMode = mode;
+  state.deliveryTask = task || null;
+  state.deliveryPreview = null;
+  state.deliveryAttempt = null;
+  state.deliveryHistoryExecutionId = null;
+  elements.deliveryDialogTitle.textContent = mode === "history"
+    ? "执行详情" : "确认手动测试投递";
+  elements.deliveryError.hidden = true;
+  elements.deliveryResult.hidden = true;
+  elements.deliveryUncertain.hidden = true;
+  elements.deliveryConfirmInfo.replaceChildren();
+  elements.deliveryTargets.replaceChildren();
+  elements.deliveryConfirmButton.hidden = false;
+  elements.deliveryConfirmButton.disabled = true;
+  elements.deliveryConfirmButton.textContent = mode === "history" ? "只读详情" : "读取中…";
+  elements.deliveryCancelButton.textContent = mode === "history" ? "关闭" : "取消";
 }
 
 async function openDelivery(task) {
   if (state.deliveryBusy || blockIfPendingWrite()) {
     return;
   }
+  const token = ++state.deliveryPreviewRequestId;
+  resetDeliveryDialog(task, "confirm");
   state.deliveryBusy = true;
-  state.deliveryTask = task;
-  state.deliveryPreview = null;
-  elements.deliveryError.hidden = true;
-  elements.deliveryResult.hidden = true;
-  elements.deliveryUncertain.hidden = true;
   elements.deliveryConfirmInfo.textContent = "正在读取最新任务配置…";
-  elements.deliveryTargets.replaceChildren();
-  elements.deliveryConfirmButton.disabled = true;
-  elements.deliveryConfirmButton.textContent = "读取中…";
   openDialog(elements.deliveryDialog);
   try {
     const result = await bridge.apiPost(
       `tasks/${encodeURIComponent(task.id)}/test-preview`, {},
     );
-    if (!state.deliveryBusy || state.deliveryTask !== task) {
+    if (token !== state.deliveryPreviewRequestId ||
+        state.deliveryMode !== "confirm" ||
+        state.deliveryTask !== task) {
       return;
     }
     state.deliveryPreview = result;
-    renderDeliveryPreview(result);
+    renderDeliveryPreview(result, token);
     syncDeliveryPendingPanel();
   } catch (error) {
+    if (token !== state.deliveryPreviewRequestId ||
+        state.deliveryMode !== "confirm") {
+      return;
+    }
     elements.deliveryError.textContent = `无法读取确认信息：${friendlyErrorMessage(error)}`;
     elements.deliveryError.hidden = false;
     elements.deliveryConfirmInfo.textContent = "";
     elements.deliveryConfirmButton.disabled = true;
     elements.deliveryConfirmButton.textContent = "不可投递";
   } finally {
-    state.deliveryBusy = false;
+    if (token === state.deliveryPreviewRequestId) {
+      state.deliveryBusy = false;
+    }
   }
 }
 
@@ -3317,8 +3387,9 @@ function renderDeliveryExecution(execution) {
 
 async function submitDelivery(event) {
   event.preventDefault();
-  if (state.deliveryBusy || !state.deliveryPreview ||
-      !state.deliveryPreview.can_deliver) {
+  if (state.deliveryBusy || state.deliveryMode !== "confirm" ||
+      !state.deliveryPreview || !state.deliveryPreview.can_deliver ||
+      state.deliveryAttempt) {
     return;
   }
   const preview = state.deliveryPreview;
@@ -3326,12 +3397,12 @@ async function submitDelivery(event) {
   const executionId = newDeliveryExecutionId();
   const requestId = ++state.deliveryRequestId;
   state.deliveryBusy = true;
+  state.deliveryAttempt = { executionId, taskId: task.id, status: "submitted" };
   elements.deliveryConfirmButton.disabled = true;
-  elements.deliveryConfirmButton.textContent = "提交中…";
+  elements.deliveryConfirmButton.textContent = "已提交，等待结果…";
   elements.deliveryError.hidden = true;
   elements.deliveryUncertain.hidden = true;
-  // Persist the stable execution id before the write response can be lost.
-  writeDeliveryPending({ executionId, taskId: task.id });
+  setDeliveryPending({ executionId, taskId: task.id });
   try {
     const execution = await bridge.apiPost(
       `tasks/${encodeURIComponent(task.id)}/test`,
@@ -3342,24 +3413,45 @@ async function submitDelivery(event) {
         expected_site_revision: preview.site_revision,
       },
     );
-    if (requestId !== state.deliveryRequestId) {
+    if (requestId !== state.deliveryRequestId ||
+        !state.deliveryAttempt ||
+        state.deliveryAttempt.executionId !== executionId ||
+        execution.id !== executionId) {
       return;
     }
+    state.deliveryMode = "result";
+    state.deliveryAttempt.status = execution.status;
+    elements.deliveryConfirmButton.hidden = true;
     renderDeliveryExecution(execution);
     if (isDeliveryFinal(execution.status)) {
-      writeDeliveryPending(null);
+      confirmDeliveryPending(executionId);
     }
-    await loadDeliveries();
+    await loadDeliveries(true);
   } catch (error) {
-    if (requestId !== state.deliveryRequestId) {
+    if (requestId !== state.deliveryRequestId ||
+        !state.deliveryAttempt ||
+        state.deliveryAttempt.executionId !== executionId) {
       return;
     }
     const message = friendlyErrorMessage(error);
     if (isExplicitWriteRejection(message)) {
-      writeDeliveryPending(null);
-      elements.deliveryError.textContent = message;
+      // Explicit rejection happened before sending. A revision conflict
+      // invalidates the confirmation; a new review is required.
+      confirmDeliveryPending(executionId);
+      state.deliveryMode = "conflict";
+      state.deliveryPreview = null;
+      elements.deliveryConfirmButton.disabled = true;
+      elements.deliveryConfirmButton.hidden = false;
+      elements.deliveryConfirmButton.textContent = "请重新审阅";
+      elements.deliveryError.textContent =
+        message.includes("配置版本") || message.includes("确认")
+          ? "配置版本已变化，当前确认已作废，请关闭后重新打开确认。"
+          : message;
       elements.deliveryError.hidden = false;
     } else {
+      state.deliveryMode = "uncertain";
+      state.deliveryAttempt.status = "unknown";
+      elements.deliveryConfirmButton.hidden = true;
       elements.deliveryUncertain.hidden = false;
       elements.deliveryExecutionId.textContent = executionId;
       elements.deliveryUncertainText.textContent =
@@ -3367,29 +3459,45 @@ async function submitDelivery(event) {
     }
     syncDeliveryPendingPanel();
   } finally {
-    state.deliveryBusy = false;
     if (requestId === state.deliveryRequestId) {
-      elements.deliveryConfirmButton.disabled = false;
-      elements.deliveryConfirmButton.textContent = "确认并投递";
+      state.deliveryBusy = false;
+      // Never re-enable the old confirmation after submit, timeout or loss.
+      elements.deliveryConfirmButton.disabled = true;
     }
   }
 }
 
-async function queryDelivery(executionId) {
+async function queryDelivery(executionId, options = {}) {
+  const history = Boolean(options.history);
+  const requestId = ++state.deliveryQueryRequestId;
+  if (history) {
+    state.deliveryMode = "history";
+    state.deliveryHistoryExecutionId = executionId;
+    elements.deliveryConfirmButton.hidden = true;
+    elements.deliveryResult.hidden = true;
+    elements.deliveryUncertain.hidden = true;
+  }
   try {
     const execution = await bridge.apiGet(
       `executions/${encodeURIComponent(executionId)}`,
     );
+    if (requestId !== state.deliveryQueryRequestId ||
+        (history && state.deliveryHistoryExecutionId !== executionId)) {
+      return false;
+    }
     renderDeliveryExecution(execution);
     elements.deliveryError.hidden = true;
     elements.deliveryUncertain.hidden = true;
     if (isDeliveryFinal(execution.status)) {
-      writeDeliveryPending(null);
+      confirmDeliveryPending(executionId);
     }
     syncDeliveryPendingPanel();
-    await loadDeliveries();
+    await loadDeliveries(true);
     return true;
   } catch (error) {
+    if (requestId !== state.deliveryQueryRequestId) {
+      return false;
+    }
     const message = friendlyErrorMessage(error);
     elements.deliveryUncertain.hidden = false;
     elements.deliveryExecutionId.textContent = executionId;
@@ -3400,19 +3508,40 @@ async function queryDelivery(executionId) {
 }
 
 async function queryPendingDelivery() {
-  const pending = readDeliveryPending();
+  const pending = currentDeliveryPending();
   if (!pending) {
     syncDeliveryPendingPanel();
     return;
   }
+  state.deliveryMode = "pending";
+  state.deliveryAttempt = {
+    executionId: pending.executionId, taskId: pending.taskId, status: "unknown",
+  };
+  elements.deliveryDialogTitle.textContent = "查询未确认执行";
+  elements.deliveryConfirmButton.hidden = true;
+  elements.deliveryCancelButton.textContent = "关闭";
+  openDialog(elements.deliveryDialog);
   await queryDelivery(pending.executionId);
 }
 
-function renderDeliveries(executions) {
-  elements.deliveryList.replaceChildren();
-  if (!executions.length) {
+async function openDeliveryHistory(execution) {
+  if (state.deliveryBusy || blockIfPendingWrite()) {
+    return;
+  }
+  resetDeliveryDialog(null, "history");
+  state.deliveryHistoryExecutionId = execution.id;
+  openDialog(elements.deliveryDialog);
+  await queryDelivery(execution.id, { history: true });
+}
+
+function renderDeliveries(executions, append = false) {
+  if (!append) {
+    elements.deliveryList.replaceChildren();
+  }
+  if (!executions.length && !append) {
     elements.deliveryListStateText.textContent = "还没有手动测试记录。";
     elements.deliveryListState.hidden = false;
+    elements.deliveryLoadMoreButton.hidden = true;
     return;
   }
   elements.deliveryListState.hidden = true;
@@ -3438,24 +3567,36 @@ function renderDeliveries(executions) {
     meta.append(id, counts, time);
     const actions = document.createElement("div");
     actions.className = "profile-card-actions";
-    actions.append(makeButton("查看详情", "button button-secondary", async () => {
-      await queryDelivery(execution.id);
-      openDialog(elements.deliveryDialog);
-    }, `查看执行 ${execution.id}`));
+    actions.append(makeButton("查看详情", "button button-secondary",
+      () => openDeliveryHistory(execution), `查看执行 ${execution.id}`));
     card.append(head, meta, actions);
     elements.deliveryList.append(card);
   }
 }
 
-async function loadDeliveries() {
+async function loadDeliveries(reset = true) {
+  if (reset) {
+    state.deliveryHistory = [];
+    state.deliveryOffset = 0;
+    state.deliveryHasMore = false;
+  }
   const requestId = ++state.deliveryLoadRequestId;
   elements.deliveryList.setAttribute("aria-busy", "true");
   try {
-    const result = await bridge.apiGet("executions?limit=20&offset=0");
+    const result = await bridge.apiGet("executions", {
+      limit: DELIVERY_PAGE_SIZE,
+      offset: state.deliveryOffset,
+    });
     if (requestId !== state.deliveryLoadRequestId) {
       return;
     }
-    renderDeliveries(Array.isArray(result.executions) ? result.executions : []);
+    const items = Array.isArray(result.executions) ? result.executions : [];
+    state.deliveryHistory = reset
+      ? items : state.deliveryHistory.concat(items);
+    state.deliveryOffset += items.length;
+    state.deliveryHasMore = Boolean(result.has_more);
+    renderDeliveries(items, !reset);
+    elements.deliveryLoadMoreButton.hidden = !state.deliveryHasMore;
   } catch (error) {
     if (requestId !== state.deliveryLoadRequestId) {
       return;
@@ -3470,18 +3611,23 @@ async function loadDeliveries() {
   }
 }
 async function refreshAll() {
-  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries()]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries(true)]);
 }
 
 function bindEvents() {
   elements.createTaskButton.addEventListener("click", openCreateTask);
-  elements.deliveryRefreshButton.addEventListener("click", loadDeliveries);
+  elements.deliveryRefreshButton.addEventListener("click", () => loadDeliveries(true));
+  elements.deliveryLoadMoreButton.addEventListener("click", () => loadDeliveries(false));
   elements.deliveryForm.addEventListener("submit", submitDelivery);
   elements.deliveryQueryButton.addEventListener("click", queryPendingDelivery);
   elements.deliveryQueryPendingButton.addEventListener("click", queryPendingDelivery);
   elements.deliveryClearPendingButton.addEventListener("click", () => {
-    writeDeliveryPending(null);
-    syncDeliveryPendingPanel();
+    const pending = currentDeliveryPending();
+    if (pending) {
+      // Hide only; the unknown execution remains tracked and queryable.
+      state.deliveryPendingHiddenFor = pending.executionId;
+      syncDeliveryPendingPanel();
+    }
   });
   elements.deliveryCancelButton.addEventListener("click", () => {
     if (!state.deliveryBusy) {
@@ -3497,6 +3643,15 @@ function bindEvents() {
     if (state.deliveryBusy) {
       event.preventDefault();
     }
+  });
+  elements.deliveryDialog.addEventListener("close", () => {
+    if (state.deliveryBusy) {
+      return;
+    }
+    state.deliveryMode = "closed";
+    state.deliveryPreviewRequestId += 1;
+    state.deliveryQueryRequestId += 1;
+    state.deliveryHistoryExecutionId = null;
   });
   elements.taskRetryButton.addEventListener("click", loadTasks);
   elements.taskForm.addEventListener("submit", handleTaskSave);
@@ -3724,7 +3879,7 @@ async function init() {
   }
 
   bindEvents();
-  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries()]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries(true)]);
   syncDeliveryPendingPanel();
 }
 

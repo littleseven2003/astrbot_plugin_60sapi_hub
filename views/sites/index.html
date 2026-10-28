@@ -201,11 +201,12 @@
           <p id="delivery-pending-text"></p>
           <div class="uncertain-actions">
             <button id="delivery-query-pending-button" class="button button-primary" type="button">查询该执行标识</button>
-            <button id="delivery-clear-pending-button" class="button button-secondary" type="button">仅清除本地标识</button>
+            <button id="delivery-clear-pending-button" class="button button-secondary" type="button">仅隐藏提示（保留未确认记录）</button>
           </div>
         </div>
         <div id="delivery-list-state" class="list-state" hidden><p id="delivery-list-state-text"></p></div>
         <ul id="delivery-list" class="sites-list" aria-busy="true"></ul>
+        <button id="delivery-load-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
       </section>
 
       <section class="profile-preview-section" aria-labelledby="profile-preview-heading">

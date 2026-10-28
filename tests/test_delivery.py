@@ -4,6 +4,7 @@ import asyncio
 import base64
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from core.delivery import (
@@ -483,7 +484,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         await reopened.open()
         try:
             store = reopened.store
-            with sqlite3.connect(self.db) as check:
+            with closing(sqlite3.connect(self.db)) as check:
                 self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
                 self.assertEqual(check.execute("SELECT COUNT(*) FROM sites").fetchone()[0], 1)
                 self.assertEqual(check.execute("SELECT COUNT(*) FROM push_tasks").fetchone()[0], 1)

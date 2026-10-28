@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。M1、M2、M3 已通过 AstrBot v4.29.1 / Python 3.12.13 基线验收；当前包括插件入口、站点/组合/推送任务持久化、五类内容获取、共享缓存/手动刷新、后台预览、组合文字/Markdown 和分页图片。M4 正在实现任务配置与 UMO 白名单，消息发送和调度尚未实现；代码、依赖和测试目录随后续功能按需创建。验收范围见 [测试手册](testing.md#m3-验收基线)。
+本项目按个人开源项目维护。M1、M2、M3 已通过 AstrBot v4.29.1 / Python 3.12.13 基线验收；当前包括插件入口、站点/组合/推送任务持久化、五类内容获取、共享缓存/手动刷新、后台预览、组合文字/Markdown、分页图片和假发送器投递核心。M4 投递核心未接入真实平台发送、后台入口或调度；代码、依赖和测试目录随后续功能按需创建。验收范围见 [测试手册](testing.md#m3-验收基线)。
 
 ## 获取与本地设置
 
@@ -71,7 +71,7 @@ git config core.hooksPath .githooks
 - 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
 - SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 的官方文档/源码和一次公开实例响应已核验；尚未遍历社区实例、不同部署版本，也未用真实实例完成浏览器全链路验证。
-- 其他 endpoint、消息发送、启用和调度尚未实现；不要展示或宣称这些能力。组合持久化/预览、纯文字/Markdown、固定样式分页图片和推送任务配置已实现，但不能冒充消息发送、任务启用或主题编辑。站点保存仍只做格式校验，不代替内容获取验证。
+- 其他 endpoint、真实平台消息发送、后台发送入口、启用和调度尚未实现；不要展示或宣称这些能力。组合持久化/预览、纯文字/Markdown、固定样式分页图片、推送任务配置和假发送器投递核心已实现，但不能冒充真实平台发送、任务启用或主题编辑。站点保存仍只做格式校验，不代替内容获取验证。
 
 ### 可复现的本地验证
 
@@ -214,7 +214,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/delivery.py`：一次共享内容准备、注入式发送器、逐目标逐页状态、配置复核、取消/关闭和保守恢复；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
@@ -256,6 +256,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_profile_image.py`：真实 PNG、长内容多页、同快照确定性、空列表/热度 0/部分失败、页数/字节/字体/取消限制。
 - `tests/test_image_service.py`：排队/准入上限、总超时、线程不响应取消、取消后新请求、关闭期间排队请求、准入清理期间首次/再次取消、多轮取消容量稳定、关闭与取消交错和资源释放。
 - `tests/test_profile_image_api.py`：同预览快照、图片不增加上游请求、后改数据不改变同快照图片、归属/过期/修改/删除/停用失效、全部失败无快照、图片超限仍保留文字。
+- `tests/test_delivery.py`：空名单零获取/零投递、共享内容、文/图页顺序、成功/失败/unknown/超时/取消/部分成功、同标识/并发幂等、发送前/成功后写库失败、配置删除/移除目标/修改组合/停用站点、关闭与无关任务、崩溃重开、schema v3/v4→v5 迁移和失败回滚、部分栏目记录、关闭/排队/准备/配置读取竞态、容量与总截止、pending/sending 状态区分、错误码归一化和跨任务同标识冲突。
 - `tests/test_tasks.py` / `tests/test_task_api.py`：任务模型、UMO 整条首尾规范化与内部原样保存、群聊/私聊/空名单/去重/冒号/控制字符/长度/数量、CRUD/revision、非法 `expected_revision` 400、过期 409、v2→v3 迁移回滚、重启、取消、组合引用保护和并发引用。
 
 - 宿主与浏览器验证使用本地模拟上游，覆盖每日新闻、Bilibili 热搜、知乎热榜、抖音热搜与今日头条热榜切换、正常、空内容、HTML 文本、HTTP/业务/非 JSON/超时/大小/重定向、停用/启用/重载、未登录和窄屏；另外在慢速上游请求在途时停用/重载，确认旧请求被取消、没有后续重试、没有 RuntimeError，重新启用/重载后五种内容均恢复；不连接真实消息平台。

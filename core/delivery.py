@@ -10,7 +10,7 @@ import asyncio
 import base64
 import hashlib
 import json
-import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
@@ -56,6 +56,14 @@ class DeliveryNoContentError(DeliveryError):
     """内容准备失败，不能投递。"""
 
 
+class DeliveryCapacityError(DeliveryError):
+    """排队/执行容量已满。"""
+
+
+class DeliveryTimeoutError(DeliveryError):
+    """执行在总截止时间内未完成。"""
+
+
 class SendStatus(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
@@ -90,8 +98,32 @@ class DeliveryLimits:
     max_targets: int = 20
     max_pages: int = 6
     max_concurrent_executions: int = 2
+    max_pending_executions: int = 4
     max_execution_seconds: float = 60.0
     sender_timeout_seconds: float = 15.0
+
+
+ALLOWED_SEND_CODES = frozenset({
+    "send_failed",
+    "send_unknown",
+    "sender_cancelled",
+    "sender_exception",
+    "sender_invalid_result",
+    "sender_timeout",
+})
+MAX_ERROR_CODE_LENGTH = 64
+SAFE_ERROR_CODES = frozenset({
+    "all_sections_failed", "cancelled", "config_changed",
+    "execution_timeout", "image_failed", "image_invalid",
+    "image_render_failed", "image_snapshot_unavailable",
+    "image_unavailable", "interrupted", "internal_error",
+    "preview_failed", "preview_invalid", "profile_not_found",
+    "record_after_send_failed", "render_failed", "send_failed",
+    "send_unknown", "sender_cancelled", "sender_exception",
+    "sender_invalid_result", "sender_timeout", "site_disabled",
+    "site_not_found", "task_not_found", "too_many_pages",
+    "too_many_targets",
+})
 
 
 PAGE_STATUS_SUCCESS = "success"
@@ -120,7 +152,11 @@ class DeliveryService:
         self._sender = sender
         self._limits = limits or DeliveryLimits()
         self._closed = False
-        self._active: set[asyncio.Task[object]] = set()
+        self._owned: set[asyncio.Task[object]] = set()
+        self._lifecycle_lock = asyncio.Lock()
+        self._admission_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
+        self._pending = 0
         self._semaphore = asyncio.Semaphore(
             self._limits.max_concurrent_executions,
         )
@@ -134,65 +170,152 @@ class DeliveryService:
             raise DeliveryClosedError("投递服务已关闭。")
         task_key = _normalize_key(task_id, "task_id", 64)
         execution_key = _normalize_key(execution_id, "execution_id", 128)
+        deadline = asyncio.get_running_loop().time() + self._limits.max_execution_seconds
+        start_gate = asyncio.Event()
+        owned = asyncio.create_task(
+            self._owned_execute(
+                task_key, execution_key, deadline, start_gate,
+            ),
+            name=f"delivery-{execution_key}",
+        )
+        async with self._lifecycle_lock:
+            if self._closed:
+                owned.cancel()
+                await asyncio.gather(owned, return_exceptions=True)
+                raise DeliveryClosedError("投递服务已关闭。")
+            self._owned.add(owned)
+            start_gate.set()
         try:
-            existing = await self._store.get_delivery_execution(execution_key)
-        except DeliveryRecordNotFoundError:
-            existing = None
-        if existing is not None:
-            if existing.task_id != task_key:
-                raise DeliveryValidationError(
-                    "execution_id", "该执行标识属于其他任务",
+            return await asyncio.shield(owned)
+        except asyncio.CancelledError:
+            if not self._closed:
+                owned.cancel()
+            await asyncio.gather(owned, return_exceptions=True)
+            raise
+        finally:
+            async with self._lifecycle_lock:
+                self._owned.discard(owned)
+
+    async def close(self) -> None:
+        async with self._lifecycle_lock:
+            if self._close_task is None:
+                self._closed = True
+                self._close_task = asyncio.create_task(
+                    self._shutdown_owned(),
+                    name="delivery-close",
                 )
+            close_task = self._close_task
+        await asyncio.shield(close_task)
+
+    async def _shutdown_owned(self) -> None:
+        async with self._lifecycle_lock:
+            owned = tuple(self._owned)
+        for task in owned:
+            task.cancel()
+        if owned:
+            await asyncio.gather(*owned, return_exceptions=True)
+
+    async def _owned_execute(
+        self,
+        task_key: str,
+        execution_key: str,
+        deadline: float,
+        start_gate: asyncio.Event,
+    ) -> StoredDeliveryExecution:
+        await start_gate.wait()
+        if self._closed:
+            raise DeliveryClosedError("投递服务已关闭。")
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise DeliveryTimeoutError("投递总耗时已超限。")
+        try:
+            return await asyncio.wait_for(
+                self._execute_work(task_key, execution_key),
+                timeout=remaining,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            await self._mark_incomplete_safely(execution_key)
+            if isinstance(exc, asyncio.TimeoutError):
+                existing = await self._read_optional(execution_key)
+                if existing is not None:
+                    return existing
+                raise DeliveryTimeoutError("投递总耗时已超限。") from exc
+            raise
+
+    async def _execute_work(
+        self,
+        task_key: str,
+        execution_key: str,
+    ) -> StoredDeliveryExecution:
+        existing = await self._existing_for_task(execution_key, task_key)
+        if existing is not None:
             return existing
         task = await self._load_task(task_key)
         profile, site = await self._load_config(task)
-        try:
-            await self._store.create_delivery_execution(
-                execution_id=execution_key,
-                task_id=task.id,
-                task_name=task.name,
-                task_revision=task.revision,
-                profile_id=profile.id,
-                profile_revision=profile.revision,
-                site_id=site.id,
-                site_revision=site.revision,
-                output_format=task.output_format,
-                umos=task.umos,
-            )
-        except DeliveryExecutionExistsError:
-            return await self._store.get_delivery_execution(execution_key)
-        except Exception as exc:
-            raise DeliveryStorageError("无法创建投递记录。") from exc
-
-        current = asyncio.current_task()
-        if current is not None:
-            self._active.add(current)
-        try:
-            async with self._semaphore:
-                return await asyncio.wait_for(
-                    self._run(execution_key, task, profile, site),
-                    timeout=self._limits.max_execution_seconds,
+        async with self._admission():
+            if self._closed:
+                raise DeliveryClosedError("投递服务已关闭。")
+            existing = await self._existing_for_task(execution_key, task_key)
+            if existing is not None:
+                return existing
+            try:
+                await self._store.create_delivery_execution(
+                    execution_id=execution_key,
+                    task_id=task.id,
+                    task_name=task.name,
+                    task_revision=task.revision,
+                    profile_id=profile.id,
+                    profile_revision=profile.revision,
+                    site_id=site.id,
+                    site_revision=site.revision,
+                    output_format=task.output_format,
+                    umos=task.umos,
                 )
-        except asyncio.TimeoutError:
-            await self._mark_incomplete_safely(execution_key)
-            return await self._read(execution_key)
-        except asyncio.CancelledError:
-            await self._mark_incomplete_safely(execution_key)
-            raise
-        finally:
-            if current is not None:
-                self._active.discard(current)
+            except DeliveryExecutionExistsError:
+                return await self._existing_for_task(execution_key, task_key)
+            except Exception as exc:
+                raise DeliveryStorageError("无法创建投递记录。") from exc
+            return await self._run(execution_key, task, profile, site)
 
-    async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        current = asyncio.current_task()
-        active = [task for task in self._active if task is not current]
-        for task in active:
-            task.cancel()
-        if active:
-            await asyncio.gather(*active, return_exceptions=True)
+    @asynccontextmanager
+    async def _admission(self):
+        async with self._admission_lock:
+            if self._closed:
+                raise DeliveryClosedError("投递服务已关闭。")
+            if self._pending >= self._limits.max_pending_executions:
+                raise DeliveryCapacityError("投递排队已满。")
+            self._pending += 1
+        acquired = False
+        try:
+            await self._semaphore.acquire()
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                self._semaphore.release()
+            async with self._admission_lock:
+                self._pending -= 1
+
+    async def _existing_for_task(
+        self,
+        execution_key: str,
+        task_key: str,
+    ) -> StoredDeliveryExecution | None:
+        try:
+            existing = await self._store.get_delivery_execution(execution_key)
+        except DeliveryRecordNotFoundError:
+            return None
+        if existing.task_id != task_key:
+            raise DeliveryValidationError(
+                "execution_id", "该执行标识属于其他任务",
+            )
+        return existing
+
+    async def _read_optional(self, execution_key: str) -> StoredDeliveryExecution | None:
+        try:
+            return await self._store.get_delivery_execution(execution_key)
+        except DeliveryRecordNotFoundError:
+            return None
 
     async def _run(
         self,
@@ -360,6 +483,20 @@ class DeliveryService:
                     text=page if isinstance(page, str) else None,
                     image_png=page if isinstance(page, bytes) else None,
                 )
+                # 最后一次生命周期/配置校验：必须紧邻外部调用，之后不能再写入。
+                if self._closed or not await self._config_unchanged(
+                    task, profile, site, umo,
+                ):
+                    await self._mark_remaining(
+                        execution_id, position, len(prepared.pages),
+                        "skipped", "config_changed", start=page_index,
+                    )
+                    await self._mark_target_safely(
+                        execution_id, position, status="skipped",
+                        error_code="config_changed",
+                    )
+                    target_status = "skipped"
+                    break
                 try:
                     result = await self._call_sender(message)
                 except asyncio.CancelledError:
@@ -442,11 +579,16 @@ class DeliveryService:
             return DeliverySendResult(SendStatus.UNKNOWN, "sender_exception")
         if not isinstance(result, DeliverySendResult):
             return DeliverySendResult(SendStatus.UNKNOWN, "sender_invalid_result")
-        if result.status not in (
-            SendStatus.SUCCESS, SendStatus.FAILED, SendStatus.UNKNOWN,
-        ):
-            return DeliverySendResult(SendStatus.UNKNOWN, "sender_invalid_result")
-        return result
+        status = _normalize_send_status(result.status)
+        if status is SendStatus.SUCCESS:
+            return DeliverySendResult(SendStatus.SUCCESS)
+        default_code = (
+            "send_unknown" if status is SendStatus.UNKNOWN else "send_failed"
+        )
+        return DeliverySendResult(
+            status,
+            _safe_error_code(result.code, default_code),
+        )
 
     async def _config_unchanged(
         self,
@@ -462,7 +604,8 @@ class DeliveryService:
         except Exception:
             return False
         return (
-            current.revision == task.revision
+            not self._closed
+            and current.revision == task.revision
             and current.profile_id == task.profile_id
             and current.output_format == task.output_format
             and umo in current.umos
@@ -519,13 +662,13 @@ class DeliveryService:
         for page_index in range(start, page_count + 1):
             await self._store.set_delivery_page_status(
                 execution_id, position, page_index,
-                status=status, error_code=error_code,
+                status=status, error_code=_safe_error_code(error_code),
             )
 
     async def _finish(self, execution_id: str, status: str, code: str | None) -> None:
         try:
             await self._store.set_delivery_execution_status(
-                execution_id, status=status, error_code=code,
+                execution_id, status=status, error_code=_safe_error_code(code),
             )
         except Exception as exc:
             raise DeliveryStorageError("无法保存投递结果。") from exc
@@ -533,7 +676,7 @@ class DeliveryService:
     async def _finish_safely(self, execution_id: str, *, status: str, error_code: str) -> None:
         try:
             await self._store.set_delivery_execution_status(
-                execution_id, status=status, error_code=error_code,
+                execution_id, status=status, error_code=_safe_error_code(error_code),
             )
         except Exception:
             pass
@@ -541,7 +684,7 @@ class DeliveryService:
     async def _mark_incomplete_safely(self, execution_id: str) -> None:
         try:
             await asyncio.shield(self._store.mark_delivery_incomplete(execution_id))
-        except Exception:
+        except BaseException:
             pass
 
     async def _read(self, execution_id: str) -> StoredDeliveryExecution:
@@ -571,6 +714,24 @@ class _Prepared:
     content_hash: str
     content_status: str
     failed_sections: list[object]
+
+
+def _normalize_send_status(value: object) -> SendStatus:
+    if isinstance(value, SendStatus):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "success":
+            return SendStatus.SUCCESS
+        if normalized == "failed":
+            return SendStatus.FAILED
+    return SendStatus.UNKNOWN
+
+
+def _safe_error_code(value: object, default: str = "internal_error") -> str:
+    if isinstance(value, str) and value in SAFE_ERROR_CODES:
+        return value
+    return default
 
 
 def _normalize_key(value: object, field: str, max_length: int) -> str:

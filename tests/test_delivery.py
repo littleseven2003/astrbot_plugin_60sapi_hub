@@ -296,7 +296,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.pages[0].status, "unknown")
         self.assertEqual(len(self.sender.calls), 1)
 
-    async def test_restart_marks_incomplete_unknown_without_sending(self) -> None:
+    async def test_restart_marks_never_started_skipped_without_sending(self) -> None:
         await self.sites.store.create_delivery_execution(
             execution_id="crash-1", task_id="task-x", task_name="崩溃任务",
             task_revision=1, profile_id="p", profile_revision=1,
@@ -309,9 +309,9 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         await reopened.open()
         try:
             result = await reopened.store.get_delivery_execution("crash-1")
-            self.assertEqual(result.status, "unknown")
-            self.assertEqual(result.pages[0].status, "unknown")
-            self.assertEqual(result.targets[0].status, "unknown")
+            self.assertEqual(result.status, "stopped")
+            self.assertEqual(result.pages[0].status, "skipped")
+            self.assertEqual(result.targets[0].status, "skipped")
         finally:
             await reopened.close()
         self.assertEqual(len(self.sender.calls), 0)
@@ -372,7 +372,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         running = asyncio.create_task(self.service.execute(task.id, "close-1"))
         await self.sender.started.wait()
         unrelated = asyncio.create_task(asyncio.sleep(0.2))
-        await self.service.close()
+        await asyncio.gather(self.service.close(), self.service.close())
         outcome = (await asyncio.gather(running, return_exceptions=True))[0]
         self.assertIsInstance(outcome, asyncio.CancelledError)
         self.assertFalse(unrelated.cancelled())
@@ -566,3 +566,300 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         repeated = await self.service.execute(task.id, "history-1")
         self.assertEqual(repeated.status, "success")
         self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_close_during_config_read_does_not_send(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        original = self.tasks.get_task
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked(task_id):
+            entered.set()
+            await release.wait()
+            return await original(task_id)
+
+        self.tasks.get_task = blocked
+        running = asyncio.create_task(self.service.execute(task.id, "close-read-1"))
+        await entered.wait()
+        await self.service.close()
+        release.set()
+        outcome = (await asyncio.gather(running, return_exceptions=True))[0]
+        self.assertIsInstance(outcome, asyncio.CancelledError)
+        self.assertEqual(len(self.sender.calls), 0)
+        from core.site_store import DeliveryRecordNotFoundError
+        with self.assertRaises(DeliveryRecordNotFoundError):
+            await self.sites.store.get_delivery_execution("close-read-1")
+
+    async def test_final_check_after_sending_record_skips_without_sender(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        original = self.sites.store.set_delivery_page_status
+        changed = False
+
+        async def remove_target_after_sending(*args, **kwargs):
+            nonlocal changed
+            result = await original(*args, **kwargs)
+            if kwargs.get("status") == "sending" and not changed:
+                changed = True
+                from core.tasks import TaskUpdate
+                await self.tasks.update_task(
+                    task.id,
+                    TaskUpdate(
+                        name=task.name, profile_id=task.profile_id,
+                        output_format=task.output_format, umos=[],
+                        expected_revision=task.revision,
+                    ),
+                )
+            return result
+
+        self.sites.store.set_delivery_page_status = remove_target_after_sending
+        try:
+            result = await self.service.execute(task.id, "final-check-1")
+        finally:
+            self.sites.store.set_delivery_page_status = original
+        self.assertEqual(len(self.sender.calls), 0)
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.targets[0].status, "skipped")
+        self.assertEqual(result.pages[0].status, "skipped")
+
+    async def test_queue_capacity_and_deadline_are_bounded(self) -> None:
+        limited = DeliveryLimits(
+            max_concurrent_executions=1, max_pending_executions=1,
+            max_execution_seconds=0.2, sender_timeout_seconds=5,
+        )
+        service = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=limited,
+        )
+        self.sender.block = True
+        first = await self._task(["aiocqhttp:GroupMessage:g1"])
+        second = await self._task(["aiocqhttp:GroupMessage:g2"])
+        third = await self._task(["aiocqhttp:GroupMessage:g3"])
+        running = asyncio.create_task(service.execute(first.id, "queue-1"))
+        await self.sender.started.wait()
+        waiting = asyncio.create_task(service.execute(second.id, "queue-2"))
+        await asyncio.sleep(0)
+        from core.delivery import DeliveryCapacityError
+        with self.assertRaises(DeliveryCapacityError):
+            await service.execute(third.id, "queue-3")
+        outcome = (await asyncio.gather(waiting, return_exceptions=True))[0]
+        self.assertIsInstance(outcome, Exception)
+        self.sender.block = False
+        self.sender.release.set()
+        await running
+        await service.close()
+
+    async def test_cancel_marks_only_started_pages_unknown_and_pending_skipped(self) -> None:
+        task = await self._task([
+            "aiocqhttp:GroupMessage:g1",
+            "aiocqhttp:FriendMessage:u1",
+        ], output="image")
+        self.sender.block = True
+        running = asyncio.create_task(self.service.execute(task.id, "cancel-pages-1"))
+        await self.sender.started.wait()
+        running.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await running
+        result = await self.sites.store.get_delivery_execution("cancel-pages-1")
+        self.assertEqual(result.status, "unknown")
+        self.assertEqual([t.status for t in result.targets], ["unknown", "skipped"])
+        self.assertEqual(
+            [p.status for p in result.pages],
+            ["unknown", "skipped", "skipped", "skipped"],
+        )
+
+    async def test_incomplete_preserves_known_success(self) -> None:
+        await self.sites.store.create_delivery_execution(
+            execution_id="mixed-1", task_id="t", task_name="混合",
+            task_revision=1, profile_id="p", profile_revision=1,
+            site_id="s", site_revision=1, output_format="image",
+            umos=("aiocqhttp:GroupMessage:g1", "aiocqhttp:FriendMessage:u1"),
+        )
+        await self.sites.store.add_delivery_pages("mixed-1", position=0, page_count=2)
+        await self.sites.store.add_delivery_pages("mixed-1", position=1, page_count=2)
+        await self.sites.store.set_delivery_target_status("mixed-1", 0, status="success")
+        await self.sites.store.set_delivery_page_status("mixed-1", 0, 1, status="success")
+        await self.sites.store.set_delivery_page_status("mixed-1", 0, 2, status="success")
+        await self.sites.store.set_delivery_target_status("mixed-1", 1, status="sending")
+        await self.sites.store.set_delivery_page_status("mixed-1", 1, 1, status="sending")
+        await self.sites.store.mark_delivery_incomplete("mixed-1")
+        result = await self.sites.store.get_delivery_execution("mixed-1")
+        self.assertEqual(result.status, "unknown")
+        self.assertEqual([t.status for t in result.targets], ["success", "unknown"])
+        self.assertEqual(
+            [p.status for p in result.pages],
+            ["success", "success", "unknown", "skipped"],
+        )
+
+    async def test_sender_error_code_is_normalized_and_secret_not_persisted(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        secret = "Bearer sk-SECRET-1234567890 and platform echo"
+        # A malicious/oversized code is never persisted; a string status
+        # is normalized instead of falling through to an explicit failure.
+        original = self.sender.send
+        async def bad(message):
+            self.sender.calls.append(message)
+            return DeliverySendResult("success", secret)
+        self.sender.send = bad
+        try:
+            result = await self.service.execute(task.id, "code-1")
+        finally:
+            self.sender.send = original
+        self.assertEqual(result.status, "success")
+        stored = await self.sites.store.get_delivery_execution("code-1")
+        self.assertNotIn("SECRET", repr(stored))
+        self.assertNotIn("platform echo", repr(stored))
+
+        async def failed(message):
+            self.sender.calls.append(message)
+            return DeliverySendResult("failed", secret)
+        self.sender.send = failed
+        try:
+            result2 = await self.service.execute(task.id, "code-2")
+        finally:
+            self.sender.send = original
+        self.assertEqual(result2.status, "failed")
+        stored2 = await self.sites.store.get_delivery_execution("code-2")
+        self.assertEqual(stored2.pages[0].error_code, "send_failed")
+        self.assertNotIn("SECRET", repr(stored2))
+
+        async def malformed(message):
+            self.sender.calls.append(message)
+            return DeliverySendResult("not-a-status", secret)
+        self.sender.send = malformed
+        try:
+            result3 = await self.service.execute(task.id, "code-3")
+        finally:
+            self.sender.send = original
+        self.assertEqual(result3.status, "unknown")
+        stored3 = await self.sites.store.get_delivery_execution("code-3")
+        self.assertEqual(stored3.pages[0].error_code, "send_unknown")
+        self.assertNotIn("SECRET", repr(stored3))
+
+    async def test_concurrent_same_id_different_tasks_rejects_other_owner(self) -> None:
+        from core.delivery import DeliveryValidationError
+        first = await self._task(["aiocqhttp:GroupMessage:g1"])
+        second = await self._task(["aiocqhttp:FriendMessage:u1"])
+        original = self.sites.store.get_delivery_execution
+        entered = 0
+        both = asyncio.Event()
+
+        async def gated(execution_id):
+            nonlocal entered
+            if execution_id == "owner-race" and entered < 2:
+                entered += 1
+                if entered == 2:
+                    both.set()
+                await both.wait()
+            return await original(execution_id)
+
+        self.sites.store.get_delivery_execution = gated
+        try:
+            outcomes = await asyncio.gather(
+                self.service.execute(first.id, "owner-race"),
+                self.service.execute(second.id, "owner-race"),
+                return_exceptions=True,
+            )
+        finally:
+            self.sites.store.get_delivery_execution = original
+        errors = [x for x in outcomes if isinstance(x, DeliveryValidationError)]
+        successes = [x for x in outcomes if not isinstance(x, Exception)]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].field, "execution_id")
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(len(self.sender.calls), 1)
+        stored = await self.sites.store.get_delivery_execution("owner-race")
+        self.assertEqual(stored.task_id, successes[0].task_id)
+
+    async def test_close_during_create_does_not_send(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        original = self.sites.store.create_delivery_execution
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked(**kwargs):
+            entered.set()
+            await release.wait()
+            return await original(**kwargs)
+
+        self.sites.store.create_delivery_execution = blocked
+        running = asyncio.create_task(self.service.execute(task.id, "close-create-1"))
+        await entered.wait()
+        await self.service.close()
+        release.set()
+        outcome = (await asyncio.gather(running, return_exceptions=True))[0]
+        self.assertIsInstance(outcome, asyncio.CancelledError)
+        self.assertEqual(len(self.sender.calls), 0)
+        from core.site_store import DeliveryRecordNotFoundError
+        with self.assertRaises(DeliveryRecordNotFoundError):
+            await self.sites.store.get_delivery_execution("close-create-1")
+
+    async def test_close_during_prepare_marks_stopped_and_never_sends(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        original = self.api.preview_profile
+
+        async def blocked(payload, *, owner=None):
+            entered.set()
+            await release.wait()
+            return await original(payload, owner=owner)
+
+        self.api.preview_profile = blocked
+        running = asyncio.create_task(self.service.execute(task.id, "close-prepare-1"))
+        await entered.wait()
+        await self.service.close()
+        release.set()
+        outcome = (await asyncio.gather(running, return_exceptions=True))[0]
+        self.assertIsInstance(outcome, asyncio.CancelledError)
+        self.assertEqual(len(self.sender.calls), 0)
+        result = await self.sites.store.get_delivery_execution("close-prepare-1")
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.targets[0].status, "skipped")
+
+    async def test_close_during_queue_reclaims_slots(self) -> None:
+        limited = DeliveryLimits(
+            max_concurrent_executions=1, max_pending_executions=1,
+            max_execution_seconds=5, sender_timeout_seconds=5,
+        )
+        service = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=limited,
+        )
+        first = await self._task(["aiocqhttp:GroupMessage:g1"])
+        second = await self._task(["aiocqhttp:GroupMessage:g2"])
+        self.sender.block = True
+        running = asyncio.create_task(service.execute(first.id, "queue-close-1"))
+        await self.sender.started.wait()
+        waiting = asyncio.create_task(service.execute(second.id, "queue-close-2"))
+        await asyncio.sleep(0)
+        await service.close()
+        outcomes = await asyncio.gather(running, waiting, return_exceptions=True)
+        self.assertTrue(all(isinstance(x, BaseException) for x in outcomes), outcomes)
+        self.assertEqual(len(self.sender.calls), 1)
+        result = await self.sites.store.get_delivery_execution("queue-close-1")
+        self.assertEqual(result.status, "unknown")
+        from core.site_store import DeliveryRecordNotFoundError
+        with self.assertRaises(DeliveryRecordNotFoundError):
+            await self.sites.store.get_delivery_execution("queue-close-2")
+
+    async def test_total_deadline_applies_while_sending(self) -> None:
+        limited = DeliveryLimits(
+            max_execution_seconds=0.1, sender_timeout_seconds=5,
+            max_concurrent_executions=2, max_pending_executions=2,
+        )
+        service = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=limited,
+        )
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        self.sender.block = True
+        running = asyncio.create_task(service.execute(task.id, "deadline-1"))
+        await self.sender.started.wait()
+        result = await running
+        self.assertEqual(result.status, "unknown")
+        self.assertEqual(result.error_code, "interrupted")
+        self.assertEqual(len(self.sender.calls), 1)
+        await service.close()

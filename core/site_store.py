@@ -1218,32 +1218,14 @@ class SiteStore:
             )
 
     async def mark_delivery_incomplete(self, execution_id: str) -> None:
-        """取消/超时/关闭时保守归类，不把未开始条目当作已发送。"""
+        """取消/超时/关闭时保守归类：未开始=skipped，已调用=unknown。"""
         async with self._lock:
             connection = self._require_connection()
 
             async def perform() -> None:
-                await connection.execute(
-                    """
-                    UPDATE delivery_pages SET status = 'unknown', error_code = 'interrupted'
-                    WHERE execution_id = ? AND status IN ('pending', 'sending')
-                    """,
-                    (execution_id,),
-                )
-                await connection.execute(
-                    """
-                    UPDATE delivery_targets SET status = 'unknown', error_code = 'interrupted'
-                    WHERE execution_id = ? AND status IN ('pending', 'sending')
-                    """,
-                    (execution_id,),
-                )
-                await connection.execute(
-                    """
-                    UPDATE delivery_executions
-                    SET status = 'unknown', error_code = 'interrupted', updated_at = ?
-                    WHERE id = ? AND status IN ('preparing', 'running')
-                    """,
-                    (_utc_now(), execution_id),
+                await _mark_incomplete_rows(
+                    connection, "execution_id = ?", (execution_id,),
+                    execution_where="id = ?",
                 )
 
             await self._commit_write(
@@ -1256,27 +1238,7 @@ class SiteStore:
         async with connection.execute("BEGIN IMMEDIATE"):
             pass
         try:
-            now = _utc_now()
-            await connection.execute(
-                """
-                UPDATE delivery_pages SET status = 'unknown', error_code = 'restart'
-                WHERE status IN ('pending', 'sending')
-                """,
-            )
-            await connection.execute(
-                """
-                UPDATE delivery_targets SET status = 'unknown', error_code = 'restart'
-                WHERE status IN ('pending', 'sending')
-                """,
-            )
-            await connection.execute(
-                """
-                UPDATE delivery_executions
-                SET status = 'unknown', error_code = 'restart', updated_at = ?
-                WHERE status IN ('preparing', 'running')
-                """,
-                (now,),
-            )
+            await _mark_incomplete_rows(connection, "1 = 1", ())
             await connection.commit()
         except BaseException:
             await self._rollback_quietly(connection)
@@ -1521,6 +1483,128 @@ def _row_to_profile(
         revision=int(row["revision"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+async def _mark_incomplete_rows(
+    connection: aiosqlite.Connection,
+    where: str,
+    params: tuple[object, ...],
+    *,
+    execution_where: str | None = None,
+) -> None:
+    execution_filter = execution_where or where
+    await connection.execute(
+        f"""
+        UPDATE delivery_pages SET status = 'skipped', error_code = 'never_started'
+        WHERE {where} AND status = 'pending'
+        """,
+        params,
+    )
+    await connection.execute(
+        f"""
+        UPDATE delivery_pages SET status = 'unknown', error_code = 'interrupted'
+        WHERE {where} AND status = 'sending'
+        """,
+        params,
+    )
+    await connection.execute(
+        f"""
+        UPDATE delivery_targets AS t SET
+            status = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = t.execution_id
+                      AND p.position = t.position AND p.status = 'unknown'
+                ) THEN 'unknown'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = t.execution_id
+                      AND p.position = t.position AND p.status = 'failed'
+                ) THEN 'failed'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = t.execution_id
+                      AND p.position = t.position AND p.status = 'success'
+                ) AND EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = t.execution_id
+                      AND p.position = t.position
+                      AND p.status IN ('skipped', 'failed')
+                ) THEN 'partial'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = t.execution_id
+                      AND p.position = t.position AND p.status = 'success'
+                ) THEN 'success'
+                ELSE 'skipped'
+            END,
+            error_code = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = t.execution_id
+                      AND p.position = t.position AND p.status = 'unknown'
+                ) THEN 'interrupted'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = t.execution_id
+                      AND p.position = t.position
+                      AND p.status IN ('failed', 'skipped')
+                ) THEN 'never_started'
+                ELSE NULL
+            END
+        WHERE {where} AND t.status IN ('pending', 'sending')
+        """,
+        params,
+    )
+    await connection.execute(
+        f"""
+        UPDATE delivery_executions SET
+            status = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = delivery_executions.id
+                      AND p.status = 'unknown'
+                ) THEN 'unknown'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = delivery_executions.id
+                      AND p.status = 'success'
+                ) AND EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = delivery_executions.id
+                      AND p.status IN ('failed', 'skipped')
+                ) THEN 'partial'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = delivery_executions.id
+                      AND p.status = 'success'
+                ) THEN 'success'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = delivery_executions.id
+                      AND p.status = 'failed'
+                ) THEN 'failed'
+                ELSE 'stopped'
+            END,
+            error_code = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = delivery_executions.id
+                      AND p.status = 'unknown'
+                ) THEN 'interrupted'
+                WHEN EXISTS (
+                    SELECT 1 FROM delivery_pages p
+                    WHERE p.execution_id = delivery_executions.id
+                      AND p.status IN ('success', 'failed')
+                ) THEN 'interrupted'
+                ELSE 'never_started'
+            END,
+            updated_at = ?
+        WHERE {execution_filter}
+          AND status IN ('preparing', 'running')
+        """,
+        (_utc_now(), *params),
     )
 
 

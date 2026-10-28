@@ -230,6 +230,7 @@ const state = {
   deliveryPreviewRequestId: 0,
   deliveryQueryRequestId: 0,
   deliveryQueryTarget: null,
+  deliveryQueryHistory: false,
   deliveryHistoryExecutionId: null,
   deliveryAttempt: null,
   deliveryHistory: [],
@@ -3364,6 +3365,10 @@ function renderDeliveryPreview(data, token) {
 }
 
 function resetDeliveryDialog(task, mode) {
+  // A new dialog/mode must never keep an older detail-query target.
+  state.deliveryQueryTarget = null;
+  state.deliveryQueryHistory = false;
+  state.deliveryQueryRequestId += 1;
   state.deliveryMode = mode;
   state.deliveryTask = task || null;
   state.deliveryPreview = null;
@@ -3478,6 +3483,9 @@ async function submitDelivery(event) {
   const requestId = ++state.deliveryRequestId;
   state.deliveryBusy = true;
   state.deliveryAttempt = { executionId, taskId: task.id, status: "submitted" };
+  // Bind the query context before the POST: a lost response must still query B.
+  state.deliveryQueryTarget = executionId;
+  state.deliveryQueryHistory = false;
   elements.deliveryConfirmButton.disabled = true;
   elements.deliveryConfirmButton.textContent = "已提交，等待结果…";
   elements.deliveryError.hidden = true;
@@ -3550,6 +3558,7 @@ async function submitDelivery(event) {
 async function queryDelivery(executionId, options = {}) {
   const history = Boolean(options.history);
   state.deliveryQueryTarget = executionId;
+  state.deliveryQueryHistory = history;
   const requestId = ++state.deliveryQueryRequestId;
   if (history) {
     state.deliveryMode = "history";
@@ -3594,7 +3603,7 @@ async function retryDeliveryQuery() {
     return;
   }
   await queryDelivery(executionId, {
-    history: state.deliveryMode === "history",
+    history: state.deliveryQueryHistory,
   });
 }
 
@@ -3728,6 +3737,8 @@ function bindEvents() {
     state.deliveryPreviewRequestId += 1;
     state.deliveryQueryRequestId += 1;
     state.deliveryHistoryExecutionId = null;
+    state.deliveryQueryTarget = null;
+    state.deliveryQueryHistory = false;
   });
   elements.taskRetryButton.addEventListener("click", loadTasks);
   elements.taskForm.addEventListener("submit", handleTaskSave);

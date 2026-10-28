@@ -223,7 +223,7 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
         "updated_at": e.updated_at,
         "target_count": len(e.targets),
         "page_count": len(e.pages),
-        "target_statuses": {t.status for t in e.targets},
+        "target_statuses": sorted({t.status for t in e.targets}),
     }
 
 

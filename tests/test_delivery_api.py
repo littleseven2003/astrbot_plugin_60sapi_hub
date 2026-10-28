@@ -156,3 +156,23 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed.body["data"]["count"], 1)
         detail = await self.api.get_execution("history-1")
         self.assertEqual(detail.status_code, 200)
+
+    async def test_execution_list_paginates_beyond_twenty(self) -> None:
+        for index in range(21):
+            await self.sites.store.create_delivery_execution(
+                execution_id=f"page-{index:02d}", task_id="task-pages",
+                task_name="翻页任务", task_revision=1,
+                profile_id="profile-pages", profile_revision=1,
+                site_id="site-pages", site_revision=1,
+                output_format="text", umos=(),
+            )
+        first = await self.api.list_executions(limit=20, offset=0)
+        self.assertEqual(first.body["data"]["count"], 20)
+        self.assertTrue(first.body["data"]["has_more"])
+        second = await self.api.list_executions(limit=20, offset=20)
+        self.assertEqual(second.body["data"]["count"], 1)
+        self.assertFalse(second.body["data"]["has_more"])
+        self.assertNotEqual(
+            first.body["data"]["executions"][0]["id"],
+            second.body["data"]["executions"][0]["id"],
+        )

@@ -20,16 +20,20 @@ from io import BytesIO
 
 from PIL import Image as PILImage
 
-try:
+HAS_HOST = False
+AiocqhttpAdapter = None  # type: ignore[assignment]
+Context = None  # type: ignore[assignment]
+
+# Only skip when the real astrbot package cannot be found at all. Once the
+# package is present, any dependency/import failure is a real test failure.
+from importlib.util import find_spec
+
+if find_spec("astrbot") is not None:
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
         AiocqhttpAdapter,
     )
     from astrbot.core.star.context import Context
     HAS_HOST = True
-except BaseException:
-    AiocqhttpAdapter = None  # type: ignore[assignment]
-    Context = None  # type: ignore[assignment]
-    HAS_HOST = False
 
 
 _png_buffer = BytesIO()

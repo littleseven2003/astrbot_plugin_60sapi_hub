@@ -296,14 +296,16 @@ class DeliveryService:
             acquired = True
             async with self._admission_lock:
                 self._running += 1
+                self._pending -= 1
             yield
         finally:
             if acquired:
                 async with self._admission_lock:
                     self._running -= 1
                     self._semaphore.release()
-            async with self._admission_lock:
-                self._pending -= 1
+            else:
+                async with self._admission_lock:
+                    self._pending -= 1
 
     async def _existing_for_task(
         self,

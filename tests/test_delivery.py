@@ -959,8 +959,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         outcomes = await asyncio.gather(*running, return_exceptions=True)
         rejected = [x for x in outcomes if isinstance(x, DeliveryCapacityError)]
         successes = [x for x in outcomes if not isinstance(x, Exception)]
-        self.assertGreaterEqual(len(rejected), 6)
-        self.assertLessEqual(len(successes), 6)
+        self.assertEqual(len(rejected), 6)
+        self.assertEqual(len(successes), 6)
         self.assertEqual(len(self.sender.calls), len(successes))
         await service.close()
 

@@ -93,6 +93,11 @@ PYTHONPATH=<astrbot-source>:<matching-host-venv>/lib/pythonX.Y/site-packages \
 - 重复点击/旧响应/响应丢失：稳定执行标识、查询 only、不自动重发；unknown 不自动重试。
 - API 覆盖未登录/停用、非法分页、任务筛选、执行列表/详情、删除任务后历史保留和公开投影不含 owner_token。
 - 宿主：启动/重载/停用零发送，投递服务先于图片/内容/数据库关闭；历史记录保留。
+- 后台 bridge：`apiGet("executions", {limit, offset})` 分页，超过 20 条可加载更多；历史详情只读；历史查询与待确认标识隔离。
+- 请求归属：预览、提交、详情、弹窗切换的 success/catch/finally 都检查 token/请求号；旧响应不覆盖新状态。
+- 存储边界：localStorage 抛 SecurityError 时当前页内存仍可查询；刷新后只能靠执行记录人工核对，不自动重发、不放宽 sandbox。
+- 尝试状态：提交后旧确认按钮保持禁用；unknown/超时/丢失只查询原 execution_id；revision 冲突作废确认。
+- UI 浏览器验证仅在可用的本地 Playwright 环境执行；环境不可用时明确报告未验证，不把静态检查当作浏览器通过。
 - 真实发送只在 AstrBot v4.29.1 + 假机器人环境验证；未连接真实账号。
 
 ## 当前检查

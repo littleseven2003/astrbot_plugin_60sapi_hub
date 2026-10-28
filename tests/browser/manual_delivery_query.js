@@ -75,10 +75,31 @@ async function waitPreview(frame) {
   );
 }
 
-async function settleFrames(page) {
-  await page.evaluate(() => new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(resolve));
-  }));
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function resetBridgeResponseCounter(frame) {
+  await frame.evaluate(() => {
+    window.__manualDeliveryBridgeResponses = 0;
+    if (!window.__manualDeliveryBridgeListener) {
+      window.__manualDeliveryBridgeListener = (event) => {
+        if (event.data && event.data.channel && event.data.kind === "response") {
+          window.__manualDeliveryBridgeResponses += 1;
+        }
+      };
+      window.addEventListener("message", window.__manualDeliveryBridgeListener);
+    }
+  });
+}
+
+async function waitBridgeResponse(frame, minimum = 1) {
+  await frame.waitForFunction(
+    (count) => (window.__manualDeliveryBridgeResponses || 0) >= count,
+    minimum,
+  );
 }
 
 (async () => {
@@ -278,16 +299,15 @@ async function settleFrames(page) {
         (id) => document.getElementById("delivery-list")?.innerText.includes(id),
         HISTORY_ID,
       );
-      const gate = {};
-      gate.promise = new Promise((resolve) => { gate.resolvePromise = resolve; });
-      gate.settled = {};
-      gate.settled.promise = new Promise((resolve) => { gate.settled.resolvePromise = resolve; });
+      const releaseGate = deferred();
+      const settledGate = deferred();
       delayed = {
         id: HISTORY_ID, status,
-        promise: gate.promise,
-        resolve: gate.resolvePromise,
-        settled: { resolve: gate.settled.resolvePromise },
+        promise: releaseGate.promise,
+        resolve: releaseGate.resolve,
+        settled: settledGate,
       };
+      await resetBridgeResponseCounter(frame);
       const delayedRequest = page.waitForRequest((request) =>
         request.url().endsWith(`/executions/${HISTORY_ID}`),
       );
@@ -301,7 +321,7 @@ async function settleFrames(page) {
       const local = delayed;
       local.resolve();
       await local.settled.promise;
-      await settleFrames(page);
+      await waitBridgeResponse(frame);
       assert.equal(await frame.locator("#delivery-dialog-title").innerText(), "确认手动测试投递");
       assert.equal(await frame.locator("#delivery-result").isVisible(), false);
       assert.equal(await frame.locator("#delivery-uncertain").isVisible(), false);

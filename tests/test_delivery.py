@@ -1023,3 +1023,188 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "stopped")
         self.assertEqual(result.targets[0].status, "skipped")
         self.assertEqual(len(self.sender.calls), 0)
+
+    async def test_timeout_returns_other_task_record_is_rejected(self) -> None:
+        from core.delivery import DeliveryValidationError
+        first = await self._task(["aiocqhttp:GroupMessage:g1"])
+        second = await self._task(["aiocqhttp:FriendMessage:u1"])
+        await self.service.execute(first.id, "owned-timeout-1")
+        limited = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(max_execution_seconds=0.1),
+        )
+        original = self.sites.store.get_delivery_execution
+        entered = asyncio.Event()
+        calls = 0
+
+        async def blocked(execution_id):
+            nonlocal calls
+            if execution_id == "owned-timeout-1" and calls == 0:
+                calls += 1
+                entered.set()
+                await asyncio.Event().wait()
+            return await original(execution_id)
+
+        self.sites.store.get_delivery_execution = blocked
+        try:
+            running = asyncio.create_task(
+                limited.execute(second.id, "owned-timeout-1"),
+            )
+            await entered.wait()
+            with self.assertRaises(DeliveryValidationError):
+                await running
+        finally:
+            self.sites.store.get_delivery_execution = original
+        stored = await self.sites.store.get_delivery_execution("owned-timeout-1")
+        self.assertEqual(stored.task_id, first.id)
+        self.assertEqual(stored.status, "success")
+        self.assertEqual(len(self.sender.calls), 1)
+        await limited.close()
+
+    async def test_same_task_timeout_returns_existing_without_send(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        await self.service.execute(task.id, "same-timeout-1")
+        limited = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(max_execution_seconds=0.1),
+        )
+        original = self.sites.store.get_delivery_execution
+        calls = 0
+        entered = asyncio.Event()
+
+        async def blocked(execution_id):
+            nonlocal calls
+            if execution_id == "same-timeout-1" and calls == 0:
+                calls += 1
+                entered.set()
+                await asyncio.Event().wait()
+            return await original(execution_id)
+
+        self.sites.store.get_delivery_execution = blocked
+        try:
+            running = asyncio.create_task(
+                limited.execute(task.id, "same-timeout-1"),
+            )
+            await entered.wait()
+            result = await running
+        finally:
+            self.sites.store.get_delivery_execution = original
+        self.assertEqual(result.id, "same-timeout-1")
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(self.sender.calls), 1)
+        await limited.close()
+
+    async def test_zero_wait_uses_free_slot_and_rejects_when_full(self) -> None:
+        from core.delivery import DeliveryCapacityError, DeliveryValidationError
+        with self.assertRaises(DeliveryValidationError):
+            DeliveryService(
+                tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+                profile_api=self.api, store=self.sites.store,
+                sender=self.sender,
+                limits=DeliveryLimits(max_concurrent_executions=0),
+            )
+        with self.assertRaises(DeliveryValidationError):
+            DeliveryService(
+                tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+                profile_api=self.api, store=self.sites.store,
+                sender=self.sender,
+                limits=DeliveryLimits(max_pending_executions=-1),
+            )
+        service = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(
+                max_concurrent_executions=1, max_pending_executions=0,
+                max_execution_seconds=5, sender_timeout_seconds=5,
+            ),
+        )
+        first = await self._task(["aiocqhttp:GroupMessage:g1"])
+        second = await self._task(["aiocqhttp:GroupMessage:g2"])
+        third = await self._task(["aiocqhttp:GroupMessage:g3"])
+        self.sender.block = True
+        running = asyncio.create_task(service.execute(first.id, "zero-1"))
+        await self.sender.started.wait()
+        with self.assertRaises(DeliveryCapacityError):
+            await service.execute(second.id, "zero-1")
+        self.sender.block = False
+        self.sender.release.set()
+        await running
+        result = await service.execute(third.id, "zero-2")
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(self.sender.calls), 2)
+        await service.close()
+
+    async def test_none_error_codes_and_safe_codes(self) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        result = await self.service.execute(task.id, "none-success-1")
+        self.assertIsNone(result.error_code)
+        empty = await self._task([])
+        no_targets = await self.service.execute(empty.id, "none-empty-1")
+        self.assertEqual(no_targets.status, "no_targets")
+        self.assertIsNone(no_targets.error_code)
+
+        self.sender.modes = ["failed"]
+        failed = await self.service.execute(task.id, "none-failed-1")
+        stored = await self.sites.store.get_delivery_execution("none-failed-1")
+        self.assertEqual(stored.pages[0].error_code, "send_failed")
+        self.assertIsNone(failed.error_code)
+
+        secret = "Bearer sk-SECRET-9876543210"
+        original = self.sender.send
+        async def bad(message):
+            self.sender.calls.append(message)
+            return DeliverySendResult("unknown", secret)
+        self.sender.send = bad
+        try:
+            unknown = await self.service.execute(task.id, "none-unknown-1")
+        finally:
+            self.sender.send = original
+        self.assertEqual(unknown.status, "unknown")
+        stored_unknown = await self.sites.store.get_delivery_execution("none-unknown-1")
+        self.assertEqual(stored_unknown.pages[0].error_code, "send_unknown")
+        self.assertNotIn("SECRET", repr(stored_unknown))
+
+    async def test_timeout_other_task_running_record_is_rejected(self) -> None:
+        from core.delivery import DeliveryValidationError
+        first = await self._task(["aiocqhttp:GroupMessage:g1"])
+        second = await self._task(["aiocqhttp:FriendMessage:u1"])
+        self.sender.block = True
+        running_owner = asyncio.create_task(
+            self.service.execute(first.id, "owned-running-1"),
+        )
+        await self.sender.started.wait()
+        limited = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(max_execution_seconds=0.1),
+        )
+        original = self.sites.store.get_delivery_execution
+        entered = asyncio.Event()
+        calls = 0
+
+        async def blocked(execution_id):
+            nonlocal calls
+            if execution_id == "owned-running-1" and calls == 0:
+                calls += 1
+                entered.set()
+                await asyncio.Event().wait()
+            return await original(execution_id)
+
+        self.sites.store.get_delivery_execution = blocked
+        try:
+            watching = asyncio.create_task(
+                limited.execute(second.id, "owned-running-1"),
+            )
+            await entered.wait()
+            with self.assertRaises(DeliveryValidationError):
+                await watching
+        finally:
+            self.sites.store.get_delivery_execution = original
+        self.sender.block = False
+        self.sender.release.set()
+        result = await running_owner
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(self.sender.calls), 1)
+        await limited.close()

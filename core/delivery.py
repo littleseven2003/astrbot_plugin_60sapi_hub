@@ -153,15 +153,13 @@ class DeliveryService:
         self._sender = sender
         self._limits = limits or DeliveryLimits()
         self._closed = False
+        self._validate_limits(self._limits)
         self._owned: set[asyncio.Task[object]] = set()
         self._lifecycle_lock = asyncio.Lock()
-        self._admission_lock = asyncio.Lock()
+        self._admission_condition = asyncio.Condition()
         self._close_task: asyncio.Task[None] | None = None
         self._pending = 0
         self._running = 0
-        self._semaphore = asyncio.Semaphore(
-            self._limits.max_concurrent_executions,
-        )
 
     async def execute(
         self,
@@ -239,7 +237,9 @@ class DeliveryService:
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             await self._mark_incomplete_if_owner(execution_key, owner_token)
             if isinstance(exc, asyncio.TimeoutError):
-                existing = await self._read_optional(execution_key)
+                existing = await self._existing_for_task(
+                    execution_key, task_key,
+                )
                 if existing is not None:
                     return existing
                 raise DeliveryTimeoutError("投递总耗时已超限。") from exc
@@ -284,28 +284,40 @@ class DeliveryService:
 
     @asynccontextmanager
     async def _admission(self):
-        async with self._admission_lock:
-            if self._closed:
-                raise DeliveryClosedError("投递服务已关闭。")
-            if self._pending >= self._limits.max_pending_executions:
-                raise DeliveryCapacityError("投递排队已满。")
-            self._pending += 1
-        acquired = False
+        async with self._admission_condition:
+            while self._running >= self._limits.max_concurrent_executions:
+                if self._pending >= self._limits.max_pending_executions:
+                    raise DeliveryCapacityError("投递排队已满。")
+                self._pending += 1
+                try:
+                    await self._admission_condition.wait()
+                finally:
+                    self._pending -= 1
+            self._running += 1
         try:
-            await self._semaphore.acquire()
-            acquired = True
-            async with self._admission_lock:
-                self._running += 1
-                self._pending -= 1
             yield
         finally:
-            if acquired:
-                async with self._admission_lock:
-                    self._running -= 1
-                    self._semaphore.release()
-            else:
-                async with self._admission_lock:
-                    self._pending -= 1
+            async with self._admission_condition:
+                self._running -= 1
+                self._admission_condition.notify_all()
+
+    @staticmethod
+    def _validate_limits(limits: DeliveryLimits) -> None:
+        if (
+            type(limits.max_targets) is not int or limits.max_targets < 1
+            or type(limits.max_pages) is not int or limits.max_pages < 1
+            or type(limits.max_concurrent_executions) is not int
+            or limits.max_concurrent_executions < 1
+            or type(limits.max_pending_executions) is not int
+            or limits.max_pending_executions < 0
+            or not isinstance(limits.max_execution_seconds, (int, float))
+            or isinstance(limits.max_execution_seconds, bool)
+            or limits.max_execution_seconds <= 0
+            or not isinstance(limits.sender_timeout_seconds, (int, float))
+            or isinstance(limits.sender_timeout_seconds, bool)
+            or limits.sender_timeout_seconds <= 0
+        ):
+            raise DeliveryValidationError("limits", "容量/超时配置不合法")
 
     async def _existing_for_task(
         self,
@@ -751,7 +763,12 @@ def _normalize_send_status(value: object) -> SendStatus:
     return SendStatus.UNKNOWN
 
 
-def _safe_error_code(value: object, default: str = "internal_error") -> str:
+def _safe_error_code(
+    value: object,
+    default: str = "internal_error",
+) -> str | None:
+    if value is None:
+        return None
     if isinstance(value, str) and value in SAFE_ERROR_CODES:
         return value
     return default

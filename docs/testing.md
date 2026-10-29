@@ -46,7 +46,9 @@
 
 ## M4 聊天纯文字查询
 
-- 单元：`tests/test_chat_commands.py` 覆盖 `get` 的精确 UMO 授权、不存在/未授权同提示且零上游、非法参数、站点停用零上游、群聊/私聊/跨实例/隔离会话、组合缓存查询、部分失败/合法空内容/全部失败、2000 字符截断、任务目标移除/任务/组合/站点 revision 变化后抑制旧内容，以及 help/list 不触发查询。
+- 单元：`tests/test_chat_commands.py` 覆盖 `get` 的精确 UMO 授权、不存在/未授权同提示且零上游、非法参数、站点停用零上游、群聊/私聊/跨实例/隔离会话、部分失败/合法空内容/全部失败、2000 字符截断，以及 help/list 不触发查询。
+- 原子复核：真实 SQLite `TaskService.update_task/delete_task`、`ContentProfileService.update_profile`、`SiteService.update_site` 在查询等待期间执行，验证最终复核使用同一份存储快照；移除当前 UMO、删除任务、修改组合或停用站点后均不输出旧正文。
+- 组合链路：`tests/test_chat_content_integration.py` 使用实际 `ProfileApi`、`ContentService`、SQLite 和 `httpx.MockTransport` 模拟上游，验证连续查询第二次命中缓存、合法空内容、部分失败和全部失败；不访问公开 API，错误响应正文不进入回复。
 - 边界：查询服务只复用 `ProfileApi.preview_profile` 和 `ContentService` 缓存，不调用 DeliveryService、不渲染图片、不发送、不写业务配置；不接受聊天 URL、endpoint、正文或目标 UMO。
 - 宿主：`tests/test_chat_commands_host.py` 验证真实命令过滤器/处理器调用实际 `ChatContentQuery` 服务，并保留生命周期代次测试；完整平台消息管道和真实账号仍未验证。
 - 聊天纯文字查询待 Codex 验收；聊天图片查询、任务启用和调度未实现。

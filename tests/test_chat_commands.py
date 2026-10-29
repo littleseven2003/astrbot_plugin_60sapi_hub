@@ -172,9 +172,13 @@ class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
         service = self.build()
         self.assertEqual(await service.handle("u", "/60s"), HELP_TEXT)
         self.assertEqual(await service.handle("u", "/60s help"), HELP_TEXT)
-        unknown = await service.handle("u", "/60s get")
+        unknown = await service.handle("u", "/60s foo")
         self.assertIn("未知命令", unknown)
         self.assertIn("/60s list", unknown)
+        self.assertEqual(
+            await service.handle("u", "/60s get"),
+            "用法：/60s get <任务ID>。",
+        )
         self.assertEqual(await service.handle("u", "/60s list"), EMPTY_TEXT)
         self.assertEqual(await service.handle("u", "/60s help extra"), HELP_TEXT)
 
@@ -241,3 +245,260 @@ class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("输出：Markdown", text)
         self.assertNotIn("停用站点任务", text)
         self.assertEqual(len(await self.tasks.list_tasks()), len(before))
+
+
+class ContentFixture:
+    def __init__(self):
+        self.task = SimpleNamespace(
+            id="task-get", name="查询任务", profile_id="p1",
+            output_format="image", umos=("bot:GroupMessage:g",),
+            revision=2, created_at="2026-01-01T00:00:00Z",
+        )
+        self.profile = SimpleNamespace(
+            id="p1", site_id="s1", revision=3,
+        )
+        self.site = SimpleNamespace(id="s1", enabled=True, revision=4)
+        self.task_reads = 0
+        self.profile_reads = 0
+        self.site_reads = 0
+        self.preview_calls = []
+
+    async def get_task(self, task_id):
+        from core.tasks import TaskNotFoundError
+        self.task_reads += 1
+        if task_id != self.task.id:
+            raise TaskNotFoundError(task_id)
+        return self.task
+
+    async def get_config_snapshot(self, task_id):
+        task = await self.get_task(task_id)
+        return SimpleNamespace(
+            task=task,
+            profile_id=self.profile.id,
+            profile_revision=self.profile.revision,
+            site_id=self.site.id,
+            site_revision=self.site.revision,
+            site_enabled=self.site.enabled,
+        )
+
+    async def get_profile(self, profile_id):
+        return self.profile
+
+    async def get_site(self, site_id):
+        return self.site
+
+    async def preview_profile(self, payload):
+        self.preview_calls.append(payload)
+        return SimpleNamespace(
+            status_code=200,
+            body={"data": {"outputs": {"text": "组合：查询任务\n内容"}}},
+        )
+
+
+class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
+    def build(self):
+        from core.chat_commands import ChatCommandService
+        from core.chat_content import ChatContentQuery
+        self.f = ContentFixture()
+        query = ChatContentQuery(self.f, self.f)
+        service = ChatCommandService(
+            self.f, self.f, self.f, content_query=query,
+        )
+        return service
+
+    async def test_exact_authorization_and_same_denial(self) -> None:
+        service = self.build()
+        ok = await service.handle("bot:GroupMessage:g", "/60s get task-get")
+        self.assertIn("内容", ok)
+        self.assertEqual(self.f.preview_calls, [{
+            "profile_id": "p1", "force_refresh": False,
+        }])
+        missing = await service.handle("bot:GroupMessage:g", "/60s get nope")
+        denied = await service.handle("bot:GroupMessage:other", "/60s get task-get")
+        self.assertEqual(missing, denied)
+        self.assertEqual(missing, "任务不存在或当前会话无权查询。")
+        self.assertEqual(len(self.f.preview_calls), 1)
+
+    async def test_usage_site_disabled_and_all_failed_no_upstream(self) -> None:
+        service = self.build()
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get"),
+            "用法：/60s get <任务ID>。",
+        )
+        self.f.site.enabled = False
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "任务配置不可用，请检查组合或站点状态。",
+        )
+        self.assertEqual(self.f.preview_calls, [])
+
+        self.f.site.enabled = True
+        async def failed(payload):
+            self.f.preview_calls.append(payload)
+            return SimpleNamespace(status_code=502, body={"data": {"status": "failed"}})
+        self.f.preview_profile = failed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "内容暂时无法获取，请稍后重试。",
+        )
+
+    async def test_config_change_during_query_suppresses_old_content(self) -> None:
+        service = self.build()
+        original = self.f.preview_profile
+        async def changed(payload):
+            result = await original(payload)
+            self.f.task.revision += 1
+            return result
+        self.f.preview_profile = changed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_target_removed_during_query(self) -> None:
+        service = self.build()
+        original = self.f.preview_profile
+        async def removed(payload):
+            result = await original(payload)
+            self.f.task.umos = ("bot:GroupMessage:other",)
+            return result
+        self.f.preview_profile = removed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_partial_empty_and_truncation(self) -> None:
+        service = self.build()
+        async def partial(payload):
+            return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": "状态：部分成功\n空列表，0 条"}}})
+        self.f.preview_profile = partial
+        text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
+        self.assertIn("部分成功", text)
+        self.assertIn("空列表", text)
+
+        long_text = "长" * 2500
+        async def long(payload):
+            return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": long_text}}})
+        self.f.preview_profile = long
+        text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
+        self.assertLessEqual(len(text), 2000)
+        self.assertIn("已截断", text)
+
+    async def test_list_and_help_do_not_use_query(self) -> None:
+        service = self.build()
+        self.assertEqual(await service.handle("bot:GroupMessage:g", "/60s help"), HELP_TEXT)
+        await service.handle("bot:GroupMessage:g", "/60s list")
+        self.assertEqual(self.f.preview_calls, [])
+        self.assertEqual(self.f.task_reads, 0)
+
+
+class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from core.profiles import ContentProfileService, ProfileCreate
+        from core.sites import SiteCreate, SiteService
+        from core.tasks import PushTaskService, TaskCreate
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sites = SiteService(Path(self.tmp.name) / "race.sqlite3")
+        await self.sites.open()
+        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.site = await self.sites.create_site(SiteCreate(
+            name="并发站点", base_url="http://example.test", enabled=True,
+            timeout_seconds=5,
+        ))
+        self.profile = await self.profiles.create_profile(ProfileCreate(
+            name="并发组合", site_id=self.site.id,
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+        ))
+        self.task = await self.tasks.create_task(TaskCreate(
+            name="并发任务", profile_id=self.profile.id,
+            output_format="text", umos=["bot:GroupMessage:g"],
+        ))
+        self.preview = BlockingPreview()
+        self.query = __import__(
+            "core.chat_content", fromlist=["ChatContentQuery"],
+        ).ChatContentQuery(self.tasks, self.preview)
+
+    async def asyncTearDown(self) -> None:
+        await self.sites.close()
+        self.tmp.cleanup()
+
+    async def run_with_mutation(self, mutate):
+        import asyncio
+        pending = asyncio.create_task(
+            self.query.query("bot:GroupMessage:g", self.task.id),
+        )
+        await self.preview.started.wait()
+        await mutate()
+        self.preview.release.set()
+        return await pending
+
+    async def test_remove_current_umo_during_final_recheck(self) -> None:
+        from core.tasks import TaskUpdate
+        async def mutate():
+            current = await self.tasks.get_task(self.task.id)
+            await self.tasks.update_task(self.task.id, TaskUpdate(
+                name=current.name, profile_id=current.profile_id,
+                output_format=current.output_format, umos=[],
+                expected_revision=current.revision,
+            ))
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_delete_task_during_final_recheck(self) -> None:
+        async def mutate():
+            current = await self.tasks.get_task(self.task.id)
+            await self.tasks.delete_task(self.task.id, current.revision)
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_modify_profile_during_final_recheck(self) -> None:
+        from core.profiles import ProfileUpdate
+        async def mutate():
+            current = await self.profiles.get_profile(self.profile.id)
+            await self.profiles.update_profile(self.profile.id, ProfileUpdate(
+                name="组合已改", site_id=current.site_id,
+                items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+                expected_revision=current.revision,
+            ))
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_disable_site_during_final_recheck(self) -> None:
+        from core.sites import SiteUpdate
+        async def mutate():
+            current = await self.sites.get_site(self.site.id)
+            await self.sites.update_site(self.site.id, SiteUpdate(
+                name=current.name, base_url=current.base_url,
+                enabled=False, timeout_seconds=current.timeout_seconds,
+                expected_revision=current.revision,
+            ))
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+
+class BlockingPreview:
+    def __init__(self):
+        import asyncio
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def preview_profile(self, payload):
+        self.started.set()
+        await self.release.wait()
+        return SimpleNamespace(
+            status_code=200,
+            body={"data": {"outputs": {"text": "旧正文"}}},
+        )

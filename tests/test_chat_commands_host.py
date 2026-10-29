@@ -25,6 +25,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from core.chat_commands import ChatCommandService
+from core.chat_content import ChatContentQuery
 
 # Mirror test_astrbot_sender.py: only a genuinely missing host is skipped.
 # If the host exists, import errors are real failures, not skips.
@@ -265,6 +266,60 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         chat.release.set()
         result = await pending
         self.assertEqual(result.get_plain_text(), "延迟回复")
+
+    async def test_get_command_through_actual_query_service(self) -> None:
+        class GetFixture:
+            def __init__(self):
+                self.task = SimpleNamespace(
+                    id="visible", name="可见任务", profile_id="p1",
+                    output_format="image", umos=("bot1:GroupMessage:g1",),
+                    revision=2, created_at="2026-01-01T00:00:00Z",
+                )
+                self.profile = SimpleNamespace(id="p1", site_id="s1", revision=3)
+                self.site = SimpleNamespace(id="s1", site_revision=4, enabled=True, revision=4)
+
+            async def get_task(self, task_id):
+                from core.tasks import TaskNotFoundError
+                if task_id != self.task.id:
+                    raise TaskNotFoundError(task_id)
+                return self.task
+
+            async def get_config_snapshot(self, task_id):
+                task = await self.get_task(task_id)
+                return SimpleNamespace(
+                    task=task, profile_id=self.profile.id,
+                    profile_revision=self.profile.revision,
+                    site_id=self.site.id, site_revision=self.site.revision,
+                    site_enabled=self.site.enabled,
+                )
+
+            async def get_profile(self, profile_id):
+                return self.profile
+
+            async def get_site(self, site_id):
+                return self.site
+
+            async def preview_profile(self, payload):
+                return SimpleNamespace(status_code=200, body={
+                    "data": {"outputs": {"text": "组合：可见任务\n纯文字内容"}},
+                })
+
+        fixture = GetFixture()
+        service = ChatCommandService(
+            fixture, fixture, fixture,
+            content_query=ChatContentQuery(fixture, fixture),
+        )
+        handler = self.handler_metadata()
+        event = self.event("60s get visible", "bot1:GroupMessage:g1")
+        params = self.filtered_event(handler, event)
+        fake = SimpleNamespace(
+            _active=True, _lifecycle_generation=1, chat_commands=service,
+        )
+        results = [
+            result async for result in handler.handler(fake, event, **params)
+        ]
+        self.assertEqual(len(results), 1)
+        self.assertIn("纯文字内容", results[0].get_plain_text())
 
     async def test_actual_initialize_terminate_reinitialize_stale_query(self) -> None:
         class AsyncResource:

@@ -1,9 +1,10 @@
 """60s API Hub 的 AstrBot 插件入口。
 
-负责宿主装配、站点存储、每日新闻 / Bilibili 热搜获取和后台接口的生命周期；
-渲染、发送与调度尚未实现。
+负责宿主装配、站点存储、内容获取、后台接口和聊天发现命令的生命周期；
+后台手动投递已实现，聊天内容查询、任务启用与调度尚未实现。
 """
 
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
 from .content_web import ContentWeb
@@ -26,6 +27,7 @@ from .core.tasks import PushTaskService
 from .core.astrbot_sender import AstrBotAiocqhttpSender
 from .core.delivery import DeliveryLimits, DeliveryService
 from .core.delivery_api import DeliveryApi
+from .core.chat_commands import ChatCommandService
 
 PLUGIN_NAME = "astrbot_plugin_60sapi_hub"
 DATABASE_FILENAME = "sites.sqlite3"
@@ -42,6 +44,9 @@ class SixtySAPIHub(Star):
         self.content = ContentService(self.sites)
         self.profiles = ContentProfileService(self.sites)
         self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.chat_commands = ChatCommandService(
+            self.tasks, self.profiles, self.sites,
+        )
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
         self.profile_api = ProfileApi(
@@ -61,6 +66,7 @@ class SixtySAPIHub(Star):
             limits=DeliveryLimits(),
         )
         self._active = False
+        self._lifecycle_generation = 0
         self._site_web = SiteWeb(
             SiteApi(self.sites),
             plugin_name=plugin_name,
@@ -105,7 +111,23 @@ class SixtySAPIHub(Star):
         self._delivery_web.register(context)
         self._profile_web.register(context)
 
+    @filter.command("60s")
+    async def sixty_seconds_command(self, event: AstrMessageEvent):
+        """展示帮助或当前会话可见的已保存任务。"""
+        if not self._active:
+            return
+        generation = self._lifecycle_generation
+        text = await self.chat_commands.handle(
+            event.unified_msg_origin, event.message_str,
+        )
+        # 停用、重载或同一实例重新初始化后，旧在途处理不得再输出。
+        if not self._active or generation != self._lifecycle_generation:
+            return
+        if text:
+            yield event.plain_result(text)
+
     async def initialize(self) -> None:
+        self._lifecycle_generation += 1
         await self.sites.open()
         try:
             await self.content.open()
@@ -122,6 +144,8 @@ class SixtySAPIHub(Star):
 
     async def terminate(self) -> None:
         self._active = False
+        # 单调递增；停用后不得重置或复用，否则同一实例重新初始化时旧在途处理会通过校验。
+        self._lifecycle_generation += 1
         try:
             await self.delivery.close()
         finally:

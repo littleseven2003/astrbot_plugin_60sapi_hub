@@ -1,7 +1,7 @@
 """60s API Hub 的 AstrBot 插件入口。
 
 负责宿主装配、站点存储、内容获取、后台接口和聊天发现命令的生命周期；
-内容投递、任务启用与调度尚未实现。
+后台手动投递已实现，聊天内容查询、任务启用与调度尚未实现。
 """
 
 from astrbot.api.event import AstrMessageEvent, filter
@@ -66,6 +66,7 @@ class SixtySAPIHub(Star):
             limits=DeliveryLimits(),
         )
         self._active = False
+        self._lifecycle_generation = 0
         self._site_web = SiteWeb(
             SiteApi(self.sites),
             plugin_name=plugin_name,
@@ -115,13 +116,18 @@ class SixtySAPIHub(Star):
         """展示帮助或当前会话可见的已保存任务。"""
         if not self._active:
             return
+        generation = self._lifecycle_generation
         text = await self.chat_commands.handle(
             event.unified_msg_origin, event.message_str,
         )
+        # 停用、重载或同一实例重新初始化后，旧在途处理不得再输出。
+        if not self._active or generation != self._lifecycle_generation:
+            return
         if text:
             yield event.plain_result(text)
 
     async def initialize(self) -> None:
+        self._lifecycle_generation += 1
         await self.sites.open()
         try:
             await self.content.open()
@@ -138,6 +144,8 @@ class SixtySAPIHub(Star):
 
     async def terminate(self) -> None:
         self._active = False
+        self._lifecycle_generation += 1
+        self._lifecycle_generation = 0
         try:
             await self.delivery.close()
         finally:

@@ -37,7 +37,7 @@
 
 - 单元：`tests/test_chat_commands.py` 覆盖群聊、私聊、不同平台实例和群成员隔离 UMO 的精确匹配；空白名单、未授权目标、移除目标、组合缺失、站点停用、任务未启用但站点启用、先过滤后分页、稳定顺序、非法/越界页码、帮助/未知命令/空结果，以及回复不包含其他任务 ID、名称、UMO 或站点。
 - 只读边界：命令服务只调用任务、组合、站点列表读取，不持有内容获取、图片、DeliveryService 或写接口；列表不请求上游、不生成图片、不发送、不写业务配置。
-- 宿主过滤器/处理器：`tests/test_chat_commands_host.py` 使用 AstrBot v4.29.1 的真实命令注册、`CommandFilter`、事件和实际 `ChatCommandService`，验证 `/60s` 注册、非命令不触发、参数进入处理器、异步回复、停用实例无回复、受控在途查询停用后零回复、同一实例重新初始化后旧代次零回复、正常实例仍回复及 `importlib.reload` 后注册数不增加。
+- 宿主过滤器/处理器：`tests/test_chat_commands_host.py` 使用 AstrBot v4.29.1 的真实命令注册、`CommandFilter`、事件和实际 `ChatCommandService`，验证 `/60s` 注册、非命令不触发、参数进入处理器、异步回复、停用实例无回复、受控在途查询停用后零回复、实际 `initialize()`/`terminate()`/再次 `initialize()` 后旧代次零回复、正常实例和新查询仍回复及 `importlib.reload` 后注册数不增加。生命周期测试使用假资源边界，但调用真实入口方法。
 - 宿主测试准备：将插件副本放到 `<root>/data/plugins/astrbot_plugin_60sapi_hub`，设置 `ASTRBOT_HOST_ROOT=<root>`（也可回退到 `ASTRBOT_ROOT`）；`ASTRBOT_ROOT` 是启动 AstrBot 的运行数据根目录。仅当找不到 `astrbot` 包时跳过；已找到宿主但导入失败会作为真实错误，不转成跳过。
 - 边界：上述测试验证过滤器/处理器，不等同于 `PluginManager` 的完整加载/停用/重载；实际 Dashboard 启动和重载命令注册另行人工核验。模块重载测试只检查注册数量，不替代宿主管理器生命周期验收。
 - 该验证不连接真实账号、不发送消息；真实平台会话过滤和命令前缀配置仍需在授权环境实测。

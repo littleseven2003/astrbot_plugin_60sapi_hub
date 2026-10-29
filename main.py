@@ -144,8 +144,8 @@ class SixtySAPIHub(Star):
 
     async def terminate(self) -> None:
         self._active = False
+        # 单调递增；停用后不得重置或复用，否则同一实例重新初始化时旧在途处理会通过校验。
         self._lifecycle_generation += 1
-        self._lifecycle_generation = 0
         try:
             await self.delivery.close()
         finally:

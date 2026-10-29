@@ -265,3 +265,65 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         chat.release.set()
         result = await pending
         self.assertEqual(result.get_plain_text(), "延迟回复")
+
+    async def test_actual_initialize_terminate_reinitialize_stale_query(self) -> None:
+        class AsyncResource:
+            def __init__(self):
+                self.opened = 0
+                self.closed = 0
+
+            async def open(self):
+                self.opened += 1
+
+            async def close(self):
+                self.closed += 1
+
+        class Slot:
+            def close(self):
+                pass
+
+        chat = ControlledChat()
+        instance = object.__new__(self.module.SixtySAPIHub)
+        instance._active = False
+        instance._lifecycle_generation = 0
+        instance.chat_commands = chat
+        instance.sites = AsyncResource()
+        instance.content = AsyncResource()
+        instance.delivery = AsyncResource()
+        instance.image_service = AsyncResource()
+        instance.image_snapshots = Slot()
+
+        await self.module.SixtySAPIHub.initialize(instance)
+        self.assertTrue(instance._active)
+        self.assertEqual(instance._lifecycle_generation, 1)
+
+        event = SimpleNamespace(
+            unified_msg_origin="bot1:GroupMessage:g1",
+            message_str="60s list",
+            plain_result=lambda text: SimpleNamespace(text=text),
+        )
+        stream = self.module.SixtySAPIHub.sixty_seconds_command(instance, event)
+        old_pending = asyncio.create_task(stream.__anext__())
+        await chat.started.wait()
+
+        await self.module.SixtySAPIHub.terminate(instance)
+        self.assertFalse(instance._active)
+        self.assertEqual(instance._lifecycle_generation, 2)
+        await self.module.SixtySAPIHub.initialize(instance)
+        self.assertTrue(instance._active)
+        self.assertEqual(instance._lifecycle_generation, 3)
+
+        chat.release.set()
+        with self.assertRaises(StopAsyncIteration):
+            await old_pending
+
+        new_event = SimpleNamespace(
+            unified_msg_origin="bot1:GroupMessage:g1",
+            message_str="60s list",
+            plain_result=lambda text: SimpleNamespace(text=text),
+        )
+        new_stream = self.module.SixtySAPIHub.sixty_seconds_command(
+            instance, new_event,
+        )
+        new_result = await new_stream.__anext__()
+        self.assertEqual(new_result.text, "延迟回复")

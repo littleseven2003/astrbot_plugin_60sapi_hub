@@ -188,3 +188,56 @@ class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sites.list_calls, 1)
         self.assertFalse(hasattr(self.tasks, "create_task"))
         self.assertFalse(hasattr(self.tasks, "execute"))
+
+
+class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from core.profiles import ContentProfileService, ProfileCreate
+        from core.sites import SiteCreate, SiteService
+        from core.tasks import PushTaskService, TaskCreate
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sites = SiteService(Path(self.tmp.name) / "chat.sqlite3")
+        await self.sites.open()
+        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.site = await self.sites.create_site(SiteCreate(
+            name="聊天站点", base_url="http://example.test", enabled=True,
+            timeout_seconds=5,
+        ))
+        self.disabled_site = await self.sites.create_site(SiteCreate(
+            name="停用站点", base_url="http://disabled.test", enabled=False,
+            timeout_seconds=5,
+        ))
+        self.profile = await self.profiles.create_profile(ProfileCreate(
+            name="聊天组合", site_id=self.site.id,
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+        ))
+        self.disabled_profile = await self.profiles.create_profile(ProfileCreate(
+            name="停用组合", site_id=self.disabled_site.id,
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+        ))
+        self.task = await self.tasks.create_task(TaskCreate(
+            name="可见任务", profile_id=self.profile.id,
+            output_format="markdown", umos=["bot:GroupMessage:g"],
+        ))
+        await self.tasks.create_task(TaskCreate(
+            name="停用站点任务", profile_id=self.disabled_profile.id,
+            output_format="text", umos=["bot:GroupMessage:g"],
+        ))
+        self.service = ChatCommandService(self.tasks, self.profiles, self.sites)
+
+    async def asyncTearDown(self) -> None:
+        await self.sites.close()
+        self.tmp.cleanup()
+
+    async def test_sqlite_visibility_and_read_only(self) -> None:
+        before = await self.tasks.list_tasks()
+        text = await self.service.handle("bot:GroupMessage:g", "/60s list")
+        self.assertIn(self.task.id, text)
+        self.assertIn("可见任务", text)
+        self.assertIn("输出：Markdown", text)
+        self.assertNotIn("停用站点任务", text)
+        self.assertEqual(len(await self.tasks.list_tasks()), len(before))

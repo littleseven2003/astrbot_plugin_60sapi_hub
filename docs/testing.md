@@ -87,6 +87,45 @@ PYTHONPATH=<astrbot-source>:<matching-host-venv>/lib/pythonX.Y/site-packages \
 
 边界：真实 QQ/OneBot 账号、真实网络发送、平台回执、后台入口、调度和任务启用未验证。
 
+## M4 手动投递验证
+
+- 后台手动确认页覆盖最新配置、目标实际路由、空名单、无效目标、revision 冲突和取消零发送。
+- 重复点击/旧响应/响应丢失：稳定执行标识、查询 only、不自动重发；unknown 不自动重试。
+- API 覆盖未登录/停用、非法分页、任务筛选、执行列表/详情、删除任务后历史保留和公开投影不含 owner_token。
+- 宿主：启动/重载/停用零发送，投递服务先于图片/内容/数据库关闭；历史记录保留。
+- 后台 bridge：`apiGet("executions", {limit, offset})` 分页，超过 20 条可加载更多；历史详情只读；历史查询与待确认标识隔离。
+- 请求归属：预览、提交、详情、弹窗切换的 success/catch/finally 都检查 token/请求号；旧响应不覆盖新状态。
+- 存储边界：localStorage 抛 SecurityError 时当前页内存仍可查询；刷新后只能靠执行记录人工核对，不自动重发、不放宽 sandbox。
+- 尝试状态：提交后旧确认按钮保持禁用；unknown/超时/丢失只查询原 execution_id；revision 冲突作废确认。
+- UI 浏览器验证仅在可用的本地 Playwright 环境执行；环境不可用时明确报告未验证，不把静态检查当作浏览器通过。
+- 真实发送只在 AstrBot v4.29.1 + 假机器人环境验证；未连接真实账号。
+
+## 手动投递查询上下文回归
+
+在真实 Dashboard iframe bridge 下运行（Playwright 可选依赖，不随插件分发）：
+
+```bash
+ASTRBOT_URL=<isolated-host-url> \
+ASTRBOT_PASSWORD=<test-dashboard-password> \
+ASTRBOT_PLUGIN=astrbot_plugin_60sapi_hub \
+CHROME_PATH=<chromium> \
+NODE_PATH=<playwright-core-node-modules> \
+node tests/browser/manual_delivery_query.js
+```
+
+任务列表和历史记录由浏览器 route fixture 构造；该回归拦截 preview/submit/detail，不发送真实消息，不调用服务器任务测试投递，验证：
+
+- localStorage 对插件 key 抛 SecurityError 时未确认标识进入内存；
+- 捕获提交 POST 的 execution_id，断言详情 GET 的实际路径与本次 ID 完全一致；
+- 独立覆盖首次提交响应丢失：只查询提交中的 execution_id，test POST 次数仍为 1，重新打开/查询不再取 preview；
+- 先查看历史 A，再提交 B 并响应丢失，查询只请求 B；
+- 历史 A 查询失败后重试仍请求 A，并保持只读模式；
+- 分别延迟旧查询的成功、失败响应，关闭并切换到新确认弹窗后释放，当前标题、结果区、查询目标和确认按钮不被旧响应覆盖；
+- 通过 request/response/selector 事件等待，不以固定 200ms 作为请求完成判据。
+- 快速关闭历史详情并立即打开另一任务确认：新预览完成后注入旧 close 事件，确认按钮仍可提交，且仅产生一次被拦截的 POST；覆盖关闭按钮、取消按钮和 Escape 路径。
+
+21 条以上 UI 翻页仍由服务端分页测试覆盖，未在浏览器脚本中构造；延迟旧响应测试使用完整 deferred 对象；从父页面捕获旧历史查询的 bridge `requestId`（匹配 `channel`、`api:get` 和 `executions/<id>` endpoint），释放前断言 iframe 尚未收到该 requestId 的 response（新 preview 响应不能替代），释放后等待路由完成及同一 requestId 的 response 到达，再断言新弹窗状态。成功和失败 response 分别覆盖；不使用固定 100ms 或仅父页面动画帧。静态语法检查不作为浏览器通过。
+
 ## 当前检查
 
 - 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。

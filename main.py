@@ -7,6 +7,7 @@
 from astrbot.api.star import Context, Star, StarTools
 
 from .content_web import ContentWeb
+from .delivery_web import DeliveryWeb
 from .core.content_api import ContentApi
 from .core.content_service import ContentService
 from .core.news_api import NewsApi
@@ -22,6 +23,9 @@ from .core.profile_api import ProfileApi
 from .core.profiles import ContentProfileService
 from .core.task_api import TaskApi
 from .core.tasks import PushTaskService
+from .core.astrbot_sender import AstrBotAiocqhttpSender
+from .core.delivery import DeliveryLimits, DeliveryService
+from .core.delivery_api import DeliveryApi
 
 PLUGIN_NAME = "astrbot_plugin_60sapi_hub"
 DATABASE_FILENAME = "sites.sqlite3"
@@ -40,6 +44,22 @@ class SixtySAPIHub(Star):
         self.tasks = PushTaskService(self.profiles, self.sites.store)
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
+        self.profile_api = ProfileApi(
+            self.profiles,
+            self.content,
+            self.sites,
+            image_snapshots=self.image_snapshots,
+            image_service=self.image_service,
+        )
+        self.delivery = DeliveryService(
+            tasks=self.tasks,
+            profiles=self.profiles,
+            sites=self.sites,
+            profile_api=self.profile_api,
+            store=self.sites.store,
+            sender=AstrBotAiocqhttpSender(context),
+            limits=DeliveryLimits(),
+        )
         self._active = False
         self._site_web = SiteWeb(
             SiteApi(self.sites),
@@ -61,14 +81,20 @@ class SixtySAPIHub(Star):
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
-        self._profile_web = ProfileWeb(
-            ProfileApi(
-                self.profiles,
-                self.content,
-                self.sites,
-                image_snapshots=self.image_snapshots,
-                image_service=self.image_service,
+        self._delivery_web = DeliveryWeb(
+            DeliveryApi(
+                delivery=self.delivery,
+                tasks=self.tasks,
+                profiles=self.profiles,
+                sites=self.sites,
+                store=self.sites.store,
+                inspector=AstrBotAiocqhttpSender(context),
             ),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._profile_web = ProfileWeb(
+            self.profile_api,
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
@@ -76,6 +102,7 @@ class SixtySAPIHub(Star):
         self._news_web.register(context)
         self._content_web.register(context)
         self._task_web.register(context)
+        self._delivery_web.register(context)
         self._profile_web.register(context)
 
     async def initialize(self) -> None:
@@ -83,6 +110,7 @@ class SixtySAPIHub(Star):
         try:
             await self.content.open()
         except Exception:
+            await self.delivery.close()
             await self.content.close()
             try:
                 await self.image_service.close()
@@ -95,10 +123,13 @@ class SixtySAPIHub(Star):
     async def terminate(self) -> None:
         self._active = False
         try:
-            await self.image_service.close()
+            await self.delivery.close()
         finally:
-            self.image_snapshots.close()
             try:
-                await self.content.close()
+                await self.image_service.close()
             finally:
-                await self.sites.close()
+                self.image_snapshots.close()
+                try:
+                    await self.content.close()
+                finally:
+                    await self.sites.close()

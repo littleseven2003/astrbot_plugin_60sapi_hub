@@ -91,30 +91,69 @@ class AstrBotAiocqhttpSender:
 
         return isinstance(platform, AiocqhttpAdapter)
 
-    @staticmethod
-    def _build_chain(message: DeliveryMessage, session: object):
-        from astrbot.core.message.components import Image, Plain
-        from astrbot.core.message.message_event_result import MessageChain
+    def inspect_target(self, umo: object) -> dict[str, object]:
+        """返回确认页所需的受控目标信息；不调用外部发送路径。"""
+        try:
+            session, platform_id = self._parse_session(umo)
+        except ValueError:
+            return {
+                "valid": False, "reason": "sender_invalid_payload",
+                "umo": umo, "platform_id": None, "message_type": None,
+                "target": None, "isolated": False,
+            }
+        try:
+            platform = self._context.get_platform_inst(platform_id)
+        except Exception:
+            platform = None
+        if platform is None:
+            reason = "sender_not_found"
+        elif not self._is_supported(platform):
+            reason = "sender_not_supported"
+        else:
+            reason = None
+        try:
+            target = self._validate_target(session)
+        except ValueError:
+            reason = reason or "sender_invalid_payload"
+            target = None
+        return {
+            "valid": reason is None,
+            "reason": reason,
+            "umo": umo,
+            "platform_id": platform_id,
+            "message_type": session.message_type.value,
+            "target": target,
+            "isolated": (
+                session.message_type.value == "GroupMessage"
+                and "_" in session.session_id
+            ),
+        }
 
+    @staticmethod
+    def _validate_target(session: object) -> str:
         if session.message_type.value == "GroupMessage":
-            # aiocqhttp 入站隔离 ID 为 sender_id + "_" + group_id；
-            # 普通群聊只有 group_id。两者都必须是完整 ASCII 数字字段。
             parts = session.session_id.split("_")
             if len(parts) not in (1, 2) or any(
                 not part or not all("0" <= char <= "9" for char in part)
                 for part in parts
             ):
                 raise ValueError("invalid group target")
-        else:
-            if (
-                not session.session_id
-                or "_" in session.session_id
-                or ":" in session.session_id
-                or not all(
-                    "0" <= char <= "9" for char in session.session_id
-                )
-            ):
-                raise ValueError("invalid private target")
+            return parts[-1]
+        if (
+            not session.session_id
+            or "_" in session.session_id
+            or ":" in session.session_id
+            or not all("0" <= char <= "9" for char in session.session_id)
+        ):
+            raise ValueError("invalid private target")
+        return session.session_id
+
+    @staticmethod
+    def _build_chain(message: DeliveryMessage, session: object):
+        from astrbot.core.message.components import Image, Plain
+        from astrbot.core.message.message_event_result import MessageChain
+
+        AstrBotAiocqhttpSender._validate_target(session)
         if message.kind in ("text", "markdown"):
             if (
                 not isinstance(message.text, str)

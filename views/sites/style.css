@@ -1272,3 +1272,32 @@ input:focus-visible,
     min-height: 150px;
   }
 }
+
+.delivery-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid #eee;
+  overflow-wrap: anywhere;
+}
+
+.delivery-target code {
+  overflow-wrap: anywhere;
+}
+
+.delivery-result {
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.delivery-section {
+  margin-top: 28px;
+}
+
+@media (max-width: 700px) {
+  .delivery-target { flex-direction: column; }
+}

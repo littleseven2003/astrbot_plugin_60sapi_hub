@@ -188,6 +188,28 @@
         <ul id="tasks-list" class="sites-list profiles-list" aria-busy="true"></ul>
       </section>
 
+      <section class="delivery-section" aria-labelledby="delivery-heading">
+        <div class="section-head">
+          <h2 id="delivery-heading">手动测试与执行记录</h2>
+          <button id="delivery-refresh-button" class="button button-secondary" type="button">刷新记录</button>
+        </div>
+        <p class="preview-lede">
+          手动测试只由管理员显式提交；不会启用任务或自动推送。确认后按当前保存配置获取最新内容。unknown 表示结果不确定，不会自动重发。
+        </p>
+        <button id="delivery-show-pending-button" class="button button-secondary" type="button" hidden>查看未确认执行</button>
+        <div id="delivery-pending-panel" class="uncertain" hidden>
+          <h3>有未确认的执行</h3>
+          <p id="delivery-pending-text"></p>
+          <div id="delivery-pending-list" class="delivery-targets"></div>
+          <div class="uncertain-actions">
+            <button id="delivery-clear-pending-button" class="button button-secondary" type="button">仅隐藏提示（保留未确认记录）</button>
+          </div>
+        </div>
+        <div id="delivery-list-state" class="list-state" hidden><p id="delivery-list-state-text"></p></div>
+        <ul id="delivery-list" class="sites-list" aria-busy="true"></ul>
+        <button id="delivery-load-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
+      </section>
+
       <section class="profile-preview-section" aria-labelledby="profile-preview-heading">
         <div class="section-head">
           <h2 id="profile-preview-heading">组合预览</h2>
@@ -278,6 +300,30 @@
       <p class="footnote">
         站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。内容组合引用已保存站点，不能填写任意 URL。凭据保存后不会回显。
       </p>
+
+    <dialog id="delivery-dialog" class="dialog" aria-labelledby="delivery-dialog-title">
+      <form id="delivery-form" class="form">
+        <header class="dialog-head">
+          <h2 id="delivery-dialog-title">确认手动测试投递</h2>
+          <button id="delivery-close-button" class="icon-button" type="button" aria-label="关闭">×</button>
+        </header>
+        <div id="delivery-error" class="form-error" role="alert" hidden></div>
+        <div id="delivery-confirm-info"></div>
+        <div id="delivery-targets" class="delivery-targets"></div>
+        <p class="help">确认后会获取最新内容，不是复用页面旧预览。配置或 revision 变化时会要求重新审阅。</p>
+        <div id="delivery-result" class="delivery-result" hidden></div>
+        <div id="delivery-uncertain" class="uncertain" role="alert" hidden>
+          <h3>结果未确认</h3>
+          <p id="delivery-uncertain-text"></p>
+          <p>执行标识：<code id="delivery-execution-id"></code></p>
+          <button id="delivery-query-button" class="button button-primary" type="button">只查询该标识</button>
+        </div>
+        <footer class="dialog-actions">
+          <button id="delivery-cancel-button" class="button button-secondary" type="button">取消</button>
+          <button id="delivery-confirm-button" class="button button-danger" type="submit">确认并投递</button>
+        </footer>
+      </form>
+    </dialog>
 
     <dialog id="task-dialog" class="dialog" aria-labelledby="task-dialog-title">
       <form id="task-form" class="form">

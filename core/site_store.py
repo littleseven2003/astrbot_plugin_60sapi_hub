@@ -1091,6 +1091,30 @@ class SiteStore:
                 page_rows = await cursor.fetchall()
             return _row_to_delivery(row, target_rows, page_rows)
 
+    async def list_delivery_execution_ids(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        task_id: str | None = None,
+    ) -> tuple[str, ...]:
+        async with self._lock:
+            if task_id is None:
+                sql = (
+                    "SELECT id FROM delivery_executions "
+                    "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+                )
+                params: tuple[object, ...] = (limit, offset)
+            else:
+                sql = (
+                    "SELECT id FROM delivery_executions WHERE task_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+                )
+                params = (task_id, limit, offset)
+            async with self._require_connection().execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+            return tuple(row["id"] for row in rows)
+
     async def set_delivery_content(
         self,
         execution_id: str,

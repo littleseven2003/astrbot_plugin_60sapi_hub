@@ -1,6 +1,6 @@
 # 开发手册
 
-本项目按个人开源项目维护。M1、M2、M3 已通过 AstrBot v4.29.1 / Python 3.12.13 基线验收；当前包括插件入口、站点/组合/推送任务持久化、五类内容获取、共享缓存/手动刷新、后台预览、组合文字/Markdown、分页图片和假发送器投递核心。M4 投递核心未接入真实平台发送、后台入口或调度；代码、依赖和测试目录随后续功能按需创建。验收范围见 [测试手册](testing.md#m3-验收基线)。
+本项目按个人开源项目维护。M1、M2、M3 已验收；M4 后台手动投递和执行记录于 2026-10-29 完成隔离验收并合并 PR #15。当前入口已装配 aiocqhttp 适配层，后台可显式提交测试并查询记录；真实账号发送未验证，聊天查询、任务启用和调度未实现。验收范围见[测试手册](testing.md#m4-后台手动投递验收基线)。
 
 ## 获取与本地设置
 
@@ -50,7 +50,7 @@ git config core.hooksPath .githooks
 - 插件数据目录通过 `StarTools.get_data_dir(plugin_name)` 创建；站点数据库位于 `<ASTRBOT_ROOT>/data/plugin_data/<插件名>/sites.sqlite3`。停用后数据库句柄关闭，启用/重载后数据保留。
 - 初始加载、停用、启用和重载过程没有触发 60s API 请求，也没有发送消息。
 - 插件视图：Dashboard 会扫描插件根目录的 `views/<视图名>/index.html`（其次 `pages/`），以受限 iframe 加载并自动注入 bridge。真实环境已验证 `views/sites/index.html` 被发现、页面标题通过 `.astrbot-plugin/i18n/zh-CN.json` 显示为“站点管理”，侧边栏入口可用。
-- 视图 bridge：实际对象为 `window.AstrBotPluginView`（别名 `AstrBotPluginPage`），提供 `ready()`、`getContext()`、`getLocale()`、`getI18n()`、`t(...)`、`onContext(...)`、`apiGet(endpoint)`、`apiPost(endpoint, body)`、上传/下载和 SSE 方法。`endpoint` 是相对路径，由宿主拼成 `/api/v1/plugins/extensions/<插件名>/<endpoint>`；本页只使用 `apiGet`/`apiPost`，不创建独立登录或保存 Dashboard token。
+- 视图 bridge：实际对象为 `window.AstrBotPluginView`（别名 `AstrBotPluginPage`），提供 `ready()`、`getContext()`、`getLocale()`、`getI18n()`、`t(...)`、`onContext(...)`、`apiGet(endpoint, params)`、`apiPost(endpoint, body)`、上传/下载和 SSE 方法。`endpoint` 是相对路径，由宿主拼成 `/api/v1/plugins/extensions/<插件名>/<endpoint>`；本页只使用 `apiGet`/`apiPost`，不创建独立登录或保存 Dashboard token。
 - 视图 bridge 的响应约定：后端返回 `{status:"ok",data:...}` 时解析为 `data` 本身；返回 `{status:"error",message,...}` 或 HTTP 失败时抛出 `Error`。本页按成功、明确拒绝、revision 冲突和结果未确认分别处理。
 - Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由须以 `/<插件名>/` 开头；Dashboard 负责扩展路由鉴权，处理器可通过 `astrbot.api.web.request.username` 检查当前用户。请求体用 `request.json(default=None)`，响应使用 `json_response`/`error_response`。同路由同方法会替换旧注册；重载不会整体清空注册表，因此插件用“实例是否已启用”标志拒绝停用后的旧处理器。
 - 真实 Web API 已验证：未登录请求返回 401；登录后可完成站点列表、新增、读取、编辑、删除；校验错误返回 400、未找到返回 404、revision 冲突返回 409 且不覆盖、存储不可用返回 503；凭据只返回 `has_bearer_token`。停用后旧处理器返回 503，启用/重载后新实例恢复读写，数据仍保留。
@@ -66,12 +66,12 @@ git config core.hooksPath .githooks
 
 **未验证：**
 
-- 4.29.1 以外的 AstrBot 版本、其他 Python 版本和其他操作系统。
+- 4.29.1 以外的 AstrBot 版本，以及其他完整 Python/操作系统宿主环境。M3 的部分测试曾在 Python 3.13 通过，不等于该环境完整宿主验收。
 - 配置表单在真实 WebUI 中的保存/重载、上传功能、暗色主题以及除 Chromium 外的浏览器。
-- 消息平台、群成员隔离、主动投递、渲染、调度与重启恢复。
+- 真实消息账号、真实群聊/私聊及群成员隔离投递、平台回执、定时调度与计划恢复。渲染已完成 M3 验收，路由/记录/保守恢复已通过隔离测试，不等于真实平台验证。
 - SQLite 已做服务级和宿主路径/关闭验证，但未做多进程并发、崩溃恢复或大数据量测试。
 - 60s API 的官方文档/源码和一次公开实例响应已核验；尚未遍历社区实例、不同部署版本，也未用真实实例完成浏览器全链路验证。
-- 其他 endpoint、真实平台消息发送、后台发送入口、启用和调度尚未实现；不要展示或宣称这些能力。组合持久化/预览、纯文字/Markdown、固定样式分页图片、推送任务配置和假发送器投递核心已实现，但不能冒充真实平台发送、任务启用或主题编辑。站点保存仍只做格式校验，不代替内容获取验证。
+- 其他 endpoint、聊天查询、任务启用和调度尚未实现；后台发送入口已接入，真实账号消息发送尚未验证。组合、图文输出和后台投递通过隔离验收，不等于真实平台可用或主题编辑已完成。站点保存仍只做格式校验，不代替内容获取验证。
 
 ### 可复现的本地验证
 
@@ -214,7 +214,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/delivery.py`：一次共享内容准备、注入式发送器、逐目标逐页状态、配置复核、取消/关闭和保守恢复；`core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp 发送适配（精确实例、真实 Context 路由、内存图片、拒绝不支持适配器）；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/delivery.py`：一次共享内容准备、注入式发送器、逐目标逐页状态、配置复核、取消/关闭和保守恢复；`core/delivery_api.py` / `delivery_web.py`：鉴权的确认/手动投递和执行记录查询；`core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp 发送适配（精确实例、真实 Context 路由、内存图片、拒绝不支持适配器）；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
@@ -257,6 +257,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - `tests/test_image_service.py`：排队/准入上限、总超时、线程不响应取消、取消后新请求、关闭期间排队请求、准入清理期间首次/再次取消、多轮取消容量稳定、关闭与取消交错和资源释放。
 - `tests/test_profile_image_api.py`：同预览快照、图片不增加上游请求、后改数据不改变同快照图片、归属/过期/修改/删除/停用失效、全部失败无快照、图片超限仍保留文字。
 - `tests/test_astrbot_sender.py`：真实宿主源码/Context/MessageSession/MessageChain/aiocqhttp 路由，假机器人边界；实例隔离、群聊/私聊、成员隔离、文本/Markdown/PNG、非法目标、未知/不支持实例、异常/取消、投递核心端到端。常规无宿主环境自动跳过。
+- `tests/test_delivery_api.py`：确认信息、revision 校验、非法输入、执行记录投影、分页及删除任务后历史保留；`tests/browser/manual_delivery_query.js`：真实 Dashboard bridge 下使用夹具及请求拦截验证查询上下文、关闭重开、迟到响应隔离，运行方式见[测试手册](testing.md#手动投递查询上下文回归)。
 - `tests/test_delivery.py`：空名单零获取/零投递、共享内容、文/图页顺序、成功/失败/unknown/超时/取消/部分成功、同标识/并发幂等、发送前/成功后写库失败、配置删除/移除目标/修改组合/停用站点、关闭与无关任务、崩溃重开、schema v3/v4→v5 迁移和失败回滚、部分栏目记录、关闭/排队/准备/配置读取竞态、容量与总截止、pending/sending 状态区分、错误码归一化和跨任务同标识冲突。
 - `tests/test_tasks.py` / `tests/test_task_api.py`：任务模型、UMO 整条首尾规范化与内部原样保存、群聊/私聊/空名单/去重/冒号/控制字符/长度/数量、CRUD/revision、非法 `expected_revision` 400、过期 409、v2→v3 迁移回滚、重启、取消、组合引用保护和并发引用。
 

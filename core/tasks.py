@@ -107,6 +107,16 @@ class PushTask:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskConfigSnapshot:
+    task: PushTask
+    profile_id: str | None
+    profile_revision: int | None
+    site_id: str | None
+    site_revision: int | None
+    site_enabled: bool | None
+
+
+@dataclass(frozen=True, slots=True)
 class TaskCreate:
     name: object
     profile_id: object
@@ -150,6 +160,23 @@ class PushTaskService:
         except Exception as exc:
             raise TaskStorageError("读取推送任务失败。") from exc
         return _to_task(stored)
+
+    async def get_config_snapshot(self, task_id: object) -> TaskConfigSnapshot:
+        normalized_id = normalize_task_id(task_id)
+        try:
+            stored = await self._store.get_task_config_snapshot(normalized_id)
+        except TaskRecordNotFoundError as exc:
+            raise TaskNotFoundError(exc.task_id) from exc
+        except Exception as exc:
+            raise TaskStorageError("读取任务配置快照失败。") from exc
+        return TaskConfigSnapshot(
+            task=_to_task(stored.task),
+            profile_id=stored.profile_id,
+            profile_revision=stored.profile_revision,
+            site_id=stored.site_id,
+            site_revision=stored.site_revision,
+            site_enabled=stored.site_enabled,
+        )
 
     async def create_task(self, data: TaskCreate) -> PushTask:
         name = _normalize_task_name(data.name)

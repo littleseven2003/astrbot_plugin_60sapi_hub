@@ -326,6 +326,16 @@ class StoredTask:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredTaskConfigSnapshot:
+    task: StoredTask
+    profile_id: str | None
+    profile_revision: int | None
+    site_id: str | None
+    site_revision: int | None
+    site_enabled: bool | None
+
+
+@dataclass(frozen=True, slots=True)
 class StoredProfile:
     id: str
     name: str
@@ -923,6 +933,72 @@ class SiteStore:
             except Exception as exc:
                 raise SiteStoreError("读取推送任务失败") from exc
             return _row_to_task(row, umos.get(task_id, ()))
+
+    async def get_task_config_snapshot(
+        self,
+        task_id: str,
+    ) -> StoredTaskConfigSnapshot:
+        """在一个锁内读取任务、组合和站点的配置快照。
+
+        任务 UMO、任务引用的组合、组合引用的站点以及各自 revision 必须来自
+        同一次一致的存储读取，避免分多次 await 拼装旧状态。
+        """
+        async with self._lock:
+            try:
+                row = await self._fetchone_unlocked(
+                    """
+                    SELECT id, name, profile_id, output_format, enabled,
+                           revision, created_at, updated_at
+                    FROM push_tasks
+                    WHERE id = ?
+                    """,
+                    (task_id,),
+                )
+                if row is None:
+                    raise TaskRecordNotFoundError(task_id)
+                umos = await self._load_task_umos((task_id,))
+                task = _row_to_task(row, umos.get(task_id, ()))
+                profile_row = await self._fetchone_unlocked(
+                    """
+                    SELECT id, site_id, revision
+                    FROM content_profiles
+                    WHERE id = ?
+                    """,
+                    (task.profile_id,),
+                )
+                if profile_row is None:
+                    return StoredTaskConfigSnapshot(
+                        task=task, profile_id=None, profile_revision=None,
+                        site_id=None, site_revision=None, site_enabled=None,
+                    )
+                site_row = await self._fetchone_unlocked(
+                    """
+                    SELECT id, enabled, revision
+                    FROM sites
+                    WHERE id = ?
+                    """,
+                    (profile_row["site_id"],),
+                )
+                return StoredTaskConfigSnapshot(
+                    task=task,
+                    profile_id=str(profile_row["id"]),
+                    profile_revision=int(profile_row["revision"]),
+                    site_id=(
+                        str(site_row["id"]) if site_row is not None else None
+                    ),
+                    site_revision=(
+                        int(site_row["revision"]) if site_row is not None else None
+                    ),
+                    site_enabled=(
+                        bool(site_row["enabled"]) if site_row is not None else None
+                    ),
+                )
+            except TaskRecordNotFoundError:
+                raise
+            except SiteStoreError:
+                raise
+            except Exception as exc:
+                raise SiteStoreError("读取任务配置快照失败") from exc
 
     async def update_task(
         self,

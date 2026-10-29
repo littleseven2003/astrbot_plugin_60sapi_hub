@@ -51,8 +51,6 @@ class SixtySAPIHub(Star):
             self.sites,
             content_query=ChatContentQuery(
                 self.tasks,
-                self.profiles,
-                self.sites,
                 ProfileApi(self.profiles, self.content, self.sites),
             ),
         )

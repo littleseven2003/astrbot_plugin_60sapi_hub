@@ -5,12 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .profile_api import ProfileApi
-from .profiles import (
-    ContentProfileService,
-    ProfileNotFoundError,
-    ProfileStorageError,
-)
-from .sites import SiteNotFoundError, SiteService, SiteStorageError
 from .tasks import (
     PushTaskService,
     TaskNotFoundError,
@@ -44,13 +38,9 @@ class ChatContentQuery:
     def __init__(
         self,
         tasks: PushTaskService,
-        profiles: ContentProfileService,
-        sites: SiteService,
         previews: ProfileApi,
     ) -> None:
         self._tasks = tasks
-        self._profiles = profiles
-        self._sites = sites
         self._previews = previews
 
     async def query(self, umo: str, task_id: object) -> str:
@@ -84,45 +74,42 @@ class ChatContentQuery:
 
     async def _authorize(self, umo: str, task_id: str) -> _Authorized:
         try:
-            task = await self._tasks.get_task(task_id)
+            snapshot = await self._tasks.get_config_snapshot(task_id)
         except TaskNotFoundError:
             raise _Unauthorized from None
         except TaskStorageError:
             raise _Unavailable from None
+        task = snapshot.task
         if umo not in task.umos:
             raise _Unauthorized
-        try:
-            profile = await self._profiles.get_profile(task.profile_id)
-            site = await self._sites.get_site(profile.site_id)
-        except (ProfileNotFoundError, SiteNotFoundError):
-            raise _Unavailable from None
-        except (ProfileStorageError, SiteStorageError):
-            raise _Unavailable from None
-        if not site.enabled:
+        if (snapshot.profile_id is None
+                or snapshot.profile_revision is None
+                or snapshot.site_id is None
+                or snapshot.site_revision is None
+                or snapshot.site_enabled is not True):
             raise _Unavailable
         return _Authorized(
             task_id=task.id,
             task_revision=task.revision,
-            profile_id=profile.id,
-            profile_revision=profile.revision,
-            site_id=site.id,
-            site_revision=site.revision,
+            profile_id=snapshot.profile_id,
+            profile_revision=snapshot.profile_revision,
+            site_id=snapshot.site_id,
+            site_revision=snapshot.site_revision,
         )
 
     async def _config_changed(self, umo: str, before: _Authorized) -> bool:
         try:
-            task = await self._tasks.get_task(before.task_id)
-            profile = await self._profiles.get_profile(before.profile_id)
-            site = await self._sites.get_site(before.site_id)
+            snapshot = await self._tasks.get_config_snapshot(before.task_id)
         except Exception:
             return True
         return (
-            umo not in task.umos
-            or task.revision != before.task_revision
-            or task.profile_id != before.profile_id
-            or profile.revision != before.profile_revision
-            or site.revision != before.site_revision
-            or not site.enabled
+            umo not in snapshot.task.umos
+            or snapshot.task.revision != before.task_revision
+            or snapshot.profile_id != before.profile_id
+            or snapshot.profile_revision != before.profile_revision
+            or snapshot.site_id != before.site_id
+            or snapshot.site_revision != before.site_revision
+            or snapshot.site_enabled is not True
         )
 
 

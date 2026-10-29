@@ -270,6 +270,17 @@ class ContentFixture:
             raise TaskNotFoundError(task_id)
         return self.task
 
+    async def get_config_snapshot(self, task_id):
+        task = await self.get_task(task_id)
+        return SimpleNamespace(
+            task=task,
+            profile_id=self.profile.id,
+            profile_revision=self.profile.revision,
+            site_id=self.site.id,
+            site_revision=self.site.revision,
+            site_enabled=self.site.enabled,
+        )
+
     async def get_profile(self, profile_id):
         return self.profile
 
@@ -289,7 +300,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         from core.chat_commands import ChatCommandService
         from core.chat_content import ChatContentQuery
         self.f = ContentFixture()
-        query = ChatContentQuery(self.f, self.f, self.f, self.f)
+        query = ChatContentQuery(self.f, self.f)
         service = ChatCommandService(
             self.f, self.f, self.f, content_query=query,
         )
@@ -380,3 +391,114 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         await service.handle("bot:GroupMessage:g", "/60s list")
         self.assertEqual(self.f.preview_calls, [])
         self.assertEqual(self.f.task_reads, 0)
+
+
+class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from core.profiles import ContentProfileService, ProfileCreate
+        from core.sites import SiteCreate, SiteService
+        from core.tasks import PushTaskService, TaskCreate
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sites = SiteService(Path(self.tmp.name) / "race.sqlite3")
+        await self.sites.open()
+        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.site = await self.sites.create_site(SiteCreate(
+            name="并发站点", base_url="http://example.test", enabled=True,
+            timeout_seconds=5,
+        ))
+        self.profile = await self.profiles.create_profile(ProfileCreate(
+            name="并发组合", site_id=self.site.id,
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+        ))
+        self.task = await self.tasks.create_task(TaskCreate(
+            name="并发任务", profile_id=self.profile.id,
+            output_format="text", umos=["bot:GroupMessage:g"],
+        ))
+        self.preview = BlockingPreview()
+        self.query = __import__(
+            "core.chat_content", fromlist=["ChatContentQuery"],
+        ).ChatContentQuery(self.tasks, self.preview)
+
+    async def asyncTearDown(self) -> None:
+        await self.sites.close()
+        self.tmp.cleanup()
+
+    async def run_with_mutation(self, mutate):
+        import asyncio
+        pending = asyncio.create_task(
+            self.query.query("bot:GroupMessage:g", self.task.id),
+        )
+        await self.preview.started.wait()
+        await mutate()
+        self.preview.release.set()
+        return await pending
+
+    async def test_remove_current_umo_during_final_recheck(self) -> None:
+        from core.tasks import TaskUpdate
+        async def mutate():
+            current = await self.tasks.get_task(self.task.id)
+            await self.tasks.update_task(self.task.id, TaskUpdate(
+                name=current.name, profile_id=current.profile_id,
+                output_format=current.output_format, umos=[],
+                expected_revision=current.revision,
+            ))
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_delete_task_during_final_recheck(self) -> None:
+        async def mutate():
+            current = await self.tasks.get_task(self.task.id)
+            await self.tasks.delete_task(self.task.id, current.revision)
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_modify_profile_during_final_recheck(self) -> None:
+        from core.profiles import ProfileUpdate
+        async def mutate():
+            current = await self.profiles.get_profile(self.profile.id)
+            await self.profiles.update_profile(self.profile.id, ProfileUpdate(
+                name="组合已改", site_id=current.site_id,
+                items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+                expected_revision=current.revision,
+            ))
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_disable_site_during_final_recheck(self) -> None:
+        from core.sites import SiteUpdate
+        async def mutate():
+            current = await self.sites.get_site(self.site.id)
+            await self.sites.update_site(self.site.id, SiteUpdate(
+                name=current.name, base_url=current.base_url,
+                enabled=False, timeout_seconds=current.timeout_seconds,
+                expected_revision=current.revision,
+            ))
+        self.assertEqual(
+            await self.run_with_mutation(mutate),
+            "任务或配置已变化，请重新查询。",
+        )
+
+
+class BlockingPreview:
+    def __init__(self):
+        import asyncio
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def preview_profile(self, payload):
+        self.started.set()
+        await self.release.wait()
+        return SimpleNamespace(
+            status_code=200,
+            body={"data": {"outputs": {"text": "旧正文"}}},
+        )

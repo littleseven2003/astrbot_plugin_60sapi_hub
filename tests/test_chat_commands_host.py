@@ -284,6 +284,15 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                     raise TaskNotFoundError(task_id)
                 return self.task
 
+            async def get_config_snapshot(self, task_id):
+                task = await self.get_task(task_id)
+                return SimpleNamespace(
+                    task=task, profile_id=self.profile.id,
+                    profile_revision=self.profile.revision,
+                    site_id=self.site.id, site_revision=self.site.revision,
+                    site_enabled=self.site.enabled,
+                )
+
             async def get_profile(self, profile_id):
                 return self.profile
 
@@ -298,7 +307,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         fixture = GetFixture()
         service = ChatCommandService(
             fixture, fixture, fixture,
-            content_query=ChatContentQuery(fixture, fixture, fixture, fixture),
+            content_query=ChatContentQuery(fixture, fixture),
         )
         handler = self.handler_metadata()
         event = self.event("60s get visible", "bot1:GroupMessage:g1")

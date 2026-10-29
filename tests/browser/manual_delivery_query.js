@@ -319,11 +319,19 @@ async function waitBridgeResponse(frame, requestId) {
     assert.equal(detailRequests.length, beforeRetry + 1);
     assert.equal(detailRequests.at(-1), HISTORY_ID);
     assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), false);
-    await closeDeliveryDialog(frame, page);
-
+    // Close via the X button, then immediately reopen another task; deliver a
+    // synthetic late close for the old generation after the new preview.
+    await frame.locator("#delivery-close-button").click({ force: true });
+    await frame.waitForFunction(() => !document.getElementById("delivery-dialog")?.open);
+    await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
     await frame.locator("#tasks-list li").filter({ hasText: TASK_2.name })
       .getByRole("button", { name: "测试投递" }).click({ force: true });
     await waitPreview(frame);
+    await frame.evaluate(() => {
+      document.getElementById("delivery-dialog").dispatchEvent(new Event("close"));
+    });
+    assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), true);
+    const submitCountBefore = submits.length;
     const secondSubmitSeen = page.waitForRequest((request) =>
       request.method() === "POST" && request.url().endsWith("/test"),
     );
@@ -341,7 +349,7 @@ async function waitBridgeResponse(frame, requestId) {
     await secondRequest;
     await secondResponse;
     assert.equal(detailRequests.at(-1), secondId);
-    assert.equal(submits.length, 2);
+    assert.equal(submits.length, submitCountBefore + 1);
     await closeDeliveryDialog(frame, page);
 
     // Scenario 4: delayed old success while switching to a fresh confirmation.
@@ -397,7 +405,8 @@ async function waitBridgeResponse(frame, requestId) {
         beforeRelease: false, afterRelease: true, responseOk,
       });
       delayed = null;
-      await closeDeliveryDialog(frame, page);
+      await frame.locator("#delivery-dialog").press("Escape");
+      await frame.waitForFunction(() => !document.getElementById("delivery-dialog")?.open);
     }
 
     console.log("MANUAL DELIVERY QUERY REGRESSION PASSED", {

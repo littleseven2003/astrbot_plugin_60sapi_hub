@@ -69,6 +69,15 @@ function historySummary(id = HISTORY_ID) {
   };
 }
 
+async function closeDeliveryDialog(frame, page) {
+  const dialog = frame.locator("#delivery-dialog");
+  if (await dialog.getAttribute("open") !== null) {
+    await frame.locator("#delivery-cancel-button").click({ force: true });
+  }
+  await frame.waitForFunction(() => !document.getElementById("delivery-dialog")?.open);
+  await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+}
+
 async function waitPreview(frame) {
   await frame.waitForFunction(
     () => document.getElementById("delivery-confirm-button")?.textContent === "确认并投递",
@@ -87,9 +96,10 @@ async function resetBridgeTracking(page, frame) {
     if (!window.__manualBridgeRequestListener) {
       window.__manualBridgeRequestListener = (event) => {
         const data = event.data;
-        if (data && data.channel && data.kind === "request") {
+        if (data && data.channel === "astrbot-plugin-page" && data.kind === "request") {
           window.__manualBridgeRequests.push({
             requestId: data.requestId,
+            channel: data.channel,
             action: data.action,
             endpoint: data.endpoint,
           });
@@ -103,7 +113,7 @@ async function resetBridgeTracking(page, frame) {
     if (!window.__manualBridgeResponseListener) {
       window.__manualBridgeResponseListener = (event) => {
         const data = event.data;
-        if (data && data.channel && data.kind === "response") {
+        if (data && data.channel === "astrbot-plugin-page" && data.kind === "response") {
           window.__manualBridgeResponses[data.requestId] = data.ok;
         }
       };
@@ -113,15 +123,19 @@ async function resetBridgeTracking(page, frame) {
 }
 
 async function waitBridgeRequest(page, endpoint, action = "api:get") {
-  return page.waitForFunction(
-    ({ endpoint, action }) => {
-      const found = (window.__manualBridgeRequests || []).find(
-        (item) => item.endpoint === endpoint && item.action === action,
-      );
-      return found ? found.requestId : false;
-    },
-    { endpoint, action },
-  ).then((handle) => handle.jsonValue());
+  try {
+    return await page.waitForFunction(
+      ({ endpoint, action }) => {
+        const found = (window.__manualBridgeRequests || []).find(
+          (item) => item.endpoint === endpoint && item.action === action,
+        );
+        return found ? found.requestId : false;
+      },
+      { endpoint, action },
+    ).then((handle) => handle.jsonValue());
+  } catch (error) {
+    throw new Error(`${error.message}: ${JSON.stringify(await page.evaluate(() => window.__manualBridgeRequests))}`);
+  }
 }
 
 async function bridgeResponseReceived(frame, requestId) {
@@ -273,8 +287,7 @@ async function waitBridgeResponse(frame, requestId) {
     ).catch(() => {});
     assert.equal(detailRequests.at(-1), firstId);
     assert.equal(submits.length, 1);
-    await frame.locator("#delivery-cancel-button").click({ force: true });
-    await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+    await closeDeliveryDialog(frame, page);
 
     // Scenario 2/3: history A fails, retry still A; then B after history queries B.
     historyVisible = true;
@@ -306,8 +319,7 @@ async function waitBridgeResponse(frame, requestId) {
     assert.equal(detailRequests.length, beforeRetry + 1);
     assert.equal(detailRequests.at(-1), HISTORY_ID);
     assert.equal(await frame.locator("#delivery-confirm-button").isVisible(), false);
-    await frame.locator("#delivery-cancel-button").click({ force: true });
-    await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+    await closeDeliveryDialog(frame, page);
 
     await frame.locator("#tasks-list li").filter({ hasText: TASK_2.name })
       .getByRole("button", { name: "测试投递" }).click({ force: true });
@@ -330,8 +342,7 @@ async function waitBridgeResponse(frame, requestId) {
     await secondResponse;
     assert.equal(detailRequests.at(-1), secondId);
     assert.equal(submits.length, 2);
-    await frame.locator("#delivery-cancel-button").click({ force: true });
-    await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+    await closeDeliveryDialog(frame, page);
 
     // Scenario 4: delayed old success while switching to a fresh confirmation.
     for (const status of [200, 500]) {
@@ -350,7 +361,11 @@ async function waitBridgeResponse(frame, requestId) {
         settled: settledGate,
       };
       await resetBridgeTracking(page, frame);
+      const delayedNetworkRequest = page.waitForRequest((request) =>
+        request.url().endsWith(`/executions/${HISTORY_ID}`),
+      );
       await frame.locator(`button[aria-label="查看执行 ${HISTORY_ID}"]`).click({ force: true });
+      await delayedNetworkRequest;
       const bridgeRequestId = await waitBridgeRequest(
         page, `executions/${HISTORY_ID}`,
       );
@@ -359,8 +374,7 @@ async function waitBridgeResponse(frame, requestId) {
         false,
         "delayed response must not have arrived before release",
       );
-      await frame.locator("#delivery-cancel-button").click({ force: true });
-      await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+      await closeDeliveryDialog(frame, page);
       await frame.locator("#tasks-list li").filter({ hasText: TASK_3.name })
         .getByRole("button", { name: "测试投递" }).click({ force: true });
       await waitPreview(frame);
@@ -383,8 +397,7 @@ async function waitBridgeResponse(frame, requestId) {
         beforeRelease: false, afterRelease: true, responseOk,
       });
       delayed = null;
-      await frame.locator("#delivery-cancel-button").click({ force: true });
-      await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+      await closeDeliveryDialog(frame, page);
     }
 
     console.log("MANUAL DELIVERY QUERY REGRESSION PASSED", {

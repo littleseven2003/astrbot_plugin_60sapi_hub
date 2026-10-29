@@ -231,6 +231,7 @@ const state = {
   deliveryQueryRequestId: 0,
   deliveryQueryTarget: null,
   deliveryQueryHistory: false,
+  deliveryDialogGeneration: 0,
   deliveryHistoryExecutionId: null,
   deliveryAttempt: null,
   deliveryHistory: [],
@@ -3314,7 +3315,7 @@ function queryPendingDelivery(executionId = null) {
   elements.deliveryError.hidden = true;
   elements.deliveryResult.hidden = true;
   elements.deliveryUncertain.hidden = true;
-  openDialog(elements.deliveryDialog);
+  openDeliveryDialog();
   return queryDelivery(target.executionId);
 }
 function deliveryTargetText(target) {
@@ -3364,6 +3365,33 @@ function renderDeliveryPreview(data, token) {
   elements.deliveryConfirmButton.textContent = data.can_deliver ? "确认并投递" : "不可投递";
 }
 
+function openDeliveryDialog() {
+  state.deliveryDialogGeneration += 1;
+  elements.deliveryDialog.dataset.closeGeneration = "";
+  openDialog(elements.deliveryDialog);
+}
+
+function invalidateDeliveryDialog() {
+  state.deliveryMode = "closed";
+  state.deliveryPreviewRequestId += 1;
+  state.deliveryQueryRequestId += 1;
+  state.deliveryHistoryExecutionId = null;
+  state.deliveryQueryTarget = null;
+  state.deliveryQueryHistory = false;
+  state.deliveryPreview = null;
+  state.deliveryAttempt = null;
+}
+
+function requestCloseDeliveryDialog() {
+  if (state.deliveryBusy) {
+    return;
+  }
+  elements.deliveryDialog.dataset.closeGeneration =
+    String(state.deliveryDialogGeneration);
+  invalidateDeliveryDialog();
+  closeDialog(elements.deliveryDialog);
+}
+
 function resetDeliveryDialog(task, mode) {
   // A new dialog/mode must never keep an older detail-query target.
   state.deliveryQueryTarget = null;
@@ -3400,7 +3428,7 @@ async function openDelivery(task) {
   resetDeliveryDialog(task, "confirm");
   state.deliveryBusy = true;
   elements.deliveryConfirmInfo.textContent = "正在读取最新任务配置…";
-  openDialog(elements.deliveryDialog);
+  openDeliveryDialog();
   try {
     const result = await bridge.apiPost(
       `tasks/${encodeURIComponent(task.id)}/test-preview`, {},
@@ -3613,7 +3641,7 @@ async function openDeliveryHistory(execution) {
   }
   resetDeliveryDialog(null, "history");
   state.deliveryHistoryExecutionId = execution.id;
-  openDialog(elements.deliveryDialog);
+  openDeliveryDialog();
   await queryDelivery(execution.id, { history: true });
 }
 
@@ -3714,31 +3742,31 @@ function bindEvents() {
       syncDeliveryPendingPanel();
     }
   });
-  elements.deliveryCancelButton.addEventListener("click", () => {
-    if (!state.deliveryBusy) {
-      closeDialog(elements.deliveryDialog);
-    }
-  });
-  elements.deliveryCloseButton.addEventListener("click", () => {
-    if (!state.deliveryBusy) {
-      closeDialog(elements.deliveryDialog);
-    }
-  });
+  elements.deliveryCancelButton.addEventListener("click", requestCloseDeliveryDialog);
+  elements.deliveryCloseButton.addEventListener("click", requestCloseDeliveryDialog);
   elements.deliveryDialog.addEventListener("cancel", (event) => {
     if (state.deliveryBusy) {
       event.preventDefault();
+      return;
     }
+    // Invalidate synchronously for Escape; the later native close event must
+    // not clear a dialog that was reopened in the meantime.
+    elements.deliveryDialog.dataset.closeGeneration =
+      String(state.deliveryDialogGeneration);
+    invalidateDeliveryDialog();
   });
   elements.deliveryDialog.addEventListener("close", () => {
     if (state.deliveryBusy) {
       return;
     }
-    state.deliveryMode = "closed";
-    state.deliveryPreviewRequestId += 1;
-    state.deliveryQueryRequestId += 1;
-    state.deliveryHistoryExecutionId = null;
-    state.deliveryQueryTarget = null;
-    state.deliveryQueryHistory = false;
+    const closingGeneration = Number(
+      elements.deliveryDialog.dataset.closeGeneration || "",
+    );
+    if (closingGeneration !== state.deliveryDialogGeneration) {
+      // A late close from an older dialog generation.
+      return;
+    }
+    invalidateDeliveryDialog();
   });
   elements.taskRetryButton.addEventListener("click", loadTasks);
   elements.taskForm.addEventListener("submit", handleTaskSave);

@@ -17,10 +17,13 @@ MAX_PAGE_DIGITS = 6
 HELP_TEXT = (
     "60sAPI Hub 命令：\n"
     "/60s 或 /60s help：显示本帮助\n"
-    "/60s list [页码]：列出当前会话可见的已保存任务（每页最多 10 项）"
+    "/60s list [页码]：列出当前会话可见的已保存任务（每页最多 10 项）\n"
+    "/60s get <任务ID>：查询该任务的纯文字内容预览\n"
+    "get 始终返回纯文字，不改变任务配置的输出方式；不提供图片或主动推送。"
 )
 EMPTY_TEXT = "当前会话没有可见任务。"
 PAGE_NOTICE = "页码必须是正整数。"
+GET_USAGE = "用法：/60s get <任务ID>。"
 PAGE_OUT_OF_RANGE = "页码超出范围。"
 LIST_UNAVAILABLE = "暂时无法读取任务列表。"
 
@@ -41,10 +44,12 @@ class ChatCommandService:
         tasks: PushTaskService,
         profiles: ContentProfileService,
         sites: SiteService,
+        content_query=None,
     ) -> None:
         self._tasks = tasks
         self._profiles = profiles
         self._sites = sites
+        self._content_query = content_query
 
     async def handle(self, umo: str, message: str) -> str:
         parsed = parse_command(message)
@@ -55,6 +60,12 @@ class ChatCommandService:
             return HELP_TEXT
         if subcommand == "list":
             return await self._list(umo, args)
+        if subcommand == "get":
+            if len(args) != 1:
+                return GET_USAGE
+            if self._content_query is None:
+                return "内容查询当前不可用。"
+            return await self._content_query.query(umo, args[0])
         return f"未知命令。\n\n{HELP_TEXT}"
 
     async def _list(self, umo: str, args: list[str]) -> str:
@@ -141,4 +152,6 @@ def parse_command(message: str) -> tuple[str, list[str]] | None:
         return ("help", rest[1:])
     if subcommand == "list":
         return ("list", rest[1:])
+    if subcommand == "get":
+        return ("get", rest[1:])
     return ("unknown", rest[1:])

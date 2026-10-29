@@ -1,7 +1,7 @@
 """60s API Hub 的 AstrBot 插件入口。
 
 负责宿主装配、站点存储、内容获取、后台接口和聊天发现命令的生命周期；
-后台手动投递已实现，聊天内容查询、任务启用与调度尚未实现。
+后台手动投递和聊天纯文字查询已实现，聊天图片查询、任务启用与调度尚未实现。
 """
 
 from astrbot.api.event import AstrMessageEvent, filter
@@ -28,6 +28,7 @@ from .core.astrbot_sender import AstrBotAiocqhttpSender
 from .core.delivery import DeliveryLimits, DeliveryService
 from .core.delivery_api import DeliveryApi
 from .core.chat_commands import ChatCommandService
+from .core.chat_content import ChatContentQuery
 
 PLUGIN_NAME = "astrbot_plugin_60sapi_hub"
 DATABASE_FILENAME = "sites.sqlite3"
@@ -45,7 +46,15 @@ class SixtySAPIHub(Star):
         self.profiles = ContentProfileService(self.sites)
         self.tasks = PushTaskService(self.profiles, self.sites.store)
         self.chat_commands = ChatCommandService(
-            self.tasks, self.profiles, self.sites,
+            self.tasks,
+            self.profiles,
+            self.sites,
+            content_query=ChatContentQuery(
+                self.tasks,
+                self.profiles,
+                self.sites,
+                ProfileApi(self.profiles, self.content, self.sites),
+            ),
         )
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()

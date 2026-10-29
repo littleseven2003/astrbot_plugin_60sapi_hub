@@ -172,9 +172,13 @@ class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
         service = self.build()
         self.assertEqual(await service.handle("u", "/60s"), HELP_TEXT)
         self.assertEqual(await service.handle("u", "/60s help"), HELP_TEXT)
-        unknown = await service.handle("u", "/60s get")
+        unknown = await service.handle("u", "/60s foo")
         self.assertIn("未知命令", unknown)
         self.assertIn("/60s list", unknown)
+        self.assertEqual(
+            await service.handle("u", "/60s get"),
+            "用法：/60s get <任务ID>。",
+        )
         self.assertEqual(await service.handle("u", "/60s list"), EMPTY_TEXT)
         self.assertEqual(await service.handle("u", "/60s help extra"), HELP_TEXT)
 
@@ -241,3 +245,138 @@ class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("输出：Markdown", text)
         self.assertNotIn("停用站点任务", text)
         self.assertEqual(len(await self.tasks.list_tasks()), len(before))
+
+
+class ContentFixture:
+    def __init__(self):
+        self.task = SimpleNamespace(
+            id="task-get", name="查询任务", profile_id="p1",
+            output_format="image", umos=("bot:GroupMessage:g",),
+            revision=2, created_at="2026-01-01T00:00:00Z",
+        )
+        self.profile = SimpleNamespace(
+            id="p1", site_id="s1", revision=3,
+        )
+        self.site = SimpleNamespace(id="s1", enabled=True, revision=4)
+        self.task_reads = 0
+        self.profile_reads = 0
+        self.site_reads = 0
+        self.preview_calls = []
+
+    async def get_task(self, task_id):
+        from core.tasks import TaskNotFoundError
+        self.task_reads += 1
+        if task_id != self.task.id:
+            raise TaskNotFoundError(task_id)
+        return self.task
+
+    async def get_profile(self, profile_id):
+        return self.profile
+
+    async def get_site(self, site_id):
+        return self.site
+
+    async def preview_profile(self, payload):
+        self.preview_calls.append(payload)
+        return SimpleNamespace(
+            status_code=200,
+            body={"data": {"outputs": {"text": "组合：查询任务\n内容"}}},
+        )
+
+
+class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
+    def build(self):
+        from core.chat_commands import ChatCommandService
+        from core.chat_content import ChatContentQuery
+        self.f = ContentFixture()
+        query = ChatContentQuery(self.f, self.f, self.f, self.f)
+        service = ChatCommandService(
+            self.f, self.f, self.f, content_query=query,
+        )
+        return service
+
+    async def test_exact_authorization_and_same_denial(self) -> None:
+        service = self.build()
+        ok = await service.handle("bot:GroupMessage:g", "/60s get task-get")
+        self.assertIn("内容", ok)
+        self.assertEqual(self.f.preview_calls, [{
+            "profile_id": "p1", "force_refresh": False,
+        }])
+        missing = await service.handle("bot:GroupMessage:g", "/60s get nope")
+        denied = await service.handle("bot:GroupMessage:other", "/60s get task-get")
+        self.assertEqual(missing, denied)
+        self.assertEqual(missing, "任务不存在或当前会话无权查询。")
+        self.assertEqual(len(self.f.preview_calls), 1)
+
+    async def test_usage_site_disabled_and_all_failed_no_upstream(self) -> None:
+        service = self.build()
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get"),
+            "用法：/60s get <任务ID>。",
+        )
+        self.f.site.enabled = False
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "任务配置不可用，请检查组合或站点状态。",
+        )
+        self.assertEqual(self.f.preview_calls, [])
+
+        self.f.site.enabled = True
+        async def failed(payload):
+            self.f.preview_calls.append(payload)
+            return SimpleNamespace(status_code=502, body={"data": {"status": "failed"}})
+        self.f.preview_profile = failed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "内容暂时无法获取，请稍后重试。",
+        )
+
+    async def test_config_change_during_query_suppresses_old_content(self) -> None:
+        service = self.build()
+        original = self.f.preview_profile
+        async def changed(payload):
+            result = await original(payload)
+            self.f.task.revision += 1
+            return result
+        self.f.preview_profile = changed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_target_removed_during_query(self) -> None:
+        service = self.build()
+        original = self.f.preview_profile
+        async def removed(payload):
+            result = await original(payload)
+            self.f.task.umos = ("bot:GroupMessage:other",)
+            return result
+        self.f.preview_profile = removed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_partial_empty_and_truncation(self) -> None:
+        service = self.build()
+        async def partial(payload):
+            return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": "状态：部分成功\n空列表，0 条"}}})
+        self.f.preview_profile = partial
+        text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
+        self.assertIn("部分成功", text)
+        self.assertIn("空列表", text)
+
+        long_text = "长" * 2500
+        async def long(payload):
+            return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": long_text}}})
+        self.f.preview_profile = long
+        text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
+        self.assertLessEqual(len(text), 2000)
+        self.assertIn("已截断", text)
+
+    async def test_list_and_help_do_not_use_query(self) -> None:
+        service = self.build()
+        self.assertEqual(await service.handle("bot:GroupMessage:g", "/60s help"), HELP_TEXT)
+        await service.handle("bot:GroupMessage:g", "/60s list")
+        self.assertEqual(self.f.preview_calls, [])
+        self.assertEqual(self.f.task_reads, 0)

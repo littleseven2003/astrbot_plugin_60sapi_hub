@@ -1,10 +1,11 @@
 """60s API Hub 的 AstrBot 插件入口。
 
 负责宿主装配、站点存储、内容获取、后台接口和聊天发现命令的生命周期；
-后台手动投递和聊天纯文字查询已实现，聊天图片查询、任务启用与调度尚未实现。
+后台手动投递和聊天纯文字/图片查询已实现，任务启用与调度尚未实现。
 """
 
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star, StarTools
 
 from .content_web import ContentWeb
@@ -29,6 +30,7 @@ from .core.delivery import DeliveryLimits, DeliveryService
 from .core.delivery_api import DeliveryApi
 from .core.chat_commands import ChatCommandService
 from .core.chat_content import ChatContentQuery
+from .core.chat_image import ChatImageQuery, ChatImageReply
 
 PLUGIN_NAME = "astrbot_plugin_60sapi_hub"
 DATABASE_FILENAME = "sites.sqlite3"
@@ -53,6 +55,7 @@ class SixtySAPIHub(Star):
                 self.tasks,
                 ProfileApi(self.profiles, self.content, self.sites),
             ),
+            image_query=ChatImageQuery(self.tasks, self.profile_api),
         )
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
@@ -130,7 +133,11 @@ class SixtySAPIHub(Star):
         # 停用、重载或同一实例重新初始化后，旧在途处理不得再输出。
         if not self._active or generation != self._lifecycle_generation:
             return
-        if text:
+        if isinstance(text, ChatImageReply):
+            chain = [Plain(text.text)]
+            chain.extend(Image.fromBytes(page) for page in text.pages)
+            yield event.chain_result(chain)
+        elif text:
             yield event.plain_result(text)
 
     async def initialize(self) -> None:

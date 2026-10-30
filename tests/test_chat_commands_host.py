@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import os
 import sys
@@ -31,7 +32,7 @@ from core.chat_content import ChatContentQuery
 # If the host exists, import errors are real failures, not skips.
 HAS_HOST = find_spec("astrbot") is not None
 if HAS_HOST:
-    from astrbot.core.message.components import Plain  # noqa: F401
+    from astrbot.core.message.components import Image, Plain  # noqa: F401
     from astrbot.core.platform.astr_message_event import AstrMessageEvent
     from astrbot.core.platform.astrbot_message import AstrBotMessage
     from astrbot.core.platform.message_type import MessageType
@@ -320,6 +321,59 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(results), 1)
         self.assertIn("纯文字内容", results[0].get_plain_text())
+
+    async def test_image_command_builds_one_ordered_chain(self) -> None:
+        image_module = importlib.import_module(
+            "data.plugins.astrbot_plugin_60sapi_hub.core.chat_image",
+        )
+
+        class Fixture:
+            async def get_config_snapshot(self, task_id):
+                task = SimpleNamespace(
+                    id="visible", revision=2,
+                    umos=("bot1:GroupMessage:g1",),
+                    profile_id="p1",
+                )
+                return SimpleNamespace(
+                    task=task, profile_id="p1", profile_revision=1,
+                    site_id="s1", site_revision=1, site_enabled=True,
+                )
+
+            async def preview_profile(self, payload, *, owner=None):
+                return SimpleNamespace(
+                    status_code=200,
+                    body={"data": {"image_snapshot": {"id": "chat-snapshot"}}},
+                )
+
+            async def generate_image(self, profile_id, payload, *, owner=None):
+                png = b"\x89PNG\r\n\x1a\npage"
+                encoded = base64.b64encode(png).decode()
+                return SimpleNamespace(status_code=200, body={"data": {"pages": [
+                    {"index": 2, "png_base64": encoded},
+                    {"index": 1, "png_base64": encoded},
+                ]}})
+
+        fixture = Fixture()
+        image_query = image_module.ChatImageQuery(fixture, fixture)
+        service = ChatCommandService(
+            SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+            image_query=image_query,
+        )
+        handler = self.handler_metadata()
+        event = self.event("60s image visible", "bot1:GroupMessage:g1")
+        params = self.filtered_event(handler, event)
+        fake = SimpleNamespace(
+            _active=True, _lifecycle_generation=1, chat_commands=service,
+        )
+        results = [
+            result async for result in handler.handler(fake, event, **params)
+        ]
+        self.assertEqual(len(results), 1)
+        chain = results[0].chain
+        self.assertEqual([type(item) for item in chain], [Plain, Image, Image])
+        self.assertEqual(chain[0].text, "共 2 页图片。\n可发送 /60s get visible 获取文字版。")
+        self.assertTrue(chain[1].file.startswith("base64://"))
+        self.assertTrue(chain[2].file.startswith("base64://"))
 
     async def test_actual_initialize_terminate_reinitialize_stale_query(self) -> None:
         class AsyncResource:

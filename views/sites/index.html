@@ -369,6 +369,35 @@
           </select>
         </label>
 
+        <div class="field">
+          <span>每日计划</span>
+          <div class="schedule-mode" role="radiogroup" aria-label="每日计划">
+            <label><input id="task-schedule-none" name="task-schedule-mode" type="radio" value="none" checked /> 无计划</label>
+            <label><input id="task-schedule-daily" name="task-schedule-mode" type="radio" value="daily" /> 每日</label>
+          </div>
+          <div id="task-schedule-fields" class="schedule-fields" hidden>
+            <label class="field">
+              <span>时间（HH:mm）</span>
+              <input id="task-schedule-time" type="text" inputmode="numeric" value="08:30" maxlength="5" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="08:30" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>IANA 时区</span>
+              <input id="task-schedule-timezone" type="text" value="Asia/Shanghai" maxlength="128" autocomplete="off" list="task-timezone-suggestions" placeholder="例如：Asia/Shanghai" />
+              <datalist id="task-timezone-suggestions">
+                <option value="Asia/Shanghai"></option>
+                <option value="Asia/Tokyo"></option>
+                <option value="Asia/Kathmandu"></option>
+                <option value="UTC"></option>
+                <option value="Europe/London"></option>
+                <option value="America/New_York"></option>
+              </datalist>
+              <small>必须填写 IANA 时区，不会根据浏览器时区自动推断。</small>
+            </label>
+          </div>
+          <p id="task-schedule-error" class="form-error" role="alert" hidden></p>
+          <p id="task-schedule-saved" class="task-schedule-saved" hidden></p>
+        </div>
+
         <label class="field">
           <span>UMO 白名单（一行一个）</span>
           <textarea id="task-umos" rows="6" spellcheck="false" placeholder="aiocqhttp:GroupMessage:123456789&#10;aiocqhttp:FriendMessage:987654321"></textarea>
@@ -379,7 +408,7 @@
           </small>
         </label>
 
-        <p class="help">任务保存后仍保持未启用；本轮没有发送、启用或调度入口。</p>
+        <p class="help">任务保存后仍保持未启用；保存本身不发送消息。后台“测试投递”是独立的手动操作；“每日计划”当前只保存配置和理论下次时间，不启动实际调度。</p>
 
         <footer class="dialog-actions">
           <button id="task-cancel-button" class="button button-secondary" type="button">取消</button>

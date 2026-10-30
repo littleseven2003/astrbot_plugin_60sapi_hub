@@ -1301,3 +1301,45 @@ input:focus-visible,
 @media (max-width: 700px) {
   .delivery-target { flex-direction: column; }
 }
+
+.schedule-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 6px 0;
+}
+
+.schedule-mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.schedule-fields {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.5fr) minmax(220px, 1.5fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.schedule-fields .field {
+  margin: 0;
+}
+
+.task-schedule-preview {
+  color: var(--muted, #666);
+  overflow-wrap: anywhere;
+}
+
+.task-schedule-saved {
+  color: var(--muted, #666);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .schedule-fields {
+    grid-template-columns: 1fr;
+  }
+}

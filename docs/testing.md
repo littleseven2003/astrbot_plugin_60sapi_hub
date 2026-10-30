@@ -57,11 +57,11 @@
 
 ## M4 聊天图片查询
 
-- 单元：`tests/test_chat_commands.py` 覆盖 `image` 的精确授权、执行 ID/owner 绑定、页序整理、页数上限、非法分页数据、生成失败和配置竞态；`ChatImageSqliteRaceTest` 使用真实 SQLite 在预览/渲染期间移除 UMO 或删除任务，验证旧图抑制。
-- 链路：`tests/test_chat_image_integration.py` 使用实际 `ProfileApi`、`ContentService`、`ImageSnapshotStore`、`ProfileImageService` 和 `httpx.MockTransport`，验证连续查询缓存命中、一次快照多页渲染、PNG 有效性和全失败/字体缺失安全提示；不访问公开 API。
+- 单元：`tests/test_chat_commands.py` 覆盖 `image` 的精确授权、每次查询独立 owner、页序整理、页数上限、非法分页数据、生成失败和配置竞态；`ChatImageSqliteRaceTest` 使用真实 SQLite 在预览/渲染期间移除 UMO、修改组合、停用站点或删除任务，验证旧图抑制。
+- 链路：`tests/test_chat_image_integration.py` 使用实际 `ProfileApi`、`ContentService`、`ImageSnapshotStore`、`ProfileImageService` 和 `httpx.MockTransport`，验证连续查询缓存命中、每次查询 owner 唯一、Dashboard owner 拒绝、一次快照多页渲染、可区分页序、PNG 有效性和全失败/字体缺失安全提示；不访问公开 API。
 - 中文图片：实际生成 900×1200 PNG 多页，检查中文可读、页码和分页；产物只写入系统临时目录，不提交仓库。
-- 宿主：`tests/test_chat_commands_host.py` 验证真实命令过滤器/处理器调用图片查询结果，并构造 `MessageEventResult` 的单条 `Plain + Image + Image` 内存链；不连接真实平台。
-- 边界：完整平台消息管道、真实账号和真实群聊/私聊未验证；图片查询待 Codex 验收，任务启用和调度未实现。
+- 宿主：`tests/test_chat_commands_host.py` 验证真实命令过滤器/处理器调用实际图片查询服务、真实构造函数装配及资源关闭、图片查询在渲染等待期间经历实际 `initialize/terminate/initialize` 后旧回复为零；并构造单条 `Plain + Image + Image` 内存链。`tests/test_astrbot_sender.py` 另将两图一文的单条 chain 经真实 aiocqhttp 消息转换路径发送到假机器人，验证一次调用和段顺序；不连接真实平台。
+- 边界：完整平台消息管道、真实账号和真实群聊/私聊未验证；图片查询与宿主构造修复待 Codex 验收，任务启用和调度未实现。
 
 ## M4 后台手动投递验收基线
 

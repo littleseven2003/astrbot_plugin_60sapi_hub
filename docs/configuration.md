@@ -213,6 +213,7 @@
 - 列表和详情返回 `schedule` 和 `schedule_preview`。预览包含同一次响应使用的 `evaluated_at` 和理论 `next_run_at`；无计划时均为 `null`。
 - 当前时间恰好等于计划时间时取次日；DST 不存在的本地时间跳过当天；DST 重复时间只采用第一次出现，第一次已过去时不使用第二次。预览不写入数据库，也不代表自动发送已启用。
 - 后台页面当前不提供计划控件；旧页面省略 `schedule` 的编辑请求会保留计划。
+- 如果已保存计划的时区数据暂时不可用，任务仍保留原始计划字段，并返回 `schedule_error=schedule_timezone_unavailable` 和不可计算的 `schedule_preview`；不会伪装成 `schedule=null`。此时普通名称编辑省略 `schedule` 仍原样保留计划，只有显式 `schedule:null` 才清除。恢复时区数据后可重新计算预览。
 
 ## 推送白名单
 

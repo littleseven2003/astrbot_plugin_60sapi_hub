@@ -68,8 +68,8 @@
 ## M5 每日计划配置
 
 - 单元：`tests/test_schedule.py` 覆盖严格类型/未知字段/非法 IANA/时间，UTC、中国、非整点时区，跨日/跨年/闰日、恰好命中，真实 `America/New_York` DST 缺口和重复时间。
-- 存储：`tests/test_tasks.py` 覆盖新建默认 null、更新省略保留、显式清除、单次 revision、重启恢复、schema v5 升级、历史投递记录保留及迁移失败回滚。
-- API：`tests/test_task_api.py` 覆盖创建/更新/列表/详情 schedule、同一响应 evaluated_at、非法计划 400、客户端运行状态字段拒绝和旧页面省略 schedule 保留。
+- 存储：`tests/test_tasks.py` 覆盖新建默认 null、更新省略保留、显式清除、单次 revision、重启恢复、schema v5→v6 升级、历史投递记录保留及迁移失败回滚。
+- API：`tests/test_task_api.py` 覆盖创建/更新/列表/详情 schedule、同一响应 evaluated_at、非法计划 400、客户端运行状态字段拒绝、旧页面省略 schedule 保留，以及模拟时区数据不可用后 `schedule_error`、原始计划保留、名称编辑不清除、恢复后可计算和显式 null 清除。
 - 边界：不启动后台循环、不调用 DeliveryService、不请求上游、不渲染、不发送；`next_run_at` 只是理论预览，不写入数据库。实际启用、调度执行和恢复未实现。
 - 本阶段尚未执行完整宿主调度验收；计划配置待 Codex 验收。
 
@@ -90,7 +90,7 @@
 以下为任务配置子阶段的历史验收：当时仅包含推送任务配置和 UMO 白名单，不包含发送、启用、调度或执行记录。后续后台投递集成见当前 M4 基线。
 
 - 单元：`tests/test_tasks.py`、`tests/test_task_api.py` 覆盖群聊/私聊混合、空名单、精确去重保序、大小写与会话 ID 多冒号、平台实例 ID、裸群号/裸 UID、非法类型、控制字符、字段缺失、数量/长度上限、整条 UMO 去尾/平台空白拒绝/session 前导空白保留/大小写/多冒号/精确去重；任务 CRUD、`expected_revision` 缺失/null/布尔/零/负数/小数/字符串均 400 且不写入、过期整数 409、v2→v3 迁移、重启恢复、取消写、组合引用删除保护和并发引用。
-- 后端：任务引用现有组合（允许站点停用）；请求中的 `enabled`/`schedule`/`next_run` 返回 400 `unsupported_enable_request`；任务固定 `enabled=false`、`can_send=false`；删除组合返回 409 `profile_referenced` 和任务名称；删除任务不删除组合。
+- 后端：任务引用现有组合（允许站点停用）；当时版本请求中的 `enabled`/`schedule`/`next_run` 返回 400 `unsupported_enable_request`（当前已支持每日 schedule 配置）；任务固定 `enabled=false`、`can_send=false`；删除组合返回 409 `profile_referenced` 和任务名称；删除任务不删除组合。
 - 后台：真实 AstrBot v4.29.1 Dashboard 登录后验证任务保存、刷新、编辑、删除、重载持久化、引用保护、写响应丢失后的锁定/重新读取/人工确认、390px 窄屏；未登录任务接口 401，插件停用后 503。
 - 零发送/零上游：任务服务没有消息发送或内容 HTTP 客户端；打开页面、加载、保存、编辑、删除、停用和重载不会请求 60s API 或发送消息。真实宿主验证使用虚构 UMO，不连接真实群聊/私聊。
 - UMO 语义以 AstrBot v4.29.1 源码为准：`MessageSession.__str__` 为 `platform_id:message_type:session_id`，`from_str` 只分割前两个冒号；只接受 `GroupMessage`、`FriendMessage`；平台字段是适配器实例 ID；`unique_session` 群会话 ID 原样保留。后台提示使用 /sid 获取完整 UMO，不把 UID 当 UMO。

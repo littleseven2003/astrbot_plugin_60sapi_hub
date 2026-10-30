@@ -33,6 +33,9 @@ if find_spec("astrbot") is not None:
         AiocqhttpAdapter,
     )
     from astrbot.core.star.context import Context
+    from astrbot.core.message.components import Image, Plain
+    from astrbot.core.message.message_event_result import MessageChain
+    from astrbot.core.platform.message_session import MessageSession
     HAS_HOST = True
 
 
@@ -191,6 +194,26 @@ class AstrBotAiocqhttpSenderTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.code, code, umo)
         self.assertEqual(self.bot1.calls, [])
         self.assertEqual(self.bot2.calls, [])
+
+    async def test_one_chat_like_chain_with_two_images_through_fake_bot(self) -> None:
+        session = MessageSession.from_str("demo_qq_01:GroupMessage:123")
+        chain = MessageChain([
+            Plain("共 2 页图片。"),
+            Image.fromBytes(PNG_1X1),
+            Image.fromBytes(PNG_1X1),
+        ])
+        found = await self.context.send_message(session, chain)
+        self.assertTrue(found)
+        self.assertEqual(len(self.bot1.calls), 1)
+        call = self.bot1.calls[0]
+        self.assertEqual(call[0], "group")
+        self.assertEqual(call[1]["group_id"], 123)
+        segments = call[1]["message"]
+        self.assertEqual([item["type"] for item in segments], ["text", "image", "image"])
+        self.assertEqual(segments[0]["data"]["text"], "共 2 页图片。")
+        self.assertTrue(segments[1]["data"]["file"].startswith("base64://"))
+        self.assertTrue(segments[2]["data"]["file"].startswith("base64://"))
+        self.assertEqual(len(self.bot2.calls), 0)
 
     async def test_network_exception_is_unknown_and_cancel_propagates(self) -> None:
         self.bot1.mode = "raise"

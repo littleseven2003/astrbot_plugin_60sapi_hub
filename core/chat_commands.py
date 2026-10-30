@@ -19,7 +19,8 @@ HELP_TEXT = (
     "/60s 或 /60s help：显示本帮助\n"
     "/60s list [页码]：列出当前会话可见的已保存任务（每页最多 10 项）\n"
     "/60s get <任务ID>：查询该任务的纯文字内容预览\n"
-    "get 始终返回纯文字，不改变任务配置的输出方式；不提供图片或主动推送。"
+    "/60s image <任务ID>：查询该任务的纯文字组合并生成中文分页图片\n"
+    "get 始终返回纯文字，image 始终返回图片；不改变任务配置或主动推送。"
 )
 EMPTY_TEXT = "当前会话没有可见任务。"
 PAGE_NOTICE = "页码必须是正整数。"
@@ -45,11 +46,13 @@ class ChatCommandService:
         profiles: ContentProfileService,
         sites: SiteService,
         content_query=None,
+        image_query=None,
     ) -> None:
         self._tasks = tasks
         self._profiles = profiles
         self._sites = sites
         self._content_query = content_query
+        self._image_query = image_query
 
     async def handle(self, umo: str, message: str) -> str:
         parsed = parse_command(message)
@@ -66,6 +69,12 @@ class ChatCommandService:
             if self._content_query is None:
                 return "内容查询当前不可用。"
             return await self._content_query.query(umo, args[0])
+        if subcommand == "image":
+            if len(args) != 1:
+                return "用法：/60s image <任务ID>。"
+            if self._image_query is None:
+                return "图片查询当前不可用。"
+            return await self._image_query.query(umo, args[0])
         return f"未知命令。\n\n{HELP_TEXT}"
 
     async def _list(self, umo: str, args: list[str]) -> str:
@@ -154,4 +163,6 @@ def parse_command(message: str) -> tuple[str, list[str]] | None:
         return ("list", rest[1:])
     if subcommand == "get":
         return ("get", rest[1:])
+    if subcommand == "image":
+        return ("image", rest[1:])
     return ("unknown", rest[1:])

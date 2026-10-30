@@ -153,6 +153,10 @@ class ProfileImageService:
                         "图片服务当前不可用。",
                     ) from None
                 raise
+        except ImageRenderCancelled:
+            if self._closed:
+                raise ImageServiceClosedError("图片服务当前不可用。") from None
+            raise
         except Exception:
             if future is None:
                 self._admission.release()

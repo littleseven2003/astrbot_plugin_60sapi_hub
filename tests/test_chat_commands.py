@@ -502,3 +502,223 @@ class BlockingPreview:
             status_code=200,
             body={"data": {"outputs": {"text": "旧正文"}}},
         )
+
+
+class ImageFixture:
+    def __init__(self):
+        self.task = SimpleNamespace(
+            id="task-image", name="图片任务", profile_id="p1",
+            output_format="text", umos=("bot:GroupMessage:g",),
+            revision=5, created_at="2026-01-01T00:00:00Z",
+        )
+        self.profile = SimpleNamespace(id="p1", site_id="s1", revision=2)
+        self.site = SimpleNamespace(id="s1", enabled=True, revision=3)
+        self.owners = []
+        self.preview_owners = []
+        self.pages = [
+            {"index": 2, "png_base64": "iVBORw0KGgoB", "sha256": None},
+            {"index": 1, "png_base64": "iVBORw0KGgoA", "sha256": None},
+        ]
+
+    async def get_config_snapshot(self, task_id):
+        from core.tasks import TaskNotFoundError
+        if task_id != self.task.id:
+            raise TaskNotFoundError(task_id)
+        return SimpleNamespace(
+            task=self.task, profile_id=self.profile.id,
+            profile_revision=self.profile.revision,
+            site_id=self.site.id, site_revision=self.site.revision,
+            site_enabled=self.site.enabled,
+        )
+
+    async def preview_profile(self, payload, *, owner=None):
+        self.preview_owners.append(owner)
+        return SimpleNamespace(status_code=200, body={"data": {
+            "image_snapshot": {"id": "snap-1"},
+        }})
+
+    async def generate_image(self, profile_id, payload, *, owner=None):
+        self.owners.append(owner)
+        return SimpleNamespace(status_code=200, body={"data": {
+            "pages": list(self.pages),
+        }})
+
+
+class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
+    def build(self):
+        from core.chat_commands import ChatCommandService
+        from core.chat_image import ChatImageQuery
+        self.f = ImageFixture()
+        query = ChatImageQuery(self.f, self.f)
+        return ChatCommandService(
+            self.f, self.f, self.f,
+            content_query=None, image_query=query,
+        )
+
+    async def test_exact_auth_owner_and_page_order(self) -> None:
+        service = self.build()
+        reply = await service.handle("bot:GroupMessage:g", "/60s image task-image")
+        self.assertEqual(reply.page_count, 2)
+        self.assertEqual(reply.pages, (b"\x89PNG\r\n\x1a\n\x00", b"\x89PNG\r\n\x1a\n\x01"))
+        self.assertIn("共 2 页", reply.text)
+        self.assertTrue(self.f.owners[0].startswith("chat:"))
+        self.assertEqual(self.f.owners[0], self.f.preview_owners[0])
+        other = await service.handle("bot:GroupMessage:other", "/60s image task-image")
+        self.assertEqual(other, "任务不存在或当前会话无权查询。")
+        self.assertEqual(len(self.f.owners), 1)
+
+    async def test_status_failures_and_config_race(self) -> None:
+        service = self.build()
+        async def failed(*args, **kwargs):
+            return SimpleNamespace(status_code=503, body={})
+        self.f.generate_image = failed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s image task-image"),
+            "图片查询暂时不可用，请使用 /60s get <任务ID> 查看文字版。",
+        )
+
+        self.f.generate_image = ImageFixture().generate_image
+        self.f.generate_image = self.f.generate_image.__get__(self.f)
+        original = self.f.generate_image
+        async def changed(profile_id, payload, *, owner=None):
+            result = await original(profile_id, payload, owner=owner)
+            self.f.task.revision += 1
+            return result
+        self.f.generate_image = changed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s image task-image"),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_invalid_pages_and_usage(self) -> None:
+        service = self.build()
+        self.f.pages = [{"index": 3, "png_base64": "iVBORw0KGgo="}]
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s image task-image"),
+            "图片查询暂时不可用，请使用 /60s get <任务ID> 查看文字版。",
+        )
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s image"),
+            "用法：/60s image <任务ID>。",
+        )
+        self.f.pages = [
+            {"index": i, "png_base64": "iVBORw0KGgo="}
+            for i in range(1, 8)
+        ]
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s image task-image"),
+            "图片查询暂时不可用，请使用 /60s get <任务ID> 查看文字版。",
+        )
+
+
+class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from core.profiles import ContentProfileService, ProfileCreate
+        from core.sites import SiteCreate, SiteService
+        from core.tasks import PushTaskService, TaskCreate
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sites = SiteService(Path(self.tmp.name) / "image-race.sqlite3")
+        await self.sites.open()
+        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.site = await self.sites.create_site(SiteCreate(
+            name="图片竞态站点", base_url="http://example.test", enabled=True,
+            timeout_seconds=5,
+        ))
+        self.profile = await self.profiles.create_profile(ProfileCreate(
+            name="图片竞态组合", site_id=self.site.id,
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+        ))
+        self.task = await self.tasks.create_task(TaskCreate(
+            name="图片竞态任务", profile_id=self.profile.id,
+            output_format="text", umos=["bot:GroupMessage:g"],
+        ))
+        self.preview = ImageRacePreview()
+        from core.chat_image import ChatImageQuery
+        self.query = ChatImageQuery(self.tasks, self.preview)
+
+    async def asyncTearDown(self) -> None:
+        await self.sites.close()
+        self.tmp.cleanup()
+
+    async def test_remove_umo_during_preview_suppresses_image(self) -> None:
+        import asyncio
+        from core.tasks import TaskUpdate
+        pending = asyncio.create_task(self.query.query("bot:GroupMessage:g", self.task.id))
+        await self.preview.started.wait()
+        current = await self.tasks.get_task(self.task.id)
+        await self.tasks.update_task(self.task.id, TaskUpdate(
+            name=current.name, profile_id=current.profile_id,
+            output_format=current.output_format, umos=[],
+            expected_revision=current.revision,
+        ))
+        self.preview.release.set()
+        self.preview.render_release.set()
+        self.assertEqual(await pending, "任务或配置已变化，请重新查询。")
+
+    async def test_modify_profile_during_preview_suppresses_image(self) -> None:
+        import asyncio
+        from core.profiles import ProfileUpdate
+        pending = asyncio.create_task(self.query.query("bot:GroupMessage:g", self.task.id))
+        await self.preview.started.wait()
+        current = await self.profiles.get_profile(self.profile.id)
+        await self.profiles.update_profile(self.profile.id, ProfileUpdate(
+            name="图片组合已改", site_id=current.site_id,
+            items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+            expected_revision=current.revision,
+        ))
+        self.preview.release.set()
+        self.preview.render_release.set()
+        self.assertEqual(await pending, "任务或配置已变化，请重新查询。")
+
+    async def test_disable_site_during_preview_suppresses_image(self) -> None:
+        import asyncio
+        from core.sites import SiteUpdate
+        pending = asyncio.create_task(self.query.query("bot:GroupMessage:g", self.task.id))
+        await self.preview.started.wait()
+        current = await self.sites.get_site(self.site.id)
+        await self.sites.update_site(self.site.id, SiteUpdate(
+            name=current.name, base_url=current.base_url, enabled=False,
+            timeout_seconds=current.timeout_seconds,
+            expected_revision=current.revision,
+        ))
+        self.preview.release.set()
+        self.preview.render_release.set()
+        self.assertEqual(await pending, "任务或配置已变化，请重新查询。")
+
+    async def test_delete_task_during_generate_suppresses_image(self) -> None:
+        import asyncio
+        pending = asyncio.create_task(self.query.query("bot:GroupMessage:g", self.task.id))
+        self.preview.release.set()
+        await self.preview.render_started.wait()
+        current = await self.tasks.get_task(self.task.id)
+        await self.tasks.delete_task(self.task.id, current.revision)
+        self.preview.render_release.set()
+        self.assertEqual(await pending, "任务或配置已变化，请重新查询。")
+
+
+class ImageRacePreview:
+    def __init__(self):
+        import asyncio
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.render_started = asyncio.Event()
+        self.render_release = asyncio.Event()
+
+    async def preview_profile(self, payload, *, owner=None):
+        self.started.set()
+        await self.release.wait()
+        return SimpleNamespace(status_code=200, body={"data": {
+            "image_snapshot": {"id": "snap"},
+        }})
+
+    async def generate_image(self, profile_id, payload, *, owner=None):
+        self.render_started.set()
+        await self.render_release.wait()
+        encoded = "iVBORw0KGgo="
+        return SimpleNamespace(status_code=200, body={"data": {"pages": [
+            {"index": 1, "png_base64": encoded},
+        ]}})

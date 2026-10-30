@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
+from zoneinfo import ZoneInfoNotFoundError
 
 from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
@@ -138,6 +140,62 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cleared.status_code, 200, cleared.body)
         self.assertIsNone(cleared.body["data"]["schedule"])
         self.assertIsNone(cleared.body["data"]["schedule_preview"])
+
+    async def test_timezone_unavailable_preserves_plan_on_omitted_update(self) -> None:
+        clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)
+        created = await self.api.create_task({**self.payload, "schedule": {
+            "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
+        }})
+        task = created.body["data"]
+        original = __import__("core.schedule", fromlist=["ZoneInfo"]).ZoneInfo
+
+        def unavailable(name):
+            if name == "Asia/Shanghai":
+                raise ZoneInfoNotFoundError(name)
+            return original(name)
+
+        with patch("core.schedule.ZoneInfo", side_effect=unavailable):
+            listed = await self.api.list_tasks()
+            item = listed.body["data"]["tasks"][0]
+            self.assertIsNone(item["schedule_preview"]["next_run_at"])
+            self.assertEqual(item["schedule_error"], "schedule_timezone_unavailable")
+            self.assertEqual(item["schedule"]["timezone"], "Asia/Shanghai")
+            detail = await self.api.get_task(task["id"])
+            self.assertEqual(
+                detail.body["data"]["schedule_error"],
+                "schedule_timezone_unavailable",
+            )
+            snapshot = await self.tasks.get_config_snapshot(task["id"])
+            self.assertEqual(snapshot.task.schedule, None)
+            self.assertEqual(
+                snapshot.task.schedule_error, "schedule_timezone_unavailable",
+            )
+            updated = await self.api.update_task(task["id"], {
+                **self.payload, "name": "时区不可用时改名",
+                "expected_revision": task["revision"],
+            })
+            self.assertEqual(updated.status_code, 200, updated.body)
+            self.assertEqual(
+                updated.body["data"]["schedule"]["timezone"], "Asia/Shanghai",
+            )
+            self.assertEqual(
+                updated.body["data"]["revision"], task["revision"] + 1,
+            )
+        restored = await self.api.get_task(task["id"])
+        self.assertEqual(restored.body["data"]["schedule_error"], None)
+        self.assertEqual(
+            restored.body["data"]["schedule"],
+            {"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
+        )
+        self.assertIsNotNone(restored.body["data"]["schedule_preview"]["next_run_at"])
+        cleared = await self.api.update_task(task["id"], {
+            **self.payload, "schedule": None,
+            "expected_revision": restored.body["data"]["revision"],
+        })
+        self.assertEqual(cleared.status_code, 200, cleared.body)
+        self.assertIsNone(cleared.body["data"]["schedule"])
+        self.assertIsNone(cleared.body["data"]["schedule_error"])
 
     async def test_schedule_validation_and_runtime_fields(self) -> None:
         invalid = [

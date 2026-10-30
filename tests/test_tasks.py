@@ -9,7 +9,7 @@ from pathlib import Path
 
 from core.profiles import ContentProfileService, ProfileCreate, ProfileReferencedError
 from core.site_store import SCHEMA_VERSION, SiteStore
-from core.sites import SiteCreate, SiteService
+from core.sites import SiteCreate, SiteService, SiteStorageError
 from core.tasks import (
     PushTaskService,
     TaskConflictError,
@@ -350,6 +350,13 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         import aiosqlite
 
         task = await self._create("v5迁移失败任务")
+        await self.sites.store.create_delivery_execution(
+            execution_id="v5-failure-history", task_id=task.id,
+            task_name=task.name, task_revision=task.revision,
+            profile_id=self.profile.id, profile_revision=self.profile.revision,
+            site_id=self.site.id, site_revision=self.site.revision,
+            output_format="text", umos=(),
+        )
         await self.sites.close()
         raw = sqlite3.connect(self.db_path)
         try:
@@ -361,21 +368,41 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         finally:
             raw.close()
         original_execute = aiosqlite.Connection.execute
+        seen_sql: list[str] = []
+        attempted_target = False
 
-        async def failing_execute(connection, sql, *args, **kwargs):
+        def failing_execute(connection, sql, *args, **kwargs):
+            nonlocal attempted_target
+            seen_sql.append(sql)
             if "ADD COLUMN schedule_time " in sql:
+                attempted_target = True
                 raise RuntimeError("forced schedule migration failure")
-            return await original_execute(connection, sql, *args, **kwargs)
+            # Important: return the original awaitable/async-context object;
+            # do not wrap it in a coroutine.
+            return original_execute(connection, sql, *args, **kwargs)
 
         reopened = SiteService(self.db_path)
         with patch.object(aiosqlite.Connection, "execute", failing_execute):
-            with self.assertRaises(Exception):
+            with self.assertRaises(SiteStorageError) as caught:
                 await reopened.open()
+        cause = caught.exception
+        while cause is not None and "forced schedule migration failure" not in str(cause):
+            cause = cause.__cause__
+        self.assertIsNotNone(cause)
+        self.assertTrue(attempted_target)
+        self.assertTrue(any("ADD COLUMN schedule_kind" in sql for sql in seen_sql))
+        self.assertTrue(any("ADD COLUMN schedule_timezone" in sql for sql in seen_sql))
         await reopened.close()
         with closing(sqlite3.connect(self.db_path)) as check:
             self.assertEqual(
                 check.execute("PRAGMA user_version").fetchone()[0], 5,
             )
+            columns = {
+                row[1] for row in check.execute("PRAGMA table_info(push_tasks)")
+            }
+            self.assertNotIn("schedule_kind", columns)
+            self.assertNotIn("schedule_timezone", columns)
+            self.assertNotIn("schedule_time", columns)
             self.assertEqual(
                 check.execute("SELECT COUNT(*) FROM push_tasks").fetchone()[0], 1,
             )
@@ -385,8 +412,32 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                 ).fetchone()[0],
                 "v5迁移失败任务",
             )
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM push_task_umos").fetchone()[0],
+                len(task.umos),
+            )
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM content_profiles").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM delivery_executions").fetchone()[0],
+                1,
+            )
+        # Removing the fault allows a clean retry.
         self.sites = SiteService(self.db_path)
         await self.sites.open()
+
+    async def test_unexpected_schedule_parse_error_is_not_silently_swallowed(self) -> None:
+        from unittest.mock import patch
+        await self.tasks.create_task(TaskCreate(
+            name="异常计划任务", profile_id=self.profile.id,
+            output_format="text", umos=[],
+            schedule={"kind": "daily", "timezone": "UTC", "time": "08:00"},
+        ))
+        with patch("core.tasks.parse_schedule", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                await self.tasks.list_tasks()
 
     async def test_cancelled_create_does_not_persist(self) -> None:
         await self.sites.store._lock.acquire()

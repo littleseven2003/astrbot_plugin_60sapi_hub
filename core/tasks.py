@@ -8,7 +8,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from .schedule import DailySchedule, parse_schedule
+from .schedule import (
+    DailySchedule,
+    ScheduleTimezoneUnavailableError,
+    ScheduleValidationError,
+    parse_schedule,
+)
 from .profiles import (
     ContentProfileService,
     ProfileNotFoundError,
@@ -99,6 +104,8 @@ class PushTask:
     created_at: str
     updated_at: str
     schedule: DailySchedule | None = None
+    schedule_raw: dict[str, object] | None = None
+    schedule_error: str | None = None
 
     @property
     def output_label(self) -> str:
@@ -216,10 +223,8 @@ class PushTaskService:
         profile_id = _normalize_profile_id(data.profile_id)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
-        if data.schedule is SCHEDULE_UNSET:
-            schedule = (await self.get_task(normalized_id)).schedule
-        else:
-            schedule = parse_schedule(data.schedule)
+        schedule_unchanged = data.schedule is SCHEDULE_UNSET
+        schedule = None if schedule_unchanged else parse_schedule(data.schedule)
         await self._require_profile(profile_id)
         try:
             stored = await self._store.update_task(
@@ -229,6 +234,7 @@ class PushTaskService:
                 output_format=output_format,
                 umos=umos,
                 expected_revision=expected_revision,
+                schedule_unchanged=schedule_unchanged,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
                 schedule_time=schedule.time.strftime("%H:%M") if schedule else None,
@@ -394,15 +400,26 @@ def _normalize_profile_id(value: object) -> str:
 
 def _to_task(stored: StoredTask) -> PushTask:
     schedule = None
-    if stored.schedule_kind is not None:
+    raw = None
+    error = None
+    if any((
+        stored.schedule_kind,
+        stored.schedule_timezone,
+        stored.schedule_time,
+    )):
+        raw = {
+            "kind": stored.schedule_kind,
+            "timezone": stored.schedule_timezone,
+            "time": stored.schedule_time,
+        }
         try:
-            schedule = parse_schedule({
-                "kind": stored.schedule_kind,
-                "timezone": stored.schedule_timezone,
-                "time": stored.schedule_time,
-            })
-        except Exception:
-            schedule = None
+            schedule = parse_schedule(raw)
+        except ScheduleTimezoneUnavailableError:
+            error = "schedule_timezone_unavailable"
+        except ScheduleValidationError:
+            error = "schedule_invalid"
+        # Any unexpected exception must propagate rather than masquerade as
+        # a missing plan or be silently repaired.
     return PushTask(
         id=stored.id,
         name=stored.name,
@@ -414,6 +431,8 @@ def _to_task(stored: StoredTask) -> PushTask:
         created_at=stored.created_at,
         updated_at=stored.updated_at,
         schedule=schedule,
+        schedule_raw=raw,
+        schedule_error=error,
     )
 
 

@@ -217,19 +217,26 @@ def _task_dict(
     site = sites.get(profile.site_id) if profile is not None else None
     schedule = task.schedule
     preview = None
+    evaluated_at = now.astimezone(timezone.utc).isoformat()
     if schedule is not None:
         try:
             next_run = next_daily_run(schedule, now)
             preview = {
-                "evaluated_at": now.astimezone(timezone.utc).isoformat(),
+                "evaluated_at": evaluated_at,
                 "next_run_at": next_run.isoformat(),
             }
         except ScheduleError:
             preview = {
-                "evaluated_at": now.astimezone(timezone.utc).isoformat(),
+                "evaluated_at": evaluated_at,
                 "next_run_at": None,
                 "error": "schedule_timezone_unavailable",
             }
+    elif task.schedule_raw is not None:
+        preview = {
+            "evaluated_at": evaluated_at,
+            "next_run_at": None,
+            "error": task.schedule_error,
+        }
     return {
         "id": task.id,
         "name": task.name,
@@ -246,7 +253,10 @@ def _task_dict(
         "revision": task.revision,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
-        "schedule": schedule.to_dict() if schedule else None,
+        "schedule": (
+            schedule.to_dict() if schedule else task.schedule_raw
+        ),
+        "schedule_error": task.schedule_error,
         "schedule_preview": preview,
     }
 

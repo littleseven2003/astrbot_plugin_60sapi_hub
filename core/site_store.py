@@ -1040,6 +1040,7 @@ class SiteStore:
         output_format: str,
         umos: tuple[str, ...],
         expected_revision: int,
+        schedule_unchanged: bool = False,
         schedule_kind: str | None = None,
         schedule_timezone: str | None = None,
         schedule_time: str | None = None,
@@ -1049,27 +1050,36 @@ class SiteStore:
             now = _utc_now()
 
             async def perform() -> None:
-                cursor = await connection.execute(
-                    """
-                    UPDATE push_tasks
-                    SET name = ?, profile_id = ?, output_format = ?,
-                        enabled = 0, schedule_kind = ?, schedule_timezone = ?,
-                        schedule_time = ?, revision = revision + 1,
-                        updated_at = ?
-                    WHERE id = ? AND revision = ?
-                    """,
-                    (
-                        name,
-                        profile_id,
-                        output_format,
-                        schedule_kind,
-                        schedule_timezone,
-                        schedule_time,
-                        now,
-                        task_id,
-                        expected_revision,
-                    ),
-                )
+                if schedule_unchanged:
+                    cursor = await connection.execute(
+                        """
+                        UPDATE push_tasks
+                        SET name = ?, profile_id = ?, output_format = ?,
+                            enabled = 0, revision = revision + 1,
+                            updated_at = ?
+                        WHERE id = ? AND revision = ?
+                        """,
+                        (
+                            name, profile_id, output_format, now,
+                            task_id, expected_revision,
+                        ),
+                    )
+                else:
+                    cursor = await connection.execute(
+                        """
+                        UPDATE push_tasks
+                        SET name = ?, profile_id = ?, output_format = ?,
+                            enabled = 0, schedule_kind = ?,
+                            schedule_timezone = ?, schedule_time = ?,
+                            revision = revision + 1, updated_at = ?
+                        WHERE id = ? AND revision = ?
+                        """,
+                        (
+                            name, profile_id, output_format,
+                            schedule_kind, schedule_timezone, schedule_time,
+                            now, task_id, expected_revision,
+                        ),
+                    )
                 if cursor.rowcount != 1:
                     row = await self._fetchone_unlocked(
                         "SELECT revision FROM push_tasks WHERE id = ?",

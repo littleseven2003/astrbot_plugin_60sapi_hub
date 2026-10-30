@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS push_tasks (
         output_format IN ('text', 'markdown', 'image')
     ),
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled = 0),
+    schedule_kind TEXT,
+    schedule_timezone TEXT,
+    schedule_time TEXT,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -323,6 +326,9 @@ class StoredTask:
     revision: int
     created_at: str
     updated_at: str
+    schedule_kind: str | None = None
+    schedule_timezone: str | None = None
+    schedule_time: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +400,7 @@ class SiteStore:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version in (0, 1, 2, 3, 4):
+                if version in (0, 1, 2, 3, 4, 5):
                     await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
@@ -449,6 +455,17 @@ class SiteStore:
                     "ALTER TABLE delivery_executions "
                     "ADD COLUMN owner_token TEXT",
                 )
+            # Older push_tasks tables may lack schedule columns. Inspect the
+            # actual table so partially migrated/test fixtures are safe too.
+            async with connection.execute(
+                "PRAGMA table_info(push_tasks)",
+            ) as cursor:
+                task_columns = {row[1] for row in await cursor.fetchall()}
+            for column in ("schedule_kind", "schedule_timezone", "schedule_time"):
+                if column not in task_columns:
+                    await connection.execute(
+                        f"ALTER TABLE push_tasks ADD COLUMN {column} TEXT",
+                    )
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -854,6 +871,9 @@ class SiteStore:
         profile_id: str,
         output_format: str,
         umos: tuple[str, ...],
+        schedule_kind: str | None = None,
+        schedule_timezone: str | None = None,
+        schedule_time: str | None = None,
     ) -> StoredTask:
         async with self._lock:
             connection = self._require_connection()
@@ -864,10 +884,15 @@ class SiteStore:
                     """
                     INSERT INTO push_tasks (
                         id, name, profile_id, output_format, enabled,
+                        schedule_kind, schedule_timezone, schedule_time,
                         revision, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 0, 1, ?, ?)
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 1, ?, ?)
                     """,
-                    (task_id, name, profile_id, output_format, now, now),
+                    (
+                        task_id, name, profile_id, output_format,
+                        schedule_kind, schedule_timezone, schedule_time,
+                        now, now,
+                    ),
                 )
                 await self._insert_task_umos(connection, task_id, umos)
 
@@ -886,6 +911,9 @@ class SiteStore:
                 revision=1,
                 created_at=now,
                 updated_at=now,
+                schedule_kind=schedule_kind,
+                schedule_timezone=schedule_timezone,
+                schedule_time=schedule_time,
             )
 
     async def list_tasks(self) -> list[StoredTask]:
@@ -895,6 +923,7 @@ class SiteStore:
                 async with connection.execute(
                     """
                     SELECT id, name, profile_id, output_format, enabled,
+                           schedule_kind, schedule_timezone, schedule_time,
                            revision, created_at, updated_at
                     FROM push_tasks
                     ORDER BY created_at, id
@@ -919,6 +948,7 @@ class SiteStore:
                 row = await self._fetchone_unlocked(
                     """
                     SELECT id, name, profile_id, output_format, enabled,
+                           schedule_kind, schedule_timezone, schedule_time,
                            revision, created_at, updated_at
                     FROM push_tasks
                     WHERE id = ?
@@ -948,6 +978,7 @@ class SiteStore:
                 row = await self._fetchone_unlocked(
                     """
                     SELECT id, name, profile_id, output_format, enabled,
+                           schedule_kind, schedule_timezone, schedule_time,
                            revision, created_at, updated_at
                     FROM push_tasks
                     WHERE id = ?
@@ -1009,28 +1040,46 @@ class SiteStore:
         output_format: str,
         umos: tuple[str, ...],
         expected_revision: int,
+        schedule_unchanged: bool = False,
+        schedule_kind: str | None = None,
+        schedule_timezone: str | None = None,
+        schedule_time: str | None = None,
     ) -> StoredTask:
         async with self._lock:
             connection = self._require_connection()
             now = _utc_now()
 
             async def perform() -> None:
-                cursor = await connection.execute(
-                    """
-                    UPDATE push_tasks
-                    SET name = ?, profile_id = ?, output_format = ?,
-                        enabled = 0, revision = revision + 1, updated_at = ?
-                    WHERE id = ? AND revision = ?
-                    """,
-                    (
-                        name,
-                        profile_id,
-                        output_format,
-                        now,
-                        task_id,
-                        expected_revision,
-                    ),
-                )
+                if schedule_unchanged:
+                    cursor = await connection.execute(
+                        """
+                        UPDATE push_tasks
+                        SET name = ?, profile_id = ?, output_format = ?,
+                            enabled = 0, revision = revision + 1,
+                            updated_at = ?
+                        WHERE id = ? AND revision = ?
+                        """,
+                        (
+                            name, profile_id, output_format, now,
+                            task_id, expected_revision,
+                        ),
+                    )
+                else:
+                    cursor = await connection.execute(
+                        """
+                        UPDATE push_tasks
+                        SET name = ?, profile_id = ?, output_format = ?,
+                            enabled = 0, schedule_kind = ?,
+                            schedule_timezone = ?, schedule_time = ?,
+                            revision = revision + 1, updated_at = ?
+                        WHERE id = ? AND revision = ?
+                        """,
+                        (
+                            name, profile_id, output_format,
+                            schedule_kind, schedule_timezone, schedule_time,
+                            now, task_id, expected_revision,
+                        ),
+                    )
                 if cursor.rowcount != 1:
                     row = await self._fetchone_unlocked(
                         "SELECT revision FROM push_tasks WHERE id = ?",
@@ -1053,6 +1102,7 @@ class SiteStore:
             row = await self._fetchone_unlocked(
                 """
                 SELECT id, name, profile_id, output_format, enabled,
+                       schedule_kind, schedule_timezone, schedule_time,
                        revision, created_at, updated_at
                 FROM push_tasks WHERE id = ?
                 """,
@@ -1764,6 +1814,9 @@ def _row_to_task(
         revision=int(row["revision"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        schedule_kind=row["schedule_kind"],
+        schedule_timezone=row["schedule_timezone"],
+        schedule_time=row["schedule_time"],
     )
 
 

@@ -1,6 +1,6 @@
 # 配置说明
 
-站点配置、后台管理、五种内容预览、组合图文、任务白名单及后台手动投递/执行记录已实现并完成隔离验收。入口已装配 aiocqhttp 发送适配层，真实账号发送尚未验证；聊天纯文字查询已实现，聊天图片查询、任务启用、调度、其他热榜和导入未实现。
+站点配置、后台管理、五种内容预览、组合图文、任务白名单及后台手动投递/执行记录已实现并完成隔离验收。入口已装配 aiocqhttp 发送适配层，真实账号发送尚未验证；聊天纯文字和图片查询已实现；每日计划配置与理论下次时间预览已实现，任务启用、实际调度、其他热榜和导入未实现。
 
 ### 后台站点管理
 
@@ -184,7 +184,7 @@
 
 ## 推送任务
 
-任务配置和 UMO 白名单已实现，保存操作不发送、不请求上游。任务固定未启用，不执行定时调度；鉴权的后台手动测试使用独立投递接口，见下文。
+任务配置和 UMO 白名单已实现，保存操作不发送、不请求上游。任务可以选择保存每日计划，但任务固定未启用，不执行定时调度，也不启动后台循环；鉴权的后台手动测试使用独立投递接口，见下文。
 
 任务字段：稳定 ID、名称（沿用站点名称规则，最多 80 字符）、一个已保存内容组合 ID、输出方式（`text`、`markdown`、`image`）、独立 UMO 白名单、revision、创建/修改时间。允许空白名单；允许组合引用的站点已停用；必须引用实际存在的内容组合。配置可保存不代表可投递。
 
@@ -196,7 +196,24 @@
 | `POST /<插件名>/tasks/<id>/update` | 按 expected_revision 编辑任务 |
 | `POST /<插件名>/tasks/<id>/delete` | 按 expected_revision 删除任务 |
 
-请求中出现 `enabled`、`schedule` 或 `next_run` 返回 400 `unsupported_enable_request`，不会写入。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应固定返回 `enabled=false`、`can_send=false`，表示没有自动推送启用能力；后台显式测试是否可投递由确认接口的 `can_deliver` 单独判定。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
+`schedule` 是可选的每日计划配置；请求中出现 `enabled`、`next_run`、`next_run_at`、`schedule_preview` 或运行状态字段返回 400 `unsupported_enable_request`，不会写入。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应固定返回 `enabled=false`、`can_send=false`，表示没有自动推送启用能力；后台显式测试是否可投递由确认接口的 `can_deliver` 单独判定。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
+
+### 每日计划配置与预览
+
+任务可选保存：
+
+```json
+{"kind":"daily","timezone":"Asia/Shanghai","time":"08:30"}
+```
+
+- 只支持 `kind=daily`；`timezone` 必须是可用 IANA 时区，`time` 严格为 24 小时制 `HH:mm`。
+- 未知类型、非法字段、非法时区、非法时间或错误类型返回 400，不猜测或改用 UTC/系统时区。
+- 新建省略 `schedule` 为 `null`；编辑省略保留原计划；显式 `null` 清除计划。
+- 计划变更与任务字段在同一事务中提交，成功后任务 revision 只增加一次。
+- 列表和详情返回 `schedule` 和 `schedule_preview`。预览包含同一次响应使用的 `evaluated_at` 和理论 `next_run_at`；无计划时均为 `null`。
+- 当前时间恰好等于计划时间时取次日；DST 不存在的本地时间跳过当天；DST 重复时间只采用第一次出现，第一次已过去时不使用第二次。预览不写入数据库，也不代表自动发送已启用。
+- 后台页面当前不提供计划控件；旧页面省略 `schedule` 的编辑请求会保留计划。
+- 如果已保存计划的时区数据暂时不可用，任务仍保留原始计划字段，并返回 `schedule_error=schedule_timezone_unavailable` 和不可计算的 `schedule_preview`；不会伪装成 `schedule=null`。此时普通名称编辑省略 `schedule` 仍原样保留计划，只有显式 `schedule:null` 才清除。恢复时区数据后可重新计算预览。
 
 ## 推送白名单
 

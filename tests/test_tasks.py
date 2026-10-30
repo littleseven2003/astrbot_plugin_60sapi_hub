@@ -9,7 +9,7 @@ from pathlib import Path
 
 from core.profiles import ContentProfileService, ProfileCreate, ProfileReferencedError
 from core.site_store import SCHEMA_VERSION, SiteStore
-from core.sites import SiteCreate, SiteService
+from core.sites import SiteCreate, SiteService, SiteStorageError
 from core.tasks import (
     PushTaskService,
     TaskConflictError,
@@ -220,6 +220,224 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskNotFoundError):
             await self.tasks.get_task(task.id)
         await self.profiles.delete_profile(self.profile.id, self.profile.revision)
+
+    async def test_daily_schedule_persists_preserves_clears_and_migrates_v5(self) -> None:
+        from core.schedule import DailySchedule
+        from datetime import time as dt_time
+
+        task = await self.tasks.create_task(TaskCreate(
+            name="计划任务", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={
+                "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
+            },
+        ))
+        self.assertEqual(task.schedule, DailySchedule("Asia/Shanghai", dt_time(8, 30)))
+        updated = await self.tasks.update_task(task.id, TaskUpdate(
+            name="计划保留", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            expected_revision=task.revision,
+        ))
+        self.assertEqual(updated.schedule, task.schedule)
+        self.assertEqual(updated.revision, 2)
+        cleared = await self.tasks.update_task(task.id, TaskUpdate(
+            name="计划清除", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            expected_revision=updated.revision, schedule=None,
+        ))
+        self.assertIsNone(cleared.schedule)
+        self.assertEqual(cleared.revision, 3)
+
+        # Re-add, then simulate a schema-v5 database without schedule columns.
+        scheduled = await self.tasks.update_task(task.id, TaskUpdate(
+            name="重启后计划", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            expected_revision=cleared.revision,
+            schedule={"kind": "daily", "timezone": "UTC", "time": "09:00"},
+        ))
+        await self.sites.store.create_delivery_execution(
+            execution_id="migration-history", task_id=task.id,
+            task_name=task.name, task_revision=task.revision,
+            profile_id=self.profile.id, profile_revision=self.profile.revision,
+            site_id=self.site.id, site_revision=self.site.revision,
+            output_format="text", umos=(),
+        )
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_kind")
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_timezone")
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_time")
+            raw.execute("PRAGMA user_version = 5")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            tasks = PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            )
+            loaded = await tasks.get_task(task.id)
+            self.assertIsNone(loaded.schedule)
+            self.assertEqual(loaded.revision, scheduled.revision)
+            self.assertEqual(loaded.umos, scheduled.umos)
+            self.assertIn(
+                "migration-history",
+                await reopened.store.list_delivery_execution_ids(limit=10, offset=0),
+            )
+            with closing(sqlite3.connect(self.db_path)) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_daily_schedule_survives_restart(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="重启计划", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "daily", "timezone": "UTC", "time": "10:00"},
+        ))
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule, task.schedule)
+            self.assertEqual(loaded.revision, 1)
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_v5_partial_schedule_columns_are_repaired(self) -> None:
+        task = await self._create("部分迁移任务")
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_timezone")
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_time")
+            raw.execute("PRAGMA user_version = 5")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            with closing(sqlite3.connect(self.db_path)) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+                self.assertEqual(
+                    check.execute("SELECT COUNT(*) FROM push_tasks").fetchone()[0],
+                    1,
+                )
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertIsNone(loaded.schedule)
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_v5_schedule_migration_failure_rolls_back(self) -> None:
+        from unittest.mock import patch
+        import aiosqlite
+
+        task = await self._create("v5迁移失败任务")
+        await self.sites.store.create_delivery_execution(
+            execution_id="v5-failure-history", task_id=task.id,
+            task_name=task.name, task_revision=task.revision,
+            profile_id=self.profile.id, profile_revision=self.profile.revision,
+            site_id=self.site.id, site_revision=self.site.revision,
+            output_format="text", umos=(),
+        )
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_kind")
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_timezone")
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_time")
+            raw.execute("PRAGMA user_version = 5")
+            raw.commit()
+        finally:
+            raw.close()
+        original_execute = aiosqlite.Connection.execute
+        seen_sql: list[str] = []
+        attempted_target = False
+
+        def failing_execute(connection, sql, *args, **kwargs):
+            nonlocal attempted_target
+            seen_sql.append(sql)
+            if "ADD COLUMN schedule_time " in sql:
+                attempted_target = True
+                raise RuntimeError("forced schedule migration failure")
+            # Important: return the original awaitable/async-context object;
+            # do not wrap it in a coroutine.
+            return original_execute(connection, sql, *args, **kwargs)
+
+        reopened = SiteService(self.db_path)
+        with patch.object(aiosqlite.Connection, "execute", failing_execute):
+            with self.assertRaises(SiteStorageError) as caught:
+                await reopened.open()
+        cause = caught.exception
+        while cause is not None and "forced schedule migration failure" not in str(cause):
+            cause = cause.__cause__
+        self.assertIsNotNone(cause)
+        self.assertTrue(attempted_target)
+        self.assertTrue(any("ADD COLUMN schedule_kind" in sql for sql in seen_sql))
+        self.assertTrue(any("ADD COLUMN schedule_timezone" in sql for sql in seen_sql))
+        await reopened.close()
+        with closing(sqlite3.connect(self.db_path)) as check:
+            self.assertEqual(
+                check.execute("PRAGMA user_version").fetchone()[0], 5,
+            )
+            columns = {
+                row[1] for row in check.execute("PRAGMA table_info(push_tasks)")
+            }
+            self.assertNotIn("schedule_kind", columns)
+            self.assertNotIn("schedule_timezone", columns)
+            self.assertNotIn("schedule_time", columns)
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM push_tasks").fetchone()[0], 1,
+            )
+            self.assertEqual(
+                check.execute(
+                    "SELECT name FROM push_tasks WHERE id = ?", (task.id,),
+                ).fetchone()[0],
+                "v5迁移失败任务",
+            )
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM push_task_umos").fetchone()[0],
+                len(task.umos),
+            )
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM content_profiles").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM delivery_executions").fetchone()[0],
+                1,
+            )
+        # Removing the fault allows a clean retry.
+        self.sites = SiteService(self.db_path)
+        await self.sites.open()
+
+    async def test_unexpected_schedule_parse_error_is_not_silently_swallowed(self) -> None:
+        from unittest.mock import patch
+        await self.tasks.create_task(TaskCreate(
+            name="异常计划任务", profile_id=self.profile.id,
+            output_format="text", umos=[],
+            schedule={"kind": "daily", "timezone": "UTC", "time": "08:00"},
+        ))
+        with patch("core.tasks.parse_schedule", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                await self.tasks.list_tasks()
 
     async def test_cancelled_create_does_not_persist(self) -> None:
         await self.sites.store._lock.acquire()

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
+from zoneinfo import ZoneInfoNotFoundError
 
 from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
@@ -79,8 +82,11 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(deleted.status_code, 200)
 
-    async def test_reject_enable_schedule_and_missing_profile(self) -> None:
-        for extra in ({"enabled": True}, {"enabled": False}, {"schedule": "daily"}, {"next_run": "x"}):
+    async def test_reject_enable_and_scheduled_fields(self) -> None:
+        for extra in (
+            {"enabled": True}, {"enabled": False}, {"next_run": "x"},
+            {"next_run_at": "x"}, {"schedule_preview": {}}, {"running": True},
+        ):
             with self.subTest(extra=extra):
                 result = await self.api.create_task({**self.payload, **extra})
                 self.assertEqual(result.status_code, 400)
@@ -93,6 +99,132 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing.body["data"]["code"], "profile_not_found")
+
+    async def test_schedule_create_update_preserve_clear_and_preview(self) -> None:
+        clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)
+        payload = {**self.payload, "schedule": {
+            "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
+        }}
+        created = await self.api.create_task(payload)
+        self.assertEqual(created.status_code, 201, created.body)
+        task = created.body["data"]
+        self.assertEqual(task["schedule"], payload["schedule"])
+        self.assertEqual(task["schedule_preview"]["evaluated_at"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(task["schedule_preview"]["next_run_at"], "2026-01-01T00:30:00+00:00")
+
+        # Dashboard-style edit omits schedule: preserve it and increment once.
+        updated = await self.api.update_task(task["id"], {
+            **self.payload, "name": "保留计划",
+            "expected_revision": task["revision"],
+        })
+        self.assertEqual(updated.status_code, 200, updated.body)
+        self.assertEqual(updated.body["data"]["schedule"], payload["schedule"])
+        self.assertEqual(updated.body["data"]["revision"], task["revision"] + 1)
+        self.assertEqual(
+            updated.body["data"]["schedule_preview"]["evaluated_at"],
+            task["schedule_preview"]["evaluated_at"],
+        )
+
+        listed = await self.api.list_tasks()
+        detail = await self.api.get_task(task["id"])
+        self.assertEqual(
+            listed.body["data"]["tasks"][0]["schedule_preview"]["evaluated_at"],
+            detail.body["data"]["schedule_preview"]["evaluated_at"],
+        )
+
+        cleared = await self.api.update_task(task["id"], {
+            **self.payload, "schedule": None,
+            "expected_revision": updated.body["data"]["revision"],
+        })
+        self.assertEqual(cleared.status_code, 200, cleared.body)
+        self.assertIsNone(cleared.body["data"]["schedule"])
+        self.assertIsNone(cleared.body["data"]["schedule_preview"])
+
+    async def test_timezone_unavailable_preserves_plan_on_omitted_update(self) -> None:
+        clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)
+        created = await self.api.create_task({**self.payload, "schedule": {
+            "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
+        }})
+        task = created.body["data"]
+        original = __import__("core.schedule", fromlist=["ZoneInfo"]).ZoneInfo
+
+        def unavailable(name):
+            if name == "Asia/Shanghai":
+                raise ZoneInfoNotFoundError(name)
+            return original(name)
+
+        with patch("core.schedule.ZoneInfo", side_effect=unavailable):
+            listed = await self.api.list_tasks()
+            item = listed.body["data"]["tasks"][0]
+            self.assertIsNone(item["schedule_preview"]["next_run_at"])
+            self.assertEqual(item["schedule_error"], "schedule_timezone_unavailable")
+            self.assertEqual(item["schedule"]["timezone"], "Asia/Shanghai")
+            detail = await self.api.get_task(task["id"])
+            self.assertEqual(
+                detail.body["data"]["schedule_error"],
+                "schedule_timezone_unavailable",
+            )
+            snapshot = await self.tasks.get_config_snapshot(task["id"])
+            self.assertEqual(snapshot.task.schedule, None)
+            self.assertEqual(
+                snapshot.task.schedule_error, "schedule_timezone_unavailable",
+            )
+            updated = await self.api.update_task(task["id"], {
+                **self.payload, "name": "时区不可用时改名",
+                "expected_revision": task["revision"],
+            })
+            self.assertEqual(updated.status_code, 200, updated.body)
+            self.assertEqual(
+                updated.body["data"]["schedule"]["timezone"], "Asia/Shanghai",
+            )
+            self.assertEqual(
+                updated.body["data"]["revision"], task["revision"] + 1,
+            )
+        restored = await self.api.get_task(task["id"])
+        self.assertEqual(restored.body["data"]["schedule_error"], None)
+        self.assertEqual(
+            restored.body["data"]["schedule"],
+            {"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
+        )
+        self.assertIsNotNone(restored.body["data"]["schedule_preview"]["next_run_at"])
+        cleared = await self.api.update_task(task["id"], {
+            **self.payload, "schedule": None,
+            "expected_revision": restored.body["data"]["revision"],
+        })
+        self.assertEqual(cleared.status_code, 200, cleared.body)
+        self.assertIsNone(cleared.body["data"]["schedule"])
+        self.assertIsNone(cleared.body["data"]["schedule_error"])
+
+    async def test_schedule_validation_and_runtime_fields(self) -> None:
+        invalid = [
+            {"kind": "weekly", "timezone": "UTC", "time": "08:00"},
+            {"kind": "daily", "timezone": "Not/AZone", "time": "08:00"},
+            {"kind": "daily", "timezone": "UTC", "time": "8:00"},
+            {"kind": "daily", "timezone": "UTC", "time": "08:00", "x": 1},
+            "daily",
+        ]
+        for schedule in invalid:
+            with self.subTest(schedule=schedule):
+                result = await self.api.create_task({**self.payload, "schedule": schedule})
+                self.assertEqual(result.status_code, 400, result.body)
+                self.assertIn(
+                    result.body["data"]["code"],
+                    ("validation_error", "schedule_timezone_unavailable"),
+                )
+        result = await self.api.create_task({**self.payload, "schedule": {
+            "kind": "daily", "timezone": "UTC", "time": "08:00",
+        }})
+        self.assertEqual(result.status_code, 201, result.body)
+        task = result.body["data"]
+        for extra in ({"next_run": "x"}, {"next_run_at": "x"}, {"enabled": True}):
+            with self.subTest(extra=extra):
+                rejected = await self.api.update_task(task["id"], {
+                    **self.payload, "expected_revision": task["revision"], **extra,
+                })
+                self.assertEqual(rejected.status_code, 400)
+                self.assertEqual(rejected.body["data"]["code"], "unsupported_enable_request")
 
     async def test_invalid_expected_revision_returns_400_and_no_write(self) -> None:
         created = await self.api.create_task(self.payload)

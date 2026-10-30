@@ -1,6 +1,6 @@
 # 架构设计
 
-当前已实现站点、组合和任务配置，五类内容获取/缓存，组合文字、Markdown 和分页图片，以及 Dashboard 手动投递和执行记录。发送通过 aiocqhttp 适配层，隔离验收使用真实宿主源码、假机器人和拦截请求；真实账号发送未验证。聊天帮助/列表及纯文字查询已实现；聊天图片查询和定时任务仍为后续设计。
+当前已实现站点、组合和任务配置，五类内容获取/缓存，组合文字、Markdown 和分页图片，以及 Dashboard 手动投递和执行记录。发送通过 aiocqhttp 适配层，隔离验收使用真实宿主源码、假机器人和拦截请求；真实账号发送未验证。聊天帮助/列表、纯文字和图片查询已实现；每日计划配置和理论时间预览已实现，实际调度执行仍为后续设计。
 
 ## 数据流
 
@@ -51,13 +51,14 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/image_snapshots.py`：进程内短期图片快照，TTL 300 秒/最多 32 个/总 8 MiB；保存已验证的截图输入、组合/站点 revision 和用户归属，不保存 HTML、URL 或文件路径。
 - `core/profile_image.py`：Pillow 固定样式中文分页渲染器；只读快照数据，按字符宽度换行并逐行分页，生成 900×1200 RGB PNG，不加载远程资源。
 - `core/tasks.py`：推送任务领域模型、输出方式、完整 UMO 校验、revision CRUD 和组合引用保护；不持有 HTTP 客户端或发送接口。
-- `core/task_api.py` / `task_web.py`：任务 CRUD 的安全 API 映射和 Dashboard 宿主适配；明确拒绝启用、调度或发送字段。
+- `core/task_api.py` / `task_web.py`：任务 CRUD 的安全 API 映射和 Dashboard 宿主适配；支持可选每日计划及理论时间预览，拒绝启用、运行状态和调度状态字段。
+- `core/schedule.py`：不可变每日计划模型、严格 IANA/时间解析和纯函数下次时间计算；不启动调度器、不写运行状态。
 - `core/chat_commands.py` / `core/chat_content.py`：聊天帮助、白名单内任务列表及纯文字内容查询；查询前后通过任务服务读取同一 SiteStore 锁内的配置快照，校验完整 UMO、引用关系和版本。内容复用缓存与纯文字渲染，入口在回复前检查生命周期代次，不调用投递服务。
 - `core/delivery.py`：手动投递核心。只接受已保存任务 ID 和执行标识，读取组合/输出/白名单；复用 ProfileApi 的预览与图片快照，一次准备共享内容；调用注入的 `DeliverySender`，逐目标逐页持久化状态。插件入口注入 aiocqhttp 适配层，只有 Dashboard 鉴权的显式测试操作启动执行；启动不发送、不补发。
 - `core/delivery_api.py` / `delivery_web.py`：手动投递确认、提交和执行记录查询；校验 Dashboard 身份、插件状态、执行标识及任务/组合/站点 revision。公开投影不返回 owner token、凭据、正文、PNG 或内部路径。列表支持有界分页和 task_id 筛选，页面通过 bridge params 传递分页条件。
 - `core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp/OneBot v11 适配。按 UMO 平台实例 ID 精确查找实例，用真实 `Context.send_message`/`MessageSession`/`MessageChain` 路由；仅接受 aiocqhttp，其他适配器前置拒绝；图片用内存 PNG bytes，Markdown 以 Plain 源码发送。
 - `core/image_service.py`：受限线程池（最多 2 执行、4 排队，准入 6）、20 秒总超时、取消事件和关闭等待；后台任务结束前持续占用准入名额，避免超时后无界积压。
-- `core/site_store.py`：同一 SQLite 连接管理站点、组合、栏目、推送任务、任务 UMO 和投递执行/目标/页；schema v5 事务迁移、外键 `ON DELETE RESTRICT`、组合引用删除拒绝、任务 revision 控制和投递状态恢复。
+- `core/site_store.py`：同一 SQLite 连接管理站点、组合、栏目、推送任务、任务 UMO 和投递执行/目标/页；schema v6 事务迁移、外键 `ON DELETE RESTRICT`、组合引用删除拒绝、任务 revision 控制和投递状态恢复。
 - 组合预览：`core/profile_api.py` 读取一份组合版本和站点，按栏目配置顺序调用 `ContentService.preview_cached`；只请求选中类型，复用缓存和并发预算，逐栏截取返回条数，不修改完整快照。
 - 组合文字输出：预览成功或部分成功后，`core/profile_render.py` 基于同一份响应生成 `outputs.text` 和 `outputs.markdown`；后台只切换/复制/下载已接受响应，不再次获取。全部失败不生成输出。
 - 组合图片：预览成功后，`core/profile_api.py` 将同一次响应的结构化栏目保存到 `ImageSnapshotStore` 并返回不透明 ID。生成时根据 ID 取回快照，校验用户、组合/站点 revision 和启用状态，再由 `ProfileImageService` 在线程池中调用 `ProfileImageRenderer`；不重新请求上游、不读取后续缓存。图片以认证 JSON 的 PNG base64 返回，后台用 data URL 展示和逐页下载，不使用静态文件路径。
@@ -65,26 +66,26 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 公共快照字段为来源站点、内容类型、endpoint 和获取时间；每日新闻另有内容日期、旧/未知日期警告、有序新闻条目、微语和来源链接。Bilibili 热搜另有有序标题/链接条目和实际条数；知乎热榜另有有序标题、摘要、原始热度文本、链接和实际条数；抖音热搜另有有序标题、原始整数热度、链接和实际条数；今日头条热榜另有有序标题、原始整数热度、链接和实际条数，没有排名、摘要、标签或更新时间字段。五种快照不共享字段语义，不把抓取时间当内容日期或更新时间，也不把列表序号当排名。
 
-每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，今日头条热榜使用 `/v2/toutiao`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音/今日头条 `data: []` 都是合法空内容；必要结构错误则整次解析失败。预览内容不持久化到数据库或磁盘；当前使用进程内缓存，停用/重载清空，进程重启不会恢复。内容组合、栏目、推送任务、任务 UMO 和投递执行/目标/页持久化在 SQLite schema v5；组合不复制内容快照，任务不复制组合内容，投递只保存计划、摘要/哈希和结果，不保存完整正文或 PNG。
+每日新闻使用 `/v2/60s`，Bilibili 热搜使用 `/v2/bili`，知乎热榜使用 `/v2/zhihu`，抖音热搜使用 `/v2/douyin`，今日头条热榜使用 `/v2/toutiao`，均保留站点基础路径前缀。每日新闻 `data.news: []`、Bilibili/知乎/抖音/今日头条 `data: []` 都是合法空内容；必要结构错误则整次解析失败。预览内容不持久化到数据库或磁盘；当前使用进程内缓存，停用/重载清空，进程重启不会恢复。内容组合、栏目、推送任务（含可选每日计划）、任务 UMO 和投递执行/目标/页持久化在 SQLite schema v6；组合不复制内容快照，任务不复制组合内容，投递只保存计划、摘要/哈希和结果，不保存完整正文或 PNG。
 
 ## 实现默认选择
 
 - 异步 Python 3.12；AstrBot 基线 v4.29.1，详见开发手册的兼容性基线。
 - 使用一个异步 HTTP 客户端，明确依赖约束。
-- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；内容组合由 `core/profiles.py`、`core/profile_api.py`、`profile_web.py` 管理，数据复用同一 `SiteStore`；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合和站点引用关系已实现；任务和逐目标逐页记录已持久化，后台手动投递已接入 aiocqhttp；组合文字/Markdown 和分页图片已实现。聊天纯文字查询已实现，聊天图片查询和调度未实现。
+- 站点配置由 `core/sites.py`（校验与站点服务）和 `core/site_store.py`（SQLite/aiosqlite）实现；内容组合由 `core/profiles.py`、`core/profile_api.py`、`profile_web.py` 管理，数据复用同一 `SiteStore`；后台管理由 `core/site_api.py`、`site_web.py` 和 `views/sites/` 实现。内容获取由 `core/content_client.py`、`core/content_service.py`、`core/news.py`、`core/news_service.py`、`core/bili.py`、`core/bili_service.py`、`core/zhihu.py`、`core/zhihu_service.py`、`core/douyin.py`、`core/douyin_service.py`、`core/toutiao.py`、`core/toutiao_service.py`、`core/content_api.py`、`core/news_api.py`、`content_web.py` 和 `news_web.py` 实现；组合和站点引用关系已实现；任务和逐目标逐页记录已持久化，后台手动投递已接入 aiocqhttp；组合文字/Markdown 和分页图片已实现。聊天纯文字和图片查询已实现；每日计划配置与理论预览已实现，实际调度未实现。
 - SQLite 在宿主插件数据目录保存站点、组合、任务及投递执行/目标/页记录；删除任务不删除既有执行记录。
 - 少量全局设置使用 AstrBot 配置 schema；业务实体只有一个持久化真源。
 - 后台使用宿主插件视图及 bridge，当前站点页采用简单 HTML/CSS/JS，不引入 CDN、外部字体或独立服务器。
 - 图片使用 Pillow 和宿主可验证的 CJK 字体，渲染器不调用宿主 Web/消息 API；字体环境缺失时明确报错，文字/Markdown 保持可用。
-- 调度尚未实现；设计上采用单实例确定性调度，不依赖大模型任务工具。
+- 实际调度尚未实现；当前只保存每日计划和计算理论下次时间。设计上采用单实例确定性调度，不依赖大模型任务工具。
 
 ## 生命周期
 
-启动：验证 → 数据迁移 → 打开内容客户端 → 宿主集成。当前没有调度恢复流程。
-配置更新：验证并事务保存站点、组合和任务；保存不触发获取或投递，不存在定时执行计划。
+启动：验证 → 数据迁移 → 打开内容客户端 → 宿主集成。当前没有后台调度循环或调度恢复流程。
+配置更新：验证并事务保存站点、组合和任务（含可选每日计划）；保存不触发获取或投递，不创建定时执行计划。
 停用/重载：置为未启用 → 关闭投递服务并等待自有任务清理 → 关闭图片服务（取消/等待渲染线程）→ 清空图片快照 → 关闭内容客户端 → 关闭存储。
 
-当前存储在插件 `initialize()` 中打开并迁移至 SQLite schema v5，随后打开共享内容客户端。内容客户端打开失败时依次关闭投递、内容、图片、快照和存储资源。`terminate()` 按上面的停用顺序释放资源。各 Web API 在 `__init__` 中注册，初始化完成前及停用后通过实例启用标志拒绝调用；重载时同路由同方法替换旧处理器。投递执行在关闭、取消或重开后保留已知结果；未开始项记 skipped，可能进入外部调用的项保守记 unknown，不恢复发送。
+当前存储在插件 `initialize()` 中打开并迁移至 SQLite schema v6，随后打开共享内容客户端。内容客户端打开失败时依次关闭投递、内容、图片、快照和存储资源。`terminate()` 按上面的停用顺序释放资源。各 Web API 在 `__init__` 中注册，初始化完成前及停用后通过实例启用标志拒绝调用；重载时同路由同方法替换旧处理器。投递执行在关闭、取消或重开后保留已知结果；未开始项记 skipped，可能进入外部调用的项保守记 unknown，不恢复发送。
 
 4.29.1 的停用/重载会调用插件 `terminate()`（插件类自身定义 `__del__` 时优先）并解绑处理器；同路由同方法的 Web API 会替换。新增注册项仍须按目标版本源码和实测逐项核验。投递核心已在外部调用前重新检查配置和白名单；已移除目标不会继续接收尚未开始的页。
 

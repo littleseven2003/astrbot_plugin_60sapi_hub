@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
+from .schedule import DailySchedule, parse_schedule
 from .profiles import (
     ContentProfileService,
     ProfileNotFoundError,
@@ -32,6 +33,7 @@ MAX_TASK_UMOS = 20
 MAX_UMO_LENGTH = 512
 MAX_PLATFORM_ID_LENGTH = 128
 MAX_SESSION_ID_LENGTH = 384
+SCHEDULE_UNSET = object()
 SUPPORTED_OUTPUT_FORMATS = ("text", "markdown", "image")
 OUTPUT_FORMAT_LABELS = {
     "text": "纯文字",
@@ -96,6 +98,7 @@ class PushTask:
     revision: int
     created_at: str
     updated_at: str
+    schedule: DailySchedule | None = None
 
     @property
     def output_label(self) -> str:
@@ -122,6 +125,7 @@ class TaskCreate:
     profile_id: object
     output_format: object
     umos: object
+    schedule: object = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +135,7 @@ class TaskUpdate:
     output_format: object
     umos: object
     expected_revision: object
+    schedule: object = SCHEDULE_UNSET
 
 
 class PushTaskService:
@@ -183,6 +188,7 @@ class PushTaskService:
         profile_id = _normalize_profile_id(data.profile_id)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
+        schedule = parse_schedule(data.schedule)
         await self._require_profile(profile_id)
         try:
             stored = await self._store.create_task(
@@ -191,6 +197,9 @@ class PushTaskService:
                 profile_id=profile_id,
                 output_format=output_format,
                 umos=umos,
+                schedule_kind=schedule.kind if schedule else None,
+                schedule_timezone=schedule.timezone if schedule else None,
+                schedule_time=schedule.time.strftime("%H:%M") if schedule else None,
             )
         except Exception as exc:
             raise TaskStorageError("保存推送任务失败。") from exc
@@ -207,6 +216,10 @@ class PushTaskService:
         profile_id = _normalize_profile_id(data.profile_id)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
+        if data.schedule is SCHEDULE_UNSET:
+            schedule = (await self.get_task(normalized_id)).schedule
+        else:
+            schedule = parse_schedule(data.schedule)
         await self._require_profile(profile_id)
         try:
             stored = await self._store.update_task(
@@ -216,6 +229,9 @@ class PushTaskService:
                 output_format=output_format,
                 umos=umos,
                 expected_revision=expected_revision,
+                schedule_kind=schedule.kind if schedule else None,
+                schedule_timezone=schedule.timezone if schedule else None,
+                schedule_time=schedule.time.strftime("%H:%M") if schedule else None,
             )
         except TaskRecordNotFoundError as exc:
             raise TaskNotFoundError(exc.task_id) from exc
@@ -377,6 +393,16 @@ def _normalize_profile_id(value: object) -> str:
 
 
 def _to_task(stored: StoredTask) -> PushTask:
+    schedule = None
+    if stored.schedule_kind is not None:
+        try:
+            schedule = parse_schedule({
+                "kind": stored.schedule_kind,
+                "timezone": stored.schedule_timezone,
+                "time": stored.schedule_time,
+            })
+        except Exception:
+            schedule = None
     return PushTask(
         id=stored.id,
         name=stored.name,
@@ -387,6 +413,7 @@ def _to_task(stored: StoredTask) -> PushTask:
         revision=stored.revision,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        schedule=schedule,
     )
 
 

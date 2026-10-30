@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from .profiles import (
@@ -10,6 +11,13 @@ from .profiles import (
     ProfileNotFoundError,
     ProfileStorageError,
     ProfileValidationError,
+)
+from .schedule import (
+    ScheduleError,
+    ScheduleTimezoneUnavailableError,
+    ScheduleValidationError,
+    next_daily_run,
+    parse_schedule,
 )
 from .sites import SiteService, SiteStorageError
 from .tasks import (
@@ -20,6 +28,7 @@ from .tasks import (
     TaskNotFoundError,
     TaskStorageError,
     TaskUpdate,
+    SCHEDULE_UNSET,
     TaskValidationError,
 )
 
@@ -38,12 +47,16 @@ class TaskApi:
         tasks: PushTaskService,
         profiles: ContentProfileService,
         sites: SiteService,
+        *,
+        clock=None,
     ) -> None:
         self._tasks = tasks
         self._profiles = profiles
         self._sites = sites
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def list_tasks(self) -> TaskApiResult:
+        now = self._clock()
         try:
             tasks = await self._tasks.list_tasks()
             profiles = {
@@ -62,6 +75,7 @@ class TaskApi:
                         task,
                         profiles.get(task.profile_id),
                         sites,
+                        now,
                     )
                     for task in tasks
                 ],
@@ -69,6 +83,7 @@ class TaskApi:
         )
 
     async def get_task(self, task_id: str) -> TaskApiResult:
+        now = self._clock()
         try:
             task = await self._tasks.get_task(task_id)
             profile = await self._profiles.get_profile(task.profile_id)
@@ -83,9 +98,10 @@ class TaskApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(_task_dict(task, profile, sites))
+        return _ok(_task_dict(task, profile, sites, now))
 
     async def create_task(self, payload: object) -> TaskApiResult:
+        now = self._clock()
         data = _payload_dict(payload)
         if data is None:
             return _invalid_body_error()
@@ -99,12 +115,15 @@ class TaskApi:
                     profile_id=data.get("profile_id"),
                     output_format=data.get("output_format"),
                     umos=data.get("umos"),
+                    schedule=data.get("schedule"),
                 ),
             )
             profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
-        except (TaskValidationError, ProfileValidationError) as exc:
+        except (TaskValidationError, ProfileValidationError, ScheduleValidationError) as exc:
             return _validation_error(exc)
+        except ScheduleTimezoneUnavailableError as exc:
+            return _error(400, str(exc), code="schedule_timezone_unavailable")
         except ProfileNotFoundError:
             return _profile_not_found_error()
         except TaskStorageError:
@@ -113,13 +132,14 @@ class TaskApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(_task_dict(task, profile, sites), status_code=201)
+        return _ok(_task_dict(task, profile, sites, now), status_code=201)
 
     async def update_task(
         self,
         task_id: str,
         payload: object,
     ) -> TaskApiResult:
+        now = self._clock()
         data = _payload_dict(payload)
         if data is None:
             return _invalid_body_error()
@@ -135,12 +155,19 @@ class TaskApi:
                     output_format=data.get("output_format"),
                     umos=data.get("umos"),
                     expected_revision=data.get("expected_revision"),
+                    schedule=(
+                        data["schedule"]
+                        if "schedule" in data
+                        else SCHEDULE_UNSET
+                    ),
                 ),
             )
             profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
-        except (TaskValidationError, ProfileValidationError) as exc:
+        except (TaskValidationError, ProfileValidationError, ScheduleValidationError) as exc:
             return _validation_error(exc)
+        except ScheduleTimezoneUnavailableError as exc:
+            return _error(400, str(exc), code="schedule_timezone_unavailable")
         except TaskNotFoundError:
             return _not_found_error()
         except ProfileNotFoundError:
@@ -153,7 +180,7 @@ class TaskApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(_task_dict(task, profile, sites))
+        return _ok(_task_dict(task, profile, sites, now))
 
     async def delete_task(
         self,
@@ -185,8 +212,24 @@ def _task_dict(
     task: PushTask,
     profile: Any,
     sites: dict[str, Any],
+    now: datetime,
 ) -> dict[str, Any]:
     site = sites.get(profile.site_id) if profile is not None else None
+    schedule = task.schedule
+    preview = None
+    if schedule is not None:
+        try:
+            next_run = next_daily_run(schedule, now)
+            preview = {
+                "evaluated_at": now.astimezone(timezone.utc).isoformat(),
+                "next_run_at": next_run.isoformat(),
+            }
+        except ScheduleError:
+            preview = {
+                "evaluated_at": now.astimezone(timezone.utc).isoformat(),
+                "next_run_at": None,
+                "error": "schedule_timezone_unavailable",
+            }
     return {
         "id": task.id,
         "name": task.name,
@@ -203,6 +246,8 @@ def _task_dict(
         "revision": task.revision,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
+        "schedule": schedule.to_dict() if schedule else None,
+        "schedule_preview": preview,
     }
 
 
@@ -211,10 +256,14 @@ def _payload_dict(payload: object) -> dict[str, Any] | None:
 
 
 def _reject_enabled(data: dict[str, Any]) -> TaskApiResult | None:
-    if "enabled" in data or "schedule" in data or "next_run" in data:
+    forbidden = {
+        "enabled", "next_run", "next_run_at", "schedule_preview",
+        "running", "last_run", "last_run_at",
+    }
+    if any(field in data for field in forbidden):
         return _error(
             400,
-            "本轮只保存任务配置，不接受启用、调度或发送字段。",
+            "不接受启用、运行状态或调度状态字段。",
             code="unsupported_enable_request",
         )
     return None

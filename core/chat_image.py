@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import secrets
 from dataclasses import dataclass
 
 from .chat_content import (
@@ -53,7 +54,7 @@ class ChatImageQuery:
             return AUTH_TEXT
         except _Unavailable:
             return CONFIG_TEXT
-        owner = _owner(umo)
+        owner = _owner()
         try:
             preview = await self._previews.preview_profile(
                 {
@@ -98,11 +99,10 @@ class ChatImageQuery:
         )
 
 
-def _owner(umo: str) -> str:
-    # Internal per-session identity; never a public token and never an empty
+def _owner() -> str:
+    # Fresh internal identity per query; never user-supplied, never an empty
     # Dashboard owner. Snapshot IDs remain unguessable and are not exposed.
-    digest = hashlib.sha256(umo.encode("utf-8")).hexdigest()
-    return f"chat:{digest}"
+    return f"chat:{secrets.token_urlsafe(24)}"
 
 
 def _decode_pages(data: object) -> tuple[bytes, ...] | None:

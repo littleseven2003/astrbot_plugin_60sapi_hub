@@ -516,8 +516,8 @@ class ImageFixture:
         self.owners = []
         self.preview_owners = []
         self.pages = [
-            {"index": 2, "png_base64": "iVBORw0KGgo=", "sha256": None},
-            {"index": 1, "png_base64": "iVBORw0KGgo=", "sha256": None},
+            {"index": 2, "png_base64": "iVBORw0KGgoB", "sha256": None},
+            {"index": 1, "png_base64": "iVBORw0KGgoA", "sha256": None},
         ]
 
     async def get_config_snapshot(self, task_id):
@@ -559,7 +559,7 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
         service = self.build()
         reply = await service.handle("bot:GroupMessage:g", "/60s image task-image")
         self.assertEqual(reply.page_count, 2)
-        self.assertEqual(reply.pages, (b"\x89PNG\r\n\x1a\n", b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(reply.pages, (b"\x89PNG\r\n\x1a\n\x00", b"\x89PNG\r\n\x1a\n\x01"))
         self.assertIn("共 2 页", reply.text)
         self.assertTrue(self.f.owners[0].startswith("chat:"))
         self.assertEqual(self.f.owners[0], self.f.preview_owners[0])
@@ -653,6 +653,36 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         await self.tasks.update_task(self.task.id, TaskUpdate(
             name=current.name, profile_id=current.profile_id,
             output_format=current.output_format, umos=[],
+            expected_revision=current.revision,
+        ))
+        self.preview.release.set()
+        self.preview.render_release.set()
+        self.assertEqual(await pending, "任务或配置已变化，请重新查询。")
+
+    async def test_modify_profile_during_preview_suppresses_image(self) -> None:
+        import asyncio
+        from core.profiles import ProfileUpdate
+        pending = asyncio.create_task(self.query.query("bot:GroupMessage:g", self.task.id))
+        await self.preview.started.wait()
+        current = await self.profiles.get_profile(self.profile.id)
+        await self.profiles.update_profile(self.profile.id, ProfileUpdate(
+            name="图片组合已改", site_id=current.site_id,
+            items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+            expected_revision=current.revision,
+        ))
+        self.preview.release.set()
+        self.preview.render_release.set()
+        self.assertEqual(await pending, "任务或配置已变化，请重新查询。")
+
+    async def test_disable_site_during_preview_suppresses_image(self) -> None:
+        import asyncio
+        from core.sites import SiteUpdate
+        pending = asyncio.create_task(self.query.query("bot:GroupMessage:g", self.task.id))
+        await self.preview.started.wait()
+        current = await self.sites.get_site(self.site.id)
+        await self.sites.update_site(self.site.id, SiteUpdate(
+            name=current.name, base_url=current.base_url, enabled=False,
+            timeout_seconds=current.timeout_seconds,
             expected_revision=current.revision,
         ))
         self.preview.release.set()

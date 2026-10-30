@@ -47,6 +47,17 @@ class SixtySAPIHub(Star):
         self.content = ContentService(self.sites)
         self.profiles = ContentProfileService(self.sites)
         self.tasks = PushTaskService(self.profiles, self.sites.store)
+        # Shared image resources and the complete Dashboard API must exist
+        # before chat services reference profile_api.
+        self.image_snapshots = ImageSnapshotStore()
+        self.image_service = ProfileImageService()
+        self.profile_api = ProfileApi(
+            self.profiles,
+            self.content,
+            self.sites,
+            image_snapshots=self.image_snapshots,
+            image_service=self.image_service,
+        )
         self.chat_commands = ChatCommandService(
             self.tasks,
             self.profiles,
@@ -56,15 +67,6 @@ class SixtySAPIHub(Star):
                 ProfileApi(self.profiles, self.content, self.sites),
             ),
             image_query=ChatImageQuery(self.tasks, self.profile_api),
-        )
-        self.image_snapshots = ImageSnapshotStore()
-        self.image_service = ProfileImageService()
-        self.profile_api = ProfileApi(
-            self.profiles,
-            self.content,
-            self.sites,
-            image_snapshots=self.image_snapshots,
-            image_service=self.image_service,
         )
         self.delivery = DeliveryService(
             tasks=self.tasks,

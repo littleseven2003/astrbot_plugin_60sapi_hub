@@ -13,12 +13,24 @@ from core.chat_image import ChatImageQuery, IMAGE_FAILED_TEXT
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
-from core.image_snapshots import ImageSnapshotStore
+from core.image_snapshots import ImageSnapshot, ImageSnapshotStore
 from core.profile_api import ProfileApi
 from core.profile_image import FontUnavailableError, find_cjk_font
 from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
+
+
+class RecordingStore(ImageSnapshotStore):
+    def __init__(self):
+        super().__init__()
+        self.records: list[ImageSnapshot] = []
+
+    def put(self, **kwargs):
+        snapshot = super().put(**kwargs)
+        if snapshot is not None:
+            self.records.append(snapshot)
+        return snapshot
 
 
 def has_font() -> bool:
@@ -61,7 +73,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.snapshots = ImageSnapshotStore()
+        self.snapshots = RecordingStore()
         self.image_service = ProfileImageService()
         self.api = ProfileApi(
             self.profiles, self.content, self.sites,
@@ -103,6 +115,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 path = self.png_dir / f"page-{index}.png"
                 image.save(path)
         self.assertTrue(all(size == (900, 1200) for size in sizes))
+        self.assertEqual(len(set(reply.pages)), reply.page_count)
         print("PNG_OUTPUT", self.png_dir, [p.name for p in sorted(self.png_dir.glob("*.png"))])
         first_calls = len(self.calls)
         self.assertGreaterEqual(first_calls, 1)
@@ -110,8 +123,15 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         second = await self.query.query("bot:GroupMessage:g", self.task.id)
         self.assertEqual(second.page_count, reply.page_count)
         self.assertEqual(len(self.calls), first_calls, "cache must avoid upstream")
+        self.assertEqual(len(self.snapshots.records), 2)
+        self.assertEqual(len({record.owner for record in self.snapshots.records}), 2)
+        self.assertTrue(all(record.owner.startswith("chat:") for record in self.snapshots.records))
+        snapshot_id = self.snapshots.records[-1].id
+        denied = await self.api.generate_image(
+            self.profile.id, {"snapshot_id": snapshot_id}, owner="dashboard-owner",
+        )
+        self.assertEqual(denied.status_code, 403)
 
-    @unittest.skipUnless(has_font(), "no CJK font available")
     @unittest.skipUnless(has_font(), "no CJK font available")
     async def test_partial_failure_still_renders_images(self) -> None:
         self.partial = True
@@ -137,7 +157,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret upstream", result)
 
     async def test_font_missing_returns_safe_text(self) -> None:
-        from core.image_snapshots import ImageSnapshotStore
+        from core.image_snapshots import ImageSnapshot, ImageSnapshotStore
         broken_service = ProfileImageService(font_path="/definitely/missing/font.ttf")
         broken_api = ProfileApi(
             self.profiles, self.content, self.sites,

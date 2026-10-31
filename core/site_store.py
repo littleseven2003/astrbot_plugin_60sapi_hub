@@ -1441,6 +1441,10 @@ class SiteStore:
                     or str(row["next_run_at"]) != scheduled_for
                 ):
                     return
+                # The scan may be stale after a backward clock adjustment.
+                # Never claim a slot that is still in the future.
+                if _iso_time(scheduled_for) > _iso_time(now):
+                    return
                 cursor = await connection.execute(
                     """
                     INSERT INTO push_schedule_claims (
@@ -2282,6 +2286,13 @@ def _row_to_delivery(
             ) for r in page_rows
         ),
     )
+
+
+def _iso_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _row_to_task(

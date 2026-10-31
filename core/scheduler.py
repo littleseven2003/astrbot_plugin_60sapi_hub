@@ -187,8 +187,10 @@ class SchedulerService:
         scan_now = _as_utc(now or self._clock())
         due = await self._store.list_due_schedule_states(scan_now.isoformat())
         if self._checking:
+            current = self._now()
             for state in due:
-                await self._skip(state, "capacity", self._now())
+                if _state_time(state.next_run_at) <= current:
+                    await self._skip(state, "capacity", current)
             return 0
         self._checking = True
         claimed_count = 0
@@ -199,6 +201,10 @@ class SchedulerService:
                 # Do not reuse the batch snapshot. Configuration reads and the
                 # previous task may take time; the late window is per task.
                 current = self._now()
+                if _state_time(state.next_run_at) > current:
+                    # The scan saw a due slot, but the clock moved backward
+                    # while earlier work was running. Keep the future plan.
+                    continue
                 if len(self._active) >= self._max_concurrent:
                     await self._skip(state, "capacity", current)
                     continue
@@ -237,6 +243,10 @@ class SchedulerService:
             await self._skip(state, exemplify(exc.field), current)
             return False
         scheduled = _state_time(state.next_run_at)
+        if current < scheduled:
+            # Configuration reads may overlap a backward clock adjustment.
+            # Do not claim or skip a future slot.
+            return False
         late = current - scheduled
         if late > self._late_window:
             await self._skip(state, "late", current)
@@ -315,6 +325,9 @@ class SchedulerService:
             self._active.discard(task.id)
 
     async def _skip(self, state: ScheduleState, reason: str, now: datetime) -> None:
+        if _state_time(state.next_run_at) > now:
+            # Stale scan after a backward clock adjustment: preserve future.
+            return
         try:
             task = await self._tasks.get_task(state.task_id)
         except Exception:

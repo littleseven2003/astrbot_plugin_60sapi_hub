@@ -266,6 +266,41 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await content.close()
 
+    async def test_clock_back_before_due_keeps_future_plan(self):
+        task = await self.task()
+        await self.scheduler.enable_task(task.id, 1)
+        self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        original = self.tasks.get_config_snapshot
+
+        async def blocked(task_id):
+            started.set()
+            await release.wait()
+            return await original(task_id)
+
+        self.tasks.get_config_snapshot = blocked
+        try:
+            running = asyncio.create_task(self.scheduler.check_once())
+            await asyncio.wait_for(started.wait(), 3)
+            self.clock_now = datetime(2026, 1, 1, 0, 29, tzinfo=timezone.utc)
+            release.set()
+            self.assertEqual(await asyncio.wait_for(running, 3), 0)
+            self.assertEqual(self.sender.calls, [])
+            state = await self.sites.store.get_schedule_state(task.id)
+            self.assertEqual(state.next_run_at, "2026-01-01T00:30:00+00:00")
+            claims = await self.sites.store.list_schedule_claims(limit=10, offset=0)
+            self.assertEqual(claims, [])
+            self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+            self.assertEqual(await self.scheduler.check_once(), 1)
+            self.assertEqual(len(self.sender.calls), 1)
+            state = await self.sites.store.get_schedule_state(task.id)
+            self.assertEqual(state.next_run_at, "2026-01-02T00:30:00+00:00")
+            self.assertEqual(await self.scheduler.check_once(), 0)
+            self.assertEqual(len(self.sender.calls), 1)
+        finally:
+            self.tasks.get_config_snapshot = original
+
     async def test_unknown_result_is_not_retried(self):
         task = await self.task()
         await self.scheduler.enable_task(task.id, 1)

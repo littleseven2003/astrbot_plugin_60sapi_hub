@@ -28,6 +28,7 @@ from .core.tasks import PushTaskService
 from .core.astrbot_sender import AstrBotAiocqhttpSender
 from .core.delivery import DeliveryLimits, DeliveryService
 from .core.delivery_api import DeliveryApi
+from .core.scheduler import SchedulerService
 from .core.chat_commands import ChatCommandService
 from .core.chat_content import ChatContentQuery
 from .core.chat_image import ChatImageQuery, ChatImageReply
@@ -77,6 +78,11 @@ class SixtySAPIHub(Star):
             sender=AstrBotAiocqhttpSender(context),
             limits=DeliveryLimits(),
         )
+        self.scheduler = SchedulerService(
+            tasks=self.tasks,
+            store=self.sites.store,
+            delivery=self.delivery,
+        )
         self._active = False
         self._lifecycle_generation = 0
         self._site_web = SiteWeb(
@@ -95,7 +101,10 @@ class SixtySAPIHub(Star):
             is_active=lambda: self._active,
         )
         self._task_web = TaskWeb(
-            TaskApi(self.tasks, self.profiles, self.sites),
+            TaskApi(
+                self.tasks, self.profiles, self.sites,
+                scheduler=self.scheduler,
+            ),
             plugin_name=plugin_name,
             is_active=lambda: self._active,
         )
@@ -156,6 +165,21 @@ class SixtySAPIHub(Star):
                 self.image_snapshots.close()
                 await self.sites.close()
             raise
+        scheduler = getattr(self, "scheduler", None)
+        try:
+            if scheduler is not None:
+                await scheduler.start()
+        except Exception:
+            if scheduler is not None:
+                await scheduler.close()
+            await self.delivery.close()
+            await self.content.close()
+            try:
+                await self.image_service.close()
+            finally:
+                self.image_snapshots.close()
+                await self.sites.close()
+            raise
         self._active = True
 
     async def terminate(self) -> None:
@@ -163,13 +187,18 @@ class SixtySAPIHub(Star):
         # 单调递增；停用后不得重置或复用，否则同一实例重新初始化时旧在途处理会通过校验。
         self._lifecycle_generation += 1
         try:
-            await self.delivery.close()
+            scheduler = getattr(self, "scheduler", None)
+            if scheduler is not None:
+                await scheduler.close()
         finally:
             try:
-                await self.image_service.close()
+                await self.delivery.close()
             finally:
-                self.image_snapshots.close()
                 try:
-                    await self.content.close()
+                    await self.image_service.close()
                 finally:
-                    await self.sites.close()
+                    self.image_snapshots.close()
+                    try:
+                        await self.content.close()
+                    finally:
+                        await self.sites.close()

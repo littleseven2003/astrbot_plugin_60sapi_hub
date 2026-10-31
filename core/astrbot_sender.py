@@ -22,6 +22,15 @@ class AstrBotAiocqhttpSender:
     def __init__(self, context: Any) -> None:
         self._context = context
 
+    def supports_umo(self, umo: object) -> bool:
+        if not isinstance(umo, str):
+            return False
+        try:
+            _session, platform_id = self._parse_session(umo)
+            return self._context.get_platform_inst(platform_id) is not None
+        except Exception:
+            return False
+
     async def send(self, message: DeliveryMessage) -> DeliverySendResult:
         try:
             session, platform_id = self._parse_session(message.umo)

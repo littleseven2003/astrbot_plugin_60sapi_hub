@@ -439,6 +439,148 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await self.tasks.list_tasks()
 
+    async def test_v6_schema_migrates_enabled_constraint_and_preserves_task(self) -> None:
+        from core.site_store import SCHEMA_VERSION
+        task = await self.tasks.create_task(TaskCreate(
+            name="v6启用迁移", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
+        ))
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("PRAGMA foreign_keys = OFF")
+            raw.execute("""
+                CREATE TABLE push_tasks_v6 (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    profile_id TEXT NOT NULL REFERENCES content_profiles(id) ON DELETE RESTRICT,
+                    output_format TEXT NOT NULL CHECK (
+                        output_format IN ('text', 'markdown', 'image')
+                    ),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled = 0),
+                    schedule_kind TEXT,
+                    schedule_timezone TEXT,
+                    schedule_time TEXT,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            raw.execute("""
+                INSERT INTO push_tasks_v6
+                SELECT id, name, profile_id, output_format, enabled,
+                       schedule_kind, schedule_timezone, schedule_time,
+                       revision, created_at, updated_at FROM push_tasks
+            """)
+            raw.execute("DROP TABLE push_tasks")
+            raw.execute("ALTER TABLE push_tasks_v6 RENAME TO push_tasks")
+            raw.execute("PRAGMA user_version = 6")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertFalse(loaded.enabled)
+            self.assertEqual(loaded.schedule.time.strftime("%H:%M"), "08:30")
+            with closing(sqlite3.connect(self.db_path)) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+                columns = {
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(push_tasks)",
+                    )
+                }
+                self.assertIn("enabled", columns)
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_v6_schema_migration_failure_rolls_back(self) -> None:
+        from unittest.mock import patch
+        import aiosqlite
+
+        task = await self.tasks.create_task(TaskCreate(
+            name="v6迁移失败", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
+        ))
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("PRAGMA foreign_keys = OFF")
+            raw.execute("""
+                CREATE TABLE push_tasks_v6b (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    profile_id TEXT NOT NULL REFERENCES content_profiles(id) ON DELETE RESTRICT,
+                    output_format TEXT NOT NULL CHECK (
+                        output_format IN ('text', 'markdown', 'image')
+                    ),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled = 0),
+                    schedule_kind TEXT,
+                    schedule_timezone TEXT,
+                    schedule_time TEXT,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            raw.execute("""
+                INSERT INTO push_tasks_v6b
+                SELECT id, name, profile_id, output_format, enabled,
+                       schedule_kind, schedule_timezone, schedule_time,
+                       revision, created_at, updated_at FROM push_tasks
+            """)
+            raw.execute("DROP TABLE push_tasks")
+            raw.execute("ALTER TABLE push_tasks_v6b RENAME TO push_tasks")
+            raw.execute("PRAGMA user_version = 6")
+            raw.commit()
+        finally:
+            raw.close()
+        original_execute = aiosqlite.Connection.execute
+
+        def failing_execute(connection, sql, *args, **kwargs):
+            if "CREATE TABLE IF NOT EXISTS push_schedule_state" in sql:
+                raise RuntimeError("forced v6 schedule migration failure")
+            return original_execute(connection, sql, *args, **kwargs)
+
+        reopened = SiteService(self.db_path)
+        with patch.object(aiosqlite.Connection, "execute", failing_execute):
+            with self.assertRaises(Exception) as caught:
+                await reopened.open()
+        cause = caught.exception
+        while cause is not None and "forced v6 schedule migration failure" not in str(cause):
+            cause = cause.__cause__
+        self.assertIsNotNone(cause)
+        await reopened.close()
+        with closing(sqlite3.connect(self.db_path)) as check:
+            self.assertEqual(
+                check.execute("PRAGMA user_version").fetchone()[0], 6,
+            )
+            sql = check.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='push_tasks'",
+            ).fetchone()[0]
+            self.assertIn("enabled = 0", sql)
+            self.assertEqual(
+                check.execute(
+                    "SELECT name FROM push_tasks WHERE id = ?", (task.id,),
+                ).fetchone()[0],
+                "v6迁移失败",
+            )
+            self.assertEqual(
+                check.execute("SELECT COUNT(*) FROM push_task_umos").fetchone()[0],
+                1,
+            )
+        self.sites = SiteService(self.db_path)
+        await self.sites.open()
+
     async def test_cancelled_create_does_not_persist(self) -> None:
         await self.sites.store._lock.acquire()
         try:

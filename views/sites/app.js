@@ -2730,7 +2730,10 @@ function schedulePreviewText(task) {
   if (!preview || !preview.next_run_at) {
     return "理论下次时间暂不可用。";
   }
-  return `理论下次时间（服务端 UTC，任务尚未启用）：${preview.next_run_at}` +
+  const note = task.enabled
+    ? "任务已启用；实际执行见实际下次时间"
+    : "任务尚未启用";
+  return `理论下次时间（服务端 UTC，${note}）：${preview.next_run_at}` +
     `；评估于 ${preview.evaluated_at}`;
 }
 
@@ -2872,10 +2875,18 @@ function renderTasks() {
     const preview = document.createElement("span");
     preview.className = "task-schedule-preview";
     preview.textContent = schedulePreviewText(task);
+    const runtime = document.createElement("span");
+    if (task.next_run_at) {
+      runtime.textContent =
+        `实际下次执行（服务端 UTC）：${task.next_run_at}`;
+      runtime.className = "task-schedule-runtime";
+    }
     const disabled = document.createElement("span");
     disabled.className = "task-disabled";
-    disabled.textContent = "未启用 · 仅管理员手动测试";
-    meta.append(profile, output, schedule, preview, targets, disabled);
+    disabled.textContent = task.enabled
+      ? "已启用 · 每日调度"
+      : "未启用 · 仅管理员手动测试";
+    meta.append(profile, output, schedule, preview, runtime, targets, disabled);
 
     const actions = document.createElement("div");
     actions.className = "profile-card-actions";

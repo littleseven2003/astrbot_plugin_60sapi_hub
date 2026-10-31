@@ -178,6 +178,16 @@ class DeliveryService:
         self._pending = 0
         self._running = 0
 
+    def supports_umo(self, umo: object) -> bool:
+        """发送适配器是否声明支持该 UMO；未知能力按可用处理。"""
+        checker = getattr(self._sender, "supports_umo", None)
+        if checker is None:
+            return True
+        try:
+            return bool(checker(umo))
+        except Exception:
+            return False
+
     async def execute(
         self,
         task_id: object,

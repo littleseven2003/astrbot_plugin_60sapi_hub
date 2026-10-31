@@ -112,6 +112,23 @@ class AstrBotAiocqhttpSenderTest(unittest.IsolatedAsyncioTestCase):
     async def _noop_metric(**kwargs) -> None:
         return None
 
+    def test_supports_umo_uses_same_target_validation(self) -> None:
+        cases = {
+            "demo_qq_01:GroupMessage:123": True,
+            "demo_qq_01:FriendMessage:456": True,
+            "demo_qq_01:GroupMessage:123456_789": True,
+            "demo_qq_01:GroupMessage:abc": False,
+            "demo_qq_01:FriendMessage:abc": False,
+            "demo_qq_01:GroupMessage:123_": False,
+            "demo_qq_01:GroupMessage:123__456": False,
+            "missing:GroupMessage:123": False,
+            "telegram_01:GroupMessage:123": False,
+            "demo_qq_01:OtherMessage:123": False,
+        }
+        for umo, expected in cases.items():
+            with self.subTest(umo=umo):
+                self.assertEqual(self.sender.supports_umo(umo), expected)
+
     async def test_exact_instance_group_and_private_routes(self) -> None:
         group = DeliveryMessage(
             umo="demo_qq_01:GroupMessage:123",

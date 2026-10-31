@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
+
+import httpx
+from core.content_client import ContentHttpClient
+from core.content_service import ContentService
+from core.profile_api import ProfileApi
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,10 +28,19 @@ class FakeSender:
     def __init__(self):
         self.calls = []
         self.modes = []
+        self.hook = None
         self.block = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def supports_umo(self, umo):
+        return True
 
     async def send(self, message: DeliveryMessage) -> DeliverySendResult:
         self.calls.append(message)
+        if self.hook is not None:
+            await self.hook(message)
+        if self.block.is_set():
+            await self.release.wait()
         mode = self.modes.pop(0) if self.modes else "success"
         if mode == "unknown":
             return DeliverySendResult(SendStatus.UNKNOWN, "send_unknown")
@@ -148,6 +163,108 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
         self.assertEqual(await self.scheduler.check_once(), 0)
         self.assertEqual(self.sender.calls, [])
+
+    async def test_second_same_time_task_rechecks_late_window(self):
+        first = await self.task()
+        second = await self.task()
+        await self.scheduler.enable_task(first.id, 1)
+        await self.scheduler.enable_task(second.id, 1)
+        seen = 0
+
+        async def advance(message):
+            nonlocal seen
+            seen += 1
+            if seen == 1:
+                self.clock_now = datetime(
+                    2026, 1, 1, 0, 31, 1, tzinfo=timezone.utc,
+                )
+
+        self.sender.hook = advance
+        self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+        await self.scheduler.check_once()
+        self.assertEqual(len(self.sender.calls), 1)
+        skips = await self.sites.store.list_schedule_skips(limit=10, offset=0)
+        self.assertEqual([item.reason for item in skips], ["late"])
+
+    async def test_already_claimed_slot_advances_without_resend(self):
+        task = await self.task()
+        await self.scheduler.enable_task(task.id, 1)
+        self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 1)
+        self.assertEqual(len(self.sender.calls), 1)
+        enabled = await self.tasks.get_task(task.id)
+        await self.scheduler.disable_task(task.id, enabled.revision)
+        self.clock_now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        enabled = await self.tasks.get_task(task.id)
+        await self.scheduler.enable_task(task.id, enabled.revision)
+        self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 0)
+        self.assertEqual(len(self.sender.calls), 1)
+        state = await self.sites.store.get_schedule_state(task.id)
+        self.assertEqual(state.next_run_at, "2026-01-02T00:30:00+00:00")
+        self.assertEqual(await self.scheduler.check_once(), 0)
+
+    async def test_capacity_is_enforced_in_actual_execution_path(self):
+        first = await self.task()
+        second = await self.task()
+        await self.scheduler.enable_task(first.id, 1)
+        await self.scheduler.enable_task(second.id, 1)
+        self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+        self.sender.block.set()
+        running = asyncio.create_task(self.scheduler.check_once())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await self.scheduler.check_once()
+        self.sender.release.set()
+        await running
+        self.assertEqual(len(self.sender.calls), 1)
+        skips = await self.sites.store.list_schedule_skips(limit=10, offset=0)
+        self.assertIn("capacity", [item.reason for item in skips])
+
+    async def test_real_content_chain_disable_during_wait_suppresses_send(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(request):
+            started.set()
+            await release.wait()
+            return httpx.Response(200, content=json.dumps({
+                "code": 200,
+                "data": {"date": "2026-01-01", "news": ["新闻"]},
+            }).encode())
+
+        content = ContentService(
+            self.sites,
+            client=ContentHttpClient(transport=httpx.MockTransport(handler)),
+        )
+        await content.open()
+        try:
+            api = ProfileApi(self.profiles, content, self.sites)
+            delivery = DeliveryService(
+                tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+                profile_api=api, store=self.sites.store, sender=self.sender,
+                limits=DeliveryLimits(max_execution_seconds=5),
+            )
+            scheduler = SchedulerService(
+                tasks=self.tasks, store=self.sites.store, delivery=delivery,
+                clock=lambda: self.clock_now,
+            )
+            task = await self.task()
+            await scheduler.enable_task(task.id, 1)
+            self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+            running = asyncio.create_task(scheduler.check_once())
+            await asyncio.wait_for(started.wait(), 3)
+            current = await self.tasks.get_task(task.id)
+            await scheduler.disable_task(task.id, current.revision)
+            release.set()
+            await asyncio.wait_for(running, 3)
+            self.assertEqual(self.sender.calls, [])
+            claims = await self.sites.store.list_schedule_claims(limit=10, offset=0)
+            self.assertNotEqual(claims[0].status, "succeeded")
+            await scheduler.close()
+            await delivery.close()
+        finally:
+            await content.close()
 
     async def test_unknown_result_is_not_retried(self):
         task = await self.task()

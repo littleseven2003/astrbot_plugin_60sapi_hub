@@ -74,6 +74,7 @@ class SchedulerService:
         self._late_window = timedelta(seconds=late_window_seconds)
         self._max_concurrent = max(1, max_concurrent)
         self._active: set[str] = set()
+        self._checking = False
         self._loop_task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._closed = False
@@ -183,22 +184,33 @@ class SchedulerService:
 
     async def check_once(self, now: datetime | None = None) -> int:
         """检查一次到期任务，返回认领数量。调用方可注入固定时钟。"""
-        current = _as_utc(now or self._clock())
-        due = await self._store.list_due_schedule_states(current.isoformat())
+        scan_now = _as_utc(now or self._clock())
+        due = await self._store.list_due_schedule_states(scan_now.isoformat())
+        if self._checking:
+            for state in due:
+                await self._skip(state, "capacity", self._now())
+            return 0
+        self._checking = True
         claimed_count = 0
-        for state in due:
-            if self._closed:
-                break
-            if len(self._active) >= self._max_concurrent:
-                await self._skip(state, "capacity", current)
-                continue
-            if state.task_id in self._active:
-                await self._skip(state, "overlap", current)
-                continue
-            claimed = await self._process_state(state, current)
-            if claimed:
-                claimed_count += 1
-        return claimed_count
+        try:
+            for state in due:
+                if self._closed:
+                    break
+                # Do not reuse the batch snapshot. Configuration reads and the
+                # previous task may take time; the late window is per task.
+                current = self._now()
+                if len(self._active) >= self._max_concurrent:
+                    await self._skip(state, "capacity", current)
+                    continue
+                if state.task_id in self._active:
+                    await self._skip(state, "overlap", current)
+                    continue
+                claimed = await self._process_state(state, current)
+                if claimed:
+                    claimed_count += 1
+            return claimed_count
+        finally:
+            self._checking = False
 
     async def _process_state(self, state: ScheduleState, now: datetime) -> bool:
         try:
@@ -208,27 +220,28 @@ class SchedulerService:
             return False
         task = snapshot.task
         schedule = task.schedule
+        current = self._now()
         if schedule is None:
             await self._skip(
                 state,
                 "schedule_invalid" if task.schedule_error else "disabled",
-                now,
+                current,
             )
             return False
         if not task.enabled:
-            await self._skip(state, "disabled", now)
+            await self._skip(state, "disabled", current)
             return False
         try:
             self._validate_snapshot(snapshot)
         except SchedulerValidationError as exc:
-            await self._skip(state, exemplify(exc.field), now)
+            await self._skip(state, exemplify(exc.field), current)
             return False
         scheduled = _state_time(state.next_run_at)
-        late = now - scheduled
+        late = current - scheduled
         if late > self._late_window:
-            await self._skip(state, "late", now)
+            await self._skip(state, "late", current)
             return False
-        next_run = self._next_run(schedule, now)
+        next_run = self._next_run(schedule, current)
         execution_id = _execution_id(task.id, scheduled)
         self._active.add(task.id)
         try:
@@ -240,7 +253,7 @@ class SchedulerService:
                 profile_revision=snapshot.profile_revision or 0,
                 site_revision=snapshot.site_revision or 0,
                 next_run_at=next_run.isoformat(),
-                now=now.isoformat(),
+                now=current.isoformat(),
             )
             if not claimed:
                 return False
@@ -262,20 +275,20 @@ class SchedulerService:
             except asyncio.CancelledError:
                 await self._store.set_schedule_claim_status(
                     execution_id, status="unknown", error_code="cancelled",
-                    now=self._clock().isoformat(),
+                    now=self._now().isoformat(),
                 )
                 raise
             except DeliveryCapacityError:
                 await self._store.set_schedule_claim_status(
                     execution_id, status="skipped", error_code="capacity",
-                    now=self._clock().isoformat(),
+                    now=self._now().isoformat(),
                 )
                 await self._record_claim_skip(task.id, state, "capacity", now)
                 return False
             except DeliveryClosedError:
                 await self._store.set_schedule_claim_status(
                     execution_id, status="unknown", error_code="interrupted",
-                    now=self._clock().isoformat(),
+                    now=self._now().isoformat(),
                 )
                 raise
             except DeliveryError as exc:
@@ -284,18 +297,18 @@ class SchedulerService:
                     code = "config_changed"
                 await self._store.set_schedule_claim_status(
                     execution_id, status="unknown", error_code=code,
-                    now=self._clock().isoformat(),
+                    now=self._now().isoformat(),
                 )
                 return False
             except Exception:
                 await self._store.set_schedule_claim_status(
                     execution_id, status="unknown", error_code="internal_error",
-                    now=self._clock().isoformat(),
+                    now=self._now().isoformat(),
                 )
                 return False
             await self._store.set_schedule_claim_status(
                 execution_id, status=status, error_code=error_code,
-                now=self._clock().isoformat(),
+                now=self._now().isoformat(),
             )
             return True
         finally:

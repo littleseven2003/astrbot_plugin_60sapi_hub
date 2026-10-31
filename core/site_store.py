@@ -1456,6 +1456,23 @@ class SiteStore:
                     ),
                 )
                 if cursor.rowcount != 1:
+                    # The slot was already handled. If the persisted state is
+                    # still stuck on that slot, advance it under the same
+                    # version/state guard; never overwrite a newer plan.
+                    exists = await self._fetchone_unlocked(
+                        "SELECT 1 FROM push_schedule_claims "
+                        "WHERE task_id = ? AND scheduled_for = ?",
+                        (task_id, scheduled_for),
+                    )
+                    if exists is not None:
+                        await connection.execute(
+                            """
+                            UPDATE push_schedule_state
+                            SET next_run_at = ?, updated_at = ?
+                            WHERE task_id = ? AND next_run_at = ?
+                            """,
+                            (next_run_at, now, task_id, scheduled_for),
+                        )
                     return
                 cursor = await connection.execute(
                     """

@@ -182,7 +182,8 @@ class DeliveryService:
         """发送适配器是否声明支持该 UMO；未知能力按可用处理。"""
         checker = getattr(self._sender, "supports_umo", None)
         if checker is None:
-            return True
+            # Unknown sender capability is not an affirmative declaration.
+            return False
         try:
             return bool(checker(umo))
         except Exception:

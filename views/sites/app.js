@@ -230,6 +230,7 @@ const state = {
   editingTaskScheduleRaw: null,
   editingTaskScheduleError: null,
   editingTaskScheduleDirty: false,
+  taskFormDisabled: false,
   deliveryTask: null,
   deliveryPreview: null,
   deliveryBusy: false,
@@ -2733,6 +2734,12 @@ function schedulePreviewText(task) {
     `；评估于 ${preview.evaluated_at}`;
 }
 
+function applyTaskScheduleEnabled() {
+  const disabled = state.taskFormDisabled || elements.taskScheduleFields.hidden;
+  elements.taskScheduleTime.disabled = disabled;
+  elements.taskScheduleTimezone.disabled = disabled;
+}
+
 function setTaskScheduleMode(mode) {
   const daily = mode === "daily";
   elements.taskScheduleNone.checked = !daily;
@@ -2744,6 +2751,7 @@ function setTaskScheduleMode(mode) {
   if (daily && !elements.taskScheduleTimezone.value) {
     elements.taskScheduleTimezone.value = "Asia/Shanghai";
   }
+  applyTaskScheduleEnabled();
 }
 
 function currentTaskScheduleMode() {
@@ -2939,11 +2947,14 @@ function showTaskFormError(message) {
 }
 
 function setTaskFormDisabled(disabled) {
+  state.taskFormDisabled = disabled;
+  elements.taskSaveButton.disabled = disabled;
   for (const control of elements.taskForm.querySelectorAll(
     "input, select, textarea, button",
   )) {
     control.disabled = disabled;
   }
+  applyTaskScheduleEnabled();
   elements.taskForm.setAttribute("aria-busy", String(disabled));
 }
 

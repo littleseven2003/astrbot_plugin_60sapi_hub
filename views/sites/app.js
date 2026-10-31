@@ -132,6 +132,13 @@ const elements = {
   taskProfile: document.getElementById("task-profile"),
   taskOutputFormat: document.getElementById("task-output-format"),
   taskUmos: document.getElementById("task-umos"),
+  taskScheduleNone: document.getElementById("task-schedule-none"),
+  taskScheduleDaily: document.getElementById("task-schedule-daily"),
+  taskScheduleFields: document.getElementById("task-schedule-fields"),
+  taskScheduleTime: document.getElementById("task-schedule-time"),
+  taskScheduleTimezone: document.getElementById("task-schedule-timezone"),
+  taskScheduleError: document.getElementById("task-schedule-error"),
+  taskScheduleSaved: document.getElementById("task-schedule-saved"),
   taskFormError: document.getElementById("task-form-error"),
   taskWriteUncertain: document.getElementById("task-write-uncertain"),
   taskWriteUncertainText: document.getElementById("task-write-uncertain-text"),
@@ -219,6 +226,11 @@ const state = {
   taskLoadRequestId: 0,
   taskSaveRequestId: 0,
   taskPending: null,
+  editingTaskSchedule: null,
+  editingTaskScheduleRaw: null,
+  editingTaskScheduleError: null,
+  editingTaskScheduleDirty: false,
+  taskFormDisabled: false,
   deliveryTask: null,
   deliveryPreview: null,
   deliveryBusy: false,
@@ -273,6 +285,7 @@ const EXPLICIT_WRITE_REJECTIONS = [
   /引用的站点不存在/,
   /内容组合不存在/,
   /内容组合存储暂不可用/,
+  /时区数据不可用/,
   /确认的配置版本已变化/,
   /投递容量已满/,
   /当前无法开始投递/,
@@ -2689,6 +2702,135 @@ function taskProfileOptions(selectedId) {
   }
 }
 
+const SCHEDULE_ERROR_LABELS = {
+  schedule_timezone_unavailable: "时区数据不可用，无法计算理论下次时间。",
+  schedule_invalid: "已保存计划格式异常，无法计算理论下次时间。",
+};
+
+function scheduleLabel(task) {
+  const saved = task.schedule || task.schedule_raw;
+  if (saved && saved.kind === "daily") {
+    return `计划：每日 ${saved.time || "?"} · ${saved.timezone || "?"}`;
+  }
+  if (saved && typeof saved === "object") {
+    return "计划：已保存，但格式异常";
+  }
+  return "计划：无计划";
+}
+
+function schedulePreviewText(task) {
+  if (!task.schedule && !task.schedule_raw) {
+    return "";
+  }
+  if (task.schedule_error) {
+    return SCHEDULE_ERROR_LABELS[task.schedule_error] ||
+      "理论下次时间不可计算。";
+  }
+  const preview = task.schedule_preview;
+  if (!preview || !preview.next_run_at) {
+    return "理论下次时间暂不可用。";
+  }
+  return `理论下次时间（服务端 UTC，任务尚未启用）：${preview.next_run_at}` +
+    `；评估于 ${preview.evaluated_at}`;
+}
+
+function applyTaskScheduleEnabled() {
+  const disabled = state.taskFormDisabled || elements.taskScheduleFields.hidden;
+  elements.taskScheduleTime.disabled = disabled;
+  elements.taskScheduleTimezone.disabled = disabled;
+}
+
+function setTaskScheduleMode(mode) {
+  const daily = mode === "daily";
+  elements.taskScheduleNone.checked = !daily;
+  elements.taskScheduleDaily.checked = daily;
+  elements.taskScheduleFields.hidden = !daily;
+  if (daily && !elements.taskScheduleTime.value) {
+    elements.taskScheduleTime.value = "08:30";
+  }
+  if (daily && !elements.taskScheduleTimezone.value) {
+    elements.taskScheduleTimezone.value = "Asia/Shanghai";
+  }
+  applyTaskScheduleEnabled();
+}
+
+function currentTaskScheduleMode() {
+  return elements.taskScheduleDaily.checked ? "daily" : "none";
+}
+
+function resetTaskScheduleEditor() {
+  state.editingTaskSchedule = null;
+  state.editingTaskScheduleRaw = null;
+  state.editingTaskScheduleError = null;
+  state.editingTaskScheduleDirty = false;
+  elements.taskScheduleTime.value = "08:30";
+  elements.taskScheduleTimezone.value = "Asia/Shanghai";
+  elements.taskScheduleError.textContent = "";
+  elements.taskScheduleError.hidden = true;
+  elements.taskScheduleSaved.textContent = "";
+  elements.taskScheduleSaved.hidden = true;
+  setTaskScheduleMode("none");
+}
+
+function fillTaskScheduleEditor(task) {
+  resetTaskScheduleEditor();
+  state.editingTaskSchedule = task.schedule || null;
+  state.editingTaskScheduleRaw = task.schedule_raw || null;
+  state.editingTaskScheduleError = task.schedule_error || null;
+  const saved = task.schedule || task.schedule_raw;
+  if (saved) {
+    setTaskScheduleMode("daily");
+    if (typeof saved.time === "string") {
+      elements.taskScheduleTime.value = saved.time;
+    }
+    if (typeof saved.timezone === "string") {
+      elements.taskScheduleTimezone.value = saved.timezone;
+    }
+  }
+  if (task.schedule_error) {
+    elements.taskScheduleError.textContent =
+      SCHEDULE_ERROR_LABELS[task.schedule_error] ||
+      "已保存计划暂时不可计算；未修改计划时将原样保留。";
+    elements.taskScheduleError.hidden = false;
+    elements.taskScheduleSaved.hidden = false;
+    elements.taskScheduleSaved.textContent =
+      "已保存的原始计划仍保留；修改其他字段不会清除它。";
+  } else {
+    const preview = schedulePreviewText(task);
+    if (preview) {
+      elements.taskScheduleSaved.textContent = preview;
+      elements.taskScheduleSaved.hidden = false;
+    }
+  }
+}
+
+function markTaskScheduleDirty() {
+  state.editingTaskScheduleDirty = true;
+  elements.taskScheduleError.hidden = true;
+  elements.taskScheduleError.textContent = "";
+  elements.taskScheduleSaved.hidden = false;
+  elements.taskScheduleSaved.textContent =
+    "计划已修改，保存后更新理论时间；保存前不显示旧计划预览。";
+}
+
+function collectTaskSchedule() {
+  if (!state.editingTaskScheduleDirty) {
+    return undefined;
+  }
+  if (currentTaskScheduleMode() === "none") {
+    return null;
+  }
+  const time = elements.taskScheduleTime.value.trim();
+  const timezone = elements.taskScheduleTimezone.value.trim();
+  if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+    throw new Error("计划时间必须是 HH:mm 24 小时制。");
+  }
+  if (!timezone) {
+    throw new Error("每日计划必须填写 IANA 时区。");
+  }
+  return { kind: "daily", timezone, time };
+}
+
 function renderTasks() {
   elements.taskCount.textContent = `${state.tasks.length} 个`;
   elements.tasksList.replaceChildren();
@@ -2725,10 +2867,15 @@ function renderTasks() {
     output.textContent = `输出：${task.output_label}`;
     const targets = document.createElement("span");
     targets.textContent = `目标数量：${task.target_count} 个 UMO`;
+    const schedule = document.createElement("span");
+    schedule.textContent = scheduleLabel(task);
+    const preview = document.createElement("span");
+    preview.className = "task-schedule-preview";
+    preview.textContent = schedulePreviewText(task);
     const disabled = document.createElement("span");
     disabled.className = "task-disabled";
     disabled.textContent = "未启用 · 仅管理员手动测试";
-    meta.append(profile, output, targets, disabled);
+    meta.append(profile, output, schedule, preview, targets, disabled);
 
     const actions = document.createElement("div");
     actions.className = "profile-card-actions";
@@ -2800,11 +2947,14 @@ function showTaskFormError(message) {
 }
 
 function setTaskFormDisabled(disabled) {
+  state.taskFormDisabled = disabled;
+  elements.taskSaveButton.disabled = disabled;
   for (const control of elements.taskForm.querySelectorAll(
     "input, select, textarea, button",
   )) {
     control.disabled = disabled;
   }
+  applyTaskScheduleEnabled();
   elements.taskForm.setAttribute("aria-busy", String(disabled));
 }
 
@@ -2820,6 +2970,7 @@ function openCreateTask() {
   state.editingTaskId = null;
   state.editingTaskRevision = null;
   elements.taskForm.reset();
+  resetTaskScheduleEditor();
   elements.taskDialogTitle.textContent = "新增推送任务";
   taskProfileOptions(null);
   clearTaskFormError();
@@ -2849,6 +3000,7 @@ function openTaskEditor(task) {
   taskProfileOptions(task.profile_id);
   elements.taskOutputFormat.value = task.output_format;
   elements.taskUmos.value = Array.isArray(task.umos) ? task.umos.join("\n") : "";
+  fillTaskScheduleEditor(task);
   clearTaskFormError();
   setTaskFormDisabled(false);
   elements.taskSaveButton.textContent = "保存更改";
@@ -2877,6 +3029,13 @@ async function handleTaskSave(event) {
     showTaskFormError("请选择内容组合。");
     return;
   }
+  let schedule;
+  try {
+    schedule = collectTaskSchedule();
+  } catch (error) {
+    showTaskFormError(friendlyErrorMessage(error));
+    return;
+  }
   const requestId = ++state.taskSaveRequestId;
   state.taskSaving = true;
   elements.taskSaveButton.textContent = "保存中…";
@@ -2887,6 +3046,9 @@ async function handleTaskSave(event) {
     output_format: elements.taskOutputFormat.value,
     umos: collectTaskUmos(),
   };
+  if (schedule !== undefined) {
+    payload.schedule = schedule;
+  }
   try {
     if (state.taskMode === "create") {
       await bridge.apiPost("tasks", payload);
@@ -3770,6 +3932,16 @@ function bindEvents() {
   });
   elements.taskRetryButton.addEventListener("click", loadTasks);
   elements.taskForm.addEventListener("submit", handleTaskSave);
+  elements.taskScheduleNone.addEventListener("change", () => {
+    setTaskScheduleMode("none");
+    markTaskScheduleDirty();
+  });
+  elements.taskScheduleDaily.addEventListener("change", () => {
+    setTaskScheduleMode("daily");
+    markTaskScheduleDirty();
+  });
+  elements.taskScheduleTime.addEventListener("input", markTaskScheduleDirty);
+  elements.taskScheduleTimezone.addEventListener("input", markTaskScheduleDirty);
   elements.taskDeleteConfirmButton.addEventListener("click", confirmTaskDelete);
   elements.taskRecheckButton.addEventListener("click", recheckTaskPending);
   elements.taskReviewCloseButton.addEventListener("click", finishTaskPendingReview);

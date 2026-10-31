@@ -67,9 +67,11 @@
 
 ## M5 每日调度后端
 
-- 单元：`tests/test_scheduler.py` 使用固定时钟、真实 SQLite、真实 DeliveryService 和假发送器，覆盖启用校验、空名单、站点停用、revision 冲突、编辑自动停用、正常到期一次、重复/并发认领、60 秒边界、超过窗口不发送、未知结果不重试、容量跳过、启动不补发、启停和单循环重启。
+- 单元：`tests/test_scheduler.py` 使用固定时钟、真实 SQLite、真实 DeliveryService 和假发送器，覆盖启用校验、空名单、站点停用、revision 冲突、编辑自动停用、正常到期一次、重复/并发认领、60 秒边界、同刻任务逐任务重新读取时钟、超过窗口不发送、已处理时刻推进、未知结果不重试、实际容量路径、启动不补发、启停和单循环重启。
+- 实际链路：`ContentService` + 模拟上游 + 真实 `ProfileApi` + 真实 `DeliveryService` + 假发送器，验证内容等待期间禁用任务后零发送；认领后中断重开由 claim 恢复测试覆盖。
+- 发送能力：`AstrBotAiocqhttpSender.supports_umo` 复用 `inspect_target`，覆盖未知实例、非 aiocqhttp 适配器、非法群/私聊/隔离目标和合法目标。
 - 存储：schema v6→v7 重建 enabled 约束，保留任务、计划、UMO、站点/组合和执行历史；v6 迁移失败回滚验证。
-- 生命周期：真实宿主 `initialize/terminate/initialize` 回归覆盖旧循环关闭；停止调度后再关闭投递、图片、内容和存储。
+- 生命周期：真实宿主 `initialize/terminate/initialize` 回归覆盖旧循环关闭；停止调度后再关闭投递、图片、内容和存储。服务级固定时钟测试与真实宿主装配分开报告。
 - 隔离宿主 API：真实鉴权路由拒绝未登录、enable/disable revision、schedule-runs 只读查询；不向真实账号发送。未验证真实平台目标支持和实际定时发送。
 - 局限：页面暂无启停按钮；每周、间隔、Cron 未实现；真实 60 秒等待循环主要靠 check_once 固定时钟测试。
 

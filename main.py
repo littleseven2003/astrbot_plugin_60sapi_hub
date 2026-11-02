@@ -48,8 +48,33 @@ class SixtySAPIHub(Star):
         self.content = ContentService(self.sites)
         self.profiles = ContentProfileService(self.sites)
         self.tasks = PushTaskService(self.profiles, self.sites.store)
-        # Shared image resources and the complete Dashboard API must exist
-        # before chat services reference profile_api.
+        self._context = context
+        self._plugin_name = plugin_name
+        self._active = False
+        self._lifecycle_generation = 0
+        self._site_web = SiteWeb(
+            SiteApi(self.sites),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._news_web = NewsWeb(
+            NewsApi(self.content.news),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._content_web = ContentWeb(
+            ContentApi(self.content),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._build_runtime()
+        self._site_web.register(context)
+        self._news_web.register(context)
+        self._content_web.register(context)
+
+    def _build_runtime(self) -> None:
+        """构建所有会在停用后失效的资源，并替换对应 Web API。"""
+        context = self._context
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
         self.profile_api = ProfileApi(
@@ -83,29 +108,12 @@ class SixtySAPIHub(Star):
             store=self.sites.store,
             delivery=self.delivery,
         )
-        self._active = False
-        self._lifecycle_generation = 0
-        self._site_web = SiteWeb(
-            SiteApi(self.sites),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
-        )
-        self._news_web = NewsWeb(
-            NewsApi(self.content.news),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
-        )
-        self._content_web = ContentWeb(
-            ContentApi(self.content),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
-        )
         self._task_web = TaskWeb(
             TaskApi(
                 self.tasks, self.profiles, self.sites,
                 scheduler=self.scheduler,
             ),
-            plugin_name=plugin_name,
+            plugin_name=self._plugin_name,
             is_active=lambda: self._active,
         )
         self._delivery_web = DeliveryWeb(
@@ -117,17 +125,14 @@ class SixtySAPIHub(Star):
                 store=self.sites.store,
                 inspector=AstrBotAiocqhttpSender(context),
             ),
-            plugin_name=plugin_name,
+            plugin_name=self._plugin_name,
             is_active=lambda: self._active,
         )
         self._profile_web = ProfileWeb(
             self.profile_api,
-            plugin_name=plugin_name,
+            plugin_name=self._plugin_name,
             is_active=lambda: self._active,
         )
-        self._site_web.register(context)
-        self._news_web.register(context)
-        self._content_web.register(context)
         self._task_web.register(context)
         self._delivery_web.register(context)
         self._profile_web.register(context)
@@ -153,6 +158,7 @@ class SixtySAPIHub(Star):
 
     async def initialize(self) -> None:
         self._lifecycle_generation += 1
+        self._build_runtime()
         await self.sites.open()
         try:
             await self.content.open()

@@ -397,6 +397,39 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(chain[1].file.startswith("base64://"))
         self.assertTrue(chain[2].file.startswith("base64://"))
 
+    async def test_real_same_instance_reinitialize_rebuilds_all_resources(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+
+        context = SimpleNamespace(register_web_api=lambda *args: None)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            self.module.StarTools, "get_data_dir", return_value=Path(tmp),
+        ):
+            hub = self.module.SixtySAPIHub(context)
+            await hub.initialize()
+            old_delivery = hub.delivery
+            old_image = hub.image_service
+            old_snapshots = hub.image_snapshots
+            old_scheduler = hub.scheduler
+            await hub.terminate()
+            self.assertTrue(old_delivery._closed)
+            self.assertFalse(old_image.is_open)
+            self.assertFalse(old_snapshots.is_open)
+            await hub.initialize()
+            self.assertTrue(hub._active)
+            self.assertTrue(hub.scheduler.started)
+            self.assertIsNot(hub.delivery, old_delivery)
+            self.assertFalse(hub.delivery._closed)
+            self.assertIsNot(hub.image_service, old_image)
+            self.assertTrue(hub.image_service.is_open)
+            self.assertIsNot(hub.image_snapshots, old_snapshots)
+            self.assertTrue(hub.image_snapshots.is_open)
+            self.assertIsNot(hub.scheduler, old_scheduler)
+            self.assertIs(
+                hub.chat_commands._image_query._previews, hub.profile_api,
+            )
+            await hub.terminate()
+
     async def test_image_query_inflight_terminate_initialize_zero_old_pages(self) -> None:
         class AsyncResource:
             async def open(self):

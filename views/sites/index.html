@@ -190,7 +190,7 @@
 
       <section class="schedule-runs-section" aria-labelledby="schedule-runs-heading">
         <div class="section-head">
-          <h2 id="schedule-runs-heading">每日调度记录</h2>
+          <h2 id="schedule-runs-heading">定时调度记录</h2>
           <button id="schedule-runs-refresh-button" class="button button-secondary" type="button">刷新记录</button>
         </div>
         <p class="preview-lede">
@@ -397,8 +397,8 @@
         </label>
 
         <div class="field">
-          <span>每日计划</span>
-          <div class="schedule-mode" role="radiogroup" aria-label="每日计划">
+          <span>定时计划</span>
+          <div class="schedule-mode" role="radiogroup" aria-label="定时计划">
             <label><input id="task-schedule-none" name="task-schedule-mode" type="radio" value="none" checked /> 无计划</label>
             <label><input id="task-schedule-daily" name="task-schedule-mode" type="radio" value="daily" /> 每日</label>
             <label><input id="task-schedule-weekly" name="task-schedule-mode" type="radio" value="weekly" /> 每周</label>
@@ -446,7 +446,7 @@
           </small>
         </label>
 
-        <p class="help">任务保存后仍保持未启用；保存本身不发送消息。后台“测试投递”是独立的手动操作；“每日计划”当前只保存配置和理论下次时间，不启动实际调度。</p>
+        <p class="help">任务保存后仍保持未启用；保存本身不发送消息。后台“测试投递”是独立的手动操作；“定时计划”保存配置和理论时间；保存会自动停用，需显式启用后才实际调度。</p>
 
         <footer class="dialog-actions">
           <button id="task-cancel-button" class="button button-secondary" type="button">取消</button>
@@ -458,7 +458,7 @@
     <dialog id="task-power-dialog" class="dialog dialog-small" aria-labelledby="task-power-title">
       <form id="task-power-form" class="form">
         <header class="dialog-head">
-          <h2 id="task-power-title">启用每日调度</h2>
+          <h2 id="task-power-title">启用定时调度</h2>
           <button id="task-power-close-button" class="icon-button" type="button" aria-label="关闭">×</button>
         </header>
         <div id="task-power-error" class="form-error" role="alert" hidden></div>

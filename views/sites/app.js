@@ -2888,7 +2888,7 @@ function collectTaskSchedule() {
     throw new Error("计划时间必须是 HH:mm 24 小时制。");
   }
   if (!timezone) {
-    throw new Error("每日计划必须填写 IANA 时区。");
+    throw new Error("定时计划必须填写 IANA 时区。");
   }
   if (mode === "daily") {
     return { kind: "daily", timezone, time };
@@ -2953,7 +2953,7 @@ function renderTasks() {
     const disabled = document.createElement("span");
     disabled.className = "task-disabled";
     disabled.textContent = task.enabled
-      ? "已启用 · 每日调度"
+      ? "已启用 · 定时调度"
       : "未启用 · 仅管理员手动测试";
     meta.append(profile, output, schedule, preview, runtime, targets, disabled);
 
@@ -2962,10 +2962,10 @@ function renderTasks() {
     const edit = makeButton("编辑", "button button-secondary", () =>
       openTaskEditor(task), `编辑推送任务 ${task.name}`);
     const power = makeButton(
-      task.enabled ? "停用每日调度" : "启用每日调度",
+      task.enabled ? "停用定时调度" : "启用定时调度",
       "button button-secondary",
       () => openTaskPower(task, task.enabled ? "disable" : "enable"),
-      `${task.enabled ? "停用" : "启用"}每日调度 ${task.name}`,
+      `${task.enabled ? "停用" : "启用"}定时调度 ${task.name}`,
     );
     const test = makeButton("测试投递", "button button-primary", () =>
       openDelivery(task), `手动测试投递 ${task.name}`);
@@ -3198,10 +3198,10 @@ async function handleTaskSave(event) {
 function taskPowerPreflight(task, mode) {
   if (mode !== "enable") return null;
   if (!task.schedule || task.schedule_error) {
-    return "任务没有可计算的每日计划，不能启用。";
+    return "任务没有可计算的定时计划，不能启用。";
   }
   if (!task.schedule.timezone || !task.schedule.time) {
-    return "每日计划缺少时间或 IANA 时区，不能启用。";
+    return "定时计划缺少时间或 IANA 时区，不能启用。";
   }
   if (!Array.isArray(task.umos) || task.umos.length === 0) {
     return "任务 UMO 白名单为空，不能启用。";
@@ -3234,7 +3234,7 @@ function openTaskPower(task, mode) {
   state.taskPowerMode = mode;
   state.taskPowerRequestId += 1;
   elements.taskPowerTitle.textContent = mode === "enable"
-    ? "启用每日调度" : "停用每日调度";
+    ? "启用定时调度" : "停用定时调度";
   elements.taskPowerConfirmButton.textContent = mode === "enable"
     ? "确认启用" : "确认停用";
   elements.taskPowerInfo.replaceChildren();

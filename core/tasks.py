@@ -423,11 +423,19 @@ def _to_task(stored: StoredTask) -> PushTask:
             "time": stored.schedule_time,
         }
         if stored.schedule_weekdays:
-            raw["weekdays"] = [
-                int(part) for part in stored.schedule_weekdays.split(",") if part
-            ]
+            raw["weekdays"] = stored.schedule_weekdays
         try:
+            if stored.schedule_weekdays:
+                parts = stored.schedule_weekdays.split(",")
+                if any(not part or not part.isdigit() for part in parts):
+                    raise ValueError("invalid stored weekdays")
+                raw["weekdays"] = [int(part) for part in parts]
             schedule = parse_schedule(raw)
+        except ValueError:
+            error = "schedule_invalid"
+            # Keep the original string exactly as stored.
+            if stored.schedule_weekdays:
+                raw["weekdays"] = stored.schedule_weekdays
         except ScheduleTimezoneUnavailableError:
             error = "schedule_timezone_unavailable"
         except ScheduleValidationError:

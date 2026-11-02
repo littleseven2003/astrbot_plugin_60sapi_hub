@@ -301,6 +301,16 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         finally:
             self.tasks.get_config_snapshot = original
 
+    async def test_closed_scheduler_rejects_enable_without_write(self):
+        task = await self.task()
+        await self.scheduler.close()
+        with self.assertRaises(Exception):
+            await self.scheduler.enable_task(task.id, 1)
+        current = await self.tasks.get_task(task.id)
+        self.assertFalse(current.enabled)
+        self.assertEqual(current.revision, 1)
+        self.assertIsNone(await self.sites.store.get_schedule_state(task.id))
+
     async def test_unknown_result_is_not_retried(self):
         task = await self.task()
         await self.scheduler.enable_task(task.id, 1)

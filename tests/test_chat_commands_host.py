@@ -335,7 +335,10 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 hub.chat_commands._image_query._previews,
                 hub.profile_api,
             )
+            constructor_image = hub.image_service
             await hub.initialize()
+            self.assertIs(hub.image_service, constructor_image)
+            self.assertTrue(hub.image_service.is_open)
             self.assertTrue(hub._active)
             await hub.terminate()
             self.assertFalse(hub._active)
@@ -411,6 +414,9 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             old_image = hub.image_service
             old_snapshots = hub.image_snapshots
             old_scheduler = hub.scheduler
+            old_task_web = hub._task_web
+            old_delivery_web = hub._delivery_web
+            old_profile_web = hub._profile_web
             await hub.terminate()
             self.assertTrue(old_delivery._closed)
             self.assertFalse(old_image.is_open)
@@ -425,9 +431,81 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNot(hub.image_snapshots, old_snapshots)
             self.assertTrue(hub.image_snapshots.is_open)
             self.assertIsNot(hub.scheduler, old_scheduler)
+            self.assertFalse(old_scheduler is hub.scheduler)
+            self.assertFalse(old_task_web._is_active())
+            self.assertFalse(old_delivery_web._is_active())
+            self.assertFalse(old_profile_web._is_active())
+            self.assertTrue(hub._task_web._is_active())
             self.assertIs(
                 hub.chat_commands._image_query._previews, hub.profile_api,
             )
+            from tests.test_profile_image import sample_data
+            pages = await hub.image_service.render(sample_data(items=1))
+            self.assertGreaterEqual(len(pages), 1)
+            self.assertTrue(pages[0].png.startswith(b"\x89PNG\r\n\x1a\n"))
+            await hub.terminate()
+
+    async def test_reinitialized_runtime_actual_delivery_once(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+        from datetime import datetime, timezone
+        import httpx
+        from core.content_client import ContentHttpClient
+        from core.delivery import DeliverySendResult, SendStatus
+        from core.profiles import ProfileCreate
+        from core.sites import SiteCreate
+        from core.tasks import TaskCreate
+
+        class FakeSender:
+            def __init__(self):
+                self.calls = []
+            def supports_umo(self, umo):
+                return True
+            async def send(self, message):
+                self.calls.append(message)
+                return DeliverySendResult(SendStatus.SUCCESS)
+
+        sender = FakeSender()
+        real_content_service = self.module.ContentService
+        def fake_content(sites):
+            async def handler(request):
+                return httpx.Response(200, content=__import__("json").dumps({
+                    "code": 200, "data": {
+                        "date": "2026-01-01", "news": ["新闻"],
+                    },
+                }).encode())
+            return real_content_service(
+                sites, client=ContentHttpClient(transport=httpx.MockTransport(handler)),
+            )
+
+        context = SimpleNamespace(register_web_api=lambda *args: None)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            self.module.StarTools, "get_data_dir", return_value=Path(tmp),
+        ), patch.object(self.module, "ContentService", side_effect=fake_content), patch.object(
+            self.module, "AstrBotAiocqhttpSender", return_value=sender,
+        ):
+            hub = self.module.SixtySAPIHub(context)
+            await hub.initialize()
+            site = await hub.sites.create_site(SiteCreate(
+                name="调度站点", base_url="http://example.test/proxy",
+                enabled=True, timeout_seconds=5,
+            ))
+            profile = await hub.profiles.create_profile(ProfileCreate(
+                name="调度组合", site_id=site.id,
+                items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            ))
+            task = await hub.tasks.create_task(TaskCreate(
+                name="调度任务", profile_id=profile.id, output_format="text",
+                umos=["fake:GroupMessage:g"], schedule={
+                    "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
+                },
+            ))
+            fixed = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+            hub.scheduler._clock = lambda: fixed
+            await hub.scheduler.enable_task(task.id, task.revision)
+            fixed = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+            await hub.scheduler.check_once()
+            self.assertEqual(len(sender.calls), 1)
             await hub.terminate()
 
     async def test_image_query_inflight_terminate_initialize_zero_old_pages(self) -> None:

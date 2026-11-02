@@ -52,6 +52,8 @@ class SixtySAPIHub(Star):
         self._plugin_name = plugin_name
         self._active = False
         self._lifecycle_generation = 0
+        self._runtime_epoch = 1
+        self._runtime_needs_rebuild = False
         self._site_web = SiteWeb(
             SiteApi(self.sites),
             plugin_name=plugin_name,
@@ -71,6 +73,31 @@ class SixtySAPIHub(Star):
         self._site_web.register(context)
         self._news_web.register(context)
         self._content_web.register(context)
+
+    def _runtime_active_guard(self):
+        epoch = getattr(self, "_runtime_epoch", 1)
+
+        def active() -> bool:
+            return (
+                bool(getattr(self, "_active", False))
+                and getattr(self, "_runtime_epoch", 0) == epoch
+            )
+
+        return active
+
+    async def _close_dynamic_runtime(self) -> None:
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is not None:
+            await scheduler.close()
+        delivery = getattr(self, "delivery", None)
+        if delivery is not None:
+            await delivery.close()
+        image_service = getattr(self, "image_service", None)
+        if image_service is not None:
+            await image_service.close()
+        snapshots = getattr(self, "image_snapshots", None)
+        if snapshots is not None:
+            snapshots.close()
 
     def _build_runtime(self) -> None:
         """构建所有会在停用后失效的资源，并替换对应 Web API。"""
@@ -114,7 +141,7 @@ class SixtySAPIHub(Star):
                 scheduler=self.scheduler,
             ),
             plugin_name=self._plugin_name,
-            is_active=lambda: self._active,
+            is_active=self._runtime_active_guard(),
         )
         self._delivery_web = DeliveryWeb(
             DeliveryApi(
@@ -126,12 +153,12 @@ class SixtySAPIHub(Star):
                 inspector=AstrBotAiocqhttpSender(context),
             ),
             plugin_name=self._plugin_name,
-            is_active=lambda: self._active,
+            is_active=self._runtime_active_guard(),
         )
         self._profile_web = ProfileWeb(
             self.profile_api,
             plugin_name=self._plugin_name,
-            is_active=lambda: self._active,
+            is_active=self._runtime_active_guard(),
         )
         self._task_web.register(context)
         self._delivery_web.register(context)
@@ -156,35 +183,39 @@ class SixtySAPIHub(Star):
         elif text:
             yield event.plain_result(text)
 
+    async def _cleanup_failed_initialize(self) -> None:
+        await self._close_dynamic_runtime()
+        content = getattr(self, "content", None)
+        if content is not None:
+            await content.close()
+        sites = getattr(self, "sites", None)
+        if sites is not None:
+            await sites.close()
+        self._runtime_needs_rebuild = getattr(self, "_context", None) is not None
+
     async def initialize(self) -> None:
         self._lifecycle_generation += 1
-        self._build_runtime()
+        needs_rebuild = (
+            getattr(self, "_runtime_needs_rebuild", False)
+            and getattr(self, "_context", None) is not None
+        )
+        if needs_rebuild:
+            await self._close_dynamic_runtime()
+            self._runtime_epoch = getattr(self, "_runtime_epoch", 1) + 1
+            self._build_runtime()
+            self._runtime_needs_rebuild = False
         await self.sites.open()
         try:
             await self.content.open()
         except Exception:
-            await self.delivery.close()
-            await self.content.close()
-            try:
-                await self.image_service.close()
-            finally:
-                self.image_snapshots.close()
-                await self.sites.close()
+            await self._cleanup_failed_initialize()
             raise
         scheduler = getattr(self, "scheduler", None)
         try:
             if scheduler is not None:
                 await scheduler.start()
         except Exception:
-            if scheduler is not None:
-                await scheduler.close()
-            await self.delivery.close()
-            await self.content.close()
-            try:
-                await self.image_service.close()
-            finally:
-                self.image_snapshots.close()
-                await self.sites.close()
+            await self._cleanup_failed_initialize()
             raise
         self._active = True
 
@@ -208,3 +239,4 @@ class SixtySAPIHub(Star):
                         await self.content.close()
                     finally:
                         await self.sites.close()
+        self._runtime_needs_rebuild = getattr(self, "_context", None) is not None

@@ -90,6 +90,7 @@ class SchedulerService:
         return None
 
     async def enable_task(self, task_id: object, expected_revision: object) -> object:
+        self._ensure_open()
         task = await self._tasks.get_task(task_id)
         revision = _revision(expected_revision)
         if task.schedule is None:
@@ -120,6 +121,7 @@ class SchedulerService:
         return await self._tasks.get_task(task.id)
 
     async def disable_task(self, task_id: object, expected_revision: object) -> object:
+        self._ensure_open()
         task = await self._tasks.get_task(task_id)
         revision = _revision(expected_revision)
         try:
@@ -174,6 +176,10 @@ class SchedulerService:
                 for item in skips
             ],
         }
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise SchedulerUnavailableError("调度服务已关闭。")
 
     async def runtime_status(self) -> dict[str, str]:
         try:

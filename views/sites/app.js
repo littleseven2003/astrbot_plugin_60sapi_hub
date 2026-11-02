@@ -2922,6 +2922,7 @@ function renderTasks() {
   for (const task of state.tasks) {
     const card = document.createElement("li");
     card.className = "site-card profile-card";
+    card.dataset.taskId = task.id;
     const head = document.createElement("div");
     head.className = "site-card-head";
     const title = document.createElement("h3");

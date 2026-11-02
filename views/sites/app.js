@@ -2752,7 +2752,10 @@ function scheduleLabel(task) {
     return `计划：每日 ${saved.time || "?"} · ${saved.timezone || "?"}`;
   }
   if (saved && saved.kind === "weekly") {
-    return `计划：每周 ${(saved.weekdays || []).join(",")} ${saved.time || "?"} · ${saved.timezone || "?"}`;
+    if (!Array.isArray(saved.weekdays)) {
+      return "计划：已保存，但星期配置异常";
+    }
+    return `计划：每周 ${saved.weekdays.join(",")} ${saved.time || "?"} · ${saved.timezone || "?"}`;
   }
   if (saved && typeof saved === "object") {
     return "计划：已保存，但格式异常";

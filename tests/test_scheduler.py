@@ -301,6 +301,74 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         finally:
             self.tasks.get_config_snapshot = original
 
+    async def test_inflight_enable_cancelled_waiting_config(self):
+        task = await self.task()
+        old = self.scheduler
+        started = asyncio.Event()
+        release = asyncio.Event()
+        original = self.tasks.get_task
+
+        async def blocked(task_id):
+            started.set()
+            await release.wait()
+            return await original(task_id)
+
+        self.tasks.get_task = blocked
+        try:
+            running = asyncio.create_task(old.enable_task(task.id, 1))
+            await asyncio.wait_for(started.wait(), 3)
+            await old.close()
+            release.set()
+            await asyncio.gather(running, return_exceptions=True)
+            current = await original(task.id)
+            self.assertFalse(current.enabled)
+            self.assertEqual(current.revision, 1)
+        finally:
+            self.tasks.get_task = original
+        current_scheduler = SchedulerService(
+            tasks=self.tasks, store=self.sites.store, delivery=self.delivery,
+            clock=lambda: self.clock_now,
+        )
+        try:
+            await current_scheduler.enable_task(task.id, 1)
+        finally:
+            await current_scheduler.close()
+
+    async def test_inflight_enable_cancelled_waiting_store_lock(self):
+        task = await self.task()
+        old = self.scheduler
+        original = self.tasks.get_task
+        snapshot = await original(task.id)
+
+        async def fast(task_id):
+            return snapshot
+
+        await self.sites.store._lock.acquire()
+        self.tasks.get_task = fast
+        try:
+            running = asyncio.create_task(old.enable_task(task.id, 1))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            await old.close()
+            self.sites.store._lock.release()
+            await asyncio.gather(running, return_exceptions=True)
+            current = await original(task.id)
+            self.assertFalse(current.enabled)
+            self.assertEqual(current.revision, 1)
+            self.assertIsNone(await self.sites.store.get_schedule_state(task.id))
+        finally:
+            if self.sites.store._lock.locked():
+                self.sites.store._lock.release()
+            self.tasks.get_task = original
+        current_scheduler = SchedulerService(
+            tasks=self.tasks, store=self.sites.store, delivery=self.delivery,
+            clock=lambda: self.clock_now,
+        )
+        try:
+            await current_scheduler.enable_task(task.id, 1)
+        finally:
+            await current_scheduler.close()
+
     async def test_closed_scheduler_rejects_enable_without_write(self):
         task = await self.task()
         await self.scheduler.close()

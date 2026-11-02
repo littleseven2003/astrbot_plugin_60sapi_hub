@@ -445,6 +445,34 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(pages[0].png.startswith(b"\x89PNG\r\n\x1a\n"))
             await hub.terminate()
 
+    async def test_initialize_failure_cleans_and_retries(self) -> None:
+        import tempfile
+        from unittest.mock import AsyncMock, patch
+
+        context = SimpleNamespace(register_web_api=lambda *args: None)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            self.module.StarTools, "get_data_dir", return_value=Path(tmp),
+        ):
+            hub = self.module.SixtySAPIHub(context)
+            with patch.object(
+                hub.sites, "open",
+                new=AsyncMock(side_effect=RuntimeError("forced sites failure")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    await hub.initialize()
+            self.assertFalse(hub._active)
+            self.assertTrue(hub.delivery._closed)
+            self.assertFalse(hub.image_service.is_open)
+            self.assertFalse(hub.image_snapshots.is_open)
+            self.assertFalse(hub.content.is_open)
+            self.assertFalse(hub.sites.is_open)
+            await hub.initialize()
+            self.assertTrue(hub._active)
+            self.assertTrue(hub.scheduler.started)
+            self.assertTrue(hub.sites.is_open)
+            self.assertTrue(hub.image_service.is_open)
+            await hub.terminate()
+
     async def test_reinitialized_runtime_actual_delivery_once(self) -> None:
         import tempfile
         from unittest.mock import patch
@@ -500,8 +528,11 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                     "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
                 },
             ))
+            await hub.terminate()
+            await hub.initialize()
             fixed = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
             hub.scheduler._clock = lambda: fixed
+            task = await hub.tasks.get_task(task.id)
             await hub.scheduler.enable_task(task.id, task.revision)
             fixed = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
             await hub.scheduler.check_once()

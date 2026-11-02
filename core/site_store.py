@@ -276,6 +276,10 @@ class TaskRecordNotFoundError(SiteStoreError):
         super().__init__(f"推送任务 {task_id} 不存在")
 
 
+class TaskOperationStaleError(SiteStoreError):
+    """操作所属运行周期已失效。"""
+
+
 class TaskRevisionConflictError(SiteStoreError):
     """推送任务写入 revision 冲突。"""
 
@@ -1271,12 +1275,17 @@ class SiteStore:
         expected_revision: int,
         next_run_at: str | None,
         now: str,
+        is_valid: Callable[[], bool] | None = None,
     ) -> StoredTask:
         """显式启停；与 revision、运行计划同一事务。"""
         async with self._lock:
+            if is_valid is not None and not is_valid():
+                raise TaskOperationStaleError()
             connection = self._require_connection()
 
             async def perform() -> None:
+                if is_valid is not None and not is_valid():
+                    raise TaskOperationStaleError()
                 cursor = await connection.execute(
                     """
                     UPDATE push_tasks
@@ -2025,6 +2034,7 @@ class SiteStore:
             ProfileRevisionConflictError,
             ProfileReferencedError,
             TaskRecordNotFoundError,
+            TaskOperationStaleError,
             TaskRevisionConflictError,
             DeliveryExecutionExistsError,
         ):

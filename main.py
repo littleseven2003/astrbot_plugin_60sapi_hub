@@ -204,17 +204,14 @@ class SixtySAPIHub(Star):
             self._runtime_epoch = getattr(self, "_runtime_epoch", 1) + 1
             self._build_runtime()
             self._runtime_needs_rebuild = False
-        await self.sites.open()
         try:
+            await self.sites.open()
             await self.content.open()
-        except Exception:
-            await self._cleanup_failed_initialize()
-            raise
-        scheduler = getattr(self, "scheduler", None)
-        try:
+            scheduler = getattr(self, "scheduler", None)
             if scheduler is not None:
                 await scheduler.start()
         except Exception:
+            self._active = False
             await self._cleanup_failed_initialize()
             raise
         self._active = True

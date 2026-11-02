@@ -25,6 +25,7 @@ from .site_store import (
     ScheduleState,
     SiteStore,
     StoredTaskConfigSnapshot,
+    TaskOperationStaleError,
     TaskRecordNotFoundError,
     TaskRevisionConflictError,
 )
@@ -74,6 +75,7 @@ class SchedulerService:
         self._late_window = timedelta(seconds=late_window_seconds)
         self._max_concurrent = max(1, max_concurrent)
         self._active: set[str] = set()
+        self._operations: set[asyncio.Task[object]] = set()
         self._checking = False
         self._loop_task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
@@ -90,6 +92,9 @@ class SchedulerService:
         return None
 
     async def enable_task(self, task_id: object, expected_revision: object) -> object:
+        return await self._owned_operation(self._enable_task, task_id, expected_revision)
+
+    async def _enable_task(self, task_id: object, expected_revision: object) -> object:
         self._ensure_open()
         task = await self._tasks.get_task(task_id)
         revision = _revision(expected_revision)
@@ -112,15 +117,23 @@ class SchedulerService:
                 expected_revision=revision,
                 next_run_at=next_run.isoformat(),
                 now=self._now().isoformat(),
+                is_valid=self._valid_now,
             )
         except TaskRevisionConflictError as exc:
             raise TaskConflictError(task.id, revision, exc.actual_revision) from exc
+        except TaskOperationStaleError as exc:
+            raise SchedulerUnavailableError("调度服务已关闭。") from exc
+        except TaskOperationStaleError as exc:
+            raise SchedulerUnavailableError("调度服务已关闭。") from exc
         except TaskRecordNotFoundError as exc:
             raise TaskNotFoundError(exc.task_id) from exc
         self._wake.set()
         return await self._tasks.get_task(task.id)
 
     async def disable_task(self, task_id: object, expected_revision: object) -> object:
+        return await self._owned_operation(self._disable_task, task_id, expected_revision)
+
+    async def _disable_task(self, task_id: object, expected_revision: object) -> object:
         self._ensure_open()
         task = await self._tasks.get_task(task_id)
         revision = _revision(expected_revision)
@@ -131,6 +144,7 @@ class SchedulerService:
                 expected_revision=revision,
                 next_run_at=None,
                 now=self._now().isoformat(),
+                is_valid=self._valid_now,
             )
         except TaskRevisionConflictError as exc:
             raise TaskConflictError(task.id, revision, exc.actual_revision) from exc
@@ -176,6 +190,24 @@ class SchedulerService:
                 for item in skips
             ],
         }
+
+    async def _owned_operation(self, operation, *args) -> object:
+        self._ensure_open()
+        current = asyncio.current_task()
+        if current is None:
+            raise SchedulerUnavailableError("调度服务不可用。")
+        self._operations.add(current)
+        try:
+            return await operation(*args)
+        finally:
+            self._operations.discard(current)
+
+    def _valid_now(self) -> bool:
+        return not self._closed
+
+    async def _ensure_open_after_wait(self) -> None:
+        if self._closed:
+            raise SchedulerUnavailableError("调度服务已关闭。")
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -468,9 +500,18 @@ class SchedulerService:
         self._wake.set()
         loop_task = self._loop_task
         self._loop_task = None
+        operations = tuple(self._operations)
+        for operation in operations:
+            if operation is not asyncio.current_task():
+                operation.cancel()
+        pending = [
+            item for item in operations if item is not asyncio.current_task()
+        ]
         if loop_task is not None:
             loop_task.cancel()
-            await asyncio.gather(loop_task, return_exceptions=True)
+            pending.append(loop_task)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         self._active.clear()
 
 

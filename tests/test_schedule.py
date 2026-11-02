@@ -123,3 +123,94 @@ class NextDailyRunTest(unittest.TestCase):
         schedule = DailySchedule("UTC", __import__("datetime").time(8, 0))
         with self.assertRaises(ScheduleValidationError):
             next_daily_run(schedule, datetime(2026, 1, 1, 8, 0))
+
+
+class WeeklyScheduleTest(unittest.TestCase):
+    def test_weekly_parsing_normalizes_and_rejects_invalid(self) -> None:
+        from core.schedule import WeeklySchedule
+        value = {
+            "kind": "weekly", "timezone": "Asia/Shanghai", "time": "08:30",
+            "weekdays": [5, 1, 3],
+        }
+        schedule = parse_schedule(value)
+        self.assertEqual(schedule, WeeklySchedule(
+            "Asia/Shanghai", schedule.time, (1, 3, 5),
+        ))
+        self.assertEqual(schedule.to_dict()["weekdays"], [1, 3, 5])
+        for bad in (
+            [], [0], [8], [True], ["1"], [1, 1], [1, 2, 3, 4, 5, 6, 7, 1],
+        ):
+            with self.subTest(weekdays=bad):
+                with self.assertRaises(ScheduleValidationError):
+                    parse_schedule({**value, "weekdays": bad})
+        with self.assertRaises(ScheduleValidationError):
+            parse_schedule({**value, "unknown": 1})
+        with self.assertRaises(ScheduleValidationError):
+            parse_schedule({"kind": "daily", "timezone": "UTC",
+                            "time": "08:30", "weekdays": [1]})
+
+    def test_weekly_next_run_exact_and_weekday(self) -> None:
+        from core.schedule import next_scheduled_run
+        schedule = parse_schedule({
+            "kind": "weekly", "timezone": "Asia/Shanghai", "time": "08:30",
+            "weekdays": [1, 3, 5],
+        })
+        now = dt("2026-01-05T00:30:00+00:00")  # Monday 08:30 local
+        self.assertEqual(
+            next_scheduled_run(schedule, now),
+            dt("2026-01-07T00:30:00+00:00"),
+        )
+
+    def test_weekly_local_weekday_differs_from_utc(self) -> None:
+        from core.schedule import next_scheduled_run
+        schedule = parse_schedule({
+            "kind": "weekly", "timezone": "Asia/Shanghai", "time": "08:30",
+            "weekdays": [2],
+        })
+        now = dt("2026-01-05T23:00:00+00:00")  # Tuesday 07:00 local
+        self.assertEqual(
+            next_scheduled_run(schedule, now),
+            dt("2026-01-06T00:30:00+00:00"),
+        )
+
+    def test_weekly_cross_year_and_sunday_to_monday(self) -> None:
+        from core.schedule import next_scheduled_run
+        friday = parse_schedule({
+            "kind": "weekly", "timezone": "UTC", "time": "08:30",
+            "weekdays": [5],
+        })
+        self.assertEqual(
+            next_scheduled_run(friday, dt("2026-12-31T09:00:00+00:00")),
+            dt("2027-01-01T08:30:00+00:00"),
+        )
+        monday = parse_schedule({
+            "kind": "weekly", "timezone": "UTC", "time": "08:30",
+            "weekdays": [1],
+        })
+        self.assertEqual(
+            next_scheduled_run(monday, dt("2026-01-04T08:30:00+00:00")),
+            dt("2026-01-05T08:30:00+00:00"),
+        )
+
+    def test_weekly_dst_gap_and_fold(self) -> None:
+        from core.schedule import next_scheduled_run
+        gap = parse_schedule({
+            "kind": "weekly", "timezone": "America/New_York", "time": "02:30",
+            "weekdays": [7],
+        })
+        self.assertEqual(
+            next_scheduled_run(gap, dt("2026-03-08T00:00:00+00:00")),
+            dt("2026-03-15T06:30:00+00:00"),
+        )
+        fold = parse_schedule({
+            "kind": "weekly", "timezone": "America/New_York", "time": "01:30",
+            "weekdays": [7],
+        })
+        self.assertEqual(
+            next_scheduled_run(fold, dt("2026-11-01T00:00:00+00:00")),
+            dt("2026-11-01T05:30:00+00:00"),
+        )
+        self.assertEqual(
+            next_scheduled_run(fold, dt("2026-11-01T05:30:00+00:00")),
+            dt("2026-11-08T06:30:00+00:00"),
+        )

@@ -401,8 +401,19 @@
           <div class="schedule-mode" role="radiogroup" aria-label="每日计划">
             <label><input id="task-schedule-none" name="task-schedule-mode" type="radio" value="none" checked /> 无计划</label>
             <label><input id="task-schedule-daily" name="task-schedule-mode" type="radio" value="daily" /> 每日</label>
+            <label><input id="task-schedule-weekly" name="task-schedule-mode" type="radio" value="weekly" /> 每周</label>
           </div>
           <div id="task-schedule-fields" class="schedule-fields" hidden>
+            <div id="task-weekdays" class="weekday-picker" hidden>
+              <span>星期（ISO，1=周一）</span>
+              <label><input type="checkbox" value="1" /> 一</label>
+              <label><input type="checkbox" value="2" /> 二</label>
+              <label><input type="checkbox" value="3" /> 三</label>
+              <label><input type="checkbox" value="4" /> 四</label>
+              <label><input type="checkbox" value="5" /> 五</label>
+              <label><input type="checkbox" value="6" /> 六</label>
+              <label><input type="checkbox" value="7" /> 日</label>
+            </div>
             <label class="field">
               <span>时间（HH:mm）</span>
               <input id="task-schedule-time" type="text" inputmode="numeric" value="08:30" maxlength="5" placeholder="08:30" autocomplete="off" />

@@ -295,6 +295,55 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
         self.sites = reopened
 
+    async def test_v7_schema_adds_weekdays_and_preserves_weekly(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="v7每周迁移", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "weekly", "timezone": "Asia/Shanghai",
+                      "time": "08:30", "weekdays": [1, 3]},
+        ))
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("PRAGMA user_version = 7")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule.weekdays, (1, 3))
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_weekly_schedule_persists_and_restarts(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="每周任务", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={
+                "kind": "weekly", "timezone": "Asia/Shanghai",
+                "time": "08:30", "weekdays": [5, 1, 3],
+            },
+        ))
+        self.assertEqual(task.schedule.kind, "weekly")
+        self.assertEqual(task.schedule.weekdays, (1, 3, 5))
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule.weekdays, (1, 3, 5))
+            self.assertEqual(loaded.schedule.time.strftime("%H:%M"), "08:30")
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
     async def test_daily_schedule_survives_restart(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="重启计划", profile_id=self.profile.id,

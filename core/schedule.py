@@ -1,4 +1,4 @@
-"""每日计划的严格模型和纯时间计算。
+"""每日/每周计划的严格模型和纯时间计算。
 
 只计算理论上的下一次本地触发时间；不创建后台任务、不写运行状态。
 """
@@ -36,6 +36,25 @@ class ScheduleCalculationError(ScheduleError):
 
 
 @dataclass(frozen=True, slots=True)
+class WeeklySchedule:
+    timezone: str
+    time: time
+    weekdays: tuple[int, ...]
+
+    @property
+    def kind(self) -> str:
+        return "weekly"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "weekly",
+            "timezone": self.timezone,
+            "time": self.time.strftime("%H:%M"),
+            "weekdays": list(self.weekdays),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DailySchedule:
     timezone: str
     time: time
@@ -52,21 +71,24 @@ class DailySchedule:
         }
 
 
-def parse_schedule(value: object) -> DailySchedule | None:
+def parse_schedule(value: object) -> DailySchedule | WeeklySchedule | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ScheduleValidationError("schedule", "必须是对象或 null")
-    allowed = {"kind", "timezone", "time"}
+    kind = value.get("kind")
+    allowed = (
+        {"kind", "timezone", "time", "weekdays"}
+        if kind == "weekly" else {"kind", "timezone", "time"}
+    )
     unknown = set(value) - allowed
     if unknown:
         raise ScheduleValidationError(
             "schedule",
             "包含未知字段：" + "、".join(sorted(map(str, unknown))),
         )
-    kind = value.get("kind")
-    if kind != "daily":
-        raise ScheduleValidationError("kind", "只支持 daily")
+    if kind not in ("daily", "weekly"):
+        raise ScheduleValidationError("kind", "只支持 daily 或 weekly")
     timezone_name = value.get("timezone")
     if not isinstance(timezone_name, str) or not timezone_name.strip():
         raise ScheduleValidationError("timezone", "必须是非空 IANA 时区名称")
@@ -83,7 +105,56 @@ def parse_schedule(value: object) -> DailySchedule | None:
     if not isinstance(raw_time, str) or not _TIME_RE.fullmatch(raw_time):
         raise ScheduleValidationError("time", "必须是 HH:mm 24 小时制")
     hour, minute = raw_time.split(":")
-    return DailySchedule(timezone=timezone_name, time=time(int(hour), int(minute)))
+    parsed_time = time(int(hour), int(minute))
+    if kind == "daily":
+        return DailySchedule(timezone=timezone_name, time=parsed_time)
+    raw_days = value.get("weekdays")
+    if not isinstance(raw_days, list) or not raw_days:
+        raise ScheduleValidationError("weekdays", "必须是非空数组")
+    if len(raw_days) > 7:
+        raise ScheduleValidationError("weekdays", "最多包含 7 个星期")
+    days = []
+    seen = set()
+    for day in raw_days:
+        if type(day) is not int or day < 1 or day > 7:
+            raise ScheduleValidationError("weekdays", "必须是 1～7 的整数")
+        if day in seen:
+            raise ScheduleValidationError("weekdays", "不能包含重复星期")
+        seen.add(day)
+        days.append(day)
+    return WeeklySchedule(
+        timezone=timezone_name, time=parsed_time,
+        weekdays=tuple(sorted(days)),
+    )
+
+
+def next_scheduled_run(
+    schedule: DailySchedule | WeeklySchedule,
+    now: datetime,
+    *,
+    zone: ZoneInfo | None = None,
+) -> datetime:
+    """统一入口；根据计划类型计算严格晚于 now 的 UTC 时刻。"""
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        raise ScheduleValidationError("now", "必须带时区")
+    try:
+        zone = zone or ZoneInfo(schedule.timezone)
+    except ZoneInfoNotFoundError:
+        raise ScheduleTimezoneUnavailableError(schedule.timezone) from None
+    local_now = now.astimezone(zone)
+    selected = (
+        set(schedule.weekdays) if isinstance(schedule, WeeklySchedule) else None
+    )
+    for offset in range(_MAX_DAYS + 1):
+        day = local_now.date() + timedelta(days=offset)
+        if selected is not None and day.isoweekday() not in selected:
+            continue
+        candidate = _candidate_for_local_day(day, schedule.time, zone)
+        if candidate is None:
+            continue
+        if candidate > now.astimezone(timezone.utc):
+            return candidate
+    raise ScheduleCalculationError("无法在边界内计算下一次每周计划时间")
 
 
 def next_daily_run(
@@ -139,10 +210,12 @@ def _candidate_for_local_day(
 
 __all__ = [
     "DailySchedule",
+    "WeeklySchedule",
     "ScheduleCalculationError",
     "ScheduleError",
     "ScheduleTimezoneUnavailableError",
     "ScheduleValidationError",
     "next_daily_run",
+    "next_scheduled_run",
     "parse_schedule",
 ]

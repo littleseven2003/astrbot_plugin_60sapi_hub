@@ -369,6 +369,25 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await current_scheduler.close()
 
+    async def test_weekly_selected_day_only(self):
+        task = await self.tasks.create_task(TaskCreate(
+            name="每周任务", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "weekly", "timezone": "Asia/Shanghai",
+                      "time": "08:30", "weekdays": [3]},
+        ))
+        # Wednesday 2026-01-07 08:30 Asia/Shanghai.
+        await self.scheduler.enable_task(task.id, 1)
+        state = await self.sites.store.get_schedule_state(task.id)
+        self.assertEqual(state.next_run_at, "2026-01-07T00:30:00+00:00")
+        self.clock_now = datetime(2026, 1, 6, 0, 30, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 0)
+        self.clock_now = datetime(2026, 1, 7, 0, 30, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 1)
+        self.assertEqual(len(self.sender.calls), 1)
+        state = await self.sites.store.get_schedule_state(task.id)
+        self.assertEqual(state.next_run_at, "2026-01-14T00:30:00+00:00")
+
     async def test_closed_scheduler_rejects_enable_without_write(self):
         task = await self.task()
         await self.scheduler.close()

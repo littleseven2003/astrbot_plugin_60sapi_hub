@@ -196,9 +196,9 @@
 | `POST /<插件名>/tasks/<id>/update` | 按 expected_revision 编辑任务 |
 | `POST /<插件名>/tasks/<id>/delete` | 按 expected_revision 删除任务 |
 
-`schedule` 是可选的每日计划配置；普通任务 CRUD 请求中出现 `enabled`、`next_run`、`next_run_at`、`schedule_preview` 或运行状态字段返回 400 `unsupported_enable_request`，不会写入。启停使用独立接口。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应固定返回 `enabled=false`、`can_send=false`，表示没有自动推送启用能力；后台显式测试是否可投递由确认接口的 `can_deliver` 单独判定。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
+`schedule` 是可选的每日/每周计划配置；普通任务 CRUD 请求中出现 `enabled`、`next_run`、`next_run_at`、`schedule_preview` 或运行状态字段返回 400 `unsupported_enable_request`，不会写入。启停使用独立接口。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应固定返回 `enabled=false`、`can_send=false`，表示没有自动推送启用能力；后台显式测试是否可投递由确认接口的 `can_deliver` 单独判定。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
 
-### 每日计划配置与预览
+### 定时计划配置与预览
 
 任务可选保存：
 

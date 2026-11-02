@@ -98,7 +98,8 @@
 - 可靠性：启停请求只提交 expected_revision；响应丢失进入未确认锁定，重新读取显示实际 enabled/next_run_at；旧请求按任务和请求序号隔离。
 - 调度记录：`schedule-runs` 的 claims/skips 独立列表，分页使用 limit/offset 查询参数；claimed、succeeded、unknown、failed 和 skip reason 分开说明，不伪造投递详情，不提供重试。
 - 页面状态：加载、空、错误、重试、390px、长 ID/错误码/时区；页面读取和确认不调用手动投递或内容预览。记录读取成功/失败统一结束忙状态；刷新失败保留旧记录和 offset，加载更多失败可原 offset 重试。
-- 新增 `tests/browser/scheduler_ui.js` 可复跑脚本；本轮仅有 Codex 已执行的 fixture 结果，脚本未在最终环境重新执行。
+- `tests/browser/scheduler_ui.js` 已在最终环境实际执行：真实宿主 API 创建/清理临时站点、组合、任务；确认取消零启用请求；claims/skips 长度不同分页 offset 0/2；记录读取失败后 aria-busy 结束且旧记录保留；重试恢复；390px 截图。
+- 浏览器未验证正向启用/停用、编辑自动停用、revision 冲突、任务删除、插件停用、响应丢失和旧响应隔离；这些仍待验收。
 - 未验证：真实平台正向启停、真实定时发送、所有记录类型的真实生产数据、关闭弹窗后的全局未确认状态展示。
 
 ## M5 每日计划配置页面

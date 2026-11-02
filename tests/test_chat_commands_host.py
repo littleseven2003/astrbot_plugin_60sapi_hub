@@ -471,6 +471,9 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(hub.scheduler.started)
             self.assertTrue(hub.sites.is_open)
             self.assertTrue(hub.image_service.is_open)
+            from tests.test_profile_image import sample_data
+            pages = await hub.image_service.render(sample_data(items=1))
+            self.assertTrue(pages[0].png.startswith(b"\x89PNG\r\n\x1a\n"))
             await hub.terminate()
 
     async def test_reinitialized_runtime_actual_delivery_once(self) -> None:

@@ -156,6 +156,28 @@ const elements = {
   taskDeleteReviewCloseButton: document.getElementById("task-delete-review-close-button"),
   taskDeleteCancelButton: document.getElementById("task-delete-cancel-button"),
   taskDeleteConfirmButton: document.getElementById("task-delete-confirm-button"),
+  taskPowerDialog: document.getElementById("task-power-dialog"),
+  taskPowerTitle: document.getElementById("task-power-title"),
+  taskPowerForm: document.getElementById("task-power-form"),
+  taskPowerInfo: document.getElementById("task-power-info"),
+  taskPowerNote: document.getElementById("task-power-note"),
+  taskPowerError: document.getElementById("task-power-error"),
+  taskPowerUncertain: document.getElementById("task-power-uncertain"),
+  taskPowerUncertainText: document.getElementById("task-power-uncertain-text"),
+  taskPowerRecheckButton: document.getElementById("task-power-recheck-button"),
+  taskPowerReviewCloseButton: document.getElementById("task-power-review-close-button"),
+  taskPowerCloseButton: document.getElementById("task-power-close-button"),
+  taskPowerCancelButton: document.getElementById("task-power-cancel-button"),
+  taskPowerConfirmButton: document.getElementById("task-power-confirm-button"),
+  scheduleRunsState: document.getElementById("schedule-runs-state"),
+  scheduleRunsStateText: document.getElementById("schedule-runs-state-text"),
+  scheduleRunsRetryButton: document.getElementById("schedule-runs-retry-button"),
+  scheduleRunsRefreshButton: document.getElementById("schedule-runs-refresh-button"),
+  scheduleRunsMoreButton: document.getElementById("schedule-runs-more-button"),
+  scheduleClaimsList: document.getElementById("schedule-claims-list"),
+  scheduleSkipsList: document.getElementById("schedule-skips-list"),
+  scheduleClaimsEmpty: document.getElementById("schedule-claims-empty"),
+  scheduleSkipsEmpty: document.getElementById("schedule-skips-empty"),
   deliveryList: document.getElementById("delivery-list"),
   deliveryListState: document.getElementById("delivery-list-state"),
   deliveryListStateText: document.getElementById("delivery-list-state-text"),
@@ -226,6 +248,16 @@ const state = {
   taskLoadRequestId: 0,
   taskSaveRequestId: 0,
   taskPending: null,
+  taskPowerTarget: null,
+  taskPowerMode: "enable",
+  taskPowerSaving: false,
+  taskPowerPending: null,
+  taskPowerRequestId: 0,
+  scheduleClaims: [],
+  scheduleSkips: [],
+  scheduleRunsOffset: 0,
+  scheduleRunsHasMore: false,
+  scheduleRunsRequestId: 0,
   editingTaskSchedule: null,
   editingTaskScheduleRaw: null,
   editingTaskScheduleError: null,
@@ -356,6 +388,10 @@ function isConflictMessage(message) {
 
 function isMissingMessage(message) {
   return message.includes("不存在") || message.includes("已被删除");
+}
+
+function isInactiveMessage(message) {
+  return message.includes("未启用") || message.includes("插件不可用");
 }
 
 function isExplicitWriteRejection(message) {
@@ -2892,11 +2928,17 @@ function renderTasks() {
     actions.className = "profile-card-actions";
     const edit = makeButton("编辑", "button button-secondary", () =>
       openTaskEditor(task), `编辑推送任务 ${task.name}`);
+    const power = makeButton(
+      task.enabled ? "停用每日调度" : "启用每日调度",
+      "button button-secondary",
+      () => openTaskPower(task, task.enabled ? "disable" : "enable"),
+      `${task.enabled ? "停用" : "启用"}每日调度 ${task.name}`,
+    );
     const test = makeButton("测试投递", "button button-primary", () =>
       openDelivery(task), `手动测试投递 ${task.name}`);
     const remove = makeButton("删除", "button button-danger", () =>
       openTaskDelete(task), `删除推送任务 ${task.name}`);
-    actions.append(test, edit, remove);
+    actions.append(power, test, edit, remove);
     card.append(head, meta, actions);
     elements.tasksList.append(card);
   }
@@ -2928,6 +2970,9 @@ async function loadTasks() {
     const raw = result && Array.isArray(result.tasks) ? result.tasks : [];
     state.tasks = raw.filter((task) => task && typeof task.id === "string");
     renderTasks();
+    if (state.scheduleClaims.length || state.scheduleSkips.length) {
+      renderScheduleRuns();
+    }
     return true;
   } catch (error) {
     if (requestId !== state.taskLoadRequestId) {
@@ -2970,7 +3015,7 @@ function setTaskFormDisabled(disabled) {
 }
 
 function openCreateTask() {
-  if (state.taskSaving || state.taskDeleting || state.taskPending) {
+  if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
     return;
   }
   if (blockIfPendingWrite()) {
@@ -2996,7 +3041,7 @@ function openCreateTask() {
 }
 
 function openTaskEditor(task) {
-  if (state.taskSaving || state.taskDeleting || state.taskPending) {
+  if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
     return;
   }
   if (blockIfPendingWrite()) {
@@ -3076,7 +3121,7 @@ async function handleTaskSave(event) {
     closeDialog(elements.taskDialog);
     const reloaded = await loadTasks();
     showStatus(
-      reloaded ? "推送任务配置已保存；任务仍未启用，未发送消息。" : "任务已保存，但列表刷新失败，请重试。",
+      reloaded ? "推送任务配置已保存；任务已自动停用，需重新启用才能继续调度；未发送消息。" : "任务已保存，但列表刷新失败，请重试。",
       reloaded ? "success" : "error",
     );
   } catch (error) {
@@ -3117,8 +3162,169 @@ async function handleTaskSave(event) {
   }
 }
 
+function taskPowerPreflight(task, mode) {
+  if (mode !== "enable") return null;
+  if (!task.schedule || task.schedule_error) {
+    return "任务没有可计算的每日计划，不能启用。";
+  }
+  if (!task.schedule.timezone || !task.schedule.time) {
+    return "每日计划缺少时间或 IANA 时区，不能启用。";
+  }
+  if (!Array.isArray(task.umos) || task.umos.length === 0) {
+    return "任务 UMO 白名单为空，不能启用。";
+  }
+  if (!task.site_id || !task.site_enabled) {
+    return "任务引用的站点不存在或已停用，不能启用。";
+  }
+  return null;
+}
+
+function appendPowerLine(label, value) {
+  const row = document.createElement("div");
+  const strong = document.createElement("strong");
+  strong.textContent = `${label}：`;
+  const text = document.createElement("span");
+  text.textContent = value;
+  row.append(strong, text);
+  elements.taskPowerInfo.append(row);
+}
+
+function openTaskPower(task, mode) {
+  if (state.taskPowerSaving || state.taskPowerPending || state.pendingWrite) {
+    return;
+  }
+  if (blockIfPendingWrite()) {
+    return;
+  }
+  const reason = taskPowerPreflight(task, mode);
+  state.taskPowerTarget = task;
+  state.taskPowerMode = mode;
+  state.taskPowerRequestId += 1;
+  elements.taskPowerTitle.textContent = mode === "enable"
+    ? "启用每日调度" : "停用每日调度";
+  elements.taskPowerConfirmButton.textContent = mode === "enable"
+    ? "确认启用" : "确认停用";
+  elements.taskPowerInfo.replaceChildren();
+  appendPowerLine("任务", task.name);
+  appendPowerLine("内容组合", task.profile_name || "未知组合");
+  appendPowerLine("输出方式", task.output_label || task.output_format);
+  appendPowerLine("目标", Array.isArray(task.umos) && task.umos.length
+    ? task.umos.join("\n") : "无");
+  appendPowerLine("每日计划", task.schedule
+    ? `${task.schedule.time} · ${task.schedule.timezone}`
+    : "无计划");
+  elements.taskPowerNote.textContent = mode === "enable"
+    ? "启用后按计划自动向上述目标发送；首次安排严格晚于当前时刻，不会立即投递。任务状态和实际下次时间以服务器返回为准。"
+    : "停用会取消未来调度。已进入外部调用的消息可能无法撤回；unknown 结果不会自动重试。";
+  elements.taskPowerError.textContent = reason || "";
+  elements.taskPowerError.hidden = !reason;
+  elements.taskPowerConfirmButton.disabled = Boolean(reason);
+  elements.taskPowerUncertain.hidden = true;
+  elements.taskPowerRecheckButton.hidden = false;
+  elements.taskPowerReviewCloseButton.hidden = true;
+  elements.taskPowerCancelButton.disabled = false;
+  elements.taskPowerCloseButton.disabled = false;
+  openDialog(elements.taskPowerDialog);
+  elements.taskPowerCancelButton.focus();
+}
+
+function setTaskPowerBusy(busy) {
+  state.taskPowerSaving = busy;
+  elements.taskPowerConfirmButton.disabled = busy;
+  elements.taskPowerCancelButton.disabled = busy;
+  elements.taskPowerCloseButton.disabled = busy;
+}
+
+async function confirmTaskPower() {
+  const task = state.taskPowerTarget;
+  if (!task || state.taskPowerSaving || state.taskPowerPending) return;
+  if (taskPowerPreflight(task, state.taskPowerMode)) return;
+  const requestId = ++state.taskPowerRequestId;
+  const mode = state.taskPowerMode;
+  setTaskPowerBusy(true);
+  try {
+    const result = await bridge.apiPost(
+      `tasks/${encodeURIComponent(task.id)}/${mode}`,
+      { expected_revision: task.revision },
+    );
+    if (requestId !== state.taskPowerRequestId || state.taskPowerTarget?.id !== task.id) {
+      return;
+    }
+    closeDialog(elements.taskPowerDialog);
+    state.taskPowerTarget = null;
+    const reloaded = await loadTasks();
+    if (reloaded) await loadScheduleRuns(true);
+    showStatus(
+      reloaded
+        ? `任务已${mode === "enable" ? "启用" : "停用"}；状态以最新读取为准。`
+        : "启停请求已返回，但任务列表刷新失败，请重试读取。",
+      reloaded ? "success" : "error",
+    );
+  } catch (error) {
+    if (requestId !== state.taskPowerRequestId || state.taskPowerTarget?.id !== task.id) {
+      return;
+    }
+    const message = friendlyErrorMessage(error);
+    if (isConflictMessage(message) || isMissingMessage(message)) {
+      closeDialog(elements.taskPowerDialog);
+      state.taskPowerTarget = null;
+      const reloaded = await loadTasks();
+      showStatus(reloaded
+        ? "任务已被修改或删除，已重新加载最新状态。"
+        : "任务已被修改或删除，但刷新失败。", "error");
+    } else if (isExplicitWriteRejection(message) || isInactiveMessage(message)) {
+      elements.taskPowerError.textContent = message;
+      elements.taskPowerError.hidden = false;
+    } else {
+      state.taskPowerPending = { taskId: task.id, phase: "unconfirmed" };
+      elements.taskPowerUncertain.hidden = false;
+      elements.taskPowerUncertainText.textContent =
+        "服务器可能已经完成，也可能没有收到请求。为避免重复写入，请先重新读取最新任务状态。";
+      elements.taskPowerRecheckButton.hidden = false;
+      elements.taskPowerRecheckButton.disabled = false;
+      elements.taskPowerReviewCloseButton.hidden = true;
+    }
+  } finally {
+    if (requestId === state.taskPowerRequestId) {
+      if (!state.taskPowerPending) setTaskPowerBusy(false);
+    }
+  }
+}
+
+async function recheckTaskPower() {
+  const pending = state.taskPowerPending;
+  if (!pending || pending.phase === "checking") return;
+  pending.phase = "checking";
+  elements.taskPowerRecheckButton.disabled = true;
+  const succeeded = await loadTasks();
+  if (state.taskPowerPending !== pending) return;
+  if (!succeeded) {
+    pending.phase = "unconfirmed";
+    elements.taskPowerRecheckButton.disabled = false;
+    elements.taskPowerUncertainText.textContent =
+      "仍无法确认：重新读取任务失败。请不要重复提交。";
+    return;
+  }
+  pending.phase = "review";
+  const current = state.tasks.find((item) => item.id === pending.taskId);
+  elements.taskPowerRecheckButton.hidden = true;
+  elements.taskPowerReviewCloseButton.hidden = false;
+  elements.taskPowerUncertainText.textContent = current
+    ? `已重新读取。任务当前${current.enabled ? "已启用" : "未启用"}，revision ${current.revision}，实际下次时间 ${current.next_run_at || "无"}。`
+    : "已重新读取，任务当前不在列表中。";
+}
+
+function closeTaskPowerAfterReview() {
+  if (!state.taskPowerPending || state.taskPowerPending.phase !== "review") return;
+  closeDialog(elements.taskPowerDialog);
+  state.taskPowerPending = null;
+  state.taskPowerTarget = null;
+  setTaskPowerBusy(false);
+  showStatus("已重新读取任务当前状态；未自动重试启停。", "success");
+}
+
 function openTaskDelete(task) {
-  if (state.taskSaving || state.taskDeleting || state.taskPending) {
+  if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
     return;
   }
   if (blockIfPendingWrite()) {
@@ -3858,6 +4064,125 @@ function renderDeliveries(executions, append = false) {
   }
 }
 
+const SCHEDULE_CLAIM_LABELS = {
+  claimed: "已认领：投递可能开始或中断，不代表成功",
+  succeeded: "投递完成：不代表平台已读",
+  failed: "投递失败",
+  unknown: "结果不确定：不会自动重试",
+  skipped: "已认领但跳过发送",
+};
+const SCHEDULE_SKIP_LABELS = {
+  late: "超过迟到窗口，已跳过",
+  capacity: "调度容量已满，已跳过",
+  overlap: "同任务执行重叠，已跳过",
+  disabled: "任务已停用",
+  schedule_invalid: "计划无效",
+  config_unavailable: "配置读取失败",
+  site_disabled: "站点已停用",
+  profile_invalid: "内容组合无效",
+  umos_invalid: "白名单或发送目标无效",
+};
+
+function scheduleTaskName(taskId) {
+  const task = state.tasks.find((item) => item.id === taskId);
+  return task ? `${task.name}（${task.id}）` : taskId;
+}
+
+function scheduleRunMeta(label, value) {
+  const p = document.createElement("p");
+  p.className = "schedule-run-meta";
+  p.textContent = `${label}：${value || "—"}`;
+  return p;
+}
+
+function scheduleCard(run, kind) {
+  const card = document.createElement("li");
+  card.className = "site-card";
+  const head = document.createElement("div");
+  head.className = "site-card-head";
+  const title = document.createElement("h4");
+  title.textContent = scheduleTaskName(run.task_id);
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = kind === "claim"
+    ? (SCHEDULE_CLAIM_LABELS[run.status] || run.status)
+    : (SCHEDULE_SKIP_LABELS[run.reason] || run.reason);
+  head.append(title, badge);
+  card.append(head);
+  if (kind === "claim") {
+    card.append(
+      scheduleRunMeta("UTC 计划时刻", run.scheduled_for),
+      scheduleRunMeta("状态", run.status),
+      scheduleRunMeta("执行 ID", run.execution_id),
+      scheduleRunMeta("错误码", run.error_code),
+      scheduleRunMeta("认领时间", run.created_at),
+      scheduleRunMeta("更新时间", run.updated_at),
+    );
+  } else {
+    card.append(
+      scheduleRunMeta("UTC 计划时刻", run.scheduled_for),
+      scheduleRunMeta("跳过原因", run.reason),
+      scheduleRunMeta("记录时间", run.created_at),
+    );
+  }
+  return card;
+}
+
+function renderScheduleRuns() {
+  elements.scheduleClaimsList.replaceChildren(
+    ...state.scheduleClaims.map((run) => scheduleCard(run, "claim")),
+  );
+  elements.scheduleSkipsList.replaceChildren(
+    ...state.scheduleSkips.map((run) => scheduleCard(run, "skip")),
+  );
+  elements.scheduleClaimsEmpty.hidden = state.scheduleClaims.length > 0;
+  elements.scheduleSkipsEmpty.hidden = state.scheduleSkips.length > 0;
+  elements.scheduleRunsMoreButton.hidden = !state.scheduleRunsHasMore;
+  elements.scheduleClaimsList.setAttribute("aria-busy", "false");
+  elements.scheduleSkipsList.setAttribute("aria-busy", "false");
+}
+
+async function loadScheduleRuns(reset = true) {
+  if (reset) {
+    state.scheduleClaims = [];
+    state.scheduleSkips = [];
+    state.scheduleRunsOffset = 0;
+    state.scheduleRunsHasMore = false;
+  }
+  const requestId = ++state.scheduleRunsRequestId;
+  elements.scheduleClaimsList.setAttribute("aria-busy", "true");
+  elements.scheduleSkipsList.setAttribute("aria-busy", "true");
+  elements.scheduleRunsStateText.textContent = "正在读取调度记录…";
+  elements.scheduleRunsState.hidden = false;
+  elements.scheduleRunsRetryButton.hidden = true;
+  try {
+    const result = await bridge.apiGet("schedule-runs", {
+      limit: 10,
+      offset: state.scheduleRunsOffset,
+    });
+    if (requestId !== state.scheduleRunsRequestId) return false;
+    const claims = Array.isArray(result.claims) ? result.claims : [];
+    const skips = Array.isArray(result.skips) ? result.skips : [];
+    state.scheduleClaims = reset
+      ? claims : state.scheduleClaims.concat(claims);
+    state.scheduleSkips = reset
+      ? skips : state.scheduleSkips.concat(skips);
+    const limit = Number(result.limit) || 10;
+    state.scheduleRunsOffset += Math.max(claims.length, skips.length);
+    state.scheduleRunsHasMore = claims.length >= limit || skips.length >= limit;
+    renderScheduleRuns();
+    elements.scheduleRunsState.hidden = true;
+    return true;
+  } catch (error) {
+    if (requestId !== state.scheduleRunsRequestId) return false;
+    elements.scheduleRunsStateText.textContent =
+      `读取调度记录失败：${friendlyErrorMessage(error)}`;
+    elements.scheduleRunsState.hidden = false;
+    elements.scheduleRunsRetryButton.hidden = false;
+    return false;
+  }
+}
+
 async function loadDeliveries(reset = true) {
   if (reset) {
     state.deliveryHistory = [];
@@ -3895,7 +4220,7 @@ async function loadDeliveries(reset = true) {
   }
 }
 async function refreshAll() {
-  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries(true)]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadScheduleRuns(true), loadDeliveries(true)]);
 }
 
 function bindEvents() {
@@ -3954,6 +4279,37 @@ function bindEvents() {
   elements.taskScheduleTime.addEventListener("input", markTaskScheduleDirty);
   elements.taskScheduleTimezone.addEventListener("input", markTaskScheduleDirty);
   elements.taskDeleteConfirmButton.addEventListener("click", confirmTaskDelete);
+  elements.taskPowerConfirmButton.addEventListener("click", confirmTaskPower);
+  elements.taskPowerRecheckButton.addEventListener("click", recheckTaskPower);
+  elements.taskPowerReviewCloseButton.addEventListener(
+    "click", closeTaskPowerAfterReview,
+  );
+  elements.taskPowerCancelButton.addEventListener("click", () => {
+    if (!state.taskPowerSaving && !state.taskPowerPending) {
+      closeDialog(elements.taskPowerDialog);
+      state.taskPowerTarget = null;
+    }
+  });
+  elements.taskPowerCloseButton.addEventListener("click", () => {
+    if (!state.taskPowerSaving && !state.taskPowerPending) {
+      closeDialog(elements.taskPowerDialog);
+      state.taskPowerTarget = null;
+    }
+  });
+  elements.taskPowerDialog.addEventListener("cancel", (event) => {
+    if (state.taskPowerSaving || state.taskPowerPending) {
+      event.preventDefault();
+    }
+  });
+  elements.scheduleRunsRefreshButton.addEventListener(
+    "click", () => loadScheduleRuns(true),
+  );
+  elements.scheduleRunsRetryButton.addEventListener(
+    "click", () => loadScheduleRuns(true),
+  );
+  elements.scheduleRunsMoreButton.addEventListener(
+    "click", () => loadScheduleRuns(false),
+  );
   elements.taskRecheckButton.addEventListener("click", recheckTaskPending);
   elements.taskReviewCloseButton.addEventListener("click", finishTaskPendingReview);
   elements.taskDeleteRecheckButton.addEventListener("click", recheckTaskPending);
@@ -4177,7 +4533,7 @@ async function init() {
   }
 
   bindEvents();
-  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadDeliveries(true)]);
+  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadScheduleRuns(true), loadDeliveries(true)]);
   syncDeliveryPendingPanel();
 }
 

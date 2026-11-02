@@ -188,6 +188,33 @@
         <ul id="tasks-list" class="sites-list profiles-list" aria-busy="true"></ul>
       </section>
 
+      <section class="schedule-runs-section" aria-labelledby="schedule-runs-heading">
+        <div class="section-head">
+          <h2 id="schedule-runs-heading">每日调度记录</h2>
+          <button id="schedule-runs-refresh-button" class="button button-secondary" type="button">刷新记录</button>
+        </div>
+        <p class="preview-lede">
+          展示调度认领和跳过记录。claimed 只表示已认领，succeeded 也不代表平台已读；unknown 不自动重试。这里不提供重试或补发操作。
+        </p>
+        <div id="schedule-runs-state" class="list-state" hidden>
+          <p id="schedule-runs-state-text"></p>
+          <button id="schedule-runs-retry-button" class="button button-secondary" type="button" hidden>重试</button>
+        </div>
+        <div class="schedule-runs-columns">
+          <div>
+            <h3>认领记录</h3>
+            <ul id="schedule-claims-list" class="sites-list" aria-busy="true"></ul>
+            <p id="schedule-claims-empty" class="empty-state" hidden>暂无认领记录。</p>
+          </div>
+          <div>
+            <h3>跳过记录</h3>
+            <ul id="schedule-skips-list" class="sites-list" aria-busy="true"></ul>
+            <p id="schedule-skips-empty" class="empty-state" hidden>暂无跳过记录。</p>
+          </div>
+        </div>
+        <button id="schedule-runs-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
+      </section>
+
       <section class="delivery-section" aria-labelledby="delivery-heading">
         <div class="section-head">
           <h2 id="delivery-heading">手动测试与执行记录</h2>
@@ -413,6 +440,30 @@
         <footer class="dialog-actions">
           <button id="task-cancel-button" class="button button-secondary" type="button">取消</button>
           <button id="task-save-button" class="button button-primary" type="submit">保存任务</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="task-power-dialog" class="dialog dialog-small" aria-labelledby="task-power-title">
+      <form id="task-power-form" class="form">
+        <header class="dialog-head">
+          <h2 id="task-power-title">启用每日调度</h2>
+          <button id="task-power-close-button" class="icon-button" type="button" aria-label="关闭">×</button>
+        </header>
+        <div id="task-power-error" class="form-error" role="alert" hidden></div>
+        <div id="task-power-uncertain" class="uncertain" role="alert" hidden>
+          <h3>启停结果未确认</h3>
+          <p id="task-power-uncertain-text"></p>
+          <div class="uncertain-actions">
+            <button id="task-power-recheck-button" class="button button-primary" type="button">重新读取最新任务</button>
+            <button id="task-power-review-close-button" class="button button-secondary" type="button" hidden>关闭并查看最新状态</button>
+          </div>
+        </div>
+        <div id="task-power-info"></div>
+        <p id="task-power-note" class="help"></p>
+        <footer class="dialog-actions">
+          <button id="task-power-cancel-button" class="button button-secondary" type="button">取消</button>
+          <button id="task-power-confirm-button" class="button button-primary" type="button">确认启用</button>
         </footer>
       </form>
     </dialog>

@@ -6,6 +6,26 @@
  */
 const assert=require('assert/strict');
 const {chromium}=require('playwright-core');
+
+async function closeHostFirstPrompt(page, currentPassword) {
+  const dialog = page.locator('.account-dialog');
+  if (!(await dialog.isVisible().catch(() => false))) return;
+  const inputs = dialog.locator('input');
+  if (await inputs.count() < 3) return;
+  const next = process.env.ASTRBOT_NEW_PASSWORD || currentPassword;
+  await inputs.nth(0).fill(currentPassword);
+  await inputs.nth(1).fill(next);
+  await inputs.nth(2).fill(next);
+  const save = dialog.getByRole('button', { name: '保存修改' });
+  await save.waitFor({ state: 'visible' });
+  await page.waitForFunction(() => {
+    const b = document.querySelector('.account-dialog button');
+    return b && !b.disabled;
+  }, null, { timeout: 10000 });
+  await save.click();
+  await dialog.waitFor({ state: 'hidden', timeout: 15000 });
+}
+
 const BASE=process.env.ASTRBOT_URL,P=process.env.ASTRBOT_PLUGIN||'astrbot_plugin_60sapi_hub',PW=process.env.ASTRBOT_PASSWORD,CHROME=process.env.CHROME_PATH;
 if(!BASE||!PW||!CHROME){console.error('ASTRBOT_URL, ASTRBOT_PASSWORD and CHROME_PATH are required');process.exit(2);}
 let token=null,siteId=null,profileId=null,taskId=null;const name='调度页面回归'+Date.now();
@@ -18,7 +38,8 @@ async function api(method,path,data){const r=await fetch(BASE+path,{method,heade
   page.on('request',req=>{if(req.method()==='POST'&&/\/tasks\/[^/]+\/enable$/.test(new URL(req.url()).pathname))enablePosts.push(req.postData());});
   await page.goto(BASE+'/',{waitUntil:'domcontentloaded'});await page.fill('input[name=username]','astrbot');await page.fill('input[name=password]',PW);
   await Promise.all([page.waitForURL(url=>!url.toString().includes('/auth/login')),page.getByRole('button',{name:'登录',exact:true}).click()]);
-  await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'});await page.waitForTimeout(800);
+  await closeHostFirstPrompt(page, PW);
+await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'});await page.waitForTimeout(800);
   const clear=async()=>page.evaluate(()=>{for(const e of document.querySelectorAll('.v-overlay__scrim,.v-overlay-container'))e.remove();});
   await clear();const iframe=page.locator('iframe').first();let frame=page.frames().find(x=>x!==page.mainFrame()&&x.url().includes('/views/sites/'));if(!frame)frame=await (await iframe.elementHandle()).contentFrame();
   await frame.waitForFunction(n=>document.getElementById('tasks-list')?.innerText.includes(n),name);

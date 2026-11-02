@@ -5,10 +5,31 @@ const assert=require('assert/strict');const {chromium}=require('playwright-core'
  * and its schedule_error are a controlled route fixture. No delivery request
  * is made. Screenshots/logs go outside the repository.
  */
+
+async function closeHostFirstPrompt(page, currentPassword) {
+  const dialog = page.locator('.account-dialog');
+  if (!(await dialog.isVisible().catch(() => false))) return;
+  const inputs = dialog.locator('input');
+  if (await inputs.count() < 3) return;
+  const next = process.env.ASTRBOT_NEW_PASSWORD || currentPassword;
+  await inputs.nth(0).fill(currentPassword);
+  await inputs.nth(1).fill(next);
+  await inputs.nth(2).fill(next);
+  const save = dialog.getByRole('button', { name: '保存修改' });
+  await save.waitFor({ state: 'visible' });
+  await page.waitForFunction(() => {
+    const b = document.querySelector('.account-dialog button');
+    return b && !b.disabled;
+  }, null, { timeout: 10000 });
+  await save.click();
+  await dialog.waitFor({ state: 'hidden', timeout: 15000 });
+}
+
 const BASE=process.env.ASTRBOT_URL,PW=process.env.ASTRBOT_PASSWORD,P=process.env.ASTRBOT_PLUGIN||'astrbot_plugin_60sapi_hub',CHROME=process.env.CHROME_PATH;if(!BASE||!PW||!CHROME){console.error('ASTRBOT_URL, ASTRBOT_PASSWORD and CHROME_PATH are required');process.exit(2);}
 async function api(t,m,p,d){const r=await fetch(BASE+p,{method:m,headers:{'Content-Type':'application/json',Authorization:`Bearer ${t}`},body:d?JSON.stringify(d):undefined});return {status:r.status,body:await r.json()};}
 (async()=>{const b=await chromium.launch({headless:true,executablePath:CHROME,args:['--no-sandbox']});const page=await b.newPage({viewport:{width:1400,height:1200}});const names=[];let token;try{const lr=await fetch(`${BASE}/api/v1/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'astrbot',password:PW})});token=(await lr.json()).data.token;const all=await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks`);const pid=all.body.data.tasks[0].profile_id;
-await page.goto(BASE+'/',{waitUntil:'domcontentloaded'});await page.fill('input[name=username]','astrbot');await page.fill('input[name=password]',PW);await Promise.all([page.waitForURL(u=>!u.toString().includes('/auth/login')),page.getByRole('button',{name:'登录',exact:true}).click()]);await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'});await page.waitForTimeout(500);const clear=async()=>page.evaluate(()=>{for(const e of document.querySelectorAll('.v-overlay__scrim,.v-overlay-container'))e.remove();});const ifr=page.locator('iframe').first();let f=page.frames().find(x=>x!==page.mainFrame()&&x.url().includes('/views/sites/'));if(!f)f=await (await ifr.elementHandle()).contentFrame();await f.waitForFunction(()=>document.getElementById('tasks-list')?.innerText.length>0);
+await page.goto(BASE+'/',{waitUntil:'domcontentloaded'});await page.fill('input[name=username]','astrbot');await page.fill('input[name=password]',PW);await Promise.all([page.waitForURL(u=>!u.toString().includes('/auth/login')),page.getByRole('button',{name:'登录',exact:true}).click()]);await closeHostFirstPrompt(page, PW);
+await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'});await page.waitForTimeout(500);const clear=async()=>page.evaluate(()=>{for(const e of document.querySelectorAll('.v-overlay__scrim,.v-overlay-container'))e.remove();});const ifr=page.locator('iframe').first();let f=page.frames().find(x=>x!==page.mainFrame()&&x.url().includes('/views/sites/'));if(!f)f=await (await ifr.elementHandle()).contentFrame();await f.waitForFunction(()=>document.getElementById('tasks-list')?.innerText.length>0);
 const card=n=>f.locator('#tasks-list li').filter({hasText:n});let lastUpdateBody=null;page.on('request',r=>{if(r.method()==='POST'&&/\/tasks\/[^/]+\/update$/.test(new URL(r.url()).pathname)){try{lastUpdateBody=JSON.parse(r.postData());}catch{lastUpdateBody=null;}}});
 async function openCreate(){await clear();await f.locator('#create-task-button').click({force:true});await f.waitForSelector('#task-dialog[open]');}
 async function openEdit(n){await clear();await card(n).getByRole('button',{name:`编辑推送任务 ${n}`}).click({force:true});await f.waitForSelector('#task-dialog[open]');}

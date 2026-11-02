@@ -206,7 +206,7 @@
 {"kind":"daily","timezone":"Asia/Shanghai","time":"08:30"}
 ```
 
-- 只支持 `kind=daily`；`timezone` 必须是可用 IANA 时区，`time` 严格为 24 小时制 `HH:mm`。
+- 支持 `kind=daily` 和 `kind=weekly`；`weekdays` 为 1～7 的 ISO 星期（1=周一，7=周日），非空、不重复并规范排序；`timezone` 必须是可用 IANA 时区，`time` 严格为 24 小时制 `HH:mm`。
 - 未知类型、非法字段、非法时区、非法时间或错误类型返回 400，不猜测或改用 UTC/系统时区。
 - 新建省略 `schedule` 为 `null`；编辑省略保留原计划；显式 `null` 清除计划。
 - 计划变更与任务字段在同一事务中提交，成功后任务 revision 只增加一次。

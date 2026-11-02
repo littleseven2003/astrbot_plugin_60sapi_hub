@@ -236,7 +236,24 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 组合页面维护“组合配置签名”（ID、revision、名称、站点、栏目顺序和 limit）与请求令牌。列表成功刷新、编辑/删除当前组合时签名变化则清除结果；预览响应只有在令牌、当前 ID、当前签名和响应 `profile_revision` 全部匹配时才渲染。旧请求 finally 仅在仍持有最新令牌时清理 busy，避免解锁新请求。
 - 关闭时缓存取消并等待自有在途任务、清空并拒绝新操作；不取消宿主无关任务，不留下后台任务或未处理异常。
 
-### 测试与核验
+### 浏览器调度回归
+
+1. 准备带本插件的隔离 AstrBot 根目录，并设置 Dashboard 密码。
+2. 启动假平台宿主：
+
+```bash
+ASTRBOT_TEST_ROOT=/path/to/isolated/root ASTRBOT_TEST_PORT=16194 python tests/browser/fake_host.py
+```
+
+3. 运行脚本，凭据通过环境变量提供，不写入仓库：
+
+```bash
+ASTRBOT_URL=http://127.0.0.1:16194 ASTRBOT_PASSWORD='<isolated password>' CHROME_PATH='<chromium-headless-shell>' node tests/browser/scheduler_ui.js
+```
+
+脚本自行创建和清理临时站点、组合、任务；调度记录使用 route fixture，启停使用真实隔离 API。
+
+## 测试与核验
 
 - `tests/test_news.py`：URL/反代/IPv6、字符串/对象条目、顺序与条数、空内容、缺失/非法/旧日期、业务/结构错误、站点启用/禁用/凭据隐藏、服务层 URL/令牌/超时传递。
 - `tests/test_news_http.py`：成功、重定向不跟随、可重试状态、重试上限、非重试状态、Content-Length 和流式大小限制、传输错误、超时、取消传播、关闭客户端、并发上限；并用事件同步覆盖在途、排队、重试等待中的关闭，关闭幂等、重新打开、无关任务不被取消。

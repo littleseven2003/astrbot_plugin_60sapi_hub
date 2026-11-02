@@ -28,6 +28,7 @@ from .core.tasks import PushTaskService
 from .core.astrbot_sender import AstrBotAiocqhttpSender
 from .core.delivery import DeliveryLimits, DeliveryService
 from .core.delivery_api import DeliveryApi
+from .core.scheduler import SchedulerService
 from .core.chat_commands import ChatCommandService
 from .core.chat_content import ChatContentQuery
 from .core.chat_image import ChatImageQuery, ChatImageReply
@@ -47,8 +48,60 @@ class SixtySAPIHub(Star):
         self.content = ContentService(self.sites)
         self.profiles = ContentProfileService(self.sites)
         self.tasks = PushTaskService(self.profiles, self.sites.store)
-        # Shared image resources and the complete Dashboard API must exist
-        # before chat services reference profile_api.
+        self._context = context
+        self._plugin_name = plugin_name
+        self._active = False
+        self._lifecycle_generation = 0
+        self._runtime_epoch = 1
+        self._runtime_needs_rebuild = False
+        self._site_web = SiteWeb(
+            SiteApi(self.sites),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._news_web = NewsWeb(
+            NewsApi(self.content.news),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._content_web = ContentWeb(
+            ContentApi(self.content),
+            plugin_name=plugin_name,
+            is_active=lambda: self._active,
+        )
+        self._build_runtime()
+        self._site_web.register(context)
+        self._news_web.register(context)
+        self._content_web.register(context)
+
+    def _runtime_active_guard(self):
+        epoch = getattr(self, "_runtime_epoch", 1)
+
+        def active() -> bool:
+            return (
+                bool(getattr(self, "_active", False))
+                and getattr(self, "_runtime_epoch", 0) == epoch
+            )
+
+        return active
+
+    async def _close_dynamic_runtime(self) -> None:
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is not None:
+            await scheduler.close()
+        delivery = getattr(self, "delivery", None)
+        if delivery is not None:
+            await delivery.close()
+        image_service = getattr(self, "image_service", None)
+        if image_service is not None:
+            await image_service.close()
+        snapshots = getattr(self, "image_snapshots", None)
+        if snapshots is not None:
+            snapshots.close()
+
+    def _build_runtime(self) -> None:
+        """构建所有会在停用后失效的资源，并替换对应 Web API。"""
+        context = self._context
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
         self.profile_api = ProfileApi(
@@ -77,27 +130,18 @@ class SixtySAPIHub(Star):
             sender=AstrBotAiocqhttpSender(context),
             limits=DeliveryLimits(),
         )
-        self._active = False
-        self._lifecycle_generation = 0
-        self._site_web = SiteWeb(
-            SiteApi(self.sites),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
-        )
-        self._news_web = NewsWeb(
-            NewsApi(self.content.news),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
-        )
-        self._content_web = ContentWeb(
-            ContentApi(self.content),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
+        self.scheduler = SchedulerService(
+            tasks=self.tasks,
+            store=self.sites.store,
+            delivery=self.delivery,
         )
         self._task_web = TaskWeb(
-            TaskApi(self.tasks, self.profiles, self.sites),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
+            TaskApi(
+                self.tasks, self.profiles, self.sites,
+                scheduler=self.scheduler,
+            ),
+            plugin_name=self._plugin_name,
+            is_active=self._runtime_active_guard(),
         )
         self._delivery_web = DeliveryWeb(
             DeliveryApi(
@@ -108,17 +152,14 @@ class SixtySAPIHub(Star):
                 store=self.sites.store,
                 inspector=AstrBotAiocqhttpSender(context),
             ),
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
+            plugin_name=self._plugin_name,
+            is_active=self._runtime_active_guard(),
         )
         self._profile_web = ProfileWeb(
             self.profile_api,
-            plugin_name=plugin_name,
-            is_active=lambda: self._active,
+            plugin_name=self._plugin_name,
+            is_active=self._runtime_active_guard(),
         )
-        self._site_web.register(context)
-        self._news_web.register(context)
-        self._content_web.register(context)
         self._task_web.register(context)
         self._delivery_web.register(context)
         self._profile_web.register(context)
@@ -142,19 +183,36 @@ class SixtySAPIHub(Star):
         elif text:
             yield event.plain_result(text)
 
+    async def _cleanup_failed_initialize(self) -> None:
+        await self._close_dynamic_runtime()
+        content = getattr(self, "content", None)
+        if content is not None:
+            await content.close()
+        sites = getattr(self, "sites", None)
+        if sites is not None:
+            await sites.close()
+        self._runtime_needs_rebuild = getattr(self, "_context", None) is not None
+
     async def initialize(self) -> None:
         self._lifecycle_generation += 1
-        await self.sites.open()
+        needs_rebuild = (
+            getattr(self, "_runtime_needs_rebuild", False)
+            and getattr(self, "_context", None) is not None
+        )
+        if needs_rebuild:
+            await self._close_dynamic_runtime()
+            self._runtime_epoch = getattr(self, "_runtime_epoch", 1) + 1
+            self._build_runtime()
+            self._runtime_needs_rebuild = False
         try:
+            await self.sites.open()
             await self.content.open()
+            scheduler = getattr(self, "scheduler", None)
+            if scheduler is not None:
+                await scheduler.start()
         except Exception:
-            await self.delivery.close()
-            await self.content.close()
-            try:
-                await self.image_service.close()
-            finally:
-                self.image_snapshots.close()
-                await self.sites.close()
+            self._active = False
+            await self._cleanup_failed_initialize()
             raise
         self._active = True
 
@@ -163,13 +221,19 @@ class SixtySAPIHub(Star):
         # 单调递增；停用后不得重置或复用，否则同一实例重新初始化时旧在途处理会通过校验。
         self._lifecycle_generation += 1
         try:
-            await self.delivery.close()
+            scheduler = getattr(self, "scheduler", None)
+            if scheduler is not None:
+                await scheduler.close()
         finally:
             try:
-                await self.image_service.close()
+                await self.delivery.close()
             finally:
-                self.image_snapshots.close()
                 try:
-                    await self.content.close()
+                    await self.image_service.close()
                 finally:
-                    await self.sites.close()
+                    self.image_snapshots.close()
+                    try:
+                        await self.content.close()
+                    finally:
+                        await self.sites.close()
+        self._runtime_needs_rebuild = getattr(self, "_context", None) is not None

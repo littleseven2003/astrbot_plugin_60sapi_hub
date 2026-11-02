@@ -1,6 +1,6 @@
 # 配置说明
 
-站点配置、后台管理、五种内容预览、组合图文、任务白名单及后台手动投递/执行记录已实现并完成隔离验收。入口已装配 aiocqhttp 发送适配层，真实账号发送尚未验证；聊天纯文字和图片查询已实现；每日计划配置与理论下次时间预览已实现，任务启用、实际调度、其他热榜和导入未实现。
+站点配置、后台管理、五种内容预览、组合图文、任务白名单及后台手动投递/执行记录已实现并完成隔离验收。入口已装配 aiocqhttp 发送适配层，真实账号发送尚未验证；聊天纯文字和图片查询已实现；每日计划配置、理论下次时间预览和显式启停/单循环调度已实现，页面启停按钮、其他热榜和导入未实现。
 
 ### 后台站点管理
 
@@ -184,7 +184,7 @@
 
 ## 推送任务
 
-任务配置和 UMO 白名单已实现，保存操作不发送、不请求上游。任务可以选择保存每日计划，但任务固定未启用，不执行定时调度，也不启动后台循环；鉴权的后台手动测试使用独立投递接口，见下文。
+任务配置和 UMO 白名单已实现，保存操作不发送、不请求上游。任务可以选择保存每日计划；保存后仍保持未启用。管理员可通过受鉴权 API 显式启用/停用，启用后才进入每日单循环；页面暂无启停按钮；鉴权的后台手动测试使用独立投递接口，见下文。
 
 任务字段：稳定 ID、名称（沿用站点名称规则，最多 80 字符）、一个已保存内容组合 ID、输出方式（`text`、`markdown`、`image`）、独立 UMO 白名单、revision、创建/修改时间。允许空白名单；允许组合引用的站点已停用；必须引用实际存在的内容组合。配置可保存不代表可投递。
 
@@ -196,7 +196,7 @@
 | `POST /<插件名>/tasks/<id>/update` | 按 expected_revision 编辑任务 |
 | `POST /<插件名>/tasks/<id>/delete` | 按 expected_revision 删除任务 |
 
-`schedule` 是可选的每日计划配置；请求中出现 `enabled`、`next_run`、`next_run_at`、`schedule_preview` 或运行状态字段返回 400 `unsupported_enable_request`，不会写入。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应固定返回 `enabled=false`、`can_send=false`，表示没有自动推送启用能力；后台显式测试是否可投递由确认接口的 `can_deliver` 单独判定。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
+`schedule` 是可选的每日计划配置；普通任务 CRUD 请求中出现 `enabled`、`next_run`、`next_run_at`、`schedule_preview` 或运行状态字段返回 400 `unsupported_enable_request`，不会写入。启停使用独立接口。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应固定返回 `enabled=false`、`can_send=false`，表示没有自动推送启用能力；后台显式测试是否可投递由确认接口的 `can_deliver` 单独判定。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
 
 ### 每日计划配置与预览
 
@@ -212,8 +212,20 @@
 - 计划变更与任务字段在同一事务中提交，成功后任务 revision 只增加一次。
 - 列表和详情返回 `schedule` 和 `schedule_preview`。预览包含同一次响应使用的 `evaluated_at` 和理论 `next_run_at`；无计划时均为 `null`。
 - 当前时间恰好等于计划时间时取次日；DST 不存在的本地时间跳过当天；DST 重复时间只采用第一次出现，第一次已过去时不使用第二次。预览不写入数据库，也不代表自动发送已启用。
-- 后台任务编辑页提供“无计划/每日”选择、HH:mm 时间和 IANA 时区输入；默认无计划，每日模式明确展示 `Asia/Shanghai` 和 `08:30`，不从浏览器时区推断。列表显示计划、服务端理论下次时间、UTC 标识和评估时间。旧页面省略 `schedule` 的编辑请求会保留计划。
+- 后台任务编辑页提供“无计划/每日”选择、HH:mm 时间和 IANA 时区输入；默认无计划，每日模式明确展示 `Asia/Shanghai` 和 `08:30`，不从浏览器时区推断。列表显示计划、真实启停状态、实际 `next_run_at`、服务端理论下次时间、UTC 标识和评估时间。旧页面省略 `schedule` 的编辑请求会保留计划。
 - 如果已保存计划的时区数据暂时不可用，任务仍保留原始计划字段，并返回 `schedule_error=schedule_timezone_unavailable` 和不可计算的 `schedule_preview`；不会伪装成 `schedule=null`。此时普通名称编辑省略 `schedule` 仍原样保留计划，只有显式 `schedule:null` 才清除。恢复时区数据后可重新计算预览。
+
+### 每日调度启停
+
+- `POST /<插件名>/tasks/<id>/enable`、`POST /<插件名>/tasks/<id>/disable`，请求只接受 `expected_revision`。
+- 启用前校验每日计划、IANA 时区、组合存在、站点启用、UMO 非空和发送适配器支持目标；成功只安排严格晚于当前时刻的下一次执行，不立即获取或发送。
+- 启用/停用成功各增加一次任务 revision；过期 revision 返回 409。
+- 普通任务编辑成功会自动停用并删除未来计划，必须重新启用。
+- 迟到窗口固定 60 秒；运行中到期且迟到不超过窗口执行一次，超过则跳过并安排下一次，不补发多天。
+- 启动/重载不补发已过去时刻；同一任务同一 UTC 时刻由数据库唯一认领，重复/并发检查不会重复发送。
+- 认领后崩溃或结果不明保留 `unknown`，不自动重试；跳过记录和真实投递记录分开保存。
+- `GET /<插件名>/schedule-runs?limit=20&offset=0` 返回有界的认领和跳过记录，用于验收追踪；不返回凭据、异常正文或路径。
+- 任务页列表读取真实 `enabled` 和实际 `next_run_at`；`schedule_preview` 仍只是理论时间，两者分开显示。页面暂不提供启停按钮。
 
 ## 推送白名单
 
@@ -257,7 +269,7 @@
 - text 使用 `Plain`；Markdown 作为普通文本源码发送，不宣称原生富文本；image 只接受有效 PNG bytes（签名、Pillow 校验、8 MiB 上限），用 `Image.fromBytes`/base64 内存传递，不创建公开 URL、不读文件路径、不请求网络。
 - 未找到实例、非 aiocqhttp、非法 UMO/目标/载荷在外部调用前返回 FAILED；已进入 `Context.send_message` 后的异常或无法确定结果返回 UNKNOWN；`CancelledError` 继续传播；不自动重试。
 - 成功表示真实宿主路由方法正常完成并调用了支持的 aiocqhttp 发送路径，不保证平台已读、绝对送达或平台 API 回执成功。异常正文/平台响应/凭据不落库、不打印 UMO/正文/PNG。
-- 插件入口已装配该发送器并提供 Dashboard 鉴权的手动测试接口；启动本身不发送。聊天命令使用事件会话白名单单独授权；任务启用和调度未实现，后台接口不对匿名调用者开放。
+- 插件入口已装配该发送器并提供 Dashboard 鉴权的手动测试接口；启动本身不发送。聊天命令使用事件会话白名单单独授权；页面启停按钮尚未实现；受鉴权启停和调度接口不对匿名调用者开放。
 - 适配层验证使用真实 AstrBot v4.29.1 源码、真实 Context/aiocqhttp 路由/消息转换，最终机器人网络边界替换为隔离假机器人；未连接真实平台。
 
 ## 投递核心与后台集成

@@ -426,7 +426,7 @@ def _to_task(stored: StoredTask) -> PushTask:
         profile_id=stored.profile_id,
         output_format=stored.output_format,
         umos=tuple(stored.umos),
-        enabled=False,
+        enabled=stored.enabled,
         revision=stored.revision,
         created_at=stored.created_at,
         updated_at=stored.updated_at,

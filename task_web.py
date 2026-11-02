@@ -41,6 +41,24 @@ class TaskWeb:
                 ["POST"],
                 "删除推送任务",
             ),
+            (
+                "schedule-runs",
+                self.list_schedule_runs,
+                ["GET"],
+                "查询每日调度认领与跳过",
+            ),
+            (
+                "tasks/<task_id>/enable",
+                self.enable_task,
+                ["POST"],
+                "启用每日任务",
+            ),
+            (
+                "tasks/<task_id>/disable",
+                self.disable_task,
+                ["POST"],
+                "停用每日任务",
+            ),
         )
         for path, handler, methods, desc in routes:
             context.register_web_api(
@@ -55,6 +73,31 @@ class TaskWeb:
         if guard is not None:
             return guard
         return self._respond(await self._api.list_tasks())
+
+    async def list_schedule_runs(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        return self._respond(await self._api.list_schedule_runs(
+            limit=request.query.get("limit", 20, type=int),
+            offset=request.query.get("offset", 0, type=int),
+        ))
+
+    async def enable_task(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        return self._respond(await self._api.enable_task(
+            task_id, await request.json(),
+        ))
+
+    async def disable_task(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        return self._respond(await self._api.disable_task(
+            task_id, await request.json(),
+        ))
 
     async def create_task(self):
         guard = self._guard()

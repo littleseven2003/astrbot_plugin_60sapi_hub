@@ -22,6 +22,9 @@ class AstrBotAiocqhttpSender:
     def __init__(self, context: Any) -> None:
         self._context = context
 
+    def supports_umo(self, umo: object) -> bool:
+        return bool(self.inspect_target(umo).get("valid"))
+
     async def send(self, message: DeliveryMessage) -> DeliverySendResult:
         try:
             session, platform_id = self._parse_session(message.umo)

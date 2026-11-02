@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS push_tasks (
     output_format TEXT NOT NULL CHECK (
         output_format IN ('text', 'markdown', 'image')
     ),
-    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled = 0),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
     schedule_kind TEXT,
     schedule_timezone TEXT,
     schedule_time TEXT,
@@ -97,6 +97,54 @@ CREATE TABLE IF NOT EXISTS push_task_umos (
 _CREATE_TASK_PROFILE_INDEX = """
 CREATE INDEX IF NOT EXISTS push_tasks_profile_id
 ON push_tasks (profile_id)
+"""
+
+_CREATE_TASKS_TABLE_V7 = _CREATE_TASKS_TABLE.replace(
+    "CREATE TABLE IF NOT EXISTS push_tasks",
+    "CREATE TABLE IF NOT EXISTS push_tasks_v7",
+)
+
+_CREATE_SCHEDULE_STATE_TABLE = """
+CREATE TABLE IF NOT EXISTS push_schedule_state (
+    task_id TEXT PRIMARY KEY NOT NULL
+        REFERENCES push_tasks(id) ON DELETE CASCADE,
+    next_run_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+_CREATE_SCHEDULE_CLAIMS_TABLE = """
+CREATE TABLE IF NOT EXISTS push_schedule_claims (
+    task_id TEXT NOT NULL REFERENCES push_tasks(id) ON DELETE CASCADE,
+    scheduled_for TEXT NOT NULL,
+    execution_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (
+        status IN ('claimed', 'succeeded', 'failed', 'unknown', 'skipped')
+    ),
+    task_revision INTEGER NOT NULL,
+    profile_revision INTEGER NOT NULL,
+    site_revision INTEGER NOT NULL,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, scheduled_for)
+)
+"""
+
+_CREATE_SCHEDULE_SKIPS_TABLE = """
+CREATE TABLE IF NOT EXISTS push_schedule_skips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES push_tasks(id) ON DELETE CASCADE,
+    scheduled_for TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (task_id, scheduled_for, reason)
+)
+"""
+
+_CREATE_SCHEDULE_STATE_INDEX = """
+CREATE INDEX IF NOT EXISTS push_schedule_state_next
+ON push_schedule_state (next_run_at)
 """
 
 _CREATE_DELIVERY_EXECUTIONS_TABLE = """
@@ -228,6 +276,10 @@ class TaskRecordNotFoundError(SiteStoreError):
         super().__init__(f"推送任务 {task_id} 不存在")
 
 
+class TaskOperationStaleError(SiteStoreError):
+    """操作所属运行周期已失效。"""
+
+
 class TaskRevisionConflictError(SiteStoreError):
     """推送任务写入 revision 冲突。"""
 
@@ -342,6 +394,35 @@ class StoredTaskConfigSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ScheduleState:
+    task_id: str
+    next_run_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleClaim:
+    task_id: str
+    scheduled_for: str
+    execution_id: str
+    status: str
+    task_revision: int
+    profile_revision: int
+    site_revision: int
+    error_code: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleSkip:
+    task_id: str
+    scheduled_for: str
+    reason: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class StoredProfile:
     id: str
     name: str
@@ -400,13 +481,14 @@ class SiteStore:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version in (0, 1, 2, 3, 4, 5):
+                if version in (0, 1, 2, 3, 4, 5, 6):
                     await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
                         f"不支持的站点数据库 schema 版本：{version}",
                     )
 
+                await self._recover_schedule_claims(connection)
                 await self._recover_delivery(connection)
                 self._connection = connection
                 connection = None
@@ -436,15 +518,54 @@ class SiteStore:
     ) -> None:
         """在同一事务中创建/升级 schema，失败保留旧版本数据。"""
         try:
+            if version in (3, 4, 5, 6):
+                # Existing push_tasks only allowed enabled=0. Rebuild it
+                # while foreign keys are off so child UMO rows survive.
+                await connection.execute("PRAGMA foreign_keys = OFF")
             await connection.execute("BEGIN IMMEDIATE")
             if version == 0:
                 await connection.execute(_CREATE_SITES_TABLE)
             await connection.execute(_CREATE_PROFILES_TABLE)
             await connection.execute(_CREATE_PROFILE_ITEMS_TABLE)
             await connection.execute(_CREATE_PROFILE_SITE_INDEX)
-            await connection.execute(_CREATE_TASKS_TABLE)
+            if version in (3, 4, 5, 6):
+                async with connection.execute(
+                    "PRAGMA table_info(push_tasks)",
+                ) as cursor:
+                    task_columns = {row[1] for row in await cursor.fetchall()}
+                for column in (
+                    "schedule_kind", "schedule_timezone", "schedule_time",
+                ):
+                    if column not in task_columns:
+                        await connection.execute(
+                            f"ALTER TABLE push_tasks ADD COLUMN {column} TEXT",
+                        )
+                await connection.execute(_CREATE_TASKS_TABLE_V7)
+                await connection.execute(
+                    """
+                    INSERT INTO push_tasks_v7 (
+                        id, name, profile_id, output_format, enabled,
+                        schedule_kind, schedule_timezone, schedule_time,
+                        revision, created_at, updated_at
+                    )
+                    SELECT id, name, profile_id, output_format, enabled,
+                           schedule_kind, schedule_timezone, schedule_time,
+                           revision, created_at, updated_at
+                    FROM push_tasks
+                    """,
+                )
+                await connection.execute("DROP TABLE push_tasks")
+                await connection.execute(
+                    "ALTER TABLE push_tasks_v7 RENAME TO push_tasks",
+                )
+            else:
+                await connection.execute(_CREATE_TASKS_TABLE)
             await connection.execute(_CREATE_TASK_UMOS_TABLE)
             await connection.execute(_CREATE_TASK_PROFILE_INDEX)
+            await connection.execute(_CREATE_SCHEDULE_STATE_TABLE)
+            await connection.execute(_CREATE_SCHEDULE_CLAIMS_TABLE)
+            await connection.execute(_CREATE_SCHEDULE_SKIPS_TABLE)
+            await connection.execute(_CREATE_SCHEDULE_STATE_INDEX)
             await connection.execute(_CREATE_DELIVERY_EXECUTIONS_TABLE)
             await connection.execute(_CREATE_DELIVERY_TARGETS_TABLE)
             await connection.execute(_CREATE_DELIVERY_PAGES_TABLE)
@@ -473,6 +594,12 @@ class SiteStore:
         except BaseException:
             await self._rollback_quietly(connection)
             raise
+        finally:
+            if version in (3, 4, 5, 6):
+                try:
+                    await connection.execute("PRAGMA foreign_keys = ON")
+                except Exception:
+                    pass
 
     async def close(self) -> None:
         """关闭连接；可重复调用。"""
@@ -1092,6 +1219,10 @@ class SiteStore:
                     "DELETE FROM push_task_umos WHERE task_id = ?",
                     (task_id,),
                 )
+                await connection.execute(
+                    "DELETE FROM push_schedule_state WHERE task_id = ?",
+                    (task_id,),
+                )
                 await self._insert_task_umos(connection, task_id, umos)
 
             await self._commit_write(
@@ -1135,6 +1266,372 @@ class SiteStore:
                 perform,
                 failure_message="删除推送任务失败",
             )
+
+    async def set_task_enabled(
+        self,
+        task_id: str,
+        *,
+        enabled: bool,
+        expected_revision: int,
+        next_run_at: str | None,
+        now: str,
+        is_valid: Callable[[], bool] | None = None,
+    ) -> StoredTask:
+        """显式启停；与 revision、运行计划同一事务。"""
+        async with self._lock:
+            if is_valid is not None and not is_valid():
+                raise TaskOperationStaleError()
+            connection = self._require_connection()
+
+            async def perform() -> None:
+                if is_valid is not None and not is_valid():
+                    raise TaskOperationStaleError()
+                cursor = await connection.execute(
+                    """
+                    UPDATE push_tasks
+                    SET enabled = ?, revision = revision + 1, updated_at = ?
+                    WHERE id = ? AND revision = ?
+                    """,
+                    (int(enabled), now, task_id, expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    row = await self._fetchone_unlocked(
+                        "SELECT revision FROM push_tasks WHERE id = ?",
+                        (task_id,),
+                    )
+                    if row is None:
+                        raise TaskRecordNotFoundError(task_id)
+                    raise TaskRevisionConflictError(int(row["revision"]))
+                if enabled:
+                    if next_run_at is None:
+                        raise ValueError("启用必须提供 next_run_at")
+                    await connection.execute(
+                        """
+                        INSERT INTO push_schedule_state
+                            (task_id, next_run_at, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(task_id) DO UPDATE SET
+                            next_run_at = excluded.next_run_at,
+                            updated_at = excluded.updated_at
+                        """,
+                        (task_id, next_run_at, now),
+                    )
+                else:
+                    await connection.execute(
+                        "DELETE FROM push_schedule_state WHERE task_id = ?",
+                        (task_id,),
+                    )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="更新任务启停状态失败",
+            )
+            row = await self._fetchone_unlocked(
+                """
+                SELECT id, name, profile_id, output_format, enabled,
+                       schedule_kind, schedule_timezone, schedule_time,
+                       revision, created_at, updated_at
+                FROM push_tasks WHERE id = ?
+                """,
+                (task_id,),
+            )
+            if row is None:
+                raise TaskRecordNotFoundError(task_id)
+            umos = await self._load_task_umos((task_id,))
+            return _row_to_task(row, umos.get(task_id, ()))
+
+    async def get_schedule_state(self, task_id: str) -> ScheduleState | None:
+        async with self._lock:
+            row = await self._fetchone_unlocked(
+                "SELECT task_id, next_run_at, updated_at "
+                "FROM push_schedule_state WHERE task_id = ?",
+                (task_id,),
+            )
+            if row is None:
+                return None
+            return ScheduleState(
+                task_id=str(row["task_id"]),
+                next_run_at=str(row["next_run_at"]),
+                updated_at=str(row["updated_at"]),
+            )
+
+    async def list_schedule_states(self) -> list[ScheduleState]:
+        async with self._lock:
+            connection = self._require_connection()
+            async with connection.execute(
+                "SELECT task_id, next_run_at, updated_at "
+                "FROM push_schedule_state ORDER BY next_run_at, task_id",
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [
+                ScheduleState(
+                    task_id=str(row["task_id"]),
+                    next_run_at=str(row["next_run_at"]),
+                    updated_at=str(row["updated_at"]),
+                )
+                for row in rows
+            ]
+
+    async def list_due_schedule_states(self, now: str) -> list[ScheduleState]:
+        async with self._lock:
+            connection = self._require_connection()
+            async with connection.execute(
+                """
+                SELECT s.task_id, s.next_run_at, s.updated_at
+                FROM push_schedule_state s
+                JOIN push_tasks t ON t.id = s.task_id
+                WHERE t.enabled = 1 AND s.next_run_at <= ?
+                ORDER BY s.next_run_at, s.task_id
+                """,
+                (now,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [
+                ScheduleState(
+                    task_id=str(row["task_id"]),
+                    next_run_at=str(row["next_run_at"]),
+                    updated_at=str(row["updated_at"]),
+                )
+                for row in rows
+            ]
+
+    async def advance_schedule(
+        self,
+        task_id: str,
+        *,
+        scheduled_for: str,
+        next_run_at: str,
+        now: str,
+    ) -> bool:
+        async with self._lock:
+            connection = self._require_connection()
+            cursor = await connection.execute(
+                """
+                UPDATE push_schedule_state
+                SET next_run_at = ?, updated_at = ?
+                WHERE task_id = ? AND next_run_at = ?
+                """,
+                (next_run_at, now, task_id, scheduled_for),
+            )
+            await connection.commit()
+            return cursor.rowcount == 1
+
+    async def claim_schedule(
+        self,
+        *,
+        task_id: str,
+        scheduled_for: str,
+        execution_id: str,
+        task_revision: int,
+        profile_revision: int,
+        site_revision: int,
+        next_run_at: str,
+        now: str,
+    ) -> bool:
+        """唯一认领并推进下一次计划；返回 False 表示已被别人处理。"""
+        async with self._lock:
+            connection = self._require_connection()
+            claimed = False
+
+            async def perform() -> None:
+                nonlocal claimed
+                row = await self._fetchone_unlocked(
+                    """
+                    SELECT t.enabled, s.next_run_at
+                    FROM push_tasks t
+                    JOIN push_schedule_state s ON s.task_id = t.id
+                    WHERE t.id = ? AND t.revision = ?
+                    """,
+                    (task_id, task_revision),
+                )
+                if (
+                    row is None or not bool(row["enabled"])
+                    or str(row["next_run_at"]) != scheduled_for
+                ):
+                    return
+                # The scan may be stale after a backward clock adjustment.
+                # Never claim a slot that is still in the future.
+                if _iso_time(scheduled_for) > _iso_time(now):
+                    return
+                cursor = await connection.execute(
+                    """
+                    INSERT INTO push_schedule_claims (
+                        task_id, scheduled_for, execution_id, status,
+                        task_revision, profile_revision, site_revision,
+                        error_code, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'claimed', ?, ?, ?, NULL, ?, ?)
+                    ON CONFLICT (task_id, scheduled_for) DO NOTHING
+                    """,
+                    (
+                        task_id, scheduled_for, execution_id, task_revision,
+                        profile_revision, site_revision, now, now,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    # The slot was already handled. If the persisted state is
+                    # still stuck on that slot, advance it under the same
+                    # version/state guard; never overwrite a newer plan.
+                    exists = await self._fetchone_unlocked(
+                        "SELECT 1 FROM push_schedule_claims "
+                        "WHERE task_id = ? AND scheduled_for = ?",
+                        (task_id, scheduled_for),
+                    )
+                    if exists is not None:
+                        await connection.execute(
+                            """
+                            UPDATE push_schedule_state
+                            SET next_run_at = ?, updated_at = ?
+                            WHERE task_id = ? AND next_run_at = ?
+                            """,
+                            (next_run_at, now, task_id, scheduled_for),
+                        )
+                    return
+                cursor = await connection.execute(
+                    """
+                    UPDATE push_schedule_state
+                    SET next_run_at = ?, updated_at = ?
+                    WHERE task_id = ? AND next_run_at = ?
+                    """,
+                    (next_run_at, now, task_id, scheduled_for),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("运行计划已变化")
+                claimed = True
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="认领调度执行失败",
+            )
+            return claimed
+
+    async def record_schedule_skip(
+        self,
+        *,
+        task_id: str,
+        scheduled_for: str,
+        next_run_at: str,
+        reason: str,
+        now: str,
+    ) -> None:
+        async with self._lock:
+            connection = self._require_connection()
+
+            async def perform() -> None:
+                await connection.execute(
+                    """
+                    INSERT INTO push_schedule_skips
+                        (task_id, scheduled_for, reason, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (task_id, scheduled_for, reason) DO NOTHING
+                    """,
+                    (task_id, scheduled_for, reason, now),
+                )
+                await connection.execute(
+                    """
+                    UPDATE push_schedule_state
+                    SET next_run_at = ?, updated_at = ?
+                    WHERE task_id = ? AND next_run_at = ?
+                    """,
+                    (next_run_at, now, task_id, scheduled_for),
+                )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="记录调度跳过失败",
+            )
+
+    async def set_schedule_claim_status(
+        self,
+        execution_id: str,
+        *,
+        status: str,
+        error_code: str | None,
+        now: str,
+    ) -> None:
+        async with self._lock:
+            connection = self._require_connection()
+            await connection.execute(
+                """
+                UPDATE push_schedule_claims
+                SET status = ?, error_code = ?, updated_at = ?
+                WHERE execution_id = ?
+                """,
+                (status, error_code, now, execution_id),
+            )
+            await connection.commit()
+
+    async def list_schedule_claims(
+        self, *, limit: int, offset: int,
+    ) -> list[ScheduleClaim]:
+        async with self._lock:
+            connection = self._require_connection()
+            async with connection.execute(
+                """
+                SELECT task_id, scheduled_for, execution_id, status,
+                       task_revision, profile_revision, site_revision,
+                       error_code, created_at, updated_at
+                FROM push_schedule_claims
+                ORDER BY scheduled_for DESC, task_id
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [
+                ScheduleClaim(
+                    task_id=str(row["task_id"]),
+                    scheduled_for=str(row["scheduled_for"]),
+                    execution_id=str(row["execution_id"]),
+                    status=str(row["status"]),
+                    task_revision=int(row["task_revision"]),
+                    profile_revision=int(row["profile_revision"]),
+                    site_revision=int(row["site_revision"]),
+                    error_code=row["error_code"],
+                    created_at=str(row["created_at"]),
+                    updated_at=str(row["updated_at"]),
+                )
+                for row in rows
+            ]
+
+    async def list_schedule_skips(
+        self, *, limit: int, offset: int,
+    ) -> list[ScheduleSkip]:
+        async with self._lock:
+            connection = self._require_connection()
+            async with connection.execute(
+                """
+                SELECT task_id, scheduled_for, reason, created_at
+                FROM push_schedule_skips
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [
+                ScheduleSkip(
+                    task_id=str(row["task_id"]),
+                    scheduled_for=str(row["scheduled_for"]),
+                    reason=str(row["reason"]),
+                    created_at=str(row["created_at"]),
+                )
+                for row in rows
+            ]
+
+    async def _recover_schedule_claims(self, connection: aiosqlite.Connection) -> None:
+        now = _utc_now()
+        await connection.execute(
+            """
+            UPDATE push_schedule_claims
+            SET status = 'unknown', error_code = 'interrupted', updated_at = ?
+            WHERE status = 'claimed'
+            """,
+            (now,),
+        )
+        await connection.commit()
 
     async def create_delivery_execution(
         self,
@@ -1537,6 +2034,7 @@ class SiteStore:
             ProfileRevisionConflictError,
             ProfileReferencedError,
             TaskRecordNotFoundError,
+            TaskOperationStaleError,
             TaskRevisionConflictError,
             DeliveryExecutionExistsError,
         ):
@@ -1798,6 +2296,13 @@ def _row_to_delivery(
             ) for r in page_rows
         ),
     )
+
+
+def _iso_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _row_to_task(

@@ -12,6 +12,10 @@ from .profiles import (
     ProfileStorageError,
     ProfileValidationError,
 )
+from .scheduler import (
+    SchedulerUnavailableError,
+    SchedulerValidationError,
+)
 from .schedule import (
     ScheduleError,
     ScheduleTimezoneUnavailableError,
@@ -49,11 +53,13 @@ class TaskApi:
         sites: SiteService,
         *,
         clock=None,
+        scheduler=None,
     ) -> None:
         self._tasks = tasks
         self._profiles = profiles
         self._sites = sites
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._scheduler = scheduler
 
     async def list_tasks(self) -> TaskApiResult:
         now = self._clock()
@@ -64,6 +70,10 @@ class TaskApi:
                 for profile in await self._profiles.list_profiles()
             }
             sites = {site.id: site for site in await self._sites.list_sites()}
+            runtime = (
+                await self._scheduler.runtime_status()
+                if self._scheduler is not None else {}
+            )
         except (TaskStorageError, ProfileStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
@@ -76,6 +86,7 @@ class TaskApi:
                         profiles.get(task.profile_id),
                         sites,
                         now,
+                        runtime.get(task.id),
                     )
                     for task in tasks
                 ],
@@ -88,6 +99,10 @@ class TaskApi:
             task = await self._tasks.get_task(task_id)
             profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
+            runtime = (
+                await self._scheduler.runtime_status()
+                if self._scheduler is not None else {}
+            )
         except TaskValidationError as exc:
             return _validation_error(exc)
         except TaskNotFoundError:
@@ -98,7 +113,65 @@ class TaskApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(_task_dict(task, profile, sites, now))
+        return _ok(_task_dict(
+            task, profile, sites, now, runtime.get(task.id),
+        ))
+
+    async def list_schedule_runs(self, *, limit: int = 20, offset: int = 0) -> TaskApiResult:
+        if self._scheduler is None:
+            return _error(503, "调度服务不可用。", code="scheduler_unavailable")
+        try:
+            return _ok(await self._scheduler.list_tracking(
+                limit=limit, offset=offset,
+            ))
+        except Exception:
+            return _storage_error()
+
+    async def enable_task(self, task_id: str, payload: object) -> TaskApiResult:
+        return await self._set_enabled(task_id, payload, True)
+
+    async def disable_task(self, task_id: str, payload: object) -> TaskApiResult:
+        return await self._set_enabled(task_id, payload, False)
+
+    async def _set_enabled(
+        self, task_id: str, payload: object, enabled: bool,
+    ) -> TaskApiResult:
+        if self._scheduler is None:
+            return _error(503, "调度服务不可用。", code="scheduler_unavailable")
+        data = _payload_dict(payload)
+        if data is None:
+            return _invalid_body_error()
+        if set(data) - {"expected_revision"}:
+            return _error(400, "只接受 expected_revision。", code="invalid_body")
+        try:
+            if enabled:
+                task = await self._scheduler.enable_task(
+                    task_id, data.get("expected_revision"),
+                )
+            else:
+                task = await self._scheduler.disable_task(
+                    task_id, data.get("expected_revision"),
+                )
+            profile = await self._profiles.get_profile(task.profile_id)
+            sites = {site.id: site for site in await self._sites.list_sites()}
+            runtime = await self._scheduler.runtime_status()
+        except TaskValidationError as exc:
+            return _validation_error(exc)
+        except SchedulerValidationError as exc:
+            return _validation_error(exc)
+        except SchedulerUnavailableError:
+            return _error(503, "调度服务不可用。", code="scheduler_unavailable")
+        except TaskNotFoundError:
+            return _not_found_error()
+        except TaskConflictError as exc:
+            return _conflict_error(exc)
+        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        return _ok(_task_dict(
+            task, profile, sites, self._clock(), runtime.get(task.id),
+        ))
 
     async def create_task(self, payload: object) -> TaskApiResult:
         now = self._clock()
@@ -213,6 +286,7 @@ def _task_dict(
     profile: Any,
     sites: dict[str, Any],
     now: datetime,
+    next_run_at: str | None = None,
 ) -> dict[str, Any]:
     site = sites.get(profile.site_id) if profile is not None else None
     schedule = task.schedule
@@ -248,8 +322,9 @@ def _task_dict(
         "output_label": task.output_label,
         "umos": list(task.umos),
         "target_count": task.target_count,
-        "enabled": False,
-        "can_send": False,
+        "enabled": task.enabled,
+        "can_send": task.enabled,
+        "next_run_at": next_run_at,
         "revision": task.revision,
         "created_at": task.created_at,
         "updated_at": task.updated_at,

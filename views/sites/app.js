@@ -258,6 +258,7 @@ const state = {
   scheduleRunsOffset: 0,
   scheduleRunsHasMore: false,
   scheduleRunsRequestId: 0,
+  scheduleRunsRetryReset: true,
   editingTaskSchedule: null,
   editingTaskScheduleRaw: null,
   editingTaskScheduleError: null,
@@ -4143,12 +4144,19 @@ function renderScheduleRuns() {
 }
 
 async function loadScheduleRuns(reset = true) {
+  const previous = {
+    claims: state.scheduleClaims,
+    skips: state.scheduleSkips,
+    offset: state.scheduleRunsOffset,
+    hasMore: state.scheduleRunsHasMore,
+  };
   if (reset) {
     state.scheduleClaims = [];
     state.scheduleSkips = [];
     state.scheduleRunsOffset = 0;
     state.scheduleRunsHasMore = false;
   }
+  state.scheduleRunsRetryReset = reset;
   const requestId = ++state.scheduleRunsRequestId;
   elements.scheduleClaimsList.setAttribute("aria-busy", "true");
   elements.scheduleSkipsList.setAttribute("aria-busy", "true");
@@ -4175,11 +4183,23 @@ async function loadScheduleRuns(reset = true) {
     return true;
   } catch (error) {
     if (requestId !== state.scheduleRunsRequestId) return false;
+    if (reset) {
+      state.scheduleClaims = previous.claims;
+      state.scheduleSkips = previous.skips;
+      state.scheduleRunsOffset = previous.offset;
+      state.scheduleRunsHasMore = previous.hasMore;
+      renderScheduleRuns();
+    }
     elements.scheduleRunsStateText.textContent =
       `读取调度记录失败：${friendlyErrorMessage(error)}`;
     elements.scheduleRunsState.hidden = false;
     elements.scheduleRunsRetryButton.hidden = false;
     return false;
+  } finally {
+    if (requestId === state.scheduleRunsRequestId) {
+      elements.scheduleClaimsList.setAttribute("aria-busy", "false");
+      elements.scheduleSkipsList.setAttribute("aria-busy", "false");
+    }
   }
 }
 
@@ -4305,7 +4325,7 @@ function bindEvents() {
     "click", () => loadScheduleRuns(true),
   );
   elements.scheduleRunsRetryButton.addEventListener(
-    "click", () => loadScheduleRuns(true),
+    "click", () => loadScheduleRuns(state.scheduleRunsRetryReset),
   );
   elements.scheduleRunsMoreButton.addEventListener(
     "click", () => loadScheduleRuns(false),

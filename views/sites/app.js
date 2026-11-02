@@ -4144,20 +4144,9 @@ function renderScheduleRuns() {
 }
 
 async function loadScheduleRuns(reset = true) {
-  const previous = {
-    claims: state.scheduleClaims,
-    skips: state.scheduleSkips,
-    offset: state.scheduleRunsOffset,
-    hasMore: state.scheduleRunsHasMore,
-  };
-  if (reset) {
-    state.scheduleClaims = [];
-    state.scheduleSkips = [];
-    state.scheduleRunsOffset = 0;
-    state.scheduleRunsHasMore = false;
-  }
   state.scheduleRunsRetryReset = reset;
   const requestId = ++state.scheduleRunsRequestId;
+  const requestOffset = reset ? 0 : state.scheduleRunsOffset;
   elements.scheduleClaimsList.setAttribute("aria-busy", "true");
   elements.scheduleSkipsList.setAttribute("aria-busy", "true");
   elements.scheduleRunsStateText.textContent = "正在读取调度记录…";
@@ -4166,30 +4155,25 @@ async function loadScheduleRuns(reset = true) {
   try {
     const result = await bridge.apiGet("schedule-runs", {
       limit: 10,
-      offset: state.scheduleRunsOffset,
+      offset: requestOffset,
     });
     if (requestId !== state.scheduleRunsRequestId) return false;
     const claims = Array.isArray(result.claims) ? result.claims : [];
     const skips = Array.isArray(result.skips) ? result.skips : [];
+    // Only a successful current request replaces the committed display.
     state.scheduleClaims = reset
       ? claims : state.scheduleClaims.concat(claims);
     state.scheduleSkips = reset
       ? skips : state.scheduleSkips.concat(skips);
     const limit = Number(result.limit) || 10;
-    state.scheduleRunsOffset += Math.max(claims.length, skips.length);
+    state.scheduleRunsOffset = requestOffset + Math.max(claims.length, skips.length);
     state.scheduleRunsHasMore = claims.length >= limit || skips.length >= limit;
     renderScheduleRuns();
     elements.scheduleRunsState.hidden = true;
     return true;
   } catch (error) {
     if (requestId !== state.scheduleRunsRequestId) return false;
-    if (reset) {
-      state.scheduleClaims = previous.claims;
-      state.scheduleSkips = previous.skips;
-      state.scheduleRunsOffset = previous.offset;
-      state.scheduleRunsHasMore = previous.hasMore;
-      renderScheduleRuns();
-    }
+    // Keep the last successfully loaded arrays, offset and hasMore.
     elements.scheduleRunsStateText.textContent =
       `读取调度记录失败：${friendlyErrorMessage(error)}`;
     elements.scheduleRunsState.hidden = false;

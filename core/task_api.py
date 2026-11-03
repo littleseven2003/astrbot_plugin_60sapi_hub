@@ -17,6 +17,7 @@ from .scheduler import (
     SchedulerValidationError,
 )
 from .schedule import (
+    ScheduleCalculationError,
     ScheduleError,
     ScheduleTimezoneUnavailableError,
     ScheduleValidationError,
@@ -299,11 +300,20 @@ def _task_dict(
                 "evaluated_at": evaluated_at,
                 "next_run_at": next_run.isoformat(),
             }
-        except ScheduleError:
+        except ScheduleTimezoneUnavailableError:
             preview = {
-                "evaluated_at": evaluated_at,
-                "next_run_at": None,
+                "evaluated_at": evaluated_at, "next_run_at": None,
                 "error": "schedule_timezone_unavailable",
+            }
+        except ScheduleValidationError:
+            preview = {
+                "evaluated_at": evaluated_at, "next_run_at": None,
+                "error": "schedule_invalid",
+            }
+        except ScheduleCalculationError:
+            preview = {
+                "evaluated_at": evaluated_at, "next_run_at": None,
+                "error": "schedule_calculation_error",
             }
     elif task.schedule_raw is not None:
         preview = {

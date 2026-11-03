@@ -426,6 +426,8 @@ class SchedulerService:
             raise SchedulerValidationError("schedule", str(exc)) from exc
         except ScheduleCalculationError as exc:
             raise SchedulerValidationError("schedule", str(exc)) from exc
+        except ScheduleValidationError as exc:
+            raise SchedulerValidationError("schedule", str(exc)) from exc
 
     def _now(self) -> datetime:
         return _as_utc(self._clock())

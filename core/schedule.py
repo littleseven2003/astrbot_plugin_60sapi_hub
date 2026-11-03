@@ -286,6 +286,10 @@ def _normalize_cron(value: str) -> str:
     return " ".join(normalized)
 
 
+def _ascii_digits(value: str) -> bool:
+    return bool(value) and all("0" <= ch <= "9" for ch in value)
+
+
 def _validate_cron_field(value: str, minimum: int, maximum: int) -> str:
     if not value:
         raise ScheduleValidationError("expression", "字段不能为空")
@@ -300,12 +304,15 @@ def _validate_cron_field(value: str, minimum: int, maximum: int) -> str:
         base = part
         if "/" in part:
             pieces = part.split("/")
-            if len(pieces) != 2 or not pieces[0] or not pieces[1].isdigit():
+            if (
+                len(pieces) != 2 or not pieces[0]
+                or not _ascii_digits(pieces[1])
+            ):
                 raise ScheduleValidationError("expression", "步长必须是正整数")
             base, step_text = pieces
             step = int(step_text)
-            if step <= 0:
-                raise ScheduleValidationError("expression", "步长必须是正整数")
+            if step <= 0 or step > maximum - minimum + 1:
+                raise ScheduleValidationError("expression", "步长超出字段范围")
         if base == "*":
             if step is None:
                 raise ScheduleValidationError("expression", "无效步长字段")
@@ -314,7 +321,7 @@ def _validate_cron_field(value: str, minimum: int, maximum: int) -> str:
             raise ScheduleValidationError("expression", "步长只支持 */n 或 a-b/n")
         if "-" in base:
             bounds = base.split("-")
-            if len(bounds) != 2 or not all(piece.isdigit() for piece in bounds):
+            if len(bounds) != 2 or not all(_ascii_digits(piece) for piece in bounds):
                 raise ScheduleValidationError("expression", "范围必须是递增整数")
             start, end = map(int, bounds)
             if start >= end:
@@ -322,7 +329,7 @@ def _validate_cron_field(value: str, minimum: int, maximum: int) -> str:
             if start < minimum or end > maximum:
                 raise ScheduleValidationError("expression", "数值超出字段范围")
         else:
-            if not base.isdigit():
+            if not _ascii_digits(base):
                 raise ScheduleValidationError("expression", "只支持整数、范围、列表和步长")
             start = int(base)
             if start < minimum or start > maximum:
@@ -345,7 +352,10 @@ def _next_cron_run(
     limit = now.astimezone(timezone.utc) + timedelta(days=366 * 8)
     base = local_now - timedelta(microseconds=1)
     try:
-        iterator = croniter(schedule.expression, base, day_or=True)
+        iterator = croniter(
+            schedule.expression, base, day_or=True,
+            max_years_between_matches=8,
+        )
         for _ in range(100000):
             candidate_local = iterator.get_next(datetime)
             candidate = _candidate_for_local_day(
@@ -359,8 +369,13 @@ def _next_cron_run(
                 return candidate
             if candidate_local > limit.astimezone(zone).replace(tzinfo=None):
                 break
-    except (ValueError, KeyError, TypeError):
-        raise ScheduleValidationError("expression", "无法解析 Cron 表达式") from None
+    except Exception as exc:
+        from croniter import CroniterBadDateError, CroniterError
+        if isinstance(exc, CroniterBadDateError):
+            raise ScheduleCalculationError("8 年内没有可用的 Cron 候选") from None
+        if isinstance(exc, CroniterError):
+            raise ScheduleValidationError("expression", "无法解析 Cron 表达式") from None
+        raise
     raise ScheduleCalculationError("8 年内没有可用的 Cron 候选")
 
 

@@ -344,3 +344,32 @@ class CronScheduleTest(unittest.TestCase):
             next_scheduled_run(gap, start),
             dt("2026-03-09T06:30:00+00:00"),
         )
+
+
+class CronBoundaryTest(unittest.TestCase):
+    def test_cron_max_years_and_sparse_candidates(self) -> None:
+        import inspect
+        from croniter import croniter
+        from core.schedule import CronSchedule, ScheduleCalculationError, next_scheduled_run
+        self.assertIn("max_years_between_matches", inspect.signature(croniter).parameters)
+        no_match = CronSchedule("UTC", "0 0 31 2 *")
+        with self.assertRaises(ScheduleCalculationError):
+            next_scheduled_run(no_match, dt("2026-01-01T00:00:00+00:00"))
+        leap = CronSchedule("UTC", "0 0 29 2 *")
+        self.assertEqual(
+            next_scheduled_run(leap, dt("2026-03-01T00:00:00+00:00")),
+            dt("2028-02-29T00:00:00+00:00"),
+        )
+
+    def test_cron_rejects_unicode_and_oversized_steps(self) -> None:
+        for expression in (
+            "٠ 0 * * *", "0 ٠ * * *", "*/61 * * * *",
+            "0-59/61 * * * *", "0 0 * * 1,", "0 0 * * 1,,2",
+            "0 0 * * 1-2-3", "0 0 * * 1/2",
+        ):
+            with self.subTest(expression=expression):
+                with self.assertRaises(ScheduleValidationError):
+                    parse_schedule({
+                        "kind": "cron", "timezone": "UTC",
+                        "expression": expression,
+                    })

@@ -178,3 +178,43 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["/proxy/v2/zhihu"], "Bearer zhihu-token")
         self.assertEqual(seen["/proxy/v2/douyin"], "Bearer douyin-token")
         self.assertEqual(seen["/proxy/v2/toutiao"], "Bearer toutiao-token")
+
+    async def test_site_connection_probe_five_types_without_writes(self) -> None:
+        site = await self.sites.create_site(SiteCreate(
+            name="测试连接站点", base_url="http://example.test/proxy",
+            enabled=False, timeout_seconds=5, bearer_token="secret-token",
+        ))
+        seen = []
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.path)
+            path = request.url.path
+            if path.endswith("/v2/60s"):
+                body = {"code": 200, "message": "ok", "data": {"news": []}}
+            elif path.endswith("/v2/bili"):
+                body = {"code": 200, "message": "ok", "data": []}
+            elif path.endswith("/v2/zhihu"):
+                body = {"code": 200, "message": "ok", "data": []}
+            elif path.endswith("/v2/douyin"):
+                body = {"code": 200, "message": "ok", "data": []}
+            else:
+                body = {"code": 200, "message": "ok", "data": []}
+            return httpx.Response(200, json=body)
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        service = ContentService(self.sites, client=client, clock=self.clock)
+        await service.open()
+        try:
+            for content_type in (
+                "daily_news", "bilibili_hot", "zhihu_hot",
+                "douyin_hot", "toutiao_hot",
+            ):
+                result = await service.test_connection(
+                    site.id, content_type, site.revision,
+                )
+                self.assertEqual(result["result"], "empty")
+                self.assertEqual(result["revision"], site.revision)
+            self.assertEqual(len(seen), 5)
+            current = await self.sites.get_site(site.id)
+            self.assertFalse(current.enabled)
+            self.assertEqual(current.revision, site.revision)
+        finally:
+            await service.close()

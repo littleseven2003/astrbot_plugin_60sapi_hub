@@ -379,3 +379,25 @@ class CronBoundaryTest(unittest.TestCase):
                         "kind": "cron", "timezone": "UTC",
                         "expression": expression,
                     })
+
+
+class CronDstAndTimezoneTest(unittest.TestCase):
+    def test_cron_dst_fold_uses_first_occurrence_only(self) -> None:
+        from core.schedule import CronSchedule, next_scheduled_run
+        schedule = CronSchedule("America/New_York", "30 1 * * *")
+        self.assertEqual(
+            next_scheduled_run(schedule, dt("2026-11-01T00:00:00+00:00")),
+            dt("2026-11-01T05:30:00+00:00"),
+        )
+        self.assertEqual(
+            next_scheduled_run(schedule, dt("2026-11-01T05:31:00+00:00")),
+            dt("2026-11-02T06:30:00+00:00"),
+        )
+
+    def test_cron_non_hour_offset_timezone(self) -> None:
+        from core.schedule import CronSchedule, next_scheduled_run
+        schedule = CronSchedule("Asia/Kolkata", "5 9 * * *")
+        self.assertEqual(
+            next_scheduled_run(schedule, dt("2026-01-01T00:00:00+00:00")),
+            dt("2026-01-01T03:35:00+00:00"),
+        )

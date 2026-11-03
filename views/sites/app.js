@@ -145,6 +145,7 @@ const elements = {
   taskWeekdays: document.getElementById("task-weekdays"),
   taskScheduleFields: document.getElementById("task-schedule-fields"),
   taskScheduleTime: document.getElementById("task-schedule-time"),
+  taskTimeField: document.getElementById("task-time-field"),
   taskScheduleTimezone: document.getElementById("task-schedule-timezone"),
   taskScheduleError: document.getElementById("task-schedule-error"),
   taskScheduleSaved: document.getElementById("task-schedule-saved"),
@@ -2805,6 +2806,8 @@ function applyTaskScheduleEnabled() {
   const off = state.taskFormDisabled || elements.taskScheduleFields.hidden;
   const mode = currentTaskScheduleMode();
   elements.taskScheduleTime.disabled = off || (mode !== "daily" && mode !== "weekly");
+  elements.taskTimeField.hidden = mode !== "daily" && mode !== "weekly";
+  elements.taskTimeField.hidden = mode !== "daily" && mode !== "weekly";
   elements.taskScheduleTimezone.disabled = off;
   elements.taskScheduleStartAt.disabled = off || mode !== "interval";
   elements.taskScheduleIntervalMinutes.disabled = off || mode !== "interval";

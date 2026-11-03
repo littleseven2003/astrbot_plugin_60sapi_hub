@@ -2975,6 +2975,8 @@ function renderTasks() {
       openDelivery(task), `手动测试投递 ${task.name}`);
     const remove = makeButton("删除", "button button-danger", () =>
       openTaskDelete(task), `删除推送任务 ${task.name}`);
+    power.dataset.taskPower = "1";
+    power.disabled = state.taskPowerSaving;
     actions.append(power, test, edit, remove);
     card.append(head, meta, actions);
     elements.tasksList.append(card);
@@ -3267,6 +3269,9 @@ function openTaskPower(task, mode) {
 
 function setTaskPowerBusy(busy) {
   state.taskPowerSaving = busy;
+  for (const button of document.querySelectorAll('[data-task-power="1"]')) {
+    button.disabled = busy;
+  }
   elements.taskPowerConfirmButton.disabled = busy;
   elements.taskPowerCancelButton.disabled = busy;
   elements.taskPowerCloseButton.disabled = busy;

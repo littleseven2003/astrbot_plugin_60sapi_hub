@@ -286,3 +286,31 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(service._cache.is_open)
         with self.assertRaises(SiteTestUnavailableError):
             await service.test_connection("missing", "daily_news", 1)
+
+    async def test_site_connection_revision_change_during_http_invalidates(self) -> None:
+        from core.sites import SiteConflictError, SiteUpdate
+        site = await self.sites.create_site(SiteCreate(
+            name="并发修改", base_url="http://example.test/proxy",
+            enabled=False, timeout_seconds=5,
+        ))
+        started = asyncio.Event(); release = asyncio.Event()
+        async def handler(request: httpx.Request) -> httpx.Response:
+            started.set(); await release.wait()
+            return httpx.Response(200, json={"code": 200, "message": "ok", "data": []})
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        service = ContentService(self.sites, client=client, clock=self.clock)
+        await service.open()
+        try:
+            task = asyncio.create_task(
+                service.test_connection(site.id, "bilibili_hot", site.revision),
+            )
+            await started.wait()
+            await self.sites.update_site(site.id, SiteUpdate(
+                name="并发修改后", base_url="http://example.test/proxy",
+                enabled=False, timeout_seconds=5, expected_revision=site.revision,
+            ))
+            release.set()
+            with self.assertRaises(SiteConflictError):
+                await task
+        finally:
+            await service.close()

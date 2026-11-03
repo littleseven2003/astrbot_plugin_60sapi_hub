@@ -526,6 +526,62 @@ function addMeta(container, label, value) {
   container.append(item);
 }
 
+let siteTestRequest = 0;
+let siteTestSite = null;
+function openSiteTest(site) {
+  siteTestSite = site;
+  siteTestRequest += 1;
+  document.getElementById("site-test-site").textContent =
+    `站点：${site.name}（revision ${site.revision}）`;
+  const result = document.getElementById("site-test-result");
+  result.hidden = true;
+  result.textContent = "";
+  const run = document.getElementById("site-test-run-button");
+  run.disabled = false;
+  run.textContent = "开始测试";
+  document.getElementById("site-test-dialog").showModal();
+}
+async function runSiteTest() {
+  if (!siteTestSite) return;
+  const site = siteTestSite;
+  const content = document.getElementById("site-test-content-type").value;
+  const requestId = ++siteTestRequest;
+  const run = document.getElementById("site-test-run-button");
+  const result = document.getElementById("site-test-result");
+  run.disabled = true;
+  run.textContent = "测试中…";
+  result.hidden = false;
+  result.textContent = "正在请求所选接口…";
+  try {
+    const data = await bridge.apiPost(`sites/${site.id}/test`, {
+      expected_revision: site.revision,
+      content_type: content,
+    });
+    if (requestId !== siteTestRequest ||
+        document.getElementById("site-test-dialog").open !== true) return;
+    const value = data && data.data ? data.data : data;
+    result.textContent = value.result === "empty"
+      ? `${value.message} 耗时 ${value.elapsed_ms} ms。`
+      : `连接成功：${value.message} 耗时 ${value.elapsed_ms} ms。`;
+  } catch (error) {
+    if (requestId !== siteTestRequest) return;
+    const status = error && error.status;
+    result.textContent = status === 409
+      ? "站点配置已变化，请关闭后刷新列表再重试。"
+      : "测试失败，请稍后手动重试；未修改站点配置。";
+  } finally {
+    if (requestId === siteTestRequest) {
+      run.disabled = false;
+      run.textContent = "重新测试";
+    }
+  }
+}
+function closeSiteTest() {
+  siteTestRequest += 1;
+  siteTestSite = null;
+  document.getElementById("site-test-dialog").close();
+}
+
 function renderSite(site) {
   const row = document.createElement("li");
   row.className = "site-row";
@@ -562,6 +618,12 @@ function renderSite(site) {
   const actions = document.createElement("div");
   actions.className = "site-actions";
   actions.append(
+    makeButton(
+      "测试连接",
+      "button button-secondary",
+      () => openSiteTest(site),
+      `测试站点 ${site.name} 连接`,
+    ),
     makeButton(
       "编辑",
       "button button-secondary",
@@ -4670,3 +4732,6 @@ async function init() {
 }
 
 init();
+
+document.getElementById("site-test-close-button")?.addEventListener("click", closeSiteTest);
+document.getElementById("site-test-run-button")?.addEventListener("click", runSiteTest);

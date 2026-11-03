@@ -259,3 +259,30 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
                 await service.test_connection(site.id, "daily_news", site.revision)
         finally:
             await service.close()
+
+    async def test_site_connection_init_cancel_cleans_cache_and_reopens(self) -> None:
+        import asyncio
+        from core.sites import SiteTestUnavailableError
+        class SlowClient:
+            def __init__(self): self.is_open = False; self.started = asyncio.Event()
+            async def open(self):
+                self.started.set()
+                await asyncio.Event().wait()
+            async def close(self): self.is_open = False
+            async def fetch_json(self, *args, **kwargs):
+                raise AssertionError("must not fetch")
+        class FakeCache:
+            def __init__(self): self.is_open = False
+            async def open(self): self.is_open = True
+            async def close(self): self.is_open = False
+        service = ContentService(self.sites, client=SlowClient())
+        service._cache = FakeCache()
+        task = asyncio.create_task(service.open())
+        await service._client.started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(service._test_admitted)
+        self.assertFalse(service._cache.is_open)
+        with self.assertRaises(SiteTestUnavailableError):
+            await service.test_connection("missing", "daily_news", 1)

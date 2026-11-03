@@ -529,6 +529,23 @@ function addMeta(container, label, value) {
 let siteTestDisplayToken = 0;
 let siteTestSite = null;
 const siteTestPending = new Map();
+const SAFE_TEST_ERRORS = new Map([
+  ["站点配置已变化，请刷新后重试。", ["站点配置已变化，请关闭后刷新列表再重试。", "warning"]],
+  ["同时进行的连接测试过多，请稍后重试。", ["同时进行的连接测试过多，请稍后手动重试。", "warning"]],
+  ["测试连接超时。", ["所选接口连接超时，请稍后手动重试。", "danger"]],
+  ["插件当前不可用。", ["插件当前不可用，请关闭后重新打开页面。", "danger"]],
+  ["插件当前不可用，请重新打开页面后重试。", ["插件当前不可用，请重新打开页面后重试。", "danger"]],
+  ["内容客户端当前不可用。", ["内容客户端当前不可用，请稍后手动重试。", "danger"]],
+  ["站点存储不可用。", ["站点存储当前不可用，请稍后手动重试。", "danger"]],
+  ["需要登录后才能获取内容预览。", ["登录状态无效，请重新登录 Dashboard。", "danger"]],
+  ["连接上游失败。", ["无法连接上游，请检查站点地址后手动重试。", "danger"]],
+  ["上游发生不允许的重定向。", ["上游返回了不允许的重定向。", "danger"]],
+  ["上游响应过大。", ["上游响应超过大小限制。", "danger"]],
+  ["上游返回非 JSON。", ["上游返回的内容不是有效 JSON。", "danger"]],
+  ["上游业务状态无效。", ["上游业务状态无效。", "danger"]],
+  ["上游内容结构无效。", ["上游内容结构不符合所选接口约定。", "danger"]],
+  ["测试失败，无法完成连接验证。", ["测试失败，请稍后手动重试。", "danger"]],
+]);
 function setSiteTestResult(text, tone) {
   const result = document.getElementById("site-test-result");
   result.hidden = !text;
@@ -585,17 +602,11 @@ async function runSiteTest() {
         siteTestSite !== site ||
         siteTestDisplayToken !== displayToken ||
         document.getElementById("site-test-content-type").value !== content) return;
-    const status = error && (error.status || (error.response && error.response.status));
-    const message = error && typeof error.message === "string" ? error.message : "";
-    const match = message.match(/错误码 ([a-z_]+)/);
-    const code = match ? match[1] : "";
-    if (status === 409 || code === "revision_conflict") {
-      setSiteTestResult("站点配置已变化，请关闭后刷新列表再重试。", "warning");
-    } else if (status === 429 || code === "test_busy") {
-      setSiteTestResult("同时进行的连接测试过多，请稍后手动重试。", "warning");
-    } else if (status === 503 || code === "plugin_unavailable" ||
-               code === "test_unavailable" || code === "storage_unavailable") {
-      setSiteTestResult("插件或内容客户端当前不可用。", "danger");
+    const message = error && typeof error.message === "string"
+      ? error.message.trim() : "";
+    const safe = SAFE_TEST_ERRORS.get(message);
+    if (safe) {
+      setSiteTestResult(safe[0], safe[1]);
     } else {
       setSiteTestResult("测试失败，请手动重试；未修改站点配置。", "danger");
     }
@@ -603,6 +614,14 @@ async function runSiteTest() {
     if (siteTestPending.get(site.id) === record) siteTestPending.delete(site.id);
     if (document.getElementById("site-test-dialog").open === true) {
       siteTestRunning(siteTestSite, document.getElementById("site-test-run-button"));
+      const result = document.getElementById("site-test-result");
+      if (siteTestDisplayToken !== displayToken &&
+          result.textContent === "正在请求所选接口…") {
+        setSiteTestResult(
+          "本次测试已结束，但结果未在当前弹窗展示；请手动重新测试。",
+          "warning",
+        );
+      }
     }
   }
 }

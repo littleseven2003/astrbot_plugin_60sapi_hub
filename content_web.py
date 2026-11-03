@@ -51,16 +51,7 @@ class ContentWeb:
                 "插件当前不可用，请重新打开页面后重试。",
                 status_code=503,
             )
-        result = await self._api.test_connection(site_id, payload)
-        if result.status_code >= 400:
-            code = result.body.get("data", {}).get("code", "test_failed")
-            result = ContentApiResult(
-                result.status_code,
-                {"status": "error",
-                 "message": f"{result.body['message']}（错误码 {code}）",
-                 "data": result.body.get("data", {})},
-            )
-        return self._respond(result)
+        return self._respond(await self._api.test_connection(site_id, payload))
 
     async def preview(self):
         guard = self._guard()

@@ -2802,13 +2802,15 @@ function schedulePreviewText(task) {
 }
 
 function applyTaskScheduleEnabled() {
-  const disabled = state.taskFormDisabled || elements.taskScheduleFields.hidden;
-  elements.taskScheduleTime.disabled = disabled || elements.taskScheduleInterval.checked;
-  elements.taskScheduleTimezone.disabled = disabled;
-  elements.taskScheduleStartAt.disabled = disabled || !elements.taskScheduleInterval.checked;
-  elements.taskScheduleIntervalMinutes.disabled = disabled || !elements.taskScheduleInterval.checked;
+  const off = state.taskFormDisabled || elements.taskScheduleFields.hidden;
+  const mode = currentTaskScheduleMode();
+  elements.taskScheduleTime.disabled = off || (mode !== "daily" && mode !== "weekly");
+  elements.taskScheduleTimezone.disabled = off;
+  elements.taskScheduleStartAt.disabled = off || mode !== "interval";
+  elements.taskScheduleIntervalMinutes.disabled = off || mode !== "interval";
+  elements.taskScheduleExpression.disabled = off || mode !== "cron";
   for (const input of elements.taskWeekdays.querySelectorAll("input")) {
-    input.disabled = disabled || elements.taskWeekdays.hidden;
+    input.disabled = off || mode !== "weekly";
   }
 }
 
@@ -2826,10 +2828,6 @@ function setTaskScheduleMode(mode) {
   elements.taskWeekdays.hidden = !weekly;
   elements.taskIntervalFields.hidden = !interval;
   elements.taskCronFields.hidden = !cron;
-  elements.taskScheduleExpression.disabled = !cron;
-  elements.taskScheduleTime.disabled = interval;
-  elements.taskScheduleStartAt.disabled = mode !== "interval";
-  elements.taskScheduleIntervalMinutes.disabled = mode !== "interval";
   if ((daily || weekly) && !elements.taskScheduleTime.value) {
     elements.taskScheduleTime.value = "08:30";
   }

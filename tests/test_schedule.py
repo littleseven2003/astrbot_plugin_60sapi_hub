@@ -348,10 +348,16 @@ class CronScheduleTest(unittest.TestCase):
 
 class CronBoundaryTest(unittest.TestCase):
     def test_cron_max_years_and_sparse_candidates(self) -> None:
-        import inspect
-        from croniter import croniter
+        from unittest.mock import patch
+        from croniter import croniter as real_croniter
         from core.schedule import CronSchedule, ScheduleCalculationError, next_scheduled_run
-        self.assertIn("max_years_between_matches", inspect.signature(croniter).parameters)
+        seen = {}
+        def recording(*args, **kwargs):
+            seen.update(kwargs)
+            return real_croniter(*args, **kwargs)
+        with patch("croniter.croniter", side_effect=recording):
+            next_scheduled_run(CronSchedule("UTC", "0 0 * * *"), dt("2026-01-01T00:00:00+00:00"))
+        self.assertEqual(seen.get("max_years_between_matches"), 8)
         no_match = CronSchedule("UTC", "0 0 31 2 *")
         with self.assertRaises(ScheduleCalculationError):
             next_scheduled_run(no_match, dt("2026-01-01T00:00:00+00:00"))

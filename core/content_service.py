@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time as monotonic_time
 from collections.abc import Callable
@@ -43,6 +44,9 @@ class ContentService:
         clock = clock or (lambda: datetime.now(timezone.utc))
         self._clock = clock
         self._cache = cache or ContentCache(wall_clock=clock)
+        self._test_slots = asyncio.Semaphore(2)
+        self._test_tasks: set[asyncio.Task[object]] = set()
+        self._test_generation = 0
         self.news = NewsService(
             sites,
             client=self._client,
@@ -87,6 +91,7 @@ class ContentService:
         return self._cache.ttl_seconds
 
     async def open(self) -> None:
+        self._test_generation += 1
         await self._cache.open()
         try:
             await self._client.open()
@@ -95,6 +100,12 @@ class ContentService:
             raise
 
     async def close(self) -> None:
+        self._test_generation += 1
+        tasks = list(self._test_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         try:
             await self._cache.close()
         finally:
@@ -114,34 +125,60 @@ class ContentService:
         }
         if content_type not in adapters:
             raise SiteValidationError("content_type", "不支持的内容类型")
-        if not isinstance(expected_revision, int) or type(expected_revision) is bool:
-            raise SiteValidationError("expected_revision", "必须是整数")
-        site = await self._sites.get_test_config(site_id, expected_revision)
-        build_url, parser = adapters[content_type]
-        started = monotonic_time.monotonic()
-        body = await self._client.fetch_json(
-            build_url(site.base_url), bearer_token=site.bearer_token,
-            timeout_seconds=site.timeout_seconds,
-        )
+        if self._test_slots.locked() and self._test_slots._value == 0:
+            from .sites import SiteTestBusyError
+            raise SiteTestBusyError()
         try:
-            payload = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("非 JSON 响应") from exc
-        snapshot = parser(
-            payload, site_id=site.id, site_name=site.name,
-            fetched_at=self._clock(),
-        )
-        elapsed_ms = int((monotonic_time.monotonic() - started) * 1000)
-        empty = not getattr(snapshot, "items", ())
-        return {
-            "site_id": site.id, "revision": site.revision,
-            "content_type": content_type,
-            "endpoint": snapshot.endpoint,
-            "tested_at": self._clock().astimezone(timezone.utc).isoformat(),
-            "elapsed_ms": elapsed_ms,
-            "result": "empty" if empty else "success",
-            "message": "连接成功，接口返回合法空内容。" if empty else "连接成功，接口返回内容结构合法。",
-        }
+            await asyncio.wait_for(self._test_slots.acquire(), timeout=0.001)
+        except asyncio.TimeoutError:
+            from .sites import SiteTestBusyError
+            raise SiteTestBusyError() from None
+        task = asyncio.current_task()
+        generation = self._test_generation
+        if task is not None:
+            self._test_tasks.add(task)
+        try:
+            if not isinstance(expected_revision, int) or type(expected_revision) is bool:
+                raise SiteValidationError("expected_revision", "必须是整数")
+            site = await self._sites.get_test_config(site_id, expected_revision)
+            build_url, parser = adapters[content_type]
+            started = monotonic_time.monotonic()
+            body = await self._client.fetch_json(
+                build_url(site.base_url), bearer_token=site.bearer_token,
+                timeout_seconds=site.timeout_seconds,
+            )
+            if generation != self._test_generation:
+                from .sites import SiteTestUnavailableError
+                raise SiteTestUnavailableError()
+            try:
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SiteValidationError("body", "非 JSON 响应") from exc
+            snapshot = parser(
+                payload, site_id=site.id, site_name=site.name,
+                fetched_at=self._clock(),
+            )
+            elapsed_ms = int((monotonic_time.monotonic() - started) * 1000)
+            empty = not getattr(snapshot, "items", ())
+            result = {
+                "site_id": site.id, "revision": site.revision,
+                "content_type": content_type,
+                "endpoint": snapshot.endpoint,
+                "tested_at": self._clock().astimezone(timezone.utc).isoformat(),
+                "elapsed_ms": elapsed_ms,
+                "result": "empty" if empty else "success",
+                "message": "连接成功，接口返回合法空内容。" if empty else "连接成功，接口返回内容结构合法。",
+            }
+            if generation != self._test_generation:
+                from .sites import SiteTestUnavailableError
+                raise SiteTestUnavailableError()
+            await self._sites.get_test_config(site.id, site.revision)
+            return result
+        finally:
+            self._test_slots.release()
+            if task is not None:
+                self._test_tasks.discard(task)
+
 
     async def preview_daily(self, site_id: object) -> NewsSnapshot:
         return await self.news.preview(site_id)

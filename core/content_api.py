@@ -23,6 +23,8 @@ from .news import (
 from .news_api import snapshot_dict
 from .sites import (
     SiteConflictError,
+    SiteTestBusyError,
+    SiteTestUnavailableError,
     SiteDisabledError,
     SiteNotFoundError,
     SiteStorageError,
@@ -77,6 +79,10 @@ class ContentApi:
             return _error(404, "站点不存在。", "site_not_found")
         except SiteConflictError:
             return _error(409, "站点配置已变化，请刷新后重试。", "revision_conflict")
+        except SiteTestBusyError:
+            return _error(429, "同时进行的连接测试过多，请稍后重试。", "test_busy")
+        except SiteTestUnavailableError:
+            return _error(503, "插件当前不可用。", "plugin_unavailable")
         except SiteValidationError as exc:
             return _error(400, "测试参数无效。", "validation_error")
         except NewsTimeoutError:

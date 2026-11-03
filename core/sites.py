@@ -60,6 +60,14 @@ class SiteNotFoundError(SiteError):
         super().__init__(f"站点 {site_id} 不存在。")
 
 
+class SiteTestBusyError(SiteError):
+    """并发连接测试已达到上限。"""
+
+
+class SiteTestUnavailableError(SiteError):
+    """测试所属插件生命周期已失效。"""
+
+
 class SiteConflictError(SiteError):
     """编辑或删除使用了过期的 revision。"""
 

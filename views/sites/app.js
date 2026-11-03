@@ -2793,8 +2793,8 @@ function applyTaskScheduleEnabled() {
   const disabled = state.taskFormDisabled || elements.taskScheduleFields.hidden;
   elements.taskScheduleTime.disabled = disabled;
   elements.taskScheduleTimezone.disabled = disabled;
-  elements.taskScheduleStartAt.disabled = disabled;
-  elements.taskScheduleIntervalMinutes.disabled = disabled;
+  elements.taskScheduleStartAt.disabled = disabled || !elements.taskScheduleInterval.checked;
+  elements.taskScheduleIntervalMinutes.disabled = disabled || !elements.taskScheduleInterval.checked;
   for (const input of elements.taskWeekdays.querySelectorAll("input")) {
     input.disabled = disabled || elements.taskWeekdays.hidden;
   }
@@ -2811,6 +2811,8 @@ function setTaskScheduleMode(mode) {
   elements.taskScheduleFields.hidden = mode === "none";
   elements.taskWeekdays.hidden = !weekly;
   elements.taskIntervalFields.hidden = !interval;
+  elements.taskScheduleStartAt.disabled = mode !== "interval";
+  elements.taskScheduleIntervalMinutes.disabled = mode !== "interval";
   if ((daily || weekly) && !elements.taskScheduleTime.value) {
     elements.taskScheduleTime.value = "08:30";
   }
@@ -2834,6 +2836,8 @@ function resetTaskScheduleEditor() {
   state.editingTaskScheduleDirty = false;
   elements.taskScheduleTime.value = "08:30";
   elements.taskScheduleTimezone.value = "Asia/Shanghai";
+  elements.taskScheduleStartAt.value = "";
+  elements.taskScheduleIntervalMinutes.value = "";
   for (const input of elements.taskWeekdays.querySelectorAll("input")) {
     input.checked = false;
   }
@@ -3232,8 +3236,15 @@ function taskPowerPreflight(task, mode) {
   if (!task.schedule || task.schedule_error) {
     return "任务没有可计算的定时计划，不能启用。";
   }
-  if (!task.schedule.timezone || !task.schedule.time) {
-    return "定时计划缺少时间或 IANA 时区，不能启用。";
+  if (!task.schedule.timezone) {
+    return "定时计划缺少 IANA 时区，不能启用。";
+  }
+  if (task.schedule.kind === "interval") {
+    if (!task.schedule.start_at || !Number.isInteger(task.schedule.interval_minutes)) {
+      return "间隔计划缺少起点或有效分钟数，不能启用。";
+    }
+  } else if (!task.schedule.time) {
+    return "定时计划缺少执行时间，不能启用。";
   }
   if (!Array.isArray(task.umos) || task.umos.length === 0) {
     return "任务 UMO 白名单为空，不能启用。";
@@ -4351,6 +4362,8 @@ function bindEvents() {
     setTaskScheduleMode("interval");
     markTaskScheduleDirty();
   });
+  elements.taskScheduleStartAt.addEventListener("input", markTaskScheduleDirty);
+  elements.taskScheduleIntervalMinutes.addEventListener("input", markTaskScheduleDirty);
   elements.taskScheduleWeekly.addEventListener("change", () => {
     setTaskScheduleMode("weekly");
     markTaskScheduleDirty();

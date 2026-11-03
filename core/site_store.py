@@ -386,7 +386,7 @@ class StoredTask:
     schedule_time: str | None = None
     schedule_weekdays: str | None = None
     schedule_start_at: str | None = None
-    schedule_interval_minutes: int | None = None
+    schedule_interval_minutes: int | str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1020,7 +1020,7 @@ class SiteStore:
         schedule_time: str | None = None,
         schedule_weekdays: str | None = None,
         schedule_start_at: str | None = None,
-        schedule_interval_minutes: int | None = None,
+        schedule_interval_minutes: int | str | None = None,
     ) -> StoredTask:
         async with self._lock:
             connection = self._require_connection()
@@ -1198,7 +1198,7 @@ class SiteStore:
         schedule_time: str | None = None,
         schedule_weekdays: str | None = None,
         schedule_start_at: str | None = None,
-        schedule_interval_minutes: int | None = None,
+        schedule_interval_minutes: int | str | None = None,
     ) -> StoredTask:
         async with self._lock:
             connection = self._require_connection()
@@ -2356,10 +2356,7 @@ def _row_to_task(
         schedule_time=row["schedule_time"],
         schedule_weekdays=row["schedule_weekdays"],
         schedule_start_at=row["schedule_start_at"],
-        schedule_interval_minutes=(
-            int(row["schedule_interval_minutes"])
-            if row["schedule_interval_minutes"] is not None else None
-        ),
+        schedule_interval_minutes=row["schedule_interval_minutes"],
     )
 
 

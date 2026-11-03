@@ -218,3 +218,44 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(current.revision, site.revision)
         finally:
             await service.close()
+
+    async def test_site_connection_errors_and_concurrency_admission(self) -> None:
+        from core.news import NewsInvalidJSONError
+        from core.sites import (
+            SiteConflictError, SiteTestBusyError, SiteValidationError,
+        )
+        site = await self.sites.create_site(SiteCreate(
+            name="边界站点", base_url="http://example.test/proxy",
+            enabled=False, timeout_seconds=5,
+        ))
+        calls = []
+        release = asyncio.Event()
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path.endswith("/v2/60s"):
+                await release.wait()
+                return httpx.Response(200, text="not-json")
+            return httpx.Response(200, json={"code": 200, "message": "ok", "data": []})
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        service = ContentService(self.sites, client=client, clock=self.clock)
+        await service.open()
+        try:
+            with self.assertRaises(SiteValidationError):
+                await service.test_connection(site.id, "unknown", site.revision)
+            with self.assertRaises(SiteConflictError):
+                await service.test_connection(site.id, "daily_news", site.revision + 1)
+            self.assertEqual(calls, [])
+            blocking = [
+                asyncio.create_task(service.test_connection(site.id, "daily_news", site.revision))
+                for _ in range(2)
+            ]
+            await asyncio.sleep(0)
+            with self.assertRaises(SiteTestBusyError):
+                await service.test_connection(site.id, "daily_news", site.revision)
+            release.set()
+            results = await asyncio.gather(*blocking, return_exceptions=True)
+            self.assertTrue(all(isinstance(item, NewsInvalidJSONError) for item in results))
+            with self.assertRaises(NewsInvalidJSONError):
+                await service.test_connection(site.id, "daily_news", site.revision)
+        finally:
+            await service.close()

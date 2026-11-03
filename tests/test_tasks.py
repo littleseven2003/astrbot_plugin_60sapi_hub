@@ -514,6 +514,59 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
         self.sites = reopened
 
+    async def test_v9_real_migration_adds_cron_column(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="v9迁移", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "interval", "timezone": "UTC",
+                      "start_at": "2026-11-04T08:30", "interval_minutes": 60},
+        ))
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_expression")
+            raw.execute("UPDATE push_tasks SET enabled=1 WHERE id=?", (task.id,))
+            raw.execute("PRAGMA user_version = 9")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertTrue(loaded.enabled)
+            self.assertEqual(loaded.schedule.interval_minutes, 60)
+            with closing(sqlite3.connect(self.db_path)) as check:
+                self.assertIn(
+                    "schedule_expression",
+                    {row[1] for row in check.execute("PRAGMA table_info(push_tasks)")},
+                )
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_cron_schedule_persists_and_restarts(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="Cron任务", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "cron", "timezone": "Asia/Shanghai",
+                      "expression": "30 8 * * 1-5"},
+        ))
+        self.assertEqual(task.schedule.kind, "cron")
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule.expression, "30 8 * * 1-5")
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
     async def test_corrupt_interval_is_reported_and_preserved(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="损坏间隔", profile_id=self.profile.id, output_format="text",

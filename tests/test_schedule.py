@@ -275,3 +275,72 @@ class IntervalScheduleTest(unittest.TestCase):
             next_scheduled_run(schedule, dt("2026-03-08T06:30:00+00:00")),
             dt("2026-03-08T07:30:00+00:00"),
         )
+
+
+class CronScheduleTest(unittest.TestCase):
+    def test_cron_parse_and_reject_unsupported(self) -> None:
+        from core.schedule import CronSchedule
+        schedule = parse_schedule({
+            "kind": "cron", "timezone": "Asia/Shanghai",
+            "expression": "30 8 * * 1-5",
+        })
+        self.assertEqual(schedule, CronSchedule("Asia/Shanghai", "30 8 * * 1-5"))
+        for bad in (
+            "0 0 * *", "0 0 * * * *", "60 0 * * *", "0 24 * * *",
+            "0 0 0 * *", "0 0 * 13 *", "0 0 * * 8", "0 0 * * ?",
+            "0 0 * * 1/2", "0 0 * * 2-1", "0 0 * * 1-1",
+            "*/0 0 * * *", "0 0 * * MON", "0 0 L * *", "0 0 * * 1#2",
+            "0 0 * * 1\n",
+        ):
+            with self.subTest(expression=bad):
+                with self.assertRaises(ScheduleValidationError):
+                    parse_schedule({"kind": "cron", "timezone": "UTC",
+                                    "expression": bad})
+        with self.assertRaises(ScheduleValidationError):
+            parse_schedule({"kind": "daily", "timezone": "UTC",
+                            "time": "08:30", "expression": "0 8 * * *"})
+
+    def test_cron_or_semantics_sunday_and_boundaries(self) -> None:
+        from core.schedule import next_scheduled_run
+        schedule = parse_schedule({
+            "kind": "cron", "timezone": "Asia/Shanghai",
+            "expression": "30 8 1 * 1",
+        })
+        # 2026-11-01 is Sunday; day=1 and Monday OR should pick Sunday.
+        self.assertEqual(
+            next_scheduled_run(schedule, dt("2026-10-31T00:00:00+00:00")),
+            dt("2026-11-01T00:30:00+00:00"),
+        )
+        sunday = parse_schedule({
+            "kind": "cron", "timezone": "UTC", "expression": "0 0 * * 0",
+        })
+        self.assertEqual(
+            next_scheduled_run(sunday, dt("2026-01-03T00:00:00+00:00")),
+            dt("2026-01-04T00:00:00+00:00"),
+        )
+        seven = parse_schedule({
+            "kind": "cron", "timezone": "UTC", "expression": "0 0 * * 7",
+        })
+        self.assertEqual(
+            next_scheduled_run(seven, dt("2026-01-03T00:00:00+00:00")),
+            dt("2026-01-04T00:00:00+00:00"),
+        )
+
+    def test_cron_exact_next_year_and_dst(self) -> None:
+        from core.schedule import next_scheduled_run
+        schedule = parse_schedule({
+            "kind": "cron", "timezone": "UTC", "expression": "0 0 1 1 *",
+        })
+        self.assertEqual(
+            next_scheduled_run(schedule, dt("2026-01-01T00:00:00+00:00")),
+            dt("2027-01-01T00:00:00+00:00"),
+        )
+        gap = parse_schedule({
+            "kind": "cron", "timezone": "America/New_York",
+            "expression": "30 2 * * *",
+        })
+        start = dt("2026-03-08T00:00:00+00:00")
+        self.assertEqual(
+            next_scheduled_run(gap, start),
+            dt("2026-03-09T06:30:00+00:00"),
+        )

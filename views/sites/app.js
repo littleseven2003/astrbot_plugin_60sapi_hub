@@ -136,6 +136,9 @@ const elements = {
   taskScheduleDaily: document.getElementById("task-schedule-daily"),
   taskScheduleWeekly: document.getElementById("task-schedule-weekly"),
   taskScheduleInterval: document.getElementById("task-schedule-interval"),
+  taskScheduleCron: document.getElementById("task-schedule-cron"),
+  taskCronFields: document.getElementById("task-cron-fields"),
+  taskScheduleExpression: document.getElementById("task-schedule-expression"),
   taskIntervalFields: document.getElementById("task-interval-fields"),
   taskScheduleStartAt: document.getElementById("task-schedule-start-at"),
   taskScheduleIntervalMinutes: document.getElementById("task-schedule-interval-minutes"),
@@ -2755,6 +2758,9 @@ function scheduleLabel(task) {
   if (saved && saved.kind === "daily") {
     return `计划：每日 ${saved.time || "?"} · ${saved.timezone || "?"}`;
   }
+  if (saved && saved.kind === "cron") {
+    return `计划：Cron ${saved.expression} · ${saved.timezone}`;
+  }
   if (saved && saved.kind === "interval") {
     return `计划：每 ${saved.interval_minutes} 分钟 · ${saved.start_at} · ${saved.timezone}`;
   }
@@ -2804,13 +2810,17 @@ function setTaskScheduleMode(mode) {
   const daily = mode === "daily";
   const weekly = mode === "weekly";
   const interval = mode === "interval";
+  const cron = mode === "cron";
   elements.taskScheduleNone.checked = mode === "none";
   elements.taskScheduleDaily.checked = daily;
   elements.taskScheduleWeekly.checked = weekly;
   elements.taskScheduleInterval.checked = interval;
+  elements.taskScheduleCron.checked = cron;
   elements.taskScheduleFields.hidden = mode === "none";
   elements.taskWeekdays.hidden = !weekly;
   elements.taskIntervalFields.hidden = !interval;
+  elements.taskCronFields.hidden = !cron;
+  elements.taskScheduleExpression.disabled = !cron;
   elements.taskScheduleTime.disabled = interval;
   elements.taskScheduleStartAt.disabled = mode !== "interval";
   elements.taskScheduleIntervalMinutes.disabled = mode !== "interval";
@@ -2824,6 +2834,7 @@ function setTaskScheduleMode(mode) {
 }
 
 function currentTaskScheduleMode() {
+  if (elements.taskScheduleCron.checked) return "cron";
   if (elements.taskScheduleInterval.checked) return "interval";
   if (elements.taskScheduleWeekly.checked) return "weekly";
   if (elements.taskScheduleDaily.checked) return "daily";
@@ -2856,12 +2867,15 @@ function fillTaskScheduleEditor(task) {
   state.editingTaskScheduleError = task.schedule_error || null;
   const saved = task.schedule || task.schedule_raw;
   if (saved) {
-    setTaskScheduleMode(saved.kind === "interval" ? "interval" : saved.kind === "weekly" ? "weekly" : "daily");
+    setTaskScheduleMode(saved.kind === "cron" ? "cron" : saved.kind === "interval" ? "interval" : saved.kind === "weekly" ? "weekly" : "daily");
     if (typeof saved.time === "string") {
       elements.taskScheduleTime.value = saved.time;
     }
     if (typeof saved.timezone === "string") {
       elements.taskScheduleTimezone.value = saved.timezone;
+    }
+    if (saved.kind === "cron") {
+      elements.taskScheduleExpression.value = saved.expression || "";
     }
     if (saved.kind === "interval") {
       elements.taskScheduleStartAt.value = saved.start_at || "";
@@ -2919,6 +2933,11 @@ function collectTaskSchedule() {
   }
   if (mode === "daily") {
     return { kind: "daily", timezone, time };
+  }
+  if (mode === "cron") {
+    const expression = elements.taskScheduleExpression.value.trim().replace(/\s+/g, " ");
+    if (!expression) throw new Error("Cron 计划必须填写表达式。");
+    return { kind: "cron", timezone, expression };
   }
   if (mode === "interval") {
     const startAt = elements.taskScheduleStartAt.value;
@@ -3242,7 +3261,9 @@ function taskPowerPreflight(task, mode) {
   if (!task.schedule.timezone) {
     return "定时计划缺少 IANA 时区，不能启用。";
   }
-  if (task.schedule.kind === "interval") {
+  if (task.schedule.kind === "cron") {
+    if (!task.schedule.expression) return "Cron 计划缺少表达式，不能启用。";
+  } else if (task.schedule.kind === "interval") {
     if (!task.schedule.start_at || !Number.isInteger(task.schedule.interval_minutes)) {
       return "间隔计划缺少起点或有效分钟数，不能启用。";
     }
@@ -3290,7 +3311,7 @@ function openTaskPower(task, mode) {
   appendPowerLine("目标", Array.isArray(task.umos) && task.umos.length
     ? task.umos.join("\n") : "无");
   appendPowerLine("定时计划", task.schedule
-    ? `${task.schedule.kind === "interval" ? "每 " + task.schedule.interval_minutes + " 分钟 · " + task.schedule.start_at : task.schedule.kind === "weekly" ? "每周 " + (task.schedule.weekdays || []).join(",") : "每日"} ${task.schedule.kind === "interval" ? "" : task.schedule.time + " · "}${task.schedule.timezone}`
+    ? `${task.schedule.kind === "cron" ? "Cron " + task.schedule.expression : task.schedule.kind === "interval" ? "每 " + task.schedule.interval_minutes + " 分钟 · " + task.schedule.start_at : task.schedule.kind === "weekly" ? "每周 " + (task.schedule.weekdays || []).join(",") : "每日"} ${task.schedule.kind === "interval" || task.schedule.kind === "cron" ? "" : task.schedule.time + " · "}${task.schedule.timezone}`
     : "无计划");
   elements.taskPowerNote.textContent = mode === "enable"
     ? "启用后按计划自动向上述目标发送；首次安排严格晚于当前时刻，不会立即投递。任务状态和实际下次时间以服务器返回为准。"
@@ -4361,6 +4382,11 @@ function bindEvents() {
     setTaskScheduleMode("daily");
     markTaskScheduleDirty();
   });
+  elements.taskScheduleCron.addEventListener("change", () => {
+    setTaskScheduleMode("cron");
+    markTaskScheduleDirty();
+  });
+  elements.taskScheduleExpression.addEventListener("input", markTaskScheduleDirty);
   elements.taskScheduleInterval.addEventListener("change", () => {
     setTaskScheduleMode("interval");
     markTaskScheduleDirty();

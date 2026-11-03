@@ -483,6 +483,19 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(disabled.body["data"]["enabled"])
         self.assertIsNone(disabled.body["data"]["next_run_at"])
 
+    async def test_cron_due_once_and_repeat_scan(self):
+        task = await self.tasks.create_task(TaskCreate(
+            name="Cron调度", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "cron", "timezone": "UTC",
+                      "expression": "0 1 * * *"},
+        ))
+        await self.scheduler.enable_task(task.id, 1)
+        self.clock_now = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 1)
+        self.assertEqual(await self.scheduler.check_once(), 0)
+        self.assertEqual(len(self.sender.calls), 1)
+
     async def test_interval_late_restart_and_config_change(self):
         task = await self.tasks.create_task(TaskCreate(
             name="间隔边界", profile_id=self.profile.id, output_format="text",

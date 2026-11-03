@@ -403,8 +403,13 @@
             <label><input id="task-schedule-daily" name="task-schedule-mode" type="radio" value="daily" /> 每日</label>
             <label><input id="task-schedule-weekly" name="task-schedule-mode" type="radio" value="weekly" /> 每周</label>
             <label><input id="task-schedule-interval" name="task-schedule-mode" type="radio" value="interval" /> 间隔</label>
+            <label><input id="task-schedule-cron" name="task-schedule-mode" type="radio" value="cron" /> Cron</label>
           </div>
           <div id="task-schedule-fields" class="schedule-fields" hidden>
+            <div id="task-cron-fields" class="schedule-cron-fields" hidden>
+              <label>Cron 表达式 <input id="task-schedule-expression" type="text" maxlength="128" placeholder="30 8 * * 1-5" /></label>
+              <p class="help">五字段：分 时 日 月 星期；星期 0/7 均为周日，与 weekly 的 1=周一不同。日与星期同时受限时取并集。</p>
+            </div>
             <div id="task-interval-fields" class="schedule-interval-fields" hidden>
               <label>本地起点 <input id="task-schedule-start-at" type="datetime-local" step="60" /></label>
               <label>间隔分钟 <input id="task-schedule-interval-minutes" type="number" min="1" max="10080" step="1" /></label>

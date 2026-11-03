@@ -136,7 +136,7 @@ class ContentService:
         return {
             "site_id": site.id, "revision": site.revision,
             "content_type": content_type,
-            "endpoint": str(build_url(site.base_url).path),
+            "endpoint": snapshot.endpoint,
             "tested_at": self._clock().astimezone(timezone.utc).isoformat(),
             "elapsed_ms": elapsed_ms,
             "result": "empty" if empty else "success",

@@ -22,6 +22,7 @@ from .news import (
 )
 from .news_api import snapshot_dict
 from .sites import (
+    SiteConflictError,
     SiteDisabledError,
     SiteNotFoundError,
     SiteStorageError,
@@ -56,11 +57,45 @@ class ContentApi:
         self._service = service
 
     async def test_connection(
-        self, site_id: object, content_type: object, expected_revision: object,
-    ) -> dict[str, object]:
-        return await self._service.test_connection(
-            site_id, content_type, expected_revision,
-        )
+        self, site_id: object, payload: object,
+    ) -> ContentApiResult:
+        if not isinstance(payload, dict):
+            return _error(400, "请求体必须是 JSON 对象。", "invalid_body")
+        if set(payload) - {"expected_revision", "content_type"}:
+            return _error(400, "请求字段无效。", "validation_error")
+        content_type = payload.get("content_type")
+        if not isinstance(content_type, str) or content_type not in KNOWN_CONTENT_TYPES:
+            return _error(400, "内容类型无效。", "validation_error")
+        revision = payload.get("expected_revision")
+        if type(revision) is not int or revision < 1:
+            return _error(400, "revision 无效。", "validation_error")
+        try:
+            data = await self._service.test_connection(
+                site_id, content_type, revision,
+            )
+        except SiteNotFoundError:
+            return _error(404, "站点不存在。", "site_not_found")
+        except SiteConflictError:
+            return _error(409, "站点配置已变化，请刷新后重试。", "revision_conflict")
+        except SiteValidationError as exc:
+            return _error(400, "测试参数无效。", "validation_error")
+        except NewsTimeoutError:
+            return _error(504, "测试连接超时。", "test_timeout")
+        except NewsRedirectError:
+            return _error(502, "上游发生不允许的重定向。", "test_redirect")
+        except NewsTooLargeError:
+            return _error(502, "上游响应过大。", "test_too_large")
+        except (NewsHTTPStatusError, NewsTransportError):
+            return _error(502, "连接上游失败。", "test_connection_error")
+        except NewsInvalidJSONError:
+            return _error(502, "上游返回非 JSON。", "test_invalid_json")
+        except (NewsStructureError, NewsBusinessError):
+            return _error(502, "上游数据结构或业务状态无效。", "test_upstream_error")
+        except SiteStorageError:
+            return _error(503, "站点存储不可用。", "storage_unavailable")
+        except Exception:
+            return _error(502, "测试失败，无法完成连接验证。", "test_failed")
+        return ContentApiResult(200, {"status": "ok", "data": data})
 
     async def preview(self, payload: object) -> ContentApiResult:
         if not isinstance(payload, dict):

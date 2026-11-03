@@ -303,8 +303,8 @@
 
 ## 数据与升级
 
-站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 5：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库直接创建八张表；旧 v1/v2/v3/v4 数据库在同一事务中补齐组合/任务/投递表并提升 `user_version=5`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
+站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 10：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库直接创建八张表；旧 v1/v2/v3/v4 数据库在同一事务中补齐组合/任务/投递表并提升 `user_version=5`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
 
 任务、投递记录与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；删除组合在事务中检查任务引用并由外键兜底；删除任务不级联删除组合。写入失败回滚，取消后下一次正常操作不受影响。
 
-运行依赖 `aiosqlite`、`httpx` 和 `Pillow` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。内容快照仍只在进程内缓存；任务配置和 UMO 持久化，执行/发送状态尚未实现。
+运行依赖 `aiosqlite`、`httpx`、`Pillow` 和 `croniter>=6.2.4,<7` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。内容快照仍只在进程内缓存；任务配置、UMO、执行/发送状态和调度历史均已持久化。

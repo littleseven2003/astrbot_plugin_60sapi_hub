@@ -2751,6 +2751,7 @@ function taskProfileOptions(selectedId) {
 const SCHEDULE_ERROR_LABELS = {
   schedule_timezone_unavailable: "时区数据不可用，无法计算理论下次时间。",
   schedule_invalid: "已保存计划格式异常，无法计算理论下次时间。",
+  schedule_calculation_error: "当前计划在搜索范围内没有可用时间，无法计算或启用。",
 };
 
 function scheduleLabel(task) {

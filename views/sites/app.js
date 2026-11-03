@@ -526,7 +526,7 @@ function addMeta(container, label, value) {
   container.append(item);
 }
 
-let siteTestRequest = 0;
+let siteTestDisplayToken = 0;
 let siteTestSite = null;
 const siteTestPending = new Map();
 function setSiteTestResult(text, tone) {
@@ -535,26 +535,30 @@ function setSiteTestResult(text, tone) {
   result.textContent = text || "";
   result.dataset.tone = tone || "info";
 }
+function siteTestRunning(site, run) {
+  const pending = site ? siteTestPending.get(site.id) : null;
+  run.disabled = Boolean(pending);
+  run.textContent = pending ? "测试中…" : "开始测试";
+}
 function openSiteTest(site) {
   siteTestSite = site;
-  siteTestRequest += 1;
+  siteTestDisplayToken += 1;
   document.getElementById("site-test-site").textContent =
     `站点：${site.name}（revision ${site.revision}）`;
   document.getElementById("site-test-content-type").value = "daily_news";
-  const pending = siteTestPending.get(site.id);
   const run = document.getElementById("site-test-run-button");
-  run.disabled = Boolean(pending);
-  run.textContent = pending ? "测试中…" : "开始测试";
-  setSiteTestResult(pending ? "正在请求所选接口…" : "", pending ? "info" : null);
+  siteTestRunning(site, run);
+  setSiteTestResult(siteTestPending.has(site.id) ? "正在请求所选接口…" : "",
+    siteTestPending.has(site.id) ? "info" : null);
   document.getElementById("site-test-dialog").showModal();
 }
 async function runSiteTest() {
-  if (!siteTestSite) return;
   const site = siteTestSite;
-  if (siteTestPending.has(site.id)) return;
+  if (!site || siteTestPending.has(site.id)) return;
   const content = document.getElementById("site-test-content-type").value;
-  const requestId = ++siteTestRequest;
-  siteTestPending.set(site.id, { contentType: content, requestId });
+  const displayToken = siteTestDisplayToken;
+  const record = { contentType: content, displayToken };
+  siteTestPending.set(site.id, record);
   const run = document.getElementById("site-test-run-button");
   run.disabled = true;
   run.textContent = "测试中…";
@@ -564,38 +568,46 @@ async function runSiteTest() {
       expected_revision: site.revision,
       content_type: content,
     });
-    const pending = siteTestPending.get(site.id);
-    if (!pending || pending.requestId !== requestId) return;
+    if (!siteTestPending.has(site.id) ||
+        siteTestPending.get(site.id) !== record ||
+        document.getElementById("site-test-dialog").open !== true ||
+        siteTestSite !== site ||
+        siteTestDisplayToken !== displayToken ||
+        document.getElementById("site-test-content-type").value !== content) return;
     const value = data && data.data ? data.data : data;
     setSiteTestResult(value.result === "empty"
       ? `${value.message} 耗时 ${value.elapsed_ms} ms。`
-      : `连接成功：${value.message} 耗时 ${value.elapsed_ms} ms。`,
-      "success");
+      : `连接成功：${value.message} 耗时 ${value.elapsed_ms} ms。`, "success");
   } catch (error) {
-    const pending = siteTestPending.get(site.id);
-    if (!pending || pending.requestId !== requestId) return;
+    if (!siteTestPending.has(site.id) ||
+        siteTestPending.get(site.id) !== record ||
+        document.getElementById("site-test-dialog").open !== true ||
+        siteTestSite !== site ||
+        siteTestDisplayToken !== displayToken ||
+        document.getElementById("site-test-content-type").value !== content) return;
     const status = error && (error.status || (error.response && error.response.status));
-    if (status === 409) {
+    const message = error && typeof error.message === "string" ? error.message : "";
+    const match = message.match(/错误码 ([a-z_]+)/);
+    const code = match ? match[1] : "";
+    if (status === 409 || code === "revision_conflict") {
       setSiteTestResult("站点配置已变化，请关闭后刷新列表再重试。", "warning");
-    } else if (status === 429) {
+    } else if (status === 429 || code === "test_busy") {
       setSiteTestResult("同时进行的连接测试过多，请稍后手动重试。", "warning");
-    } else if (status === 503) {
+    } else if (status === 503 || code === "plugin_unavailable" ||
+               code === "test_unavailable" || code === "storage_unavailable") {
       setSiteTestResult("插件或内容客户端当前不可用。", "danger");
     } else {
       setSiteTestResult("测试失败，请手动重试；未修改站点配置。", "danger");
     }
   } finally {
-    if (siteTestPending.get(site.id)?.requestId === requestId) {
-      siteTestPending.delete(site.id);
-    }
-    if (requestId === siteTestRequest) {
-      run.disabled = false;
-      run.textContent = "重新测试";
+    if (siteTestPending.get(site.id) === record) siteTestPending.delete(site.id);
+    if (document.getElementById("site-test-dialog").open === true) {
+      siteTestRunning(siteTestSite, document.getElementById("site-test-run-button"));
     }
   }
 }
 function closeSiteTest() {
-  siteTestRequest += 1;
+  siteTestDisplayToken += 1;
   siteTestSite = null;
   document.getElementById("site-test-dialog").close();
 }
@@ -4755,13 +4767,9 @@ document.getElementById("site-test-close-button")?.addEventListener("click", clo
 document.getElementById("site-test-run-button")?.addEventListener("click", runSiteTest);
 
 document.getElementById("site-test-content-type")?.addEventListener("change", () => {
-  siteTestRequest += 1;
+  siteTestDisplayToken += 1;
   setSiteTestResult("", null);
-  const site = siteTestSite;
-  const pending = site && siteTestPending.get(site.id);
-  const run = document.getElementById("site-test-run-button");
-  run.disabled = Boolean(pending);
-  run.textContent = pending ? "测试中…" : "开始测试";
+  siteTestRunning(siteTestSite, document.getElementById("site-test-run-button"));
 });
 document.getElementById("site-test-dialog")?.addEventListener("cancel", (event) => {
   event.preventDefault();

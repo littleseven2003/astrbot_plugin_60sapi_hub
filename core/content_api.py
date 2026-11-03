@@ -55,6 +55,13 @@ class ContentApi:
     def __init__(self, service: ContentService) -> None:
         self._service = service
 
+    async def test_connection(
+        self, site_id: object, content_type: object, expected_revision: object,
+    ) -> dict[str, object]:
+        return await self._service.test_connection(
+            site_id, content_type, expected_revision,
+        )
+
     async def preview(self, payload: object) -> ContentApiResult:
         if not isinstance(payload, dict):
             return _error(400, "请求体必须是 JSON 对象。", "invalid_body")

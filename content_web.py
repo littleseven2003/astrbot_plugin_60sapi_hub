@@ -31,6 +31,35 @@ class ContentWeb:
             ["POST"],
             "获取每日新闻或 Bilibili 热搜预览",
         )
+        context.register_web_api(
+            f"/{self._plugin_name}/sites/<site_id>/test",
+            self.test_connection,
+            ["POST"],
+            "测试已保存站点连接",
+        )
+
+    async def test_connection(self, site_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        data = payload if isinstance(payload, dict) else {}
+        if set(data) - {"expected_revision", "content_type"}:
+            return error_response("请求字段无效。", status_code=400)
+        from .core.sites import SiteConflictError, SiteNotFoundError, SiteValidationError
+        try:
+            result = await self._api.test_connection(
+                site_id, data.get("content_type"), data.get("expected_revision"),
+            )
+        except SiteNotFoundError:
+            return error_response("站点不存在。", status_code=404)
+        except SiteConflictError:
+            return error_response("站点配置已变化，请刷新后重试。", status_code=409)
+        except SiteValidationError as exc:
+            return error_response("测试参数无效。", status_code=400)
+        except Exception:
+            return error_response("测试失败，无法完成连接验证。", status_code=502)
+        return json_response(result, status_code=200)
 
     async def preview(self):
         guard = self._guard()

@@ -25,11 +25,19 @@ async function closeHostPrompts(page) {
   if (await account.isVisible().catch(() => false)) {
     await closeHostFirstPrompt(page, process.env.ASTRBOT_PASSWORD);
   }
+  await page.waitForFunction(() => {
+    if (localStorage.getItem('astrbot:first_notice_seen:v1') === '1') return true;
+    return [...document.querySelectorAll('button')].some((button) =>
+      button.offsetParent && button.innerText.trim() === '关闭');
+  }, null, { timeout: 15000 });
+  if (await page.evaluate(() => localStorage.getItem('astrbot:first_notice_seen:v1') === '1')) return;
   const close = page.getByRole('button', { name: '关闭', exact: true });
-  if (await close.isVisible().catch(() => false)) {
-    await close.click();
-    await close.waitFor({ state: 'hidden', timeout: 15000 });
-  }
+  await close.click();
+  await close.waitFor({ state: 'hidden', timeout: 15000 });
+  await page.waitForFunction(
+    () => localStorage.getItem('astrbot:first_notice_seen:v1') === '1',
+    null, { timeout: 15000 },
+  );
 }
 
 const BASE=process.env.ASTRBOT_URL,P=process.env.ASTRBOT_PLUGIN||'astrbot_plugin_60sapi_hub',PW=process.env.ASTRBOT_PASSWORD,CHROME=process.env.CHROME_PATH;

@@ -134,6 +134,8 @@ const elements = {
   taskUmos: document.getElementById("task-umos"),
   taskScheduleNone: document.getElementById("task-schedule-none"),
   taskScheduleDaily: document.getElementById("task-schedule-daily"),
+  taskScheduleWeekly: document.getElementById("task-schedule-weekly"),
+  taskWeekdays: document.getElementById("task-weekdays"),
   taskScheduleFields: document.getElementById("task-schedule-fields"),
   taskScheduleTime: document.getElementById("task-schedule-time"),
   taskScheduleTimezone: document.getElementById("task-schedule-timezone"),
@@ -2749,6 +2751,12 @@ function scheduleLabel(task) {
   if (saved && saved.kind === "daily") {
     return `计划：每日 ${saved.time || "?"} · ${saved.timezone || "?"}`;
   }
+  if (saved && saved.kind === "weekly") {
+    if (!Array.isArray(saved.weekdays)) {
+      return "计划：已保存，但星期配置异常";
+    }
+    return `计划：每周 ${saved.weekdays.join(",")} ${saved.time || "?"} · ${saved.timezone || "?"}`;
+  }
   if (saved && typeof saved === "object") {
     return "计划：已保存，但格式异常";
   }
@@ -2778,24 +2786,32 @@ function applyTaskScheduleEnabled() {
   const disabled = state.taskFormDisabled || elements.taskScheduleFields.hidden;
   elements.taskScheduleTime.disabled = disabled;
   elements.taskScheduleTimezone.disabled = disabled;
+  for (const input of elements.taskWeekdays.querySelectorAll("input")) {
+    input.disabled = disabled || elements.taskWeekdays.hidden;
+  }
 }
 
 function setTaskScheduleMode(mode) {
   const daily = mode === "daily";
-  elements.taskScheduleNone.checked = !daily;
+  const weekly = mode === "weekly";
+  elements.taskScheduleNone.checked = mode === "none";
   elements.taskScheduleDaily.checked = daily;
-  elements.taskScheduleFields.hidden = !daily;
-  if (daily && !elements.taskScheduleTime.value) {
+  elements.taskScheduleWeekly.checked = weekly;
+  elements.taskScheduleFields.hidden = mode === "none";
+  elements.taskWeekdays.hidden = !weekly;
+  if ((daily || weekly) && !elements.taskScheduleTime.value) {
     elements.taskScheduleTime.value = "08:30";
   }
-  if (daily && !elements.taskScheduleTimezone.value) {
+  if ((daily || weekly) && !elements.taskScheduleTimezone.value) {
     elements.taskScheduleTimezone.value = "Asia/Shanghai";
   }
   applyTaskScheduleEnabled();
 }
 
 function currentTaskScheduleMode() {
-  return elements.taskScheduleDaily.checked ? "daily" : "none";
+  if (elements.taskScheduleWeekly.checked) return "weekly";
+  if (elements.taskScheduleDaily.checked) return "daily";
+  return "none";
 }
 
 function resetTaskScheduleEditor() {
@@ -2805,6 +2821,9 @@ function resetTaskScheduleEditor() {
   state.editingTaskScheduleDirty = false;
   elements.taskScheduleTime.value = "08:30";
   elements.taskScheduleTimezone.value = "Asia/Shanghai";
+  for (const input of elements.taskWeekdays.querySelectorAll("input")) {
+    input.checked = false;
+  }
   elements.taskScheduleError.textContent = "";
   elements.taskScheduleError.hidden = true;
   elements.taskScheduleSaved.textContent = "";
@@ -2819,12 +2838,17 @@ function fillTaskScheduleEditor(task) {
   state.editingTaskScheduleError = task.schedule_error || null;
   const saved = task.schedule || task.schedule_raw;
   if (saved) {
-    setTaskScheduleMode("daily");
+    setTaskScheduleMode(saved.kind === "weekly" ? "weekly" : "daily");
     if (typeof saved.time === "string") {
       elements.taskScheduleTime.value = saved.time;
     }
     if (typeof saved.timezone === "string") {
       elements.taskScheduleTimezone.value = saved.timezone;
+    }
+    if (Array.isArray(saved.weekdays)) {
+      for (const input of elements.taskWeekdays.querySelectorAll("input")) {
+        input.checked = saved.weekdays.includes(Number(input.value));
+      }
     }
   }
   if (task.schedule_error) {
@@ -2857,7 +2881,8 @@ function collectTaskSchedule() {
   if (!state.editingTaskScheduleDirty) {
     return undefined;
   }
-  if (currentTaskScheduleMode() === "none") {
+  const mode = currentTaskScheduleMode();
+  if (mode === "none") {
     return null;
   }
   const time = elements.taskScheduleTime.value.trim();
@@ -2866,9 +2891,19 @@ function collectTaskSchedule() {
     throw new Error("计划时间必须是 HH:mm 24 小时制。");
   }
   if (!timezone) {
-    throw new Error("每日计划必须填写 IANA 时区。");
+    throw new Error("定时计划必须填写 IANA 时区。");
   }
-  return { kind: "daily", timezone, time };
+  if (mode === "daily") {
+    return { kind: "daily", timezone, time };
+  }
+  const weekdays = [...elements.taskWeekdays.querySelectorAll("input")]
+    .filter((input) => input.checked)
+    .map((input) => Number(input.value))
+    .sort((a, b) => a - b);
+  if (weekdays.length === 0) {
+    throw new Error("每周计划至少选择一个星期。");
+  }
+  return { kind: "weekly", timezone, time, weekdays };
 }
 
 function renderTasks() {
@@ -2887,6 +2922,7 @@ function renderTasks() {
   for (const task of state.tasks) {
     const card = document.createElement("li");
     card.className = "site-card profile-card";
+    card.dataset.taskId = task.id;
     const head = document.createElement("div");
     head.className = "site-card-head";
     const title = document.createElement("h3");
@@ -2921,7 +2957,7 @@ function renderTasks() {
     const disabled = document.createElement("span");
     disabled.className = "task-disabled";
     disabled.textContent = task.enabled
-      ? "已启用 · 每日调度"
+      ? "已启用 · 定时调度"
       : "未启用 · 仅管理员手动测试";
     meta.append(profile, output, schedule, preview, runtime, targets, disabled);
 
@@ -2930,15 +2966,17 @@ function renderTasks() {
     const edit = makeButton("编辑", "button button-secondary", () =>
       openTaskEditor(task), `编辑推送任务 ${task.name}`);
     const power = makeButton(
-      task.enabled ? "停用每日调度" : "启用每日调度",
+      task.enabled ? "停用定时调度" : "启用定时调度",
       "button button-secondary",
       () => openTaskPower(task, task.enabled ? "disable" : "enable"),
-      `${task.enabled ? "停用" : "启用"}每日调度 ${task.name}`,
+      `${task.enabled ? "停用" : "启用"}定时调度 ${task.name}`,
     );
     const test = makeButton("测试投递", "button button-primary", () =>
       openDelivery(task), `手动测试投递 ${task.name}`);
     const remove = makeButton("删除", "button button-danger", () =>
       openTaskDelete(task), `删除推送任务 ${task.name}`);
+    power.dataset.taskPower = "1";
+    power.disabled = state.taskPowerSaving;
     actions.append(power, test, edit, remove);
     card.append(head, meta, actions);
     elements.tasksList.append(card);
@@ -3166,10 +3204,10 @@ async function handleTaskSave(event) {
 function taskPowerPreflight(task, mode) {
   if (mode !== "enable") return null;
   if (!task.schedule || task.schedule_error) {
-    return "任务没有可计算的每日计划，不能启用。";
+    return "任务没有可计算的定时计划，不能启用。";
   }
   if (!task.schedule.timezone || !task.schedule.time) {
-    return "每日计划缺少时间或 IANA 时区，不能启用。";
+    return "定时计划缺少时间或 IANA 时区，不能启用。";
   }
   if (!Array.isArray(task.umos) || task.umos.length === 0) {
     return "任务 UMO 白名单为空，不能启用。";
@@ -3202,7 +3240,7 @@ function openTaskPower(task, mode) {
   state.taskPowerMode = mode;
   state.taskPowerRequestId += 1;
   elements.taskPowerTitle.textContent = mode === "enable"
-    ? "启用每日调度" : "停用每日调度";
+    ? "启用定时调度" : "停用定时调度";
   elements.taskPowerConfirmButton.textContent = mode === "enable"
     ? "确认启用" : "确认停用";
   elements.taskPowerInfo.replaceChildren();
@@ -3211,8 +3249,8 @@ function openTaskPower(task, mode) {
   appendPowerLine("输出方式", task.output_label || task.output_format);
   appendPowerLine("目标", Array.isArray(task.umos) && task.umos.length
     ? task.umos.join("\n") : "无");
-  appendPowerLine("每日计划", task.schedule
-    ? `${task.schedule.time} · ${task.schedule.timezone}`
+  appendPowerLine("定时计划", task.schedule
+    ? `${task.schedule.kind === "weekly" ? "每周 " + (task.schedule.weekdays || []).join(",") : "每日"} ${task.schedule.time} · ${task.schedule.timezone}`
     : "无计划");
   elements.taskPowerNote.textContent = mode === "enable"
     ? "启用后按计划自动向上述目标发送；首次安排严格晚于当前时刻，不会立即投递。任务状态和实际下次时间以服务器返回为准。"
@@ -3231,6 +3269,9 @@ function openTaskPower(task, mode) {
 
 function setTaskPowerBusy(busy) {
   state.taskPowerSaving = busy;
+  for (const button of document.querySelectorAll('[data-task-power="1"]')) {
+    button.disabled = busy;
+  }
   elements.taskPowerConfirmButton.disabled = busy;
   elements.taskPowerCancelButton.disabled = busy;
   elements.taskPowerCloseButton.disabled = busy;
@@ -4280,6 +4321,13 @@ function bindEvents() {
     setTaskScheduleMode("daily");
     markTaskScheduleDirty();
   });
+  elements.taskScheduleWeekly.addEventListener("change", () => {
+    setTaskScheduleMode("weekly");
+    markTaskScheduleDirty();
+  });
+  for (const input of elements.taskWeekdays.querySelectorAll("input")) {
+    input.addEventListener("change", markTaskScheduleDirty);
+  }
   elements.taskScheduleTime.addEventListener("input", markTaskScheduleDirty);
   elements.taskScheduleTimezone.addEventListener("input", markTaskScheduleDirty);
   elements.taskDeleteConfirmButton.addEventListener("click", confirmTaskDelete);

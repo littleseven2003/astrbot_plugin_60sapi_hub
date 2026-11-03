@@ -295,6 +295,215 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
         self.sites = reopened
 
+    async def test_v7_schema_real_migration_preserves_runtime_and_history(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="v7真实迁移", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
+        ))
+        await self.sites.store.set_task_enabled(
+            task.id, enabled=True, expected_revision=1,
+            next_run_at="2026-01-01T00:30:00+00:00",
+            now="2026-01-01T00:00:00+00:00",
+        )
+        await self.sites.store.create_delivery_execution(
+            execution_id="v7-history", task_id=task.id, task_name=task.name,
+            task_revision=2, profile_id=self.profile.id,
+            profile_revision=self.profile.revision, site_id=self.site.id,
+            site_revision=self.site.revision, output_format="text", umos=(),
+        )
+        await self.sites.store.claim_schedule(
+            task_id=task.id, scheduled_for="2026-01-01T00:30:00+00:00",
+            execution_id="v7-claim", task_revision=2,
+            profile_revision=self.profile.revision, site_revision=self.site.revision,
+            next_run_at="2026-01-02T00:30:00+00:00",
+            now="2026-01-01T00:30:00+00:00",
+        )
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_weekdays")
+            raw.execute("PRAGMA user_version = 7")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertTrue(loaded.enabled)
+            self.assertEqual(loaded.revision, 2)
+            self.assertEqual(loaded.schedule.time.strftime("%H:%M"), "08:30")
+            self.assertEqual(loaded.umos, task.umos)
+            self.assertEqual(
+                (await reopened.store.get_schedule_state(task.id)).next_run_at,
+                "2026-01-02T00:30:00+00:00",
+            )
+            claims = await reopened.store.list_schedule_claims(limit=10, offset=0)
+            self.assertEqual(claims[0].execution_id, "v7-claim")
+            self.assertIn(
+                "v7-history",
+                await reopened.store.list_delivery_execution_ids(limit=10, offset=0),
+            )
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_v7_schema_weekday_migration_failure_rolls_back(self) -> None:
+        from unittest.mock import patch
+        import aiosqlite
+        task = await self.tasks.create_task(TaskCreate(
+            name="v7失败", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "daily", "timezone": "UTC", "time": "08:30"},
+        ))
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_weekdays")
+            raw.execute("PRAGMA user_version = 7")
+            raw.commit()
+        finally:
+            raw.close()
+        original = aiosqlite.Connection.execute
+        def failing(connection, sql, *args, **kwargs):
+            if "ADD COLUMN schedule_weekdays" in sql:
+                raise RuntimeError("forced v7 weekday failure")
+            return original(connection, sql, *args, **kwargs)
+        reopened = SiteService(self.db_path)
+        with patch.object(aiosqlite.Connection, "execute", failing):
+            with self.assertRaises(Exception):
+                await reopened.open()
+        await reopened.close()
+        with closing(sqlite3.connect(self.db_path)) as check:
+            self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertNotIn(
+                "schedule_weekdays",
+                {row[1] for row in check.execute("PRAGMA table_info(push_tasks)")},
+            )
+            self.assertEqual(
+                check.execute("SELECT name FROM push_tasks WHERE id=?", (task.id,)).fetchone()[0],
+                "v7失败",
+            )
+        self.sites = SiteService(self.db_path)
+        await self.sites.open()
+
+    async def test_v7_schema_adds_weekdays_and_preserves_weekly(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="v7每周迁移", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "weekly", "timezone": "Asia/Shanghai",
+                      "time": "08:30", "weekdays": [1, 3]},
+        ))
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("PRAGMA user_version = 7")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule.weekdays, (1, 3))
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_weekly_daily_null_switch_and_edit_disables(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="切换计划", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
+                      "weekdays": [1, 3]},
+        ))
+        await self.sites.store.set_task_enabled(
+            task.id, enabled=True, expected_revision=1,
+            next_run_at="2026-01-05T08:30:00+00:00",
+            now="2026-01-01T00:00:00+00:00",
+        )
+        updated = await self.tasks.update_task(task.id, TaskUpdate(
+            name="切换每日", profile_id=self.profile.id,
+            output_format="text", umos=list(task.umos),
+            expected_revision=2,
+            schedule={"kind": "daily", "timezone": "UTC", "time": "09:00"},
+        ))
+        self.assertFalse(updated.enabled)
+        self.assertEqual(updated.schedule.kind, "daily")
+        self.assertIsNone(await self.sites.store.get_schedule_state(task.id))
+        cleared = await self.tasks.update_task(task.id, TaskUpdate(
+            name="切换无计划", profile_id=self.profile.id,
+            output_format="text", umos=list(task.umos),
+            expected_revision=3, schedule=None,
+        ))
+        self.assertIsNone(cleared.schedule)
+
+    async def test_corrupt_weekdays_are_reported_and_omitted_update_preserves(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="异常星期", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
+                      "weekdays": [1, 3]},
+        ))
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("UPDATE push_tasks SET schedule_weekdays='1,x,3' WHERE id=?", (task.id,))
+            raw.commit()
+        finally:
+            raw.close()
+        items = await self.tasks.list_tasks()
+        loaded = next(item for item in items if item.id == task.id)
+        self.assertIsNone(loaded.schedule)
+        self.assertEqual(loaded.schedule_error, "schedule_invalid")
+        self.assertEqual(loaded.schedule_raw["weekdays"], "1,x,3")
+        updated = await self.tasks.update_task(task.id, TaskUpdate(
+            name="异常保留", profile_id=self.profile.id,
+            output_format="text", umos=list(task.umos),
+            expected_revision=task.revision,
+        ))
+        self.assertEqual(updated.schedule_error, "schedule_invalid")
+        with closing(sqlite3.connect(self.db_path)) as check:
+            self.assertEqual(
+                check.execute("SELECT schedule_weekdays FROM push_tasks WHERE id=?", (task.id,)).fetchone()[0],
+                "1,x,3",
+            )
+        cleared = await self.tasks.update_task(task.id, TaskUpdate(
+            name="异常清除", profile_id=self.profile.id,
+            output_format="text", umos=list(task.umos),
+            expected_revision=updated.revision, schedule=None,
+        ))
+        self.assertIsNone(cleared.schedule)
+        self.assertIsNone(cleared.schedule_error)
+
+    async def test_weekly_schedule_persists_and_restarts(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="每周任务", profile_id=self.profile.id,
+            output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={
+                "kind": "weekly", "timezone": "Asia/Shanghai",
+                "time": "08:30", "weekdays": [5, 1, 3],
+            },
+        ))
+        self.assertEqual(task.schedule.kind, "weekly")
+        self.assertEqual(task.schedule.weekdays, (1, 3, 5))
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule.weekdays, (1, 3, 5))
+            self.assertEqual(loaded.schedule.time.strftime("%H:%M"), "08:30")
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
     async def test_daily_schedule_survives_restart(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="重启计划", profile_id=self.profile.id,

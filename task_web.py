@@ -45,19 +45,19 @@ class TaskWeb:
                 "schedule-runs",
                 self.list_schedule_runs,
                 ["GET"],
-                "查询每日调度认领与跳过",
+                "查询定时调度认领与跳过",
             ),
             (
                 "tasks/<task_id>/enable",
                 self.enable_task,
                 ["POST"],
-                "启用每日任务",
+                "启用定时任务",
             ),
             (
                 "tasks/<task_id>/disable",
                 self.disable_task,
                 ["POST"],
-                "停用每日任务",
+                "停用定时任务",
             ),
         )
         for path, handler, methods, desc in routes:

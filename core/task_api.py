@@ -20,7 +20,7 @@ from .schedule import (
     ScheduleError,
     ScheduleTimezoneUnavailableError,
     ScheduleValidationError,
-    next_daily_run,
+    next_scheduled_run,
     parse_schedule,
 )
 from .sites import SiteService, SiteStorageError
@@ -294,7 +294,7 @@ def _task_dict(
     evaluated_at = now.astimezone(timezone.utc).isoformat()
     if schedule is not None:
         try:
-            next_run = next_daily_run(schedule, now)
+            next_run = next_scheduled_run(schedule, now)
             preview = {
                 "evaluated_at": evaluated_at,
                 "next_run_at": next_run.isoformat(),

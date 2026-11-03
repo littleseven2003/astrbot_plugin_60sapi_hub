@@ -19,7 +19,7 @@ from .schedule import (
     DailySchedule,
     ScheduleCalculationError,
     ScheduleTimezoneUnavailableError,
-    next_daily_run,
+    next_scheduled_run,
 )
 from .site_store import (
     ScheduleState,
@@ -421,7 +421,7 @@ class SchedulerService:
 
     def _next_run(self, schedule: DailySchedule, now: datetime) -> datetime:
         try:
-            return next_daily_run(schedule, now)
+            return next_scheduled_run(schedule, now)
         except ScheduleTimezoneUnavailableError as exc:
             raise SchedulerValidationError("schedule", str(exc)) from exc
         except ScheduleCalculationError as exc:

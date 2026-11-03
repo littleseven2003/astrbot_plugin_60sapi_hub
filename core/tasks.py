@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from .schedule import (
     DailySchedule,
+    WeeklySchedule,
     ScheduleTimezoneUnavailableError,
     ScheduleValidationError,
     parse_schedule,
@@ -103,7 +104,7 @@ class PushTask:
     revision: int
     created_at: str
     updated_at: str
-    schedule: DailySchedule | None = None
+    schedule: DailySchedule | WeeklySchedule | None = None
     schedule_raw: dict[str, object] | None = None
     schedule_error: str | None = None
 
@@ -207,6 +208,10 @@ class PushTaskService:
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
                 schedule_time=schedule.time.strftime("%H:%M") if schedule else None,
+                schedule_weekdays=(
+                    ",".join(str(day) for day in schedule.weekdays)
+                    if isinstance(schedule, WeeklySchedule) else None
+                ),
             )
         except Exception as exc:
             raise TaskStorageError("保存推送任务失败。") from exc
@@ -238,6 +243,10 @@ class PushTaskService:
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
                 schedule_time=schedule.time.strftime("%H:%M") if schedule else None,
+                schedule_weekdays=(
+                    ",".join(str(day) for day in schedule.weekdays)
+                    if isinstance(schedule, WeeklySchedule) else None
+                ),
             )
         except TaskRecordNotFoundError as exc:
             raise TaskNotFoundError(exc.task_id) from exc
@@ -406,14 +415,27 @@ def _to_task(stored: StoredTask) -> PushTask:
         stored.schedule_kind,
         stored.schedule_timezone,
         stored.schedule_time,
+        stored.schedule_weekdays,
     )):
         raw = {
             "kind": stored.schedule_kind,
             "timezone": stored.schedule_timezone,
             "time": stored.schedule_time,
         }
+        if stored.schedule_weekdays:
+            raw["weekdays"] = stored.schedule_weekdays
         try:
+            if stored.schedule_weekdays:
+                parts = stored.schedule_weekdays.split(",")
+                if any(not part or not part.isdigit() for part in parts):
+                    raise ValueError("invalid stored weekdays")
+                raw["weekdays"] = [int(part) for part in parts]
             schedule = parse_schedule(raw)
+        except ValueError:
+            error = "schedule_invalid"
+            # Keep the original string exactly as stored.
+            if stored.schedule_weekdays:
+                raw["weekdays"] = stored.schedule_weekdays
         except ScheduleTimezoneUnavailableError:
             error = "schedule_timezone_unavailable"
         except ScheduleValidationError:

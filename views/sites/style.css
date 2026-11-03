@@ -1380,3 +1380,24 @@ input:focus-visible,
     grid-template-columns: 1fr;
   }
 }
+
+.weekday-picker {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+}
+
+.weekday-picker > span {
+  width: 100%;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.weekday-picker label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

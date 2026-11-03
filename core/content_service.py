@@ -97,9 +97,13 @@ class ContentService:
         await self._cache.open()
         try:
             await self._client.open()
-        except Exception:
-            await self._cache.close()
+        except BaseException:
+            self._test_admitted = False
             self._test_generation += 1
+            try:
+                await self._cache.close()
+            finally:
+                await self._client.close()
             raise
         self._test_admitted = True
 

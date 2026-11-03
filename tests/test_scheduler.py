@@ -483,6 +483,29 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(disabled.body["data"]["enabled"])
         self.assertIsNone(disabled.body["data"]["next_run_at"])
 
+    async def test_interval_late_restart_and_config_change(self):
+        task = await self.tasks.create_task(TaskCreate(
+            name="间隔边界", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "interval", "timezone": "UTC",
+                      "start_at": "2026-01-01T00:00", "interval_minutes": 60},
+        ))
+        await self.scheduler.enable_task(task.id, 1)
+        self.clock_now = datetime(2026, 1, 1, 1, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 0)
+        self.assertEqual(self.sender.calls, [])
+        second = SchedulerService(
+            tasks=self.tasks, store=self.sites.store, delivery=self.delivery,
+            clock=lambda: self.clock_now,
+        )
+        await self.scheduler.close()
+        await second.start()
+        self.assertEqual(await second.check_once(), 0)
+        self.assertEqual(self.sender.calls, [])
+        await second.close()
+        state = await self.sites.store.get_schedule_state(task.id)
+        self.assertEqual(state.next_run_at, "2026-01-01T02:00:00+00:00")
+
     async def test_restart_does_not_backfill_and_claims_are_unique(self):
         task = await self.task()
         await self.scheduler.enable_task(task.id, 1)

@@ -350,5 +350,5 @@ mock 测试通过不等于真实投递成功。检查报告区分通过、失败
 
 - 新增固定时钟模型测试：起点过去/未来/恰好当前、严格未来、跨年、DST 缺口、固定间隔跨 DST。
 - 真实 SQLite 覆盖间隔创建、重启和计划类型切换；schema 升级到 v9。
-- 真实隔离 Dashboard `tests/browser/interval_schedule_ui.js` 已运行通过：创建、保存、回填、修改分钟、启用/停用及服务端 `next_run_at`；调度和每日配置回归同轮通过。
+- 真实隔离 Dashboard `tests/browser/interval_schedule_ui.js` 已运行通过：每日坏时间切到间隔仍可保存、创建、回填、修改分钟、启用/停用及服务端 `next_run_at`。
 - 间隔迁移失败回滚、迟到/重启不补发、回拨和配置变更保护尚未完成专项回归；初始 390px 间隔操作未单独覆盖。

@@ -264,10 +264,16 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         import asyncio
         from core.sites import SiteTestUnavailableError
         class SlowClient:
-            def __init__(self): self.is_open = False; self.started = asyncio.Event()
+            def __init__(self):
+                self.is_open = False
+                self.started = asyncio.Event()
+                self.attempts = 0
             async def open(self):
+                self.attempts += 1
                 self.started.set()
-                await asyncio.Event().wait()
+                if self.attempts == 1:
+                    await asyncio.Event().wait()
+                self.is_open = True
             async def close(self): self.is_open = False
             async def fetch_json(self, *args, **kwargs):
                 raise AssertionError("must not fetch")
@@ -286,6 +292,10 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(service._cache.is_open)
         with self.assertRaises(SiteTestUnavailableError):
             await service.test_connection("missing", "daily_news", 1)
+        await service.open()
+        self.assertTrue(service._test_admitted)
+        self.assertTrue(service._cache.is_open)
+        await service.close()
 
     async def test_site_connection_revision_change_during_http_invalidates(self) -> None:
         from core.sites import SiteConflictError, SiteUpdate

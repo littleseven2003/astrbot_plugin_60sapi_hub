@@ -480,6 +480,90 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(cleared.schedule)
         self.assertIsNone(cleared.schedule_error)
 
+    async def test_v8_real_migration_adds_interval_columns(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="v8迁移", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
+                      "weekdays": [1, 3]},
+        ))
+        await self.sites.close()
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_start_at")
+            raw.execute("ALTER TABLE push_tasks DROP COLUMN schedule_interval_minutes")
+            raw.execute("UPDATE push_tasks SET enabled=1 WHERE id=?", (task.id,))
+            raw.execute("PRAGMA user_version = 8")
+            raw.commit()
+        finally:
+            raw.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertTrue(loaded.enabled)
+            self.assertEqual(loaded.schedule.weekdays, (1, 3))
+            with closing(sqlite3.connect(self.db_path)) as check:
+                cols = {row[1] for row in check.execute("PRAGMA table_info(push_tasks)")}
+                self.assertIn("schedule_start_at", cols)
+                self.assertIn("schedule_interval_minutes", cols)
+                self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
+    async def test_corrupt_interval_is_reported_and_preserved(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="损坏间隔", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "interval", "timezone": "UTC",
+                      "start_at": "2026-11-04T08:30", "interval_minutes": 60},
+        ))
+        raw = sqlite3.connect(self.db_path)
+        try:
+            raw.execute("UPDATE push_tasks SET schedule_interval_minutes='abc' WHERE id=?", (task.id,))
+            raw.commit()
+        finally:
+            raw.close()
+        loaded = next(item for item in await self.tasks.list_tasks() if item.id == task.id)
+        self.assertIsNone(loaded.schedule)
+        self.assertEqual(loaded.schedule_error, "schedule_invalid")
+        self.assertEqual(loaded.schedule_raw["interval_minutes"], "abc")
+        updated = await self.tasks.update_task(task.id, TaskUpdate(
+            name="损坏保留", profile_id=self.profile.id, output_format="text",
+            umos=list(task.umos), expected_revision=task.revision,
+        ))
+        self.assertEqual(updated.schedule_error, "schedule_invalid")
+        cleared = await self.tasks.update_task(task.id, TaskUpdate(
+            name="损坏清除", profile_id=self.profile.id, output_format="text",
+            umos=list(task.umos), expected_revision=updated.revision, schedule=None,
+        ))
+        self.assertIsNone(cleared.schedule)
+
+    async def test_interval_schedule_persists_and_switches(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="间隔任务", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "interval", "timezone": "Asia/Shanghai",
+                      "start_at": "2026-11-04T08:30", "interval_minutes": 60},
+        ))
+        self.assertEqual(task.schedule.kind, "interval")
+        self.assertEqual(task.schedule.interval_minutes, 60)
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule.start_at, "2026-11-04T08:30")
+            self.assertEqual(loaded.schedule.interval_minutes, 60)
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
     async def test_weekly_schedule_persists_and_restarts(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="每周任务", profile_id=self.profile.id,

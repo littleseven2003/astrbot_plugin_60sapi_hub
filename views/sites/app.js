@@ -135,6 +135,10 @@ const elements = {
   taskScheduleNone: document.getElementById("task-schedule-none"),
   taskScheduleDaily: document.getElementById("task-schedule-daily"),
   taskScheduleWeekly: document.getElementById("task-schedule-weekly"),
+  taskScheduleInterval: document.getElementById("task-schedule-interval"),
+  taskIntervalFields: document.getElementById("task-interval-fields"),
+  taskScheduleStartAt: document.getElementById("task-schedule-start-at"),
+  taskScheduleIntervalMinutes: document.getElementById("task-schedule-interval-minutes"),
   taskWeekdays: document.getElementById("task-weekdays"),
   taskScheduleFields: document.getElementById("task-schedule-fields"),
   taskScheduleTime: document.getElementById("task-schedule-time"),
@@ -2751,6 +2755,9 @@ function scheduleLabel(task) {
   if (saved && saved.kind === "daily") {
     return `计划：每日 ${saved.time || "?"} · ${saved.timezone || "?"}`;
   }
+  if (saved && saved.kind === "interval") {
+    return `计划：每 ${saved.interval_minutes} 分钟 · ${saved.start_at} · ${saved.timezone}`;
+  }
   if (saved && saved.kind === "weekly") {
     if (!Array.isArray(saved.weekdays)) {
       return "计划：已保存，但星期配置异常";
@@ -2784,8 +2791,10 @@ function schedulePreviewText(task) {
 
 function applyTaskScheduleEnabled() {
   const disabled = state.taskFormDisabled || elements.taskScheduleFields.hidden;
-  elements.taskScheduleTime.disabled = disabled;
+  elements.taskScheduleTime.disabled = disabled || elements.taskScheduleInterval.checked;
   elements.taskScheduleTimezone.disabled = disabled;
+  elements.taskScheduleStartAt.disabled = disabled || !elements.taskScheduleInterval.checked;
+  elements.taskScheduleIntervalMinutes.disabled = disabled || !elements.taskScheduleInterval.checked;
   for (const input of elements.taskWeekdays.querySelectorAll("input")) {
     input.disabled = disabled || elements.taskWeekdays.hidden;
   }
@@ -2794,11 +2803,17 @@ function applyTaskScheduleEnabled() {
 function setTaskScheduleMode(mode) {
   const daily = mode === "daily";
   const weekly = mode === "weekly";
+  const interval = mode === "interval";
   elements.taskScheduleNone.checked = mode === "none";
   elements.taskScheduleDaily.checked = daily;
   elements.taskScheduleWeekly.checked = weekly;
+  elements.taskScheduleInterval.checked = interval;
   elements.taskScheduleFields.hidden = mode === "none";
   elements.taskWeekdays.hidden = !weekly;
+  elements.taskIntervalFields.hidden = !interval;
+  elements.taskScheduleTime.disabled = interval;
+  elements.taskScheduleStartAt.disabled = mode !== "interval";
+  elements.taskScheduleIntervalMinutes.disabled = mode !== "interval";
   if ((daily || weekly) && !elements.taskScheduleTime.value) {
     elements.taskScheduleTime.value = "08:30";
   }
@@ -2809,6 +2824,7 @@ function setTaskScheduleMode(mode) {
 }
 
 function currentTaskScheduleMode() {
+  if (elements.taskScheduleInterval.checked) return "interval";
   if (elements.taskScheduleWeekly.checked) return "weekly";
   if (elements.taskScheduleDaily.checked) return "daily";
   return "none";
@@ -2821,6 +2837,8 @@ function resetTaskScheduleEditor() {
   state.editingTaskScheduleDirty = false;
   elements.taskScheduleTime.value = "08:30";
   elements.taskScheduleTimezone.value = "Asia/Shanghai";
+  elements.taskScheduleStartAt.value = "";
+  elements.taskScheduleIntervalMinutes.value = "";
   for (const input of elements.taskWeekdays.querySelectorAll("input")) {
     input.checked = false;
   }
@@ -2838,12 +2856,16 @@ function fillTaskScheduleEditor(task) {
   state.editingTaskScheduleError = task.schedule_error || null;
   const saved = task.schedule || task.schedule_raw;
   if (saved) {
-    setTaskScheduleMode(saved.kind === "weekly" ? "weekly" : "daily");
+    setTaskScheduleMode(saved.kind === "interval" ? "interval" : saved.kind === "weekly" ? "weekly" : "daily");
     if (typeof saved.time === "string") {
       elements.taskScheduleTime.value = saved.time;
     }
     if (typeof saved.timezone === "string") {
       elements.taskScheduleTimezone.value = saved.timezone;
+    }
+    if (saved.kind === "interval") {
+      elements.taskScheduleStartAt.value = saved.start_at || "";
+      elements.taskScheduleIntervalMinutes.value = saved.interval_minutes || "";
     }
     if (Array.isArray(saved.weekdays)) {
       for (const input of elements.taskWeekdays.querySelectorAll("input")) {
@@ -2887,14 +2909,25 @@ function collectTaskSchedule() {
   }
   const time = elements.taskScheduleTime.value.trim();
   const timezone = elements.taskScheduleTimezone.value.trim();
-  if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
-    throw new Error("计划时间必须是 HH:mm 24 小时制。");
-  }
   if (!timezone) {
     throw new Error("定时计划必须填写 IANA 时区。");
   }
+  if (mode === "daily" || mode === "weekly") {
+    if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+      throw new Error("计划时间必须是 HH:mm 24 小时制。");
+    }
+  }
   if (mode === "daily") {
     return { kind: "daily", timezone, time };
+  }
+  if (mode === "interval") {
+    const startAt = elements.taskScheduleStartAt.value;
+    const minutes = Number(elements.taskScheduleIntervalMinutes.value);
+    if (!startAt) throw new Error("间隔计划必须填写本地起点。");
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080) {
+      throw new Error("间隔必须是 1～10080 的整数分钟。");
+    }
+    return { kind: "interval", timezone, start_at: startAt, interval_minutes: minutes };
   }
   const weekdays = [...elements.taskWeekdays.querySelectorAll("input")]
     .filter((input) => input.checked)
@@ -3206,8 +3239,15 @@ function taskPowerPreflight(task, mode) {
   if (!task.schedule || task.schedule_error) {
     return "任务没有可计算的定时计划，不能启用。";
   }
-  if (!task.schedule.timezone || !task.schedule.time) {
-    return "定时计划缺少时间或 IANA 时区，不能启用。";
+  if (!task.schedule.timezone) {
+    return "定时计划缺少 IANA 时区，不能启用。";
+  }
+  if (task.schedule.kind === "interval") {
+    if (!task.schedule.start_at || !Number.isInteger(task.schedule.interval_minutes)) {
+      return "间隔计划缺少起点或有效分钟数，不能启用。";
+    }
+  } else if (!task.schedule.time) {
+    return "定时计划缺少执行时间，不能启用。";
   }
   if (!Array.isArray(task.umos) || task.umos.length === 0) {
     return "任务 UMO 白名单为空，不能启用。";
@@ -3250,7 +3290,7 @@ function openTaskPower(task, mode) {
   appendPowerLine("目标", Array.isArray(task.umos) && task.umos.length
     ? task.umos.join("\n") : "无");
   appendPowerLine("定时计划", task.schedule
-    ? `${task.schedule.kind === "weekly" ? "每周 " + (task.schedule.weekdays || []).join(",") : "每日"} ${task.schedule.time} · ${task.schedule.timezone}`
+    ? `${task.schedule.kind === "interval" ? "每 " + task.schedule.interval_minutes + " 分钟 · " + task.schedule.start_at : task.schedule.kind === "weekly" ? "每周 " + (task.schedule.weekdays || []).join(",") : "每日"} ${task.schedule.kind === "interval" ? "" : task.schedule.time + " · "}${task.schedule.timezone}`
     : "无计划");
   elements.taskPowerNote.textContent = mode === "enable"
     ? "启用后按计划自动向上述目标发送；首次安排严格晚于当前时刻，不会立即投递。任务状态和实际下次时间以服务器返回为准。"
@@ -4321,6 +4361,12 @@ function bindEvents() {
     setTaskScheduleMode("daily");
     markTaskScheduleDirty();
   });
+  elements.taskScheduleInterval.addEventListener("change", () => {
+    setTaskScheduleMode("interval");
+    markTaskScheduleDirty();
+  });
+  elements.taskScheduleStartAt.addEventListener("input", markTaskScheduleDirty);
+  elements.taskScheduleIntervalMinutes.addEventListener("input", markTaskScheduleDirty);
   elements.taskScheduleWeekly.addEventListener("change", () => {
     setTaskScheduleMode("weekly");
     markTaskScheduleDirty();

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from .schedule import (
     DailySchedule,
+    IntervalSchedule,
     WeeklySchedule,
     ScheduleTimezoneUnavailableError,
     ScheduleValidationError,
@@ -104,7 +105,7 @@ class PushTask:
     revision: int
     created_at: str
     updated_at: str
-    schedule: DailySchedule | WeeklySchedule | None = None
+    schedule: DailySchedule | WeeklySchedule | IntervalSchedule | None = None
     schedule_raw: dict[str, object] | None = None
     schedule_error: str | None = None
 
@@ -207,10 +208,21 @@ class PushTaskService:
                 umos=umos,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
-                schedule_time=schedule.time.strftime("%H:%M") if schedule else None,
+                schedule_time=(
+                    schedule.time.strftime("%H:%M")
+                    if schedule is not None and hasattr(schedule, "time") else None
+                ),
                 schedule_weekdays=(
                     ",".join(str(day) for day in schedule.weekdays)
                     if isinstance(schedule, WeeklySchedule) else None
+                ),
+                schedule_start_at=(
+                    schedule.start_at
+                    if isinstance(schedule, IntervalSchedule) else None
+                ),
+                schedule_interval_minutes=(
+                    schedule.interval_minutes
+                    if isinstance(schedule, IntervalSchedule) else None
                 ),
             )
         except Exception as exc:
@@ -242,10 +254,21 @@ class PushTaskService:
                 schedule_unchanged=schedule_unchanged,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
-                schedule_time=schedule.time.strftime("%H:%M") if schedule else None,
+                schedule_time=(
+                    schedule.time.strftime("%H:%M")
+                    if schedule is not None and hasattr(schedule, "time") else None
+                ),
                 schedule_weekdays=(
                     ",".join(str(day) for day in schedule.weekdays)
                     if isinstance(schedule, WeeklySchedule) else None
+                ),
+                schedule_start_at=(
+                    schedule.start_at
+                    if isinstance(schedule, IntervalSchedule) else None
+                ),
+                schedule_interval_minutes=(
+                    schedule.interval_minutes
+                    if isinstance(schedule, IntervalSchedule) else None
                 ),
             )
         except TaskRecordNotFoundError as exc:
@@ -416,14 +439,21 @@ def _to_task(stored: StoredTask) -> PushTask:
         stored.schedule_timezone,
         stored.schedule_time,
         stored.schedule_weekdays,
+        stored.schedule_start_at,
+        stored.schedule_interval_minutes,
     )):
         raw = {
             "kind": stored.schedule_kind,
             "timezone": stored.schedule_timezone,
-            "time": stored.schedule_time,
         }
+        if stored.schedule_time:
+            raw["time"] = stored.schedule_time
         if stored.schedule_weekdays:
             raw["weekdays"] = stored.schedule_weekdays
+        if stored.schedule_start_at:
+            raw["start_at"] = stored.schedule_start_at
+        if stored.schedule_interval_minutes is not None:
+            raw["interval_minutes"] = stored.schedule_interval_minutes
         try:
             if stored.schedule_weekdays:
                 parts = stored.schedule_weekdays.split(",")

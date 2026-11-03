@@ -402,8 +402,14 @@
             <label><input id="task-schedule-none" name="task-schedule-mode" type="radio" value="none" checked /> 无计划</label>
             <label><input id="task-schedule-daily" name="task-schedule-mode" type="radio" value="daily" /> 每日</label>
             <label><input id="task-schedule-weekly" name="task-schedule-mode" type="radio" value="weekly" /> 每周</label>
+            <label><input id="task-schedule-interval" name="task-schedule-mode" type="radio" value="interval" /> 间隔</label>
           </div>
           <div id="task-schedule-fields" class="schedule-fields" hidden>
+            <div id="task-interval-fields" class="schedule-interval-fields" hidden>
+              <label>本地起点 <input id="task-schedule-start-at" type="datetime-local" step="60" /></label>
+              <label>间隔分钟 <input id="task-schedule-interval-minutes" type="number" min="1" max="10080" step="1" /></label>
+              <p class="help">起点按所选 IANA 时区的本地时间解释；间隔是固定经过分钟数，跨 DST 时本地显示可能变化。</p>
+            </div>
             <div id="task-weekdays" class="weekday-picker" hidden>
               <span>星期（ISO，1=周一）</span>
               <label><input type="checkbox" value="1" /> 一</label>

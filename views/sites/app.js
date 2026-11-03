@@ -539,6 +539,18 @@ const SAFE_TEST_ERRORS = new Map([
   ["站点存储不可用。", ["站点存储当前不可用，请稍后手动重试。", "danger"]],
   ["需要登录后才能获取内容预览。", ["登录状态无效，请重新登录 Dashboard。", "danger"]],
   ["连接上游失败。", ["无法连接上游，请检查站点地址后手动重试。", "danger"]],
+  ["网络传输失败。", ["网络传输失败，请检查站点地址后手动重试。", "danger"]],
+  ["上游返回了失败状态。", ["上游返回了失败状态。", "danger"]],
+  ["插件当前未启用。", ["插件当前未启用，请启用插件后重新打开页面。", "danger"]],
+  ["插件当前不可用。", ["插件当前不可用，请关闭后重新打开页面。", "danger"]],
+  ["插件当前不可用，请重新打开页面后重试。", ["插件当前不可用，请重新打开页面后重试。", "danger"]],
+  ["站点不存在。", ["站点不存在或已被删除，请刷新列表。", "danger"]],
+  ["站点不存在或已被删除。", ["站点不存在或已被删除，请刷新列表。", "danger"]],
+  ["内容类型无效。", ["所选内容类型无效。", "danger"]],
+  ["revision 无效。", ["站点版本无效，请刷新列表。", "danger"]],
+  ["测试参数无效。", ["测试参数无效，请刷新列表后重试。", "danger"]],
+  ["请求体必须是 JSON 对象。", ["请求格式无效。", "danger"]],
+  ["需要登录后才能获取内容预览。", ["登录状态无效，请重新登录 Dashboard。", "danger"]],
   ["上游发生不允许的重定向。", ["上游返回了不允许的重定向。", "danger"]],
   ["上游响应过大。", ["上游响应超过大小限制。", "danger"]],
   ["上游返回非 JSON。", ["上游返回的内容不是有效 JSON。", "danger"]],
@@ -615,7 +627,9 @@ async function runSiteTest() {
     if (document.getElementById("site-test-dialog").open === true) {
       siteTestRunning(siteTestSite, document.getElementById("site-test-run-button"));
       const result = document.getElementById("site-test-result");
-      if (siteTestDisplayToken !== displayToken &&
+      const currentPending = siteTestSite
+        ? siteTestPending.get(siteTestSite.id) : null;
+      if (!currentPending && siteTestDisplayToken !== displayToken &&
           result.textContent === "正在请求所选接口…") {
         setSiteTestResult(
           "本次测试已结束，但结果未在当前弹窗展示；请手动重新测试。",

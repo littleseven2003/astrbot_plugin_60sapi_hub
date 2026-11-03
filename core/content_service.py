@@ -47,6 +47,7 @@ class ContentService:
         self._test_slots = asyncio.Semaphore(2)
         self._test_tasks: set[asyncio.Task[object]] = set()
         self._test_generation = 0
+        self._test_admitted = False
         self.news = NewsService(
             sites,
             client=self._client,
@@ -92,6 +93,7 @@ class ContentService:
 
     async def open(self) -> None:
         self._test_generation += 1
+        self._test_admitted = True
         await self._cache.open()
         try:
             await self._client.open()
@@ -100,6 +102,7 @@ class ContentService:
             raise
 
     async def close(self) -> None:
+        self._test_admitted = False
         self._test_generation += 1
         tasks = list(self._test_tasks)
         for task in tasks:
@@ -125,6 +128,9 @@ class ContentService:
         }
         if content_type not in adapters:
             raise SiteValidationError("content_type", "不支持的内容类型")
+        if not self._test_admitted:
+            from .sites import SiteTestUnavailableError
+            raise SiteTestUnavailableError()
         if self._test_slots.locked() and self._test_slots._value == 0:
             from .sites import SiteTestBusyError
             raise SiteTestBusyError()
@@ -141,6 +147,9 @@ class ContentService:
             if not isinstance(expected_revision, int) or type(expected_revision) is bool:
                 raise SiteValidationError("expected_revision", "必须是整数")
             site = await self._sites.get_test_config(site_id, expected_revision)
+            if not self._test_admitted or generation != self._test_generation:
+                from .sites import SiteTestUnavailableError
+                raise SiteTestUnavailableError()
             build_url, parser = adapters[content_type]
             started = monotonic_time.monotonic()
             body = await self._client.fetch_json(
@@ -153,7 +162,8 @@ class ContentService:
             try:
                 payload = json.loads(body)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise SiteValidationError("body", "非 JSON 响应") from exc
+                from .news import NewsInvalidJSONError
+                raise NewsInvalidJSONError("上游返回的内容不是有效 JSON。") from exc
             snapshot = parser(
                 payload, site_id=site.id, site_name=site.name,
                 fetched_at=self._clock(),
@@ -169,10 +179,13 @@ class ContentService:
                 "result": "empty" if empty else "success",
                 "message": "连接成功，接口返回合法空内容。" if empty else "连接成功，接口返回内容结构合法。",
             }
-            if generation != self._test_generation:
+            if generation != self._test_generation or not self._test_admitted:
                 from .sites import SiteTestUnavailableError
                 raise SiteTestUnavailableError()
             await self._sites.get_test_config(site.id, site.revision)
+            if generation != self._test_generation or not self._test_admitted:
+                from .sites import SiteTestUnavailableError
+                raise SiteTestUnavailableError()
             return result
         finally:
             self._test_slots.release()

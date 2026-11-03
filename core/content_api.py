@@ -95,6 +95,8 @@ class ContentApi:
             return _error(502, "连接上游失败。", "test_connection_error")
         except NewsInvalidJSONError:
             return _error(502, "上游返回非 JSON。", "test_invalid_json")
+        except NewsClientClosedError:
+            return _error(503, "内容客户端当前不可用。", "test_unavailable")
         except (NewsStructureError, NewsBusinessError):
             return _error(502, "上游数据结构或业务状态无效。", "test_upstream_error")
         except SiteStorageError:

@@ -100,6 +100,28 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing.body["data"]["code"], "profile_not_found")
 
+    async def test_cron_no_candidate_preview_error(self) -> None:
+        clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)
+        created = await self.api.create_task({**self.payload, "schedule": {
+            "kind": "cron", "timezone": "UTC", "expression": "0 0 31 2 *",
+        }})
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(
+            created.body["data"]["schedule_preview"]["error"],
+            "schedule_calculation_error",
+        )
+        self.assertIsNone(created.body["data"]["schedule_error"])
+        fixed = await self.api.update_task(created.body["data"]["id"], {
+            **self.payload, "expected_revision": 1,
+            "schedule": {"kind": "cron", "timezone": "UTC",
+                         "expression": "0 0 * * *"},
+        })
+        self.assertEqual(fixed.status_code, 200)
+        self.assertIsNotNone(
+            fixed.body["data"]["schedule_preview"]["next_run_at"],
+        )
+
     async def test_schedule_create_update_preserve_clear_and_preview(self) -> None:
         clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
         self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)

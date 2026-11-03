@@ -2777,12 +2777,17 @@ function scheduleLabel(task) {
   return "计划：无计划";
 }
 
+function taskScheduleError(task) {
+  return task.schedule_error || task.schedule_preview?.error || null;
+}
+
 function schedulePreviewText(task) {
   if (!task.schedule && !task.schedule_raw) {
     return "";
   }
-  if (task.schedule_error) {
-    return SCHEDULE_ERROR_LABELS[task.schedule_error] ||
+  const error = taskScheduleError(task);
+  if (error) {
+    return SCHEDULE_ERROR_LABELS[error] ||
       "理论下次时间不可计算。";
   }
   const preview = task.schedule_preview;
@@ -2888,9 +2893,10 @@ function fillTaskScheduleEditor(task) {
       }
     }
   }
-  if (task.schedule_error) {
+  const scheduleError = taskScheduleError(task);
+  if (scheduleError) {
     elements.taskScheduleError.textContent =
-      SCHEDULE_ERROR_LABELS[task.schedule_error] ||
+      SCHEDULE_ERROR_LABELS[scheduleError] ||
       "已保存计划暂时不可计算；未修改计划时将原样保留。";
     elements.taskScheduleError.hidden = false;
     elements.taskScheduleSaved.hidden = false;
@@ -3256,7 +3262,7 @@ async function handleTaskSave(event) {
 
 function taskPowerPreflight(task, mode) {
   if (mode !== "enable") return null;
-  if (!task.schedule || task.schedule_error) {
+  if (!task.schedule || taskScheduleError(task)) {
     return "任务没有可计算的定时计划，不能启用。";
   }
   if (!task.schedule.timezone) {

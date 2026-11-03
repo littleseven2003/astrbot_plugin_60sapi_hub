@@ -2791,7 +2791,7 @@ function schedulePreviewText(task) {
 
 function applyTaskScheduleEnabled() {
   const disabled = state.taskFormDisabled || elements.taskScheduleFields.hidden;
-  elements.taskScheduleTime.disabled = disabled;
+  elements.taskScheduleTime.disabled = disabled || elements.taskScheduleInterval.checked;
   elements.taskScheduleTimezone.disabled = disabled;
   elements.taskScheduleStartAt.disabled = disabled || !elements.taskScheduleInterval.checked;
   elements.taskScheduleIntervalMinutes.disabled = disabled || !elements.taskScheduleInterval.checked;
@@ -2811,6 +2811,7 @@ function setTaskScheduleMode(mode) {
   elements.taskScheduleFields.hidden = mode === "none";
   elements.taskWeekdays.hidden = !weekly;
   elements.taskIntervalFields.hidden = !interval;
+  elements.taskScheduleTime.disabled = interval;
   elements.taskScheduleStartAt.disabled = mode !== "interval";
   elements.taskScheduleIntervalMinutes.disabled = mode !== "interval";
   if ((daily || weekly) && !elements.taskScheduleTime.value) {
@@ -2908,11 +2909,13 @@ function collectTaskSchedule() {
   }
   const time = elements.taskScheduleTime.value.trim();
   const timezone = elements.taskScheduleTimezone.value.trim();
-  if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
-    throw new Error("计划时间必须是 HH:mm 24 小时制。");
-  }
   if (!timezone) {
     throw new Error("定时计划必须填写 IANA 时区。");
+  }
+  if (mode === "daily" || mode === "weekly") {
+    if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+      throw new Error("计划时间必须是 HH:mm 24 小时制。");
+    }
   }
   if (mode === "daily") {
     return { kind: "daily", timezone, time };

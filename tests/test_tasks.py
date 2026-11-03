@@ -480,6 +480,28 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(cleared.schedule)
         self.assertIsNone(cleared.schedule_error)
 
+    async def test_interval_schedule_persists_and_switches(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="间隔任务", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "interval", "timezone": "Asia/Shanghai",
+                      "start_at": "2026-11-04T08:30", "interval_minutes": 60},
+        ))
+        self.assertEqual(task.schedule.kind, "interval")
+        self.assertEqual(task.schedule.interval_minutes, 60)
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            loaded = await PushTaskService(
+                ContentProfileService(reopened), reopened.store,
+            ).get_task(task.id)
+            self.assertEqual(loaded.schedule.start_at, "2026-11-04T08:30")
+            self.assertEqual(loaded.schedule.interval_minutes, 60)
+        finally:
+            await reopened.close()
+        self.sites = reopened
+
     async def test_weekly_schedule_persists_and_restarts(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="每周任务", profile_id=self.profile.id,

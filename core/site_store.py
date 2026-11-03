@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS push_tasks (
     schedule_timezone TEXT,
     schedule_time TEXT,
     schedule_weekdays TEXT,
+    schedule_start_at TEXT,
+    schedule_interval_minutes INTEGER,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -383,6 +385,8 @@ class StoredTask:
     schedule_timezone: str | None = None
     schedule_time: str | None = None
     schedule_weekdays: str | None = None
+    schedule_start_at: str | None = None
+    schedule_interval_minutes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,7 +487,7 @@ class SiteStore:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version in (0, 1, 2, 3, 4, 5, 6, 7):
+                if version in (0, 1, 2, 3, 4, 5, 6, 7, 8):
                     await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
@@ -537,7 +541,8 @@ class SiteStore:
                     task_columns = {row[1] for row in await cursor.fetchall()}
                 for column in (
                     "schedule_kind", "schedule_timezone", "schedule_time",
-                    "schedule_weekdays",
+                    "schedule_weekdays", "schedule_start_at",
+                    "schedule_interval_minutes",
                 ):
                     if column not in task_columns:
                         await connection.execute(
@@ -549,10 +554,11 @@ class SiteStore:
                     INSERT INTO push_tasks_v7 (
                         id, name, profile_id, output_format, enabled,
                         schedule_kind, schedule_timezone, schedule_time,
-                        schedule_weekdays, revision, created_at, updated_at
+                        schedule_weekdays, schedule_start_at,
+                        schedule_interval_minutes, revision, created_at, updated_at
                     )
                     SELECT id, name, profile_id, output_format, enabled,
-                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays,
+                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes,
                            revision, created_at, updated_at
                     FROM push_tasks
                     """,
@@ -587,12 +593,17 @@ class SiteStore:
                 task_columns = {row[1] for row in await cursor.fetchall()}
             for column in (
                 "schedule_kind", "schedule_timezone", "schedule_time",
-                "schedule_weekdays",
+                "schedule_weekdays", "schedule_start_at",
             ):
                 if column not in task_columns:
                     await connection.execute(
                         f"ALTER TABLE push_tasks ADD COLUMN {column} TEXT",
                     )
+            if "schedule_interval_minutes" not in task_columns:
+                await connection.execute(
+                    "ALTER TABLE push_tasks "
+                    "ADD COLUMN schedule_interval_minutes INTEGER",
+                )
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -635,7 +646,7 @@ class SiteStore:
                     INSERT INTO sites (
                         id, name, base_url, enabled, timeout_seconds,
                         bearer_token, revision, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
                         site_id,
@@ -821,7 +832,7 @@ class SiteStore:
                     """
                     INSERT INTO content_profiles (
                         id, name, site_id, revision, created_at, updated_at
-                    ) VALUES (?, ?, ?, 1, ?, ?)
+                   ) VALUES (?, ?, ?, 1, ?, ?)
                     """,
                     (profile_id, name, site_id, now, now),
                 )
@@ -1008,6 +1019,8 @@ class SiteStore:
         schedule_timezone: str | None = None,
         schedule_time: str | None = None,
         schedule_weekdays: str | None = None,
+        schedule_start_at: str | None = None,
+        schedule_interval_minutes: int | None = None,
     ) -> StoredTask:
         async with self._lock:
             connection = self._require_connection()
@@ -1019,13 +1032,15 @@ class SiteStore:
                     INSERT INTO push_tasks (
                         id, name, profile_id, output_format, enabled,
                         schedule_kind, schedule_timezone, schedule_time,
-                        schedule_weekdays, revision, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 1, ?, ?)
+                        schedule_weekdays, schedule_start_at,
+                        schedule_interval_minutes, revision, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
                         task_id, name, profile_id, output_format,
                         schedule_kind, schedule_timezone, schedule_time,
-                        schedule_weekdays, now, now,
+                        schedule_weekdays, schedule_start_at,
+                        schedule_interval_minutes, now, now,
                     ),
                 )
                 await self._insert_task_umos(connection, task_id, umos)
@@ -1049,6 +1064,8 @@ class SiteStore:
                 schedule_timezone=schedule_timezone,
                 schedule_time=schedule_time,
                 schedule_weekdays=schedule_weekdays,
+                schedule_start_at=schedule_start_at,
+                schedule_interval_minutes=schedule_interval_minutes,
             )
 
     async def list_tasks(self) -> list[StoredTask]:
@@ -1058,7 +1075,7 @@ class SiteStore:
                 async with connection.execute(
                     """
                     SELECT id, name, profile_id, output_format, enabled,
-                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays,
+                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes,
                            revision, created_at, updated_at
                     FROM push_tasks
                     ORDER BY created_at, id
@@ -1083,7 +1100,7 @@ class SiteStore:
                 row = await self._fetchone_unlocked(
                     """
                     SELECT id, name, profile_id, output_format, enabled,
-                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays,
+                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes,
                            revision, created_at, updated_at
                     FROM push_tasks
                     WHERE id = ?
@@ -1113,7 +1130,7 @@ class SiteStore:
                 row = await self._fetchone_unlocked(
                     """
                     SELECT id, name, profile_id, output_format, enabled,
-                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays,
+                           schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes,
                            revision, created_at, updated_at
                     FROM push_tasks
                     WHERE id = ?
@@ -1180,6 +1197,8 @@ class SiteStore:
         schedule_timezone: str | None = None,
         schedule_time: str | None = None,
         schedule_weekdays: str | None = None,
+        schedule_start_at: str | None = None,
+        schedule_interval_minutes: int | None = None,
     ) -> StoredTask:
         async with self._lock:
             connection = self._require_connection()
@@ -1207,14 +1226,17 @@ class SiteStore:
                         SET name = ?, profile_id = ?, output_format = ?,
                             enabled = 0, schedule_kind = ?,
                             schedule_timezone = ?, schedule_time = ?,
-                            schedule_weekdays = ?,
+                            schedule_weekdays = ?, schedule_start_at = ?,
+                            schedule_interval_minutes = ?,
                             revision = revision + 1, updated_at = ?
                         WHERE id = ? AND revision = ?
                         """,
                         (
                             name, profile_id, output_format,
                             schedule_kind, schedule_timezone, schedule_time,
-                            schedule_weekdays, now, task_id, expected_revision,
+                            schedule_weekdays, schedule_start_at,
+                            schedule_interval_minutes, now, task_id,
+                            expected_revision,
                         ),
                     )
                 if cursor.rowcount != 1:
@@ -1243,7 +1265,7 @@ class SiteStore:
             row = await self._fetchone_unlocked(
                 """
                 SELECT id, name, profile_id, output_format, enabled,
-                       schedule_kind, schedule_timezone, schedule_time, schedule_weekdays,
+                       schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes,
                        revision, created_at, updated_at
                 FROM push_tasks WHERE id = ?
                 """,
@@ -1340,7 +1362,7 @@ class SiteStore:
             row = await self._fetchone_unlocked(
                 """
                 SELECT id, name, profile_id, output_format, enabled,
-                       schedule_kind, schedule_timezone, schedule_time, schedule_weekdays,
+                       schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes,
                        revision, created_at, updated_at
                 FROM push_tasks WHERE id = ?
                 """,
@@ -1470,7 +1492,7 @@ class SiteStore:
                         task_id, scheduled_for, execution_id, status,
                         task_revision, profile_revision, site_revision,
                         error_code, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'claimed', ?, ?, ?, NULL, ?, ?)
+                   ) VALUES (?, ?, ?, 'claimed', ?, ?, ?, NULL, ?, ?)
                     ON CONFLICT (task_id, scheduled_for) DO NOTHING
                     """,
                     (
@@ -1672,7 +1694,7 @@ class SiteStore:
                             output_format, owner_token, content_hash,
                             content_status, failed_sections_json, status,
                             error_code, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
                                   NULL, 'preparing', NULL, ?, ?)
                         """,
                         (
@@ -1688,7 +1710,7 @@ class SiteStore:
                         """
                         INSERT INTO delivery_targets (
                             execution_id, position, umo, status, error_code
-                        ) VALUES (?, ?, ?, 'pending', NULL)
+                       ) VALUES (?, ?, ?, 'pending', NULL)
                         """,
                         (execution_id, position, umo),
                     )
@@ -1832,7 +1854,7 @@ class SiteStore:
                         """
                         INSERT INTO delivery_pages (
                             execution_id, position, page_index, status, error_code
-                        ) VALUES (?, ?, ?, 'pending', NULL)
+                       ) VALUES (?, ?, ?, 'pending', NULL)
                         """,
                         (execution_id, position, page_index),
                     )
@@ -1962,7 +1984,7 @@ class SiteStore:
                 INSERT INTO content_profile_items (
                     profile_id, position, content_type,
                     params_json, limit_count
-                ) VALUES (?, ?, ?, ?, ?)
+               ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     profile_id,
@@ -2333,6 +2355,11 @@ def _row_to_task(
         schedule_timezone=row["schedule_timezone"],
         schedule_time=row["schedule_time"],
         schedule_weekdays=row["schedule_weekdays"],
+        schedule_start_at=row["schedule_start_at"],
+        schedule_interval_minutes=(
+            int(row["schedule_interval_minutes"])
+            if row["schedule_interval_minutes"] is not None else None
+        ),
     )
 
 

@@ -1,4 +1,4 @@
-"""每日/每周计划的严格模型和纯时间计算。
+"""每日/每周/间隔计划的严格模型和纯时间计算。
 
 只计算理论上的下一次本地触发时间；不创建后台任务、不写运行状态。
 """
@@ -11,6 +11,7 @@ from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _TIME_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+_LOCAL_DATETIME_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$")
 _MAX_DAYS = 370
 
 
@@ -33,6 +34,25 @@ class ScheduleTimezoneUnavailableError(ScheduleError):
 
 class ScheduleCalculationError(ScheduleError):
     """无法在边界内计算下一次计划时间。"""
+
+
+@dataclass(frozen=True, slots=True)
+class IntervalSchedule:
+    timezone: str
+    start_at: str
+    interval_minutes: int
+
+    @property
+    def kind(self) -> str:
+        return "interval"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "interval",
+            "timezone": self.timezone,
+            "start_at": self.start_at,
+            "interval_minutes": self.interval_minutes,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,24 +91,30 @@ class DailySchedule:
         }
 
 
-def parse_schedule(value: object) -> DailySchedule | WeeklySchedule | None:
+def parse_schedule(
+    value: object,
+) -> DailySchedule | WeeklySchedule | IntervalSchedule | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ScheduleValidationError("schedule", "必须是对象或 null")
     kind = value.get("kind")
-    allowed = (
-        {"kind", "timezone", "time", "weekdays"}
-        if kind == "weekly" else {"kind", "timezone", "time"}
-    )
+    if kind == "weekly":
+        allowed = {"kind", "timezone", "time", "weekdays"}
+    elif kind == "interval":
+        allowed = {
+            "kind", "timezone", "start_at", "interval_minutes",
+        }
+    else:
+        allowed = {"kind", "timezone", "time"}
     unknown = set(value) - allowed
     if unknown:
         raise ScheduleValidationError(
             "schedule",
             "包含未知字段：" + "、".join(sorted(map(str, unknown))),
         )
-    if kind not in ("daily", "weekly"):
-        raise ScheduleValidationError("kind", "只支持 daily 或 weekly")
+    if kind not in ("daily", "weekly", "interval"):
+        raise ScheduleValidationError("kind", "只支持 daily、weekly 或 interval")
     timezone_name = value.get("timezone")
     if not isinstance(timezone_name, str) or not timezone_name.strip():
         raise ScheduleValidationError("timezone", "必须是非空 IANA 时区名称")
@@ -101,6 +127,37 @@ def parse_schedule(value: object) -> DailySchedule | WeeklySchedule | None:
         raise ScheduleValidationError("timezone", "必须是有效 IANA 时区") from None
     if getattr(zone, "key", None) is None:
         raise ScheduleValidationError("timezone", "必须是 IANA 时区名称")
+    if kind == "interval":
+        raw_start = value.get("start_at")
+        if not isinstance(raw_start, str):
+            raise ScheduleValidationError(
+                "start_at", "必须是 YYYY-MM-DDTHH:mm 本地时间",
+            )
+        match = _LOCAL_DATETIME_RE.fullmatch(raw_start)
+        if match is None:
+            raise ScheduleValidationError(
+                "start_at", "必须是 YYYY-MM-DDTHH:mm 本地时间",
+            )
+        try:
+            local_start = datetime(
+                int(match.group(1)), int(match.group(2)), int(match.group(3)),
+                int(match.group(4)), int(match.group(5)),
+            )
+        except ValueError:
+            raise ScheduleValidationError("start_at", "日期或时间无效") from None
+        if _candidate_for_local_day(
+            local_start.date(), local_start.time(), zone,
+        ) is None:
+            raise ScheduleValidationError("start_at", "起点落入 DST 缺口")
+        raw_interval = value.get("interval_minutes")
+        if type(raw_interval) is not int or raw_interval < 1 or raw_interval > 10080:
+            raise ScheduleValidationError(
+                "interval_minutes", "必须是 1～10080 的整数",
+            )
+        return IntervalSchedule(
+            timezone=timezone_name, start_at=raw_start,
+            interval_minutes=raw_interval,
+        )
     raw_time = value.get("time")
     if not isinstance(raw_time, str) or not _TIME_RE.fullmatch(raw_time):
         raise ScheduleValidationError("time", "必须是 HH:mm 24 小时制")
@@ -129,7 +186,7 @@ def parse_schedule(value: object) -> DailySchedule | WeeklySchedule | None:
 
 
 def next_scheduled_run(
-    schedule: DailySchedule | WeeklySchedule,
+    schedule: DailySchedule | WeeklySchedule | IntervalSchedule,
     now: datetime,
     *,
     zone: ZoneInfo | None = None,
@@ -141,6 +198,8 @@ def next_scheduled_run(
         zone = zone or ZoneInfo(schedule.timezone)
     except ZoneInfoNotFoundError:
         raise ScheduleTimezoneUnavailableError(schedule.timezone) from None
+    if isinstance(schedule, IntervalSchedule):
+        return _next_interval_run(schedule, now, zone)
     local_now = now.astimezone(zone)
     selected = (
         set(schedule.weekdays) if isinstance(schedule, WeeklySchedule) else None
@@ -185,6 +244,32 @@ def next_daily_run(
     raise ScheduleCalculationError("无法在边界内计算下一次每日计划时间")
 
 
+def _next_interval_run(
+    schedule: IntervalSchedule,
+    now: datetime,
+    zone: tzinfo,
+) -> datetime:
+    match = _LOCAL_DATETIME_RE.fullmatch(schedule.start_at)
+    if match is None:
+        raise ScheduleValidationError("start_at", "起点格式无效")
+    local_start = datetime(
+        int(match.group(1)), int(match.group(2)), int(match.group(3)),
+        int(match.group(4)), int(match.group(5)),
+    )
+    anchor = _candidate_for_local_day(
+        local_start.date(), local_start.time(), zone,
+    )
+    if anchor is None:
+        raise ScheduleValidationError("start_at", "起点落入 DST 缺口")
+    now_utc = now.astimezone(timezone.utc)
+    step = timedelta(minutes=schedule.interval_minutes)
+    if now_utc < anchor:
+        return anchor
+    delta = now_utc - anchor
+    steps = delta // step + 1
+    return anchor + steps * step
+
+
 def _candidate_for_local_day(
     day: date,
     local_time: time,
@@ -210,6 +295,7 @@ def _candidate_for_local_day(
 
 __all__ = [
     "DailySchedule",
+    "IntervalSchedule",
     "WeeklySchedule",
     "ScheduleCalculationError",
     "ScheduleError",

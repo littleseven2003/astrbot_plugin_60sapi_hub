@@ -214,3 +214,64 @@ class WeeklyScheduleTest(unittest.TestCase):
             next_scheduled_run(fold, dt("2026-11-01T05:30:00+00:00")),
             dt("2026-11-08T06:30:00+00:00"),
         )
+
+
+class IntervalScheduleTest(unittest.TestCase):
+    def test_interval_parse_and_reject_unknown(self) -> None:
+        from core.schedule import IntervalSchedule
+        schedule = parse_schedule({
+            "kind": "interval", "timezone": "Asia/Shanghai",
+            "start_at": "2026-11-04T08:30", "interval_minutes": 60,
+        })
+        self.assertEqual(schedule, IntervalSchedule(
+            "Asia/Shanghai", "2026-11-04T08:30", 60,
+        ))
+        for bad in (
+            {"interval_minutes": 0}, {"interval_minutes": 10081},
+            {"interval_minutes": True}, {"interval_minutes": "60"},
+            {"start_at": "2026-11-04T08:30:00"},
+            {"start_at": "2026-11-04T08:30+08:00"},
+            {"start_at": "2026-11-04 08:30"},
+            {"unknown": 1},
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ScheduleValidationError):
+                    parse_schedule({
+                        "kind": "interval", "timezone": "UTC",
+                        "start_at": "2026-11-04T08:30",
+                        "interval_minutes": 60, **bad,
+                    })
+        with self.assertRaises(ScheduleValidationError):
+            parse_schedule({
+                "kind": "daily", "timezone": "UTC", "time": "08:30",
+                "interval_minutes": 60,
+            })
+
+    def test_interval_future_past_exact_and_no_drift(self) -> None:
+        from core.schedule import next_scheduled_run
+        schedule = parse_schedule({
+            "kind": "interval", "timezone": "Asia/Shanghai",
+            "start_at": "2026-11-04T08:30", "interval_minutes": 60,
+        })
+        anchor = dt("2026-11-04T00:30:00+00:00")
+        self.assertEqual(next_scheduled_run(schedule, dt("2026-11-03T00:00:00+00:00")), anchor)
+        self.assertEqual(next_scheduled_run(schedule, anchor), dt("2026-11-04T01:30:00+00:00"))
+        self.assertEqual(next_scheduled_run(schedule, dt("2026-11-04T00:31:00+00:00")), dt("2026-11-04T01:30:00+00:00"))
+        self.assertEqual(next_scheduled_run(schedule, dt("2026-11-04T03:30:00+00:00")), dt("2026-11-04T04:30:00+00:00"))
+        self.assertEqual(next_scheduled_run(schedule, dt("2027-11-04T03:30:00+00:00")), dt("2027-11-04T04:30:00+00:00"))
+
+    def test_interval_dst_gap_and_fixed_elapsed_minutes(self) -> None:
+        from core.schedule import next_scheduled_run
+        with self.assertRaises(ScheduleValidationError):
+            parse_schedule({
+                "kind": "interval", "timezone": "America/New_York",
+                "start_at": "2026-03-08T02:30", "interval_minutes": 60,
+            })
+        schedule = parse_schedule({
+            "kind": "interval", "timezone": "America/New_York",
+            "start_at": "2026-03-07T01:30", "interval_minutes": 60,
+        })
+        self.assertEqual(
+            next_scheduled_run(schedule, dt("2026-03-08T06:30:00+00:00")),
+            dt("2026-03-08T07:30:00+00:00"),
+        )

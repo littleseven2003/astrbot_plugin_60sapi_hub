@@ -1,6 +1,6 @@
-"""每日任务调度：显式启停、到期认领和单循环执行。
+"""任务调度：显式启停、到期认领和单循环执行。
 
-只负责每日计划；不实现每周、间隔、Cron、重试或页面启停按钮。
+支持每日、每周、固定间隔和五字段 Cron，复用投递服务；不自动重试或离线补发。
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from .schedule import (
     DailySchedule,
     ScheduleCalculationError,
     ScheduleTimezoneUnavailableError,
+    ScheduleValidationError,
     next_scheduled_run,
 )
 from .site_store import (
@@ -425,6 +426,8 @@ class SchedulerService:
         except ScheduleTimezoneUnavailableError as exc:
             raise SchedulerValidationError("schedule", str(exc)) from exc
         except ScheduleCalculationError as exc:
+            raise SchedulerValidationError("schedule", str(exc)) from exc
+        except ScheduleValidationError as exc:
             raise SchedulerValidationError("schedule", str(exc)) from exc
 
     def _now(self) -> datetime:

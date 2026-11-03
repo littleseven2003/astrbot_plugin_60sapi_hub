@@ -483,6 +483,72 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(disabled.body["data"]["enabled"])
         self.assertIsNone(disabled.body["data"]["next_run_at"])
 
+    async def test_cron_no_candidate_rejects_enable_without_state(self):
+        task = await self.tasks.create_task(TaskCreate(
+            name="Cron无候选", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "cron", "timezone": "UTC",
+                      "expression": "0 0 31 2 *"},
+        ))
+        with self.assertRaises(SchedulerValidationError):
+            await self.scheduler.enable_task(task.id, 1)
+        self.assertIsNone(await self.sites.store.get_schedule_state(task.id))
+
+    async def test_next_run_validation_and_unexpected_errors(self):
+        from unittest.mock import patch
+        schedule = self.task_schedule = None
+        from core.schedule import CronSchedule, ScheduleValidationError
+        cron = CronSchedule("UTC", "0 0 * * *")
+        with patch("core.scheduler.next_scheduled_run",
+                   side_effect=ScheduleValidationError("expression", "bad")):
+            with self.assertRaises(SchedulerValidationError):
+                self.scheduler._next_run(cron, datetime(2026, 1, 1, tzinfo=timezone.utc))
+        with patch("core.scheduler.next_scheduled_run", side_effect=TypeError("boom")):
+            with self.assertRaises(TypeError):
+                self.scheduler._next_run(cron, datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    async def test_cron_late_boundary_restart_rollback_and_config_edit(self):
+        task = await self.tasks.create_task(TaskCreate(
+            name="Cron恢复边界", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "cron", "timezone": "UTC",
+                      "expression": "0 1 * * *"},
+        ))
+        await self.scheduler.enable_task(task.id, 1)
+        self.clock_now = datetime(2026, 1, 1, 1, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 0)
+        self.clock_now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 0)
+        second = SchedulerService(
+            tasks=self.tasks, store=self.sites.store, delivery=self.delivery,
+            clock=lambda: self.clock_now,
+        )
+        await self.scheduler.close()
+        await second.start()
+        self.clock_now = datetime(2026, 1, 1, 1, 2, tzinfo=timezone.utc)
+        self.assertEqual(await second.check_once(), 0)
+        await second.close()
+        await self.tasks.update_task(task.id, TaskUpdate(
+            name="Cron改配置", profile_id=self.profile.id,
+            output_format="text", umos=list(task.umos),
+            expected_revision=(await self.tasks.get_task(task.id)).revision,
+        ))
+        self.assertFalse((await self.tasks.get_task(task.id)).enabled)
+        self.assertEqual(self.sender.calls, [])
+
+    async def test_cron_due_once_and_repeat_scan(self):
+        task = await self.tasks.create_task(TaskCreate(
+            name="Cron调度", profile_id=self.profile.id, output_format="text",
+            umos=["aiocqhttp:GroupMessage:g:1"],
+            schedule={"kind": "cron", "timezone": "UTC",
+                      "expression": "0 1 * * *"},
+        ))
+        await self.scheduler.enable_task(task.id, 1)
+        self.clock_now = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
+        self.assertEqual(await self.scheduler.check_once(), 1)
+        self.assertEqual(await self.scheduler.check_once(), 0)
+        self.assertEqual(len(self.sender.calls), 1)
+
     async def test_interval_late_restart_and_config_change(self):
         task = await self.tasks.create_task(TaskCreate(
             name="间隔边界", profile_id=self.profile.id, output_format="text",

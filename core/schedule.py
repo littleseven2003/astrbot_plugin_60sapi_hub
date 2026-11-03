@@ -1,4 +1,4 @@
-"""每日/每周/间隔计划的严格模型和纯时间计算。
+"""每日/每周/间隔/Cron 计划的严格模型和纯时间计算。
 
 只计算理论上的下一次本地触发时间；不创建后台任务、不写运行状态。
 """
@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _TIME_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
 _LOCAL_DATETIME_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$")
+_CRON_FIELDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 _MAX_DAYS = 370
 
 
@@ -34,6 +35,23 @@ class ScheduleTimezoneUnavailableError(ScheduleError):
 
 class ScheduleCalculationError(ScheduleError):
     """无法在边界内计算下一次计划时间。"""
+
+
+@dataclass(frozen=True, slots=True)
+class CronSchedule:
+    timezone: str
+    expression: str
+
+    @property
+    def kind(self) -> str:
+        return "cron"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "kind": "cron",
+            "timezone": self.timezone,
+            "expression": self.expression,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +111,7 @@ class DailySchedule:
 
 def parse_schedule(
     value: object,
-) -> DailySchedule | WeeklySchedule | IntervalSchedule | None:
+) -> DailySchedule | WeeklySchedule | IntervalSchedule | CronSchedule | None:
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -105,6 +123,8 @@ def parse_schedule(
         allowed = {
             "kind", "timezone", "start_at", "interval_minutes",
         }
+    elif kind == "cron":
+        allowed = {"kind", "timezone", "expression"}
     else:
         allowed = {"kind", "timezone", "time"}
     unknown = set(value) - allowed
@@ -113,8 +133,8 @@ def parse_schedule(
             "schedule",
             "包含未知字段：" + "、".join(sorted(map(str, unknown))),
         )
-    if kind not in ("daily", "weekly", "interval"):
-        raise ScheduleValidationError("kind", "只支持 daily、weekly 或 interval")
+    if kind not in ("daily", "weekly", "interval", "cron"):
+        raise ScheduleValidationError("kind", "只支持 daily、weekly、interval 或 cron")
     timezone_name = value.get("timezone")
     if not isinstance(timezone_name, str) or not timezone_name.strip():
         raise ScheduleValidationError("timezone", "必须是非空 IANA 时区名称")
@@ -127,6 +147,12 @@ def parse_schedule(
         raise ScheduleValidationError("timezone", "必须是有效 IANA 时区") from None
     if getattr(zone, "key", None) is None:
         raise ScheduleValidationError("timezone", "必须是 IANA 时区名称")
+    if kind == "cron":
+        raw_expression = value.get("expression")
+        if not isinstance(raw_expression, str):
+            raise ScheduleValidationError("expression", "必须是字符串")
+        expression = _normalize_cron(raw_expression)
+        return CronSchedule(timezone=timezone_name, expression=expression)
     if kind == "interval":
         raw_start = value.get("start_at")
         if not isinstance(raw_start, str):
@@ -186,7 +212,7 @@ def parse_schedule(
 
 
 def next_scheduled_run(
-    schedule: DailySchedule | WeeklySchedule | IntervalSchedule,
+    schedule: DailySchedule | WeeklySchedule | IntervalSchedule | CronSchedule,
     now: datetime,
     *,
     zone: ZoneInfo | None = None,
@@ -200,6 +226,8 @@ def next_scheduled_run(
         raise ScheduleTimezoneUnavailableError(schedule.timezone) from None
     if isinstance(schedule, IntervalSchedule):
         return _next_interval_run(schedule, now, zone)
+    if isinstance(schedule, CronSchedule):
+        return _next_cron_run(schedule, now, zone)
     local_now = now.astimezone(zone)
     selected = (
         set(schedule.weekdays) if isinstance(schedule, WeeklySchedule) else None
@@ -242,6 +270,113 @@ def next_daily_run(
         if candidate > now.astimezone(timezone.utc):
             return candidate
     raise ScheduleCalculationError("无法在边界内计算下一次每日计划时间")
+
+
+def _normalize_cron(value: str) -> str:
+    if len(value) > 128:
+        raise ScheduleValidationError("expression", "长度不能超过 128 字符")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ScheduleValidationError("expression", "不能包含控制字符")
+    fields = value.split()
+    if len(fields) != 5:
+        raise ScheduleValidationError("expression", "必须是五字段 Cron 表达式")
+    normalized: list[str] = []
+    for raw, (minimum, maximum) in zip(fields, _CRON_FIELDS):
+        normalized.append(_validate_cron_field(raw, minimum, maximum))
+    return " ".join(normalized)
+
+
+def _ascii_digits(value: str) -> bool:
+    return bool(value) and all("0" <= ch <= "9" for ch in value)
+
+
+def _validate_cron_field(value: str, minimum: int, maximum: int) -> str:
+    if not value:
+        raise ScheduleValidationError("expression", "字段不能为空")
+    if any(ch in value for ch in "?LW#HR"):
+        raise ScheduleValidationError("expression", "包含不支持的扩展语法")
+    for part in value.split(","):
+        if not part:
+            raise ScheduleValidationError("expression", "不允许空列表项")
+        if part == "*":
+            continue
+        step = None
+        base = part
+        if "/" in part:
+            pieces = part.split("/")
+            if (
+                len(pieces) != 2 or not pieces[0]
+                or not _ascii_digits(pieces[1])
+            ):
+                raise ScheduleValidationError("expression", "步长必须是正整数")
+            base, step_text = pieces
+            step = int(step_text)
+            if step <= 0 or step > maximum - minimum + 1:
+                raise ScheduleValidationError("expression", "步长超出字段范围")
+        if base == "*":
+            if step is None:
+                raise ScheduleValidationError("expression", "无效步长字段")
+            continue
+        if step is not None and "-" not in base:
+            raise ScheduleValidationError("expression", "步长只支持 */n 或 a-b/n")
+        if "-" in base:
+            bounds = base.split("-")
+            if len(bounds) != 2 or not all(_ascii_digits(piece) for piece in bounds):
+                raise ScheduleValidationError("expression", "范围必须是递增整数")
+            start, end = map(int, bounds)
+            if start >= end:
+                raise ScheduleValidationError("expression", "范围必须递增且端点不同")
+            if start < minimum or end > maximum:
+                raise ScheduleValidationError("expression", "数值超出字段范围")
+        else:
+            if not _ascii_digits(base):
+                raise ScheduleValidationError("expression", "只支持整数、范围、列表和步长")
+            start = int(base)
+            if start < minimum or start > maximum:
+                raise ScheduleValidationError("expression", "数值超出字段范围")
+        if step is not None and step > maximum - minimum + 1:
+            raise ScheduleValidationError("expression", "步长超出字段范围")
+    return value
+
+
+def _next_cron_run(
+    schedule: CronSchedule,
+    now: datetime,
+    zone: tzinfo,
+) -> datetime:
+    try:
+        from croniter import croniter
+    except ImportError:
+        raise ScheduleCalculationError("croniter 依赖不可用") from None
+    local_now = now.astimezone(zone).replace(tzinfo=None)
+    limit = now.astimezone(timezone.utc) + timedelta(days=366 * 8)
+    base = local_now - timedelta(microseconds=1)
+    try:
+        iterator = croniter(
+            schedule.expression, base, day_or=True,
+            max_years_between_matches=8,
+        )
+        for _ in range(100000):
+            candidate_local = iterator.get_next(datetime)
+            candidate = _candidate_for_local_day(
+                candidate_local.date(), candidate_local.time(), zone,
+            )
+            if candidate is None:
+                continue
+            if candidate > limit:
+                break
+            if candidate > now.astimezone(timezone.utc):
+                return candidate
+            if candidate_local > limit.astimezone(zone).replace(tzinfo=None):
+                break
+    except Exception as exc:
+        from croniter import CroniterBadDateError, CroniterError
+        if isinstance(exc, CroniterBadDateError):
+            raise ScheduleCalculationError("8 年内没有可用的 Cron 候选") from None
+        if isinstance(exc, CroniterError):
+            raise ScheduleValidationError("expression", "无法解析 Cron 表达式") from None
+        raise
+    raise ScheduleCalculationError("8 年内没有可用的 Cron 候选")
 
 
 def _next_interval_run(
@@ -294,6 +429,7 @@ def _candidate_for_local_day(
 
 
 __all__ = [
+    "CronSchedule",
     "DailySchedule",
     "IntervalSchedule",
     "WeeklySchedule",

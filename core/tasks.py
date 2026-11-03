@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from .schedule import (
     DailySchedule,
+    CronSchedule,
     IntervalSchedule,
     WeeklySchedule,
     ScheduleTimezoneUnavailableError,
@@ -105,7 +106,7 @@ class PushTask:
     revision: int
     created_at: str
     updated_at: str
-    schedule: DailySchedule | WeeklySchedule | IntervalSchedule | None = None
+    schedule: DailySchedule | WeeklySchedule | IntervalSchedule | CronSchedule | None = None
     schedule_raw: dict[str, object] | None = None
     schedule_error: str | None = None
 
@@ -224,6 +225,10 @@ class PushTaskService:
                     schedule.interval_minutes
                     if isinstance(schedule, IntervalSchedule) else None
                 ),
+                schedule_expression=(
+                    schedule.expression
+                    if isinstance(schedule, CronSchedule) else None
+                ),
             )
         except Exception as exc:
             raise TaskStorageError("保存推送任务失败。") from exc
@@ -269,6 +274,10 @@ class PushTaskService:
                 schedule_interval_minutes=(
                     schedule.interval_minutes
                     if isinstance(schedule, IntervalSchedule) else None
+                ),
+                schedule_expression=(
+                    schedule.expression
+                    if isinstance(schedule, CronSchedule) else None
                 ),
             )
         except TaskRecordNotFoundError as exc:
@@ -441,6 +450,7 @@ def _to_task(stored: StoredTask) -> PushTask:
         stored.schedule_weekdays,
         stored.schedule_start_at,
         stored.schedule_interval_minutes,
+        stored.schedule_expression,
     )):
         raw = {
             "kind": stored.schedule_kind,
@@ -454,6 +464,8 @@ def _to_task(stored: StoredTask) -> PushTask:
             raw["start_at"] = stored.schedule_start_at
         if stored.schedule_interval_minutes is not None:
             raw["interval_minutes"] = stored.schedule_interval_minutes
+        if stored.schedule_expression:
+            raw["expression"] = stored.schedule_expression
         try:
             if stored.schedule_weekdays:
                 parts = stored.schedule_weekdays.split(",")

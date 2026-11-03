@@ -206,7 +206,7 @@
 {"kind":"daily","timezone":"Asia/Shanghai","time":"08:30"}
 ```
 
-- 支持 `kind=daily`、`kind=weekly` 和 `kind=interval`；间隔计划使用 IANA 时区本地 `start_at`（`YYYY-MM-DDTHH:mm`）和 1～10080 的 `interval_minutes`，从 UTC 锚点按固定经过分钟计算。`weekdays` 为 1～7 的 ISO 星期（1=周一，7=周日），非空、不重复并规范排序；`timezone` 必须是可用 IANA 时区，`time` 严格为 24 小时制 `HH:mm`。
+- 支持 `kind=daily`、`kind=weekly`、`kind=interval` 和 `kind=cron`；Cron 仅支持五字段分钟级表达式，星期 0/7 均为周日，日与星期同时受限时取并集。间隔计划使用 IANA 时区本地 `start_at`（`YYYY-MM-DDTHH:mm`）和 1～10080 的 `interval_minutes`，从 UTC 锚点按固定经过分钟计算。`weekdays` 为 1～7 的 ISO 星期（1=周一，7=周日），非空、不重复并规范排序；`timezone` 必须是可用 IANA 时区，`time` 严格为 24 小时制 `HH:mm`。
 - 未知类型、非法字段、非法时区、非法时间或错误类型返回 400，不猜测或改用 UTC/系统时区。
 - 新建省略 `schedule` 为 `null`；编辑省略保留原计划；显式 `null` 清除计划。
 - 计划变更与任务字段在同一事务中提交，成功后任务 revision 只增加一次。
@@ -270,7 +270,7 @@
 - text 使用 `Plain`；Markdown 作为普通文本源码发送，不宣称原生富文本；image 只接受有效 PNG bytes（签名、Pillow 校验、8 MiB 上限），用 `Image.fromBytes`/base64 内存传递，不创建公开 URL、不读文件路径、不请求网络。
 - 未找到实例、非 aiocqhttp、非法 UMO/目标/载荷在外部调用前返回 FAILED；已进入 `Context.send_message` 后的异常或无法确定结果返回 UNKNOWN；`CancelledError` 继续传播；不自动重试。
 - 成功表示真实宿主路由方法正常完成并调用了支持的 aiocqhttp 发送路径，不保证平台已读、绝对送达或平台 API 回执成功。异常正文/平台响应/凭据不落库、不打印 UMO/正文/PNG。
-- 插件入口已装配该发送器并提供 Dashboard 鉴权的手动测试接口；启动本身不发送。聊天命令使用事件会话白名单单独授权；页面启停按钮尚未实现；受鉴权启停和调度接口不对匿名调用者开放。
+- 插件入口已装配该发送器并提供 Dashboard 鉴权的手动测试接口；启动本身不发送。聊天命令使用事件会话白名单单独授权；页面已提供启停；受鉴权启停和调度接口不对匿名调用者开放。
 - 适配层验证使用真实 AstrBot v4.29.1 源码、真实 Context/aiocqhttp 路由/消息转换，最终机器人网络边界替换为隔离假机器人；未连接真实平台。
 
 ## 投递核心与后台集成
@@ -303,8 +303,8 @@
 
 ## 数据与升级
 
-站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 5：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库直接创建八张表；旧 v1/v2/v3/v4 数据库在同一事务中补齐组合/任务/投递表并提升 `user_version=5`，失败回滚，保留原站点、凭据、组合、栏目顺序、条数和 revision。
+站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 10，包含 11 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库创建当前结构；受支持的旧 v1～v9 数据库通过同一事务补齐或迁移至 `user_version=10`，失败回滚，保留旧站点、凭据、组合、任务、白名单及历史。
 
 任务、投递记录与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；删除组合在事务中检查任务引用并由外键兜底；删除任务不级联删除组合。写入失败回滚，取消后下一次正常操作不受影响。
 
-运行依赖 `aiosqlite`、`httpx` 和 `Pillow` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。内容快照仍只在进程内缓存；任务配置和 UMO 持久化，执行/发送状态尚未实现。
+运行依赖 `aiosqlite`、`httpx`、`Pillow` 和 `croniter>=6.2.4,<7` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。内容快照仍只在进程内缓存；任务配置、UMO、执行/发送状态和调度历史均已持久化。

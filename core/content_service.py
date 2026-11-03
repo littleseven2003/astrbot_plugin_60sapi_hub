@@ -44,7 +44,7 @@ class ContentService:
         clock = clock or (lambda: datetime.now(timezone.utc))
         self._clock = clock
         self._cache = cache or ContentCache(wall_clock=clock)
-        self._test_slots = asyncio.Semaphore(2)
+        self._test_inflight = 0
         self._test_tasks: set[asyncio.Task[object]] = set()
         self._test_generation = 0
         self._test_admitted = False
@@ -92,14 +92,16 @@ class ContentService:
         return self._cache.ttl_seconds
 
     async def open(self) -> None:
+        self._test_admitted = False
         self._test_generation += 1
-        self._test_admitted = True
         await self._cache.open()
         try:
             await self._client.open()
         except Exception:
             await self._cache.close()
+            self._test_generation += 1
             raise
+        self._test_admitted = True
 
     async def close(self) -> None:
         self._test_admitted = False
@@ -131,14 +133,10 @@ class ContentService:
         if not self._test_admitted:
             from .sites import SiteTestUnavailableError
             raise SiteTestUnavailableError()
-        if self._test_slots.locked() and self._test_slots._value == 0:
+        if self._test_inflight >= 2:
             from .sites import SiteTestBusyError
             raise SiteTestBusyError()
-        try:
-            await asyncio.wait_for(self._test_slots.acquire(), timeout=0.001)
-        except asyncio.TimeoutError:
-            from .sites import SiteTestBusyError
-            raise SiteTestBusyError() from None
+        self._test_inflight += 1
         task = asyncio.current_task()
         generation = self._test_generation
         if task is not None:
@@ -188,7 +186,7 @@ class ContentService:
                 raise SiteTestUnavailableError()
             return result
         finally:
-            self._test_slots.release()
+            self._test_inflight -= 1
             if task is not None:
                 self._test_tasks.discard(task)
 

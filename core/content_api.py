@@ -91,14 +91,18 @@ class ContentApi:
             return _error(502, "上游发生不允许的重定向。", "test_redirect")
         except NewsTooLargeError:
             return _error(502, "上游响应过大。", "test_too_large")
-        except (NewsHTTPStatusError, NewsTransportError):
-            return _error(502, "连接上游失败。", "test_connection_error")
+        except NewsTransportError:
+            return _error(502, "网络传输失败。", "test_network_error")
+        except NewsHTTPStatusError:
+            return _error(502, "上游返回了失败状态。", "test_http_status")
         except NewsInvalidJSONError:
             return _error(502, "上游返回非 JSON。", "test_invalid_json")
         except NewsClientClosedError:
             return _error(503, "内容客户端当前不可用。", "test_unavailable")
-        except (NewsStructureError, NewsBusinessError):
-            return _error(502, "上游数据结构或业务状态无效。", "test_upstream_error")
+        except NewsBusinessError:
+            return _error(502, "上游业务状态无效。", "test_business_error")
+        except NewsStructureError:
+            return _error(502, "上游内容结构无效。", "test_structure_error")
         except SiteStorageError:
             return _error(503, "站点存储不可用。", "storage_unavailable")
         except Exception:

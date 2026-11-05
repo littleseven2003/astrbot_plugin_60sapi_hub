@@ -370,3 +370,49 @@ mock 测试通过不等于真实投递成功。检查报告区分通过、失败
 - 上述额外探针及手机扩展检查尚未全部固化为仓库自动回归。仓库当前的调度器重建测试不能视为冷重开数据库的替代，固定半小时偏移测试也不能替代半小时 DST 切换。
 - 每日、每周、间隔、调度启停/记录、手动投递查询五套既有浏览器回归通过；页面及 Cron 浏览器脚本语法、Git 差异检查通过。测试使用临时数据库、模拟上游、假发送器及请求夹具，没有真实账号发送。
 - 未验证：真实平台定时发送、其他完整宿主环境、Cron 扩展语法和全部生产故障组合。M4、M5 整体及 MVP 尚未完成，不因四种计划完成隔离验收而发布正式版。
+
+
+## R01 站点测试连接
+
+- 已增加五类空内容连接测试，验证停用站点可测试且 revision/enabled 不变。
+- 页面已增加测试按钮和结果对话框；真实隔离 Dashboard 390px 已完成选择接口、测试、绿色成功结果、切换类型清空、关闭重开和 Escape 关闭操作。
+- 真实 bridge 409 浏览器验证通过：页面显示“站点配置已变化”警告样式。页面错误按服务端固定安全消息精确映射，不解析状态码文本。
+- 仓库内 `tests/browser/site_connection_ui.js` 已实际运行通过：桌面 1400px 和新建 390px 页面、五类接口成功、接口切换、关闭重开、请求完成按钮恢复、iframe 内 Escape、409 警告、无横向溢出。390px 下断言宿主 viewport=390、body=390、插件 iframe>=380。
+- 脚本使用本地 HTTP 上游与应用内请求门闩，不依赖公开上游。
+- 429、503、A/B 跨站点并发旧响应、编辑/删除/刷新旧结果、插件停用后恢复已作为仓库内浏览器场景实跑通过，见下节实测结果；请求中的上游失败重试仍只由后端覆盖，未单独列浏览器断言。
+- 后端专项已完成：`tests/test_site_connection_boundary.py` 共 11 项（错误分类与凭据不回显、并发槽位、生命周期、缓存/配置/运行记录不变、不发送不渲染），明细见下节实测结果；真实平台发送仍属未验证项。
+
+### 实测结果
+
+2026-11-05 在隔离宿主 AstrBot v4.29.1、插件 `v0.1.0-dev.1`、Chromium 无头环境下实测：
+
+- 仓库全量测试：`python -m unittest discover -s tests -q` → `Ran 438 tests`、`OK (skipped=22)`，Python 3.13.13，环境补装 croniter 6.2.4。22 项跳过不计为通过。
+- 独立复核：完整 AstrBot 源码隔离环境下，Python 3.12.13 和 3.13.13 各运行 438 项，均通过且无跳过；Python 3.13 完整套件日志另出现未关闭 SQLite 连接的 ResourceWarning，来源尚未定位。
+- 既有 `task_schedule_ui.js`、`scheduler_ui.js`、`weekly_schedule_ui.js`、`interval_schedule_ui.js`、`cron_schedule_ui.js` 和 `manual_delivery_query.js` 在隔离宿主依次通过；手动投递使用测试替身，不连接真实消息平台。
+- 后端专项：`tests/test_site_connection_boundary.py` 共 11 项，覆盖错误分类与凭据不回显、并发槽位在取消/失败后恢复、旧请求与在途删除/关闭的生命周期、缓存内容与有效期不变、配置/任务/运行记录不变、不发送且不渲染图片。
+- 浏览器：`tests/browser/site_connection_ui.js` 桌面 1400px 与 390px 两条流程、7 个场景（`refresh-invalidation`、`429-busy desktop`、`a-b-isolation`、`edit-invalidation`、`delete-invalidation`、`429-busy 390px`、`plugin-503-recovery`）连续 3 次完整通过，单轮约 21 秒，`upstreamCalls=24`。
+- 409 与 503 的消息可经真实 bridge 透传：409 场景断言结果区落到 `warning` 样式（消息命中警告映射），503 场景断言到确切文案“插件当前未启用”，重新启用后恢复成功。
+- 429 的宿主限制：宿主 API 返回正确的 429 响应体与中文消息，但 AstrBot 4.29.1 的 plugin-view bridge 在异常路径丢弃服务端消息（`PluginViewPage` 的 catch 兜底为 `Plugin bridge request failed.`），页面实际显示“测试失败，请手动重试；未修改站点配置。”（`danger`）。插桩探针实测 `BRANCH: swallowed`、`TEXT: "测试失败，请手动重试；未修改站点配置。"`、`TONE: danger`。脚本对两种结果都有断言：文案透传时必须为繁忙警告态，被宿主吞掉时必须为通用失败态。该限制属于宿主行为，不记为插件错误分类通过，也不代表并发限制未生效。
+- 未验证：真实消息平台与真实账号发送、公开上游真实实例的浏览器全链路、Chromium 以外的浏览器、AstrBot 4.29.1 / Python 3.12.13、3.13.13 以外的环境。
+
+### 运行方式与环境要求
+
+脚本连接真实隔离宿主，需要具备本插件的 AstrBot v4.29.1 根目录、Dashboard 密码和本地 Chromium；不连接公开上游，也不发送消息：
+
+```bash
+ASTRBOT_URL=<isolated-host-url> \
+ASTRBOT_PASSWORD=<test-dashboard-password> \
+ASTRBOT_PLUGIN=astrbot_plugin_60sapi_hub \
+CHROME_PATH=<chromium> \
+NODE_PATH=<playwright-core-node-modules> \
+SITE_TEST_SCREENSHOT=<repo-external-screenshot-path> \
+node tests/browser/site_connection_ui.js
+```
+
+- 环境变量：`ASTRBOT_URL`、`ASTRBOT_PASSWORD`、`CHROME_PATH` 必填，缺少任一项时脚本打印缺失项并以退出码 2 中止；`ASTRBOT_PLUGIN` 默认 `astrbot_plugin_60sapi_hub`，需与视图路由一致才能打开 iframe；宿主首次登录强制改密时用 `ASTRBOT_NEW_PASSWORD` 提供新密码。
+- Node 与 Playwright：Node 需支持全局 `fetch`（Node 18 及以上）；`playwright-core` 不随插件分发，用 `NODE_PATH` 指向已有安装目录，浏览器由 `CHROME_PATH` 指定，不需要 `npx playwright install`。未安装或未指向 `playwright-core` 时脚本在 `require` 阶段即以 `MODULE_NOT_FOUND` 退出（退出码 1），不会走到环境变量检查。脚本以 `--no-sandbox` 无头启动 Chromium。
+- 隔离要求：使用临时数据库和隔离宿主，登录用户名固定为 `astrbot`；脚本自建的临时站点只指向 `127.0.0.1` 上的内置 HTTP 上游，不写真实 UMO、不执行真实投递。截图、日志和临时文件放在仓库外，不提交。
+- 等待方式：只用 `waitForFunction`、`waitForSelector`、`waitForURL` 等 DOM 与 URL 状态判断，不用固定 sleep；已有等待的显式超时为 10～15 秒，超时按失败处理。内置上游故意让知乎延迟 1.2 秒、抖音延迟 2 秒，用于覆盖“测试中”按钮状态，属于被测场景而不是测试等待。
+- 总时长：整轮用外层超时约束（例如 shell 的 `timeout 600 node tests/browser/site_connection_ui.js`），避免宿主或网络异常时挂住；中断或超时记为未通过。
+- 资源清理：`finally` 中按最新 revision 删除本轮创建的临时站点，再关闭浏览器和内置上游，断言失败也会执行。被强制中断（Ctrl-C、CI 取消）时需手动清理残留临时站点，或改用临时数据库重跑后再开始下一轮。
+- 失败判据：断言失败以非零退出码结束并打印错误；`node --check` 只验证语法，不能当作浏览器通过。

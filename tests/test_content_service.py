@@ -11,7 +11,7 @@ import httpx
 
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
-from core.sites import SiteCreate, SiteService
+from core.sites import SiteCreate, SiteDisabledError, SiteService
 
 
 class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -178,3 +178,171 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["/proxy/v2/zhihu"], "Bearer zhihu-token")
         self.assertEqual(seen["/proxy/v2/douyin"], "Bearer douyin-token")
         self.assertEqual(seen["/proxy/v2/toutiao"], "Bearer toutiao-token")
+
+    async def test_site_connection_probe_five_types_without_writes(self) -> None:
+        site = await self.sites.create_site(SiteCreate(
+            name="测试连接站点", base_url="http://example.test/proxy",
+            enabled=False, timeout_seconds=5, bearer_token="secret-token",
+        ))
+        seen = []
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.path)
+            path = request.url.path
+            if path.endswith("/v2/60s"):
+                body = {"code": 200, "message": "ok", "data": {"news": []}}
+            elif path.endswith("/v2/bili"):
+                body = {"code": 200, "message": "ok", "data": []}
+            elif path.endswith("/v2/zhihu"):
+                body = {"code": 200, "message": "ok", "data": []}
+            elif path.endswith("/v2/douyin"):
+                body = {"code": 200, "message": "ok", "data": []}
+            else:
+                body = {"code": 200, "message": "ok", "data": []}
+            return httpx.Response(200, json=body)
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        service = ContentService(self.sites, client=client, clock=self.clock)
+        await service.open()
+        async def forbidden_cache(*args, **kwargs):
+            raise AssertionError("connection test must not touch cache")
+        service._cache.get = forbidden_cache
+        try:
+            with self.assertRaises(SiteDisabledError):
+                await service.preview_cached("bilibili_hot", site.id)
+            for content_type in (
+                "daily_news", "bilibili_hot", "zhihu_hot",
+                "douyin_hot", "toutiao_hot",
+            ):
+                result = await service.test_connection(
+                    site.id, content_type, site.revision,
+                )
+                self.assertEqual(result["result"], "empty")
+                self.assertEqual(result["revision"], site.revision)
+            self.assertEqual(len(seen), 5)
+            current = await self.sites.get_site(site.id)
+            self.assertFalse(current.enabled)
+            self.assertEqual(current.revision, site.revision)
+            self.assertEqual(await self.sites.store.list_tasks(), [])
+        finally:
+            await service.close()
+
+    async def test_site_connection_errors_and_concurrency_admission(self) -> None:
+        from core.news import NewsInvalidJSONError
+        from core.sites import (
+            SiteConflictError, SiteTestBusyError, SiteValidationError,
+        )
+        site = await self.sites.create_site(SiteCreate(
+            name="边界站点", base_url="http://example.test/proxy",
+            enabled=False, timeout_seconds=5,
+        ))
+        calls = []
+        release = asyncio.Event()
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path.endswith("/v2/60s"):
+                await release.wait()
+                return httpx.Response(200, text="not-json")
+            return httpx.Response(200, json={"code": 200, "message": "ok", "data": []})
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        service = ContentService(self.sites, client=client, clock=self.clock)
+        await service.open()
+        try:
+            with self.assertRaises(SiteValidationError):
+                await service.test_connection(site.id, "unknown", site.revision)
+            with self.assertRaises(SiteConflictError):
+                await service.test_connection(site.id, "daily_news", site.revision + 1)
+            self.assertEqual(calls, [])
+            blocking = [
+                asyncio.create_task(service.test_connection(site.id, "daily_news", site.revision))
+                for _ in range(2)
+            ]
+            await asyncio.sleep(0)
+            with self.assertRaises(SiteTestBusyError):
+                await service.test_connection(site.id, "daily_news", site.revision)
+            release.set()
+            results = await asyncio.gather(*blocking, return_exceptions=True)
+            self.assertTrue(all(isinstance(item, NewsInvalidJSONError) for item in results))
+            with self.assertRaises(NewsInvalidJSONError):
+                await service.test_connection(site.id, "daily_news", site.revision)
+        finally:
+            await service.close()
+
+    async def test_site_connection_init_cancel_cleans_cache_and_reopens(self) -> None:
+        import asyncio
+        from core.sites import SiteTestUnavailableError
+        class SlowClient:
+            def __init__(self):
+                self.is_open = False
+                self.started = asyncio.Event()
+                self.attempts = 0
+            async def open(self):
+                self.attempts += 1
+                self.started.set()
+                if self.attempts == 1:
+                    await asyncio.Event().wait()
+                self.is_open = True
+            async def close(self): self.is_open = False
+            async def fetch_json(self, *args, **kwargs):
+                raise AssertionError("must not fetch")
+        class FakeCache:
+            def __init__(self): self.is_open = False
+            async def open(self): self.is_open = True
+            async def close(self): self.is_open = False
+        service = ContentService(self.sites, client=SlowClient())
+        service._cache = FakeCache()
+        task = asyncio.create_task(service.open())
+        await service._client.started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(service._test_admitted)
+        self.assertFalse(service._cache.is_open)
+        with self.assertRaises(SiteTestUnavailableError):
+            await service.test_connection("missing", "daily_news", 1)
+        await service.open()
+        self.assertTrue(service._test_admitted)
+        self.assertTrue(service._cache.is_open)
+        await service.close()
+
+    async def test_site_connection_revision_change_during_http_invalidates(self) -> None:
+        from core.sites import SiteConflictError, SiteUpdate
+        site = await self.sites.create_site(SiteCreate(
+            name="并发修改", base_url="http://example.test/proxy",
+            enabled=False, timeout_seconds=5,
+        ))
+        started = asyncio.Event(); release = asyncio.Event()
+        async def handler(request: httpx.Request) -> httpx.Response:
+            started.set(); await release.wait()
+            return httpx.Response(200, json={"code": 200, "message": "ok", "data": []})
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        service = ContentService(self.sites, client=client, clock=self.clock)
+        await service.open()
+        try:
+            task = asyncio.create_task(
+                service.test_connection(site.id, "bilibili_hot", site.revision),
+            )
+            await started.wait()
+            await self.sites.update_site(site.id, SiteUpdate(
+                name="并发修改后", base_url="http://example.test/proxy",
+                enabled=False, timeout_seconds=5, expected_revision=site.revision,
+            ))
+            release.set()
+            with self.assertRaises(SiteConflictError):
+                await task
+        finally:
+            await service.close()
+
+    async def test_site_connection_error_messages_do_not_reflect_secrets(self) -> None:
+        from core.content_api import ContentApi
+        from core.news import NewsHTTPStatusError, NewsTransportError
+        class FailingService:
+            def __init__(self, error): self.error = error
+            async def test_connection(self, *args): raise self.error
+        for error, code in (
+            (NewsHTTPStatusError("secret-token reflected"), "test_http_status"),
+            (NewsTransportError("secret-token reflected"), "test_network_error"),
+        ):
+            result = await ContentApi(FailingService(error)).test_connection(
+                "site", {"expected_revision": 1, "content_type": "daily_news"},
+            )
+            self.assertEqual(result.body["data"]["code"], code)
+            self.assertNotIn("secret-token", result.body["message"])

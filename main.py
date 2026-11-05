@@ -68,6 +68,7 @@ class SixtySAPIHub(Star):
             ContentApi(self.content),
             plugin_name=plugin_name,
             is_active=lambda: self._active,
+            lifecycle=lambda: getattr(self, "_runtime_epoch", 0),
         )
         self._build_runtime()
         self._site_web.register(context)

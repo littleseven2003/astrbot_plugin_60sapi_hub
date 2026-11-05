@@ -60,6 +60,14 @@ class SiteNotFoundError(SiteError):
         super().__init__(f"站点 {site_id} 不存在。")
 
 
+class SiteTestBusyError(SiteError):
+    """并发连接测试已达到上限。"""
+
+
+class SiteTestUnavailableError(SiteError):
+    """测试所属插件生命周期已失效。"""
+
+
 class SiteConflictError(SiteError):
     """编辑或删除使用了过期的 revision。"""
 
@@ -242,6 +250,22 @@ class SiteService:
             base_url=stored.base_url,
             timeout_seconds=stored.timeout_seconds,
             revision=stored.revision,
+            bearer_token=stored.bearer_token,
+        )
+
+    async def get_test_config(
+        self, site_id: object, expected_revision: object,
+    ) -> SiteFetchConfig:
+        """读取测试连接快照；允许停用站点，但 revision 必须匹配。"""
+        normalized_id = normalize_site_id(site_id)
+        revision = normalize_revision(expected_revision)
+        async with self._translate_store_errors(normalized_id):
+            stored = await self._store.get_site(normalized_id)
+        if stored.revision != revision:
+            raise SiteConflictError(normalized_id, revision, stored.revision)
+        return SiteFetchConfig(
+            id=stored.id, name=stored.name, base_url=stored.base_url,
+            timeout_seconds=stored.timeout_seconds, revision=stored.revision,
             bearer_token=stored.bearer_token,
         )
 

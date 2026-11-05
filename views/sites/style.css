@@ -1401,3 +1401,41 @@ input:focus-visible,
   align-items: center;
   gap: 4px;
 }
+
+.site-test-result {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+}
+.site-test-result[data-tone="info"] { background: #eef4ff; color: #1d4ed8; }
+.site-test-result[data-tone="success"] { background: #ecfdf3; color: #166534; border-color: #86efac; }
+.site-test-result[data-tone="warning"] { background: #fffbeb; color: #92400e; border-color: #fcd34d; }
+.site-test-result[data-tone="danger"] { background: #fef2f2; color: #991b1b; border-color: #fca5a5; }
+
+@media (max-width: 700px) {
+  .page { padding: 16px 10px 32px; }
+  .site-row { grid-template-columns: minmax(0, 1fr); padding: 14px 12px; }
+  .site-actions, .profile-card-actions { flex-wrap: wrap; }
+  .site-actions .button, .profile-card-actions .button { max-width: 100%; }
+  .site-test-result { overflow-wrap: anywhere; }
+}
+
+@media (max-width: 700px) {
+  dialog.dialog {
+    box-sizing: border-box;
+    width: calc(100% - 8px);
+    max-width: calc(100% - 8px);
+  }
+  dialog.dialog .form,
+  dialog.dialog .field,
+  dialog.dialog select,
+  dialog.dialog input,
+  dialog.dialog textarea,
+  dialog.dialog button {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+}

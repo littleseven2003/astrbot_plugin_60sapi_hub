@@ -669,6 +669,28 @@
       </div>
     </dialog>
 
+    <dialog id="site-test-dialog" class="dialog dialog-small" aria-labelledby="site-test-title">
+      <div class="form">
+        <header class="dialog-head"><h2 id="site-test-title">测试连接</h2></header>
+        <p id="site-test-site"></p>
+        <label class="field"><span>内容接口</span>
+          <select id="site-test-content-type">
+            <option value="daily_news">每日新闻</option>
+            <option value="bilibili_hot">Bilibili 热搜</option>
+            <option value="zhihu_hot">知乎热榜</option>
+            <option value="douyin_hot">抖音热搜</option>
+            <option value="toutiao_hot">今日头条热搜</option>
+          </select>
+        </label>
+        <p class="help">会主动请求上游，只验证所选接口本次连接和数据格式；不修改配置、不启用站点、不发送消息。</p>
+        <div id="site-test-result" class="site-test-result" role="status" hidden></div>
+        <footer class="dialog-actions">
+          <button id="site-test-close-button" class="button button-secondary" type="button">关闭</button>
+          <button id="site-test-run-button" class="button button-primary" type="button">开始测试</button>
+        </footer>
+      </div>
+    </dialog>
+
     <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-dialog-title">
       <form id="profile-form" class="form">
         <header class="dialog-head">

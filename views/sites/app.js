@@ -3953,7 +3953,7 @@ function renderDeliveryPreview(data, token) {
     ["任务", data.task_name], ["组合", data.profile_name],
     ["来源站点", data.site_name], ["输出方式", data.output_label],
     ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision} · 站点 ${data.site_revision}`],
-    ["内容策略", "确认后获取最新内容，不复用页面旧预览"],
+    ["内容策略", "重新准备内容，不复用页面旧预览；可能命中内容缓存（默认 300 秒），不保证重新请求上游"],
   ]) {
     const p = document.createElement("p");
     p.textContent = `${label}：${value}`;

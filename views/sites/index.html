@@ -26,7 +26,7 @@
         </nav>
         <div class="rail-note">
           <p class="rail-note-title">关于发送</p>
-          <p>保存配置、预览内容和查看记录都不会自动发送消息；只有管理员显式确认的手动测试投递才会进入发送流程。</p>
+          <p>保存配置、预览内容和查看记录都不会自动发送消息。手动测试需管理员显式确认后才会进入发送流程；任务在显式启用定时调度后，才会按计划自动投递。</p>
         </div>
       </aside>
 
@@ -316,7 +316,7 @@
               <button id="delivery-refresh-button" class="button button-secondary" type="button">刷新记录</button>
             </div>
             <p class="preview-lede">
-              手动测试只由管理员显式提交；不会启用任务或自动推送。确认后按当前保存配置获取最新内容。unknown 表示结果不确定，不会自动重发。
+              手动测试只由管理员显式提交；不会启用任务或自动推送。确认后按当前保存配置重新准备内容——该准备可能命中内容缓存（默认 300 秒），不保证重新请求上游。unknown 表示结果不确定，不会自动重发。
             </p>
             <button id="delivery-show-pending-button" class="button button-secondary" type="button" hidden>查看未确认执行</button>
             <div id="delivery-pending-panel" class="uncertain" hidden>
@@ -373,7 +373,7 @@
             <div id="delivery-error" class="form-error" role="alert" hidden></div>
             <div id="delivery-confirm-info"></div>
             <div id="delivery-targets" class="delivery-targets"></div>
-            <p class="help">确认后会获取最新内容，不是复用页面旧预览。配置或 revision 变化时会要求重新审阅。</p>
+            <p class="help">确认后会按当前保存配置重新准备内容，不复用页面上的旧预览结果；这可能命中内容缓存（默认 300 秒），不保证重新请求上游。配置或 revision 变化时会要求重新审阅。</p>
             <div id="delivery-result" class="delivery-result" hidden></div>
             <div id="delivery-uncertain" class="uncertain" role="alert" hidden>
               <h3>结果未确认</h3>

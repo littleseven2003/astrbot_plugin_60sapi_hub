@@ -15,24 +15,39 @@ let token;
 let siteId;
 const name = `站点连接回归${Date.now()}`;
 const upstreamCalls = [];
-const responseWaiters = [];
-function waitForUpstream(count) {
-  if (upstreamCalls.length >= count) return Promise.resolve();
-  return new Promise((resolve) => responseWaiters.push({ count, resolve }));
+let failOnce = true;
+const secondName = `${name}B`;
+let secondSiteId;
+let dailyGate = null;
+let dailyEntered = null;
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
 }
-
+function armDailyGate() {
+  dailyGate = deferred();
+  dailyEntered = deferred();
+}
 const upstream = http.createServer((req, res) => {
   upstreamCalls.push(req.url);
   const delay = req.url.includes("/v2/zhihu") ? 1200
     : req.url.includes("/v2/douyin") ? 2000 : 0;
   const body = { code: 200, message: "ok", data: [] };
   if (req.url.endsWith("/v2/60s")) body.data = { news: [] };
-  setTimeout(() => {
+  if (req.url.includes("/fail/") && failOnce) {
+    failOnce = false;
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ message: "secret-token reflected" }));
+    return;
+  }
+  setTimeout(async () => {
+    if (req.url.endsWith("/v2/60s") && dailyGate) {
+      dailyEntered.resolve();
+      await dailyGate.promise;
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
-    while (responseWaiters.length && upstreamCalls.length >= responseWaiters[0].count) {
-      responseWaiters.shift().resolve();
-    }
   }, delay);
 });
 
@@ -135,6 +150,11 @@ async function runType(frame, type) {
       enabled: false, timeout_seconds: 5,
     });
     siteId = response.body.data.id;
+    response = await api("POST", `/api/v1/plugins/extensions/${PLUGIN}/sites`, {
+      name: secondName, base_url: `http://127.0.0.1:${port}/fail`,
+      enabled: false, timeout_seconds: 5,
+    });
+    secondSiteId = response.body.data.id;
 
     let { page, frame } = await openPage(browser, 1400);
     await frame.waitForFunction(
@@ -162,15 +182,19 @@ async function runType(frame, type) {
         /连接成功/);
     }
 
-    // In-flight switch must not display the old result.
-    await runType(frame, "zhihu_hot");
-    await frame.waitForFunction(() =>
-      document.getElementById("site-test-run-button").disabled);
-    await frame.selectOption("#site-test-content-type", "daily_news");
+    // In-flight switch: hold daily upstream, switch type, release explicitly.
+    armDailyGate();
+    await runType(frame, "daily_news");
+    await dailyEntered.promise;
+    await frame.selectOption("#site-test-content-type", "zhihu_hot");
     await frame.waitForFunction(() =>
       document.getElementById("site-test-result").hidden);
-    await waitForUpstream(upstreamCalls.length);
+    dailyGate.resolve();
+    await frame.waitForFunction(() =>
+      !document.getElementById("site-test-run-button").disabled);
     assert.equal(await frame.locator("#site-test-result").isHidden(), true);
+    assert.equal(await frame.locator("#site-test-content-type").inputValue(),
+      "zhihu_hot");
 
     // Close/reopen during request keeps busy, then clears busy after finish.
     await runType(frame, "douyin_hot");
@@ -190,6 +214,26 @@ async function runType(frame, type) {
     await page.keyboard.press("Escape");
     await frame.waitForFunction(() =>
       !document.getElementById("site-test-dialog")?.open);
+
+    // Upstream failure is safe and manual retry succeeds.
+    await frame.waitForFunction(
+      (text) => document.getElementById("sites-list")?.innerText.includes(text),
+      secondName,
+    );
+    await frame.getByRole("button", {
+      name: new RegExp(`测试站点 ${secondName} 连接`),
+    }).click();
+    await frame.waitForSelector("#site-test-dialog[open]");
+    await runType(frame, "bilibili_hot");
+    await frame.waitForFunction(() =>
+      document.getElementById("site-test-result")?.dataset.tone === "danger");
+    const failureText = await frame.locator("#site-test-result").innerText();
+    assert.doesNotMatch(failureText, /secret-token/);
+    assert.match(failureText, /测试失败|失败状态/);
+    await frame.locator("#site-test-run-button").click();
+    await frame.waitForFunction(() =>
+      document.getElementById("site-test-result")?.dataset.tone === "success");
+    await frame.locator("#site-test-close-button").click();
 
     // 409 displays the config-change warning through the real bridge.
     const current = await api("GET",
@@ -252,6 +296,15 @@ async function runType(frame, type) {
     throw error;
   } finally {
     try {
+      if (secondSiteId && token) {
+        const current = await api("GET",
+          `/api/v1/plugins/extensions/${PLUGIN}/sites/${secondSiteId}`);
+        if (current.status === 200) {
+          await api("POST",
+            `/api/v1/plugins/extensions/${PLUGIN}/sites/${secondSiteId}/delete`,
+            { expected_revision: current.body.data.revision });
+        }
+      }
       if (siteId && token) {
         const current = await api("GET",
           `/api/v1/plugins/extensions/${PLUGIN}/sites/${siteId}`);

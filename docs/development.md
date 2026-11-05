@@ -161,7 +161,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - 写请求的响应丢失、超时或连接中断进入“结果未确认”：页面保留表单/目标信息，禁用保存或删除、取消和关闭，只提供“重新读取最新列表”。重新读取失败继续保持未确认；读取成功后显示最新列表状态，并要求人工确认后再关闭。新增记录不按同名/同地址认领，只根据服务器列表和稳定 ID 展示实际状态；编辑/删除不自动重发。
 - 4.29.1 bridge 的失败对象只有 `Error.message`，不保留 HTTP 状态或响应 `data.code`。页面把已知的服务端拒绝消息视为明确失败，其余（含网络异常和未知 5xx）保守归为未确认。当前无需修改 API 契约；以后若增加机器可读错误码，应同步 bridge 能力和兼容性说明。
 - 页面不使用 CDN、外部字体、统计脚本或独立服务器；列表用 `textContent` 等 DOM API 渲染，不使用用户数据拼 `innerHTML`。
-- 当前包含五类内容单栏预览、缓存与预览、内容组合 CRUD/组合预览、文字/Markdown 和固定样式分页图片、推送任务与 UMO 白名单、后台手动投递/执行记录及调度记录；不包含其他 endpoint、真实账号发送和 MVP 之外的扩展能力。内容组合只引用已保存站点和五个现有类型；不能扩展成任意 URL、跨站点或参数面板。站点保存和组合保存本身不发起上游请求。组合预览成功后页面显示同源纯文字/Markdown，可复制或下载；格式切换、复制、下载不访问上游，不引入 HTML Markdown 渲染器。图片由服务端短期快照显式生成，逐页 base64 PNG 展示/下载；不重新请求上游，不使用 HTML 模板或远程资源。
+- 当前包含五类内容单栏预览、缓存与预览、内容组合 CRUD/组合预览、文字/Markdown 和固定样式栏目长图（每栏目一张）、推送任务与 UMO 白名单、后台手动投递/执行记录及调度记录；不包含其他 endpoint、真实账号发送和 MVP 之外的扩展能力。内容组合只引用已保存站点和五个现有类型；不能扩展成任意 URL、跨站点或参数面板。站点保存和组合保存本身不发起上游请求。组合预览成功后页面显示同源纯文字/Markdown，可复制或下载；格式切换、复制、下载不访问上游，不引入 HTML Markdown 渲染器。图片由服务端短期快照显式生成，按栏目逐张返回 base64 PNG 展示/下载（每栏目一张长图，宽 900px、高度随内容增长）；不重新请求上游，不使用 HTML 模板或远程资源。
 
 ## 内容获取与预览
 
@@ -214,7 +214,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 
 ### 实现边界
 
-- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/delivery.py`：一次共享内容准备、注入式发送器、逐目标逐页状态、配置复核、取消/关闭和保守恢复；`core/delivery_api.py` / `delivery_web.py`：鉴权的确认/手动投递和执行记录查询；`core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp 发送适配（精确实例、真实 Context 路由、内存图片、拒绝不支持适配器）；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式分页渲染；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
+- `core/content_client.py`：共享 `httpx.AsyncClient`；`core/content_service.py`：一个客户端组合五种适配器；`core/content_cache.py`：统一预览的 TTL/LRU 缓存和同键合并；`core/profiles.py`：组合模型/校验/revision CRUD；`core/profile_api.py` / `profile_web.py`：组合 CRUD 和组合预览 API；`core/tasks.py`：推送任务、输出方式和 UMO 白名单校验；`core/task_api.py` / `task_web.py`：任务 CRUD API 和宿主适配；`core/delivery.py`：一次共享内容准备、注入式发送器、逐目标逐栏目图状态、配置复核、取消/关闭和保守恢复；`core/delivery_api.py` / `delivery_web.py`：鉴权的确认/手动投递和执行记录查询；`core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp 发送适配（精确实例、真实 Context 路由、内存图片、拒绝不支持适配器）；`core/profile_render.py`：纯函数文字/Markdown 渲染；`core/image_snapshots.py`：短期有界图片快照；`core/profile_image.py`：Pillow 固定样式栏目长图渲染（一个栏目一张，宽 900px、高度随内容增长，单张上限 2 MiB / 8000px，栏目最多 5 个）；`core/image_service.py`：图片线程池、超时和取消；`core/news.py` / `core/news_service.py`：每日新闻解析和 `/v2/60s` 获取；`core/bili.py` / `core/bili_service.py`：Bilibili 热搜解析和 `/v2/bili` 获取；`core/zhihu.py` / `core/zhihu_service.py`：知乎热榜解析和 `/v2/zhihu` 获取；`core/douyin.py` / `core/douyin_service.py`：抖音热搜解析和 `/v2/douyin` 获取；`core/toutiao.py` / `core/toutiao_service.py`：今日头条热榜解析和 `/v2/toutiao` 获取。
 - `core/content_api.py` / `content_web.py`：统一 `POST /<插件名>/content/preview`，只接受 `site_id` 和固定 `content_type`；未知类型在调用任何服务前拒绝。`core/news_api.py` / `news_web.py`：保留每日新闻旧接口。
 - `SiteService.get_fetch_config()` 是获取层读取站点地址、超时和凭据的唯一入口；公开 `SiteConfig` 仍不含凭据。获取层不直接读写 SQLite，也不接受页面提供的 URL。
 - URL 为站点基础地址分别拼接 `/v2/60s`、`/v2/bili`、`/v2/zhihu`、`/v2/douyin` 或 `/v2/toutiao`，保留反代前缀；已支持内网/Docker/方括号 IPv6。
@@ -270,7 +270,7 @@ ASTRBOT_URL=http://127.0.0.1:16194 ASTRBOT_PASSWORD='<isolated password>' CHROME
 - `tests/test_profile_api.py`：组合 CRUD/冲突、五类预览顺序、逐栏截取不污染完整缓存、缓存命中/刷新、station revision、部分失败/全部失败/空列表、错误脱敏、禁用站点和严格 force_refresh，以及成功/部分成功响应包含同源 outputs。
 - `tests/test_profile_render.py`：纯函数同源、不修改输入；文字字段/顺序/限制/日期提示/空栏目/零值热度/失败栏目；Markdown 转义标题、换行、HTML、围栏、链接括号/空格、非法链接降级和生成结构。
 - `tests/test_image_snapshots.py`：TTL、LRU/数量、总字节、单快照大小、关闭后拒绝访问。
-- `tests/test_profile_image.py`：真实 PNG、长内容多页、同快照确定性、空列表/热度 0/部分失败、页数/字节/字体/取消限制。
+- `tests/test_profile_image.py`：真实 PNG、长内容长图、同快照确定性、空列表/热度 0/部分失败、单图高度与字节上限（`section_too_tall` / `section_too_large`）、栏目数上限、字体/取消限制。
 - `tests/test_image_service.py`：排队/准入上限、总超时、线程不响应取消、取消后新请求、关闭期间排队请求、准入清理期间首次/再次取消、多轮取消容量稳定、关闭与取消交错和资源释放。
 - `tests/test_profile_image_api.py`：同预览快照、图片不增加上游请求、后改数据不改变同快照图片、归属/过期/修改/删除/停用失效、全部失败无快照、图片超限仍保留文字。
 - `tests/test_astrbot_sender.py`：真实宿主源码/Context/MessageSession/MessageChain/aiocqhttp 路由，假机器人边界；实例隔离、群聊/私聊、成员隔离、文本/Markdown/PNG、非法目标、未知/不支持实例、异常/取消、投递核心端到端。常规无宿主环境自动跳过。

@@ -11,7 +11,7 @@ import httpx
 
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
-from core.sites import SiteCreate, SiteService
+from core.sites import SiteCreate, SiteDisabledError, SiteService
 
 
 class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -202,7 +202,12 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         client = ContentHttpClient(transport=httpx.MockTransport(handler))
         service = ContentService(self.sites, client=client, clock=self.clock)
         await service.open()
+        async def forbidden_cache(*args, **kwargs):
+            raise AssertionError("connection test must not touch cache")
+        service._cache.get = forbidden_cache
         try:
+            with self.assertRaises(SiteDisabledError):
+                await service.preview_cached("bilibili_hot", site.id)
             for content_type in (
                 "daily_news", "bilibili_hot", "zhihu_hot",
                 "douyin_hot", "toutiao_hot",
@@ -216,6 +221,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             current = await self.sites.get_site(site.id)
             self.assertFalse(current.enabled)
             self.assertEqual(current.revision, site.revision)
+            self.assertEqual(await self.sites.store.list_tasks(), [])
         finally:
             await service.close()
 

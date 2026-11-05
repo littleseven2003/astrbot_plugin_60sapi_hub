@@ -330,3 +330,19 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
                 await task
         finally:
             await service.close()
+
+    async def test_site_connection_error_messages_do_not_reflect_secrets(self) -> None:
+        from core.content_api import ContentApi
+        from core.news import NewsHTTPStatusError, NewsTransportError
+        class FailingService:
+            def __init__(self, error): self.error = error
+            async def test_connection(self, *args): raise self.error
+        for error, code in (
+            (NewsHTTPStatusError("secret-token reflected"), "test_http_status"),
+            (NewsTransportError("secret-token reflected"), "test_network_error"),
+        ):
+            result = await ContentApi(FailingService(error)).test_connection(
+                "site", {"expected_revision": 1, "content_type": "daily_news"},
+            )
+            self.assertEqual(result.body["data"]["code"], code)
+            self.assertNotIn("secret-token", result.body["message"])

@@ -89,9 +89,19 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
 
         listed = await self.api.list_executions(limit=5, offset=0)
         self.assertEqual(listed.body["data"]["count"], 1)
+        # 投影语义：一个栏目一张图，对外用 image_count / image_index。
+        summary = listed.body["data"]["executions"][0]
+        # 汇总的 image_count = 该执行下所有目标的槽位行数（2 目标 × 1 张）。
+        self.assertEqual(summary["image_count"], 2)
+        self.assertNotIn("page_count", summary)
         detail = await self.api.get_execution(execution_id)
         self.assertEqual(detail.status_code, 200)
-        self.assertEqual(detail.body["data"]["targets"][0]["pages"][0]["status"], "success")
+        target_payload = detail.body["data"]["targets"][0]
+        self.assertNotIn("pages", target_payload)
+        item = target_payload["images"][0]
+        self.assertEqual(item["status"], "success")
+        self.assertEqual(item["image_index"], 1)
+        self.assertNotIn("page_index", item)
         again = await self.api.execute(task.id, {
             "execution_id": execution_id,
             "expected_task_revision": task.revision,

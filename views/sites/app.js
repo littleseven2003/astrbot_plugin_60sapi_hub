@@ -1555,51 +1555,92 @@ function syncProfileImageButton() {
     state.profileImageLoading ? "正在生成…" : "生成图片";
 }
 
+const PROFILE_IMAGE_STATUS_LABELS = {
+  success: "已生成",
+  empty: "空栏目",
+  failed: "未生成",
+};
+
 function renderProfileImages(data) {
-  if (!data || !Array.isArray(data.pages) || data.pages.length === 0) {
+  if (!data || !Array.isArray(data.images) || data.images.length === 0) {
     throw new Error("图片数据格式异常。");
   }
   elements.profileImagePages.replaceChildren();
-  const total = data.pages.length;
-  for (const page of data.pages) {
+  let generated = 0;
+  let missing = 0;
+  for (const section of data.images) {
     if (
-      !page ||
-      typeof page.png_base64 !== "string" ||
-      !Number.isInteger(page.index) ||
-      !Number.isInteger(page.width) ||
-      !Number.isInteger(page.height)
+      !section ||
+      !Number.isInteger(section.index) ||
+      typeof section.content_type !== "string" ||
+      typeof section.label !== "string" ||
+      !section.label ||
+      !PROFILE_IMAGE_STATUS_LABELS[section.status]
     ) {
-      throw new Error("图片分页数据格式异常。");
+      throw new Error("栏目长图数据格式异常。");
     }
     const figure = document.createElement("figure");
     figure.className = "profile-image-page";
-    const image = document.createElement("img");
-    image.src = `data:image/png;base64,${page.png_base64}`;
-    image.alt = `组合图片第 ${page.index} 页`;
-    image.width = page.width;
-    image.height = page.height;
-    image.loading = "lazy";
+    figure.dataset.status = section.status;
+    const hasImage = section.status !== "failed";
+    if (hasImage) {
+      if (
+        typeof section.png_base64 !== "string" ||
+        !Number.isInteger(section.width) ||
+        !Number.isInteger(section.height)
+      ) {
+        throw new Error("栏目长图数据格式异常。");
+      }
+      const image = document.createElement("img");
+      image.src = "data:image/png;base64," + section.png_base64;
+      image.alt = section.label + "栏目长图";
+      image.width = section.width;
+      image.height = section.height;
+      image.loading = "lazy";
+      figure.append(image);
+      generated += 1;
+    } else {
+      missing += 1;
+    }
     const caption = document.createElement("figcaption");
-    caption.textContent =
-      `第 ${page.index} / ${total} 页 · ${page.width}×${page.height}`;
-    const download = makeButton(
-      `下载第 ${page.index} 页 PNG`,
-      "button button-secondary",
-      () => downloadProfileImagePage(page, data.profile_id),
-      `下载组合图片第 ${page.index} 页`,
-    );
-    figure.append(image, caption, download);
+    if (hasImage) {
+      caption.textContent =
+        section.index + ". " + section.label + " · " +
+        section.width + "×" + section.height + " · " +
+        PROFILE_IMAGE_STATUS_LABELS[section.status];
+    } else {
+      caption.className = "task-disabled";
+      const reason = typeof section.error === "string" && section.error
+        ? section.error
+        : "未生成";
+      caption.textContent =
+        section.index + ". " + section.label + " · 未生成（" + reason + "）";
+    }
+    figure.append(caption);
+    if (hasImage) {
+      const download = makeButton(
+        "下载「" + section.label + "」PNG",
+        "button button-secondary",
+        () => downloadProfileImageSection(section),
+        "下载" + section.label + "栏目长图",
+      );
+      figure.append(download);
+    }
     elements.profileImagePages.append(figure);
   }
-  elements.profileImageState.textContent = `已生成 ${total} 页`;
+  elements.profileImageState.textContent = missing
+    ? "已生成 " + generated + " 张栏目长图，" + missing + " 个栏目未生成"
+    : "已生成 " + generated + " 张栏目长图";
   elements.profileImageState.hidden = false;
-  elements.profileImageHint.textContent = "";
-  elements.profileImageHint.hidden = true;
+  elements.profileImageHint.textContent = missing
+    ? "未生成的栏目没有可用图片；如需完整出图，请减少栏目条数后重新预览再生成。"
+    : "";
+  elements.profileImageHint.hidden = !missing;
 }
 
-function downloadProfileImagePage(page, profileId) {
+function downloadProfileImageSection(section) {
   try {
-    const raw = atob(page.png_base64);
+    const raw = atob(section.png_base64);
     const bytes = new Uint8Array(raw.length);
     for (let index = 0; index < raw.length; index += 1) {
       bytes[index] = raw.charCodeAt(index);
@@ -1608,11 +1649,14 @@ function downloadProfileImagePage(page, profileId) {
         bytes[2] !== 0x4e || bytes[3] !== 0x47) {
       throw new Error("not a png");
     }
-    const safeId = String(profileId || state.profilePreviewId || "profile")
+    const safeId = String(state.profilePreviewId || "profile")
       .replace(/[^A-Za-z0-9_-]/g, "")
       .slice(0, 64) || "profile";
+    const safeType = String(section.content_type || "section")
+      .replace(/[^A-Za-z0-9_-]/g, "")
+      .slice(0, 32) || "section";
     const filename =
-      `60sapi-profile-${safeId}-page-${page.index}.png`;
+      "60sapi-profile-" + safeId + "-" + safeType + "-" + section.index + ".png";
     const blob = new Blob([bytes], { type: "image/png" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -1623,7 +1667,7 @@ function downloadProfileImagePage(page, profileId) {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    elements.profileImageHint.textContent = `已下载 ${filename}。`;
+    elements.profileImageHint.textContent = "已下载 " + filename + "。";
     elements.profileImageHint.hidden = false;
   } catch {
     elements.profileImageHint.textContent = "图片下载失败，请重新生成。";
@@ -3792,6 +3836,19 @@ function deliveryStatusLabel(status) {
   })[status] || status;
 }
 
+// 投递记录的一个槽位 = 一个栏目长图（图片输出）或一条逻辑消息（文字/Markdown）。
+function deliverySlotLabel(execution, index) {
+  const unit = execution && execution.output_format === "image" ? "张" : "条";
+  return `第 ${index} ${unit}`;
+}
+
+function deliverySlotCountLabel(execution, count) {
+  const unit = execution && execution.output_format === "image"
+    ? "张栏目图"
+    : "条消息";
+  return `${count} ${unit}`;
+}
+
 function readStoredDeliveryPending() {
   try {
     const raw = localStorage.getItem(DELIVERY_PENDING_KEY);
@@ -4104,11 +4161,12 @@ function renderDeliveryExecution(execution) {
     const umo = document.createElement("code");
     umo.textContent = target.umo;
     const detail = document.createElement("span");
-    const pages = (target.pages || []).map((page) =>
-      `第 ${page.page_index} 页 ${deliveryStatusLabel(page.status)}` +
+    const images = (target.images || []).map((page) =>
+      `${deliverySlotLabel(execution, page.image_index)} ` +
+      `${deliveryStatusLabel(page.status)}` +
       (page.error_code ? `（${page.error_code}）` : "")
     ).join("；");
-    detail.textContent = `${deliveryStatusLabel(target.status)} · ${pages}`;
+    detail.textContent = `${deliveryStatusLabel(target.status)} · ${images}`;
     row.append(umo, detail);
     elements.deliveryResult.append(row);
   }
@@ -4288,7 +4346,8 @@ function renderDeliveries(executions, append = false) {
     const id = document.createElement("span");
     id.textContent = `执行：${execution.id}`;
     const counts = document.createElement("span");
-    counts.textContent = `目标 ${execution.target_count} · 页 ${execution.page_count}`;
+    counts.textContent = `目标 ${execution.target_count} · ` +
+      deliverySlotCountLabel(execution, execution.image_count);
     const time = document.createElement("span");
     time.textContent = execution.created_at;
     meta.append(id, counts, time);

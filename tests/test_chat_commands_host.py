@@ -373,9 +373,13 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             async def generate_image(self, profile_id, payload, *, owner=None):
                 png = b"\x89PNG\r\n\x1a\npage"
                 encoded = base64.b64encode(png).decode()
-                return SimpleNamespace(status_code=200, body={"data": {"pages": [
-                    {"index": 2, "png_base64": encoded},
-                    {"index": 1, "png_base64": encoded},
+                return SimpleNamespace(status_code=200, body={"data": {"images": [
+                    {"index": 2, "content_type": "zhihu_hot",
+                     "label": "知乎热榜", "status": "success",
+                     "width": 900, "height": 1400, "png_base64": encoded},
+                    {"index": 1, "content_type": "daily_news",
+                     "label": "每日新闻", "status": "success",
+                     "width": 900, "height": 1200, "png_base64": encoded},
                 ]}})
 
         fixture = Fixture()
@@ -396,7 +400,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 1)
         chain = results[0].chain
         self.assertEqual([type(item) for item in chain], [Plain, Image, Image])
-        self.assertEqual(chain[0].text, "共 2 页图片。\n可发送 /60s get visible 获取文字版。")
+        self.assertEqual(chain[0].text, "共 2 张栏目长图。\n可发送 /60s get visible 获取文字版。")
         self.assertTrue(chain[1].file.startswith("base64://"))
         self.assertTrue(chain[2].file.startswith("base64://"))
 
@@ -568,8 +572,11 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             async def generate_image(self, profile_id, payload, *, owner=None):
                 self.started.set()
                 await self.release.wait()
-                return SimpleNamespace(status_code=200, body={"data": {"pages": [
-                    {"index": 1, "png_base64": "iVBORw0KGgo="},
+                return SimpleNamespace(status_code=200, body={"data": {"images": [
+                    {"index": 1, "content_type": "daily_news",
+                     "label": "每日新闻", "status": "success",
+                     "width": 900, "height": 1200,
+                     "png_base64": "iVBORw0KGgo="},
                 ]}})
 
         class Tasks:

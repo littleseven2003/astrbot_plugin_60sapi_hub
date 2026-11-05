@@ -22,6 +22,14 @@ from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 
 
+PNG_PREFIX = b"\x89PNG\r\n\x1a\n"
+
+
+def fake_png(tag: bytes) -> bytes:
+    """测试夹具的最小合法 PNG 前缀；渲染器真实输出由图片线提供。"""
+    return PNG_PREFIX + tag
+
+
 def item():
     return {"content_type": "daily_news", "params": {}, "limit": None}
 
@@ -34,7 +42,12 @@ class StubApi:
         self.preview_code = "all_sections_failed"
         self.text = "共享正文"
         self.markdown = "# 共享正文"
-        self.image_pages = [b"page-one", b"page-two"]
+        self.image_sections = [
+            {"index": 1, "content_type": "daily_news", "label": "每日新闻",
+             "status": "success", "png": fake_png(b"image-one")},
+            {"index": 2, "content_type": "zhihu_hot", "label": "知乎热榜",
+             "status": "success", "png": fake_png(b"image-two")},
+        ]
         self.image_status = 200
         self.partial = False
 
@@ -58,12 +71,31 @@ class StubApi:
             return ProfileApiResult(self.image_status, {
                 "status": "error", "data": {"code": "image_render_failed"},
             })
+        images = []
+        failed_labels = []
+        for section in self.image_sections:
+            item = {
+                "index": section["index"],
+                "content_type": section["content_type"],
+                "label": section["label"],
+                "status": section["status"],
+                "width": 900,
+                "height": 1200,
+            }
+            if section["status"] == "failed":
+                item["error"] = section.get("error", "image_limit_exceeded")
+                failed_labels.append(section["label"])
+            else:
+                png = section["png"]
+                encoded = section.get("png_base64")
+                if encoded is None:
+                    encoded = base64.b64encode(png).decode()
+                item["png_base64"] = encoded
+            images.append(item)
         return ProfileApiResult(200, {"status": "ok", "data": {
-            "page_count": len(self.image_pages),
-            "pages": [
-                {"index": i, "png_base64": base64.b64encode(png).decode()}
-                for i, png in enumerate(self.image_pages, 1)
-            ],
+            "images": images,
+            "failed_sections": failed_labels,
+            "snapshot_id": "snap-1",
         }})
 
 
@@ -161,7 +193,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(result.pages), 2)
 
-    async def test_image_pages_shared_and_ordered(self) -> None:
+    async def test_section_images_shared_and_ordered(self) -> None:
         task = await self._task([
             "aiocqhttp:GroupMessage:g:1",
             "aiocqhttp:FriendMessage:u1",
@@ -174,10 +206,10 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [(m.umo, m.page_index, m.image_png) for m in self.sender.calls],
             [
-                ("aiocqhttp:GroupMessage:g:1", 1, b"page-one"),
-                ("aiocqhttp:GroupMessage:g:1", 2, b"page-two"),
-                ("aiocqhttp:FriendMessage:u1", 1, b"page-one"),
-                ("aiocqhttp:FriendMessage:u1", 2, b"page-two"),
+                ("aiocqhttp:GroupMessage:g:1", 1, fake_png(b"image-one")),
+                ("aiocqhttp:GroupMessage:g:1", 2, fake_png(b"image-two")),
+                ("aiocqhttp:FriendMessage:u1", 1, fake_png(b"image-one")),
+                ("aiocqhttp:FriendMessage:u1", 2, fake_png(b"image-two")),
             ],
         )
         self.assertEqual(len(result.pages), 4)
@@ -359,13 +391,48 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(image_result.error_code, "image_render_failed")
         self.assertEqual(len(self.sender.calls), 0)
 
-    async def test_second_page_explicit_failure_is_partial(self) -> None:
+    async def test_second_section_image_failure_is_partial(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
         self.sender.modes = ["success", "failed"]
-        result = await self.service.execute(task.id, "page-fail-1")
+        result = await self.service.execute(task.id, "image-fail-2")
         self.assertEqual(result.status, "partial")
         self.assertEqual(result.targets[0].status, "failed")
         self.assertEqual([p.status for p in result.pages], ["success", "failed"])
+
+    async def test_failed_section_image_is_skipped_but_others_sent(self) -> None:
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "section-failed-1")
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.content_status, "partial")
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].page_index, 1)
+        self.assertEqual(
+            self.sender.calls[0].image_png, fake_png(b"image-one"),
+        )
+        statuses = {p.page_index: p.status for p in result.pages}
+        self.assertEqual(statuses, {1: "success", 2: "skipped"})
+        codes = {p.page_index: p.error_code for p in result.pages}
+        self.assertEqual(codes[2], "section_image_failed")
+        self.assertIn("知乎热榜", result.failed_sections_json or "")
+
+    async def test_all_section_images_failed_never_calls_sender(self) -> None:
+        for section in self.api.image_sections:
+            section["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "all-image-failed-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "image_failed")
+        self.assertEqual(self.api.image_calls, 1)
+        self.assertEqual(len(self.sender.calls), 0)
+
+    async def test_invalid_section_image_payload_never_calls_sender(self) -> None:
+        self.api.image_sections[0]["png_base64"] = "bm90LWEtcG5n"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "image-invalid-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "image_invalid")
+        self.assertEqual(len(self.sender.calls), 0)
 
     async def test_close_cancels_own_execution_but_not_unrelated_task(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
@@ -534,7 +601,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         finally:
             raw.close()
 
-    async def test_config_change_between_image_pages_marks_target_partial(self) -> None:
+    async def test_config_change_between_section_images_marks_target_partial(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
 
         async def change_task(message):
@@ -543,7 +610,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 await self.tasks.update_task(
                     task.id,
                     TaskUpdate(
-                        name="页面变更", profile_id=task.profile_id,
+                        name="栏目图变更", profile_id=task.profile_id,
                         output_format=task.output_format, umos=list(task.umos),
                         expected_revision=task.revision,
                     ),

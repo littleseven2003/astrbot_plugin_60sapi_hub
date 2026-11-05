@@ -222,16 +222,16 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
         "content_status": e.content_status, "created_at": e.created_at,
         "updated_at": e.updated_at,
         "target_count": len(e.targets),
-        "page_count": len(e.pages),
+        "image_count": len(e.pages),
         "target_statuses": sorted({t.status for t in e.targets}),
     }
 
 
 def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
-    pages_by_target: dict[int, list[dict[str, Any]]] = {}
+    images_by_target: dict[int, list[dict[str, Any]]] = {}
     for page in e.pages:
-        pages_by_target.setdefault(page.position, []).append({
-            "page_index": page.page_index,
+        images_by_target.setdefault(page.position, []).append({
+            "image_index": page.page_index,
             "status": page.status,
             "error_code": page.error_code,
         })
@@ -257,7 +257,7 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
                 "umo": t.umo,
                 "status": t.status,
                 "error_code": t.error_code,
-                "pages": pages_by_target.get(t.position, []),
+                "images": images_by_target.get(t.position, []),
             }
             for t in e.targets
         ],

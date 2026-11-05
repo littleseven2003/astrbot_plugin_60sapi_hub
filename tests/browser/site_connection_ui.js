@@ -15,6 +15,11 @@ let token;
 let siteId;
 const name = `站点连接回归${Date.now()}`;
 const upstreamCalls = [];
+const responseWaiters = [];
+function waitForUpstream(count) {
+  if (upstreamCalls.length >= count) return Promise.resolve();
+  return new Promise((resolve) => responseWaiters.push({ count, resolve }));
+}
 
 const upstream = http.createServer((req, res) => {
   upstreamCalls.push(req.url);
@@ -25,6 +30,9 @@ const upstream = http.createServer((req, res) => {
   setTimeout(() => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
+    while (responseWaiters.length && upstreamCalls.length >= responseWaiters[0].count) {
+      responseWaiters.shift().resolve();
+    }
   }, delay);
 });
 
@@ -161,7 +169,7 @@ async function runType(frame, type) {
     await frame.selectOption("#site-test-content-type", "daily_news");
     await frame.waitForFunction(() =>
       document.getElementById("site-test-result").hidden);
-    await frame.waitForTimeout(1500);
+    await waitForUpstream(upstreamCalls.length);
     assert.equal(await frame.locator("#site-test-result").isHidden(), true);
 
     // Close/reopen during request keeps busy, then clears busy after finish.
@@ -198,35 +206,46 @@ async function runType(frame, type) {
       document.getElementById("site-test-result")?.dataset.tone === "warning");
     assert.match(await frame.locator("#site-test-result").innerText(), /配置已变化/);
 
-    await page.setViewportSize({ width: 390, height: 900 });
-    const overflow = await frame.evaluate(() => {
-      const dialog = document.getElementById("site-test-dialog");
-      return document.documentElement.scrollWidth > document.documentElement.clientWidth
-        || dialog.scrollWidth > dialog.clientWidth;
-    });
-    if (overflow) console.log("overflow", await frame.evaluate(() => ({
-      doc: [document.documentElement.scrollWidth, document.documentElement.clientWidth],
-      dialog: [document.getElementById("site-test-dialog").scrollWidth,
-        document.getElementById("site-test-dialog").clientWidth],
-      wide: [...document.querySelectorAll("*")].filter((el) =>
-        el.scrollWidth > document.documentElement.clientWidth)
-        .slice(0, 8).map((el) => [el.tagName, el.id, el.className, el.scrollWidth]),
-    })));
-    assert.equal(overflow, false);
-    await frame.locator("#site-test-close-button").click();
-    await page.screenshot({ path: "/tmp/site-connection-390.png", fullPage: true });
     await page.close();
-
     ({ page, frame } = await openPage(browser, 390));
     await frame.waitForFunction(
       (text) => document.getElementById("sites-list")?.innerText.includes(text),
       name,
     );
+    const layout = await page.evaluate(() => {
+      const iframe = document.querySelector("iframe.plugin-view-frame");
+      const sidebar = document.querySelector(".v-navigation-drawer");
+      return {
+        viewport: window.innerWidth,
+        body: document.body.scrollWidth,
+        sidebar: sidebar ? sidebar.getBoundingClientRect().x : null,
+        iframe: iframe ? iframe.getBoundingClientRect().width : 0,
+      };
+    });
+    assert.equal(layout.viewport, 390);
+    assert.equal(layout.body, 390);
+    assert.ok(layout.iframe >= 380, `iframe must fill mobile viewport: ${layout.iframe}`);
     await testButton(frame).click();
     await frame.waitForSelector("#site-test-dialog[open]");
     assert.equal(await frame.locator("#site-test-content-type").isVisible(), true);
-    await frame.locator("#site-test-close-button").click();
-    await page.waitForFunction(() => !document.getElementById("site-test-dialog")?.open);
+    await runType(frame, "bilibili_hot");
+    await frame.waitForFunction(() =>
+      document.getElementById("site-test-result")?.dataset.tone === "success");
+    const overflow = await frame.evaluate(() => {
+      const dialog = document.getElementById("site-test-dialog");
+      return {
+        doc: [document.documentElement.scrollWidth, document.documentElement.clientWidth],
+        dialog: [dialog.scrollWidth, dialog.clientWidth],
+        bad: document.documentElement.scrollWidth > document.documentElement.clientWidth
+          || dialog.scrollWidth > dialog.clientWidth,
+      };
+    });
+    assert.equal(overflow.bad, false, JSON.stringify({ layout, overflow }));
+    await page.screenshot({ path: process.env.SITE_TEST_SCREENSHOT
+      || "/tmp/site-connection-390.png", fullPage: true });
+    await page.keyboard.press("Escape");
+    await frame.waitForFunction(() =>
+      !document.getElementById("site-test-dialog")?.open);
     console.log("SITE CONNECTION UI PASS", { name, upstreamCalls: upstreamCalls.length });
   } catch (error) {
     failure = error;

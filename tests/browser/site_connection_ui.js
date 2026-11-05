@@ -18,8 +18,13 @@ const upstreamCalls = [];
 let failOnce = true;
 const secondName = `${name}B`;
 let secondSiteId;
+let aName;
+let bName;
 let dailyGate = null;
 let dailyEntered = null;
+const siteGates = {};
+const siteEntered = {};
+const extraSiteIds = [];
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -35,6 +40,14 @@ const upstream = http.createServer((req, res) => {
     : req.url.includes("/v2/douyin") ? 2000 : 0;
   const body = { code: 200, message: "ok", data: [] };
   if (req.url.endsWith("/v2/60s")) body.data = { news: [] };
+  const gateKey = req.url.includes("/a/") ? "a" : req.url.includes("/b/") ? "b" : null;
+  if (gateKey && req.url.endsWith("/v2/bili")) {
+    siteEntered[gateKey]?.resolve();
+    return siteGates[gateKey].promise.then(() => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    });
+  }
   if (req.url.includes("/fail/") && failOnce) {
     failOnce = false;
     res.writeHead(500, { "Content-Type": "application/json" });
@@ -51,6 +64,15 @@ const upstream = http.createServer((req, res) => {
   }, delay);
 });
 
+function armSite(key) {
+  siteGates[key] = deferred();
+  siteEntered[key] = deferred();
+}
+function siteButton(frame, siteName) {
+  return frame.getByRole("button", {
+    name: new RegExp(`测试站点 ${siteName} 连接`),
+  });
+}
 async function api(method, path, data) {
   const response = await fetch(BASE + path, {
     method,
@@ -155,6 +177,16 @@ async function runType(frame, type) {
       enabled: false, timeout_seconds: 5,
     });
     secondSiteId = response.body.data.id;
+    aName = `${name}A`;
+    bName = `${name}B2`;
+    for (const [siteName, prefix] of [[aName, "a"], [bName, "b"]]) {
+      const created = await api("POST",
+        `/api/v1/plugins/extensions/${PLUGIN}/sites`, {
+          name: siteName, base_url: `http://127.0.0.1:${port}/${prefix}`,
+          enabled: false, timeout_seconds: 5,
+        });
+      extraSiteIds.push([created.body.data.id, siteName]);
+    }
 
     let { page, frame } = await openPage(browser, 1400);
     await frame.waitForFunction(
@@ -235,6 +267,38 @@ async function runType(frame, type) {
       document.getElementById("site-test-result")?.dataset.tone === "success");
     await frame.locator("#site-test-close-button").click();
 
+    // A and B concurrent: A completion must not clear B busy state.
+    aName = `${name}A`;
+    bName = `${name}B2`;
+    await frame.waitForFunction(
+      ([a, b]) => {
+        const text = document.getElementById("sites-list")?.innerText || "";
+        return text.includes(a) && text.includes(b);
+      }, [aName, bName],
+    );
+    armSite("a");
+    armSite("b");
+    await siteButton(frame, aName).click();
+    await frame.waitForSelector("#site-test-dialog[open]");
+    await runType(frame, "bilibili_hot");
+    await siteEntered.a.promise;
+    await frame.locator("#site-test-close-button").click();
+    await siteButton(frame, bName).click();
+    await frame.waitForSelector("#site-test-dialog[open]");
+    await runType(frame, "bilibili_hot");
+    await siteEntered.b.promise;
+    siteGates.a.resolve();
+    await frame.waitForFunction(() =>
+      document.getElementById("site-test-result")?.textContent
+        .includes("正在请求所选接口"));
+    assert.equal(await frame.locator("#site-test-run-button").isDisabled(), true);
+    assert.doesNotMatch(await frame.locator("#site-test-result").innerText(),
+      /连接成功/);
+    siteGates.b.resolve();
+    await frame.waitForFunction(() =>
+      document.getElementById("site-test-result")?.dataset.tone === "success");
+    await frame.locator("#site-test-close-button").click();
+
     // 409 displays the config-change warning through the real bridge.
     const current = await api("GET",
       `/api/v1/plugins/extensions/${PLUGIN}/sites/${siteId}`);
@@ -296,6 +360,15 @@ async function runType(frame, type) {
     throw error;
   } finally {
     try {
+      for (const [id, siteName] of extraSiteIds) {
+        const current = await api("GET",
+          `/api/v1/plugins/extensions/${PLUGIN}/sites/${id}`);
+        if (current.status === 200) {
+          await api("POST",
+            `/api/v1/plugins/extensions/${PLUGIN}/sites/${id}/delete`,
+            { expected_revision: current.body.data.revision });
+        }
+      }
       if (secondSiteId && token) {
         const current = await api("GET",
           `/api/v1/plugins/extensions/${PLUGIN}/sites/${secondSiteId}`);

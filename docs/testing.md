@@ -242,6 +242,7 @@ node tests/browser/manual_delivery_query.js
 - 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。
 - 接口回归：`tests/test_site_api.py` 覆盖站点列表、新增、读取、编辑、删除，非法请求体、字段校验、未找到、revision 冲突且不覆盖、删除冲突、凭据保留/替换/清除与脱敏、存储不可用和未预期错误的通用响应。接口业务测试不替代真实宿主鉴权和页面验收。
 - 取消回归：用独立 SQLite 连接持有写锁，等待写操作已排队后取消任务，再释放锁；覆盖新增、编辑、删除取消后的下一次正常写入和重开数据库，确认未提交修改不落盘。不要用固定 sleep 判断写操作已进入等待。
+- 资源泄漏：用 `python -W always::ResourceWarning -m unittest discover -s tests` 运行，日志不应出现 `unclosed database`；需要定位分配点时再加 `-X tracemalloc=4`，警告中 `Object allocated at` 的末帧才是连接创建位置，通常不等于打印警告的测试。测试夹具读写 SQLite 一律用 `contextlib.closing` 包裹连接：`with sqlite3.connect(...)` 只提交或回滚事务，不关闭连接；需要提交语义时写 `with closing(sqlite3.connect(path)) as connection, connection:`。
 - 宿主级：在 AstrBot v4.29.1 中加载、停用、启用、重载；确认 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3` 存在、停用后数据库句柄关闭、重载后数据保留且插件只有一份注册。扩展 API 未登录返回 401；停用后旧处理器返回 503；启用/重载后恢复读写。
 - 后台页面：在真实 AstrBot Dashboard 登录后打开“站点管理”，新增两个虚构站点（内网地址和反向代理前缀），编辑名称/超时/启用状态，保留/替换/清除凭据，制造过期 revision 并确认冲突不覆盖，删除站点，刷新页面，停用/启用/重载，检查窄屏无横向溢出。页面只显示 `has_bearer_token`，不显示凭据原文。
 - 写操作未确认：在真实宿主浏览器中把新增/编辑/删除请求转发到服务器后丢弃响应，确认页面进入“结果未确认”、保存/删除按钮禁用且不能直接重提；重新读取成功显示最新列表状态，读取失败继续保持未确认；请求未到达服务器时重新读取后可明确重新提交。普通字段校验、正常保存和 revision 冲突仍单独验证。
@@ -387,7 +388,7 @@ mock 测试通过不等于真实投递成功。检查报告区分通过、失败
 2026-11-05 在隔离宿主 AstrBot v4.29.1、插件 `v0.1.0-dev.1`、Chromium 无头环境下实测：
 
 - 仓库全量测试：`python -m unittest discover -s tests -q` → `Ran 438 tests`、`OK (skipped=22)`，Python 3.13.13，环境补装 croniter 6.2.4。22 项跳过不计为通过。
-- 独立复核：完整 AstrBot 源码隔离环境下，Python 3.12.13 和 3.13.13 各运行 438 项，均通过且无跳过；Python 3.13 完整套件日志另出现未关闭 SQLite 连接的 ResourceWarning，来源尚未定位。
+- 独立复核：完整 AstrBot 源码隔离环境下，Python 3.12.13 和 3.13.13 各运行 438 项，均通过且无跳过。Python 3.13 完整套件当时另出现未关闭 SQLite 连接的 ResourceWarning，现已定位并修复：来源是 6 处测试夹具的 `with sqlite3.connect(...)`（该上下文管理器只提交或回滚事务，不关闭连接），改用 `contextlib.closing` 后在 `-W always::ResourceWarning` 下，Python 3.13.13（`Ran 438`、22 跳过）与 3.12.13（`Ran 438`、13 跳过）均为 0 条警告。程序代码不直接使用 `sqlite3.connect`，未发现运行时连接泄漏。
 - 既有 `task_schedule_ui.js`、`scheduler_ui.js`、`weekly_schedule_ui.js`、`interval_schedule_ui.js`、`cron_schedule_ui.js` 和 `manual_delivery_query.js` 在隔离宿主依次通过；手动投递使用测试替身，不连接真实消息平台。
 - 后端专项：`tests/test_site_connection_boundary.py` 共 11 项，覆盖错误分类与凭据不回显、并发槽位在取消/失败后恢复、旧请求与在途删除/关闭的生命周期、缓存内容与有效期不变、配置/任务/运行记录不变、不发送且不渲染图片。
 - 浏览器：`tests/browser/site_connection_ui.js` 桌面 1400px 与 390px 两条流程、7 个场景（`refresh-invalidation`、`429-busy desktop`、`a-b-isolation`、`edit-invalidation`、`delete-invalidation`、`429-busy 390px`、`plugin-503-recovery`）连续 3 次完整通过，单轮约 21 秒，`upstreamCalls=24`。

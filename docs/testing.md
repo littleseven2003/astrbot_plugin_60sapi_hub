@@ -387,11 +387,13 @@ mock 测试通过不等于真实投递成功。检查报告区分通过、失败
 2026-11-05 在隔离宿主 AstrBot v4.29.1、插件 `v0.1.0-dev.1`、Chromium 无头环境下实测：
 
 - 仓库全量测试：`python -m unittest discover -s tests -q` → `Ran 438 tests`、`OK (skipped=22)`，Python 3.13.13，环境补装 croniter 6.2.4。22 项跳过不计为通过。
+- 独立复核：完整 AstrBot 源码隔离环境下，Python 3.12.13 和 3.13.13 各运行 438 项，均通过且无跳过；Python 3.13 完整套件日志另出现未关闭 SQLite 连接的 ResourceWarning，来源尚未定位。
+- 既有 `task_schedule_ui.js`、`scheduler_ui.js`、`weekly_schedule_ui.js`、`interval_schedule_ui.js`、`cron_schedule_ui.js` 和 `manual_delivery_query.js` 在隔离宿主依次通过；手动投递使用测试替身，不连接真实消息平台。
 - 后端专项：`tests/test_site_connection_boundary.py` 共 11 项，覆盖错误分类与凭据不回显、并发槽位在取消/失败后恢复、旧请求与在途删除/关闭的生命周期、缓存内容与有效期不变、配置/任务/运行记录不变、不发送且不渲染图片。
 - 浏览器：`tests/browser/site_connection_ui.js` 桌面 1400px 与 390px 两条流程、7 个场景（`refresh-invalidation`、`429-busy desktop`、`a-b-isolation`、`edit-invalidation`、`delete-invalidation`、`429-busy 390px`、`plugin-503-recovery`）连续 3 次完整通过，单轮约 21 秒，`upstreamCalls=24`。
 - 409 与 503 的消息可经真实 bridge 透传：409 场景断言结果区落到 `warning` 样式（消息命中警告映射），503 场景断言到确切文案“插件当前未启用”，重新启用后恢复成功。
 - 429 的宿主限制：宿主 API 返回正确的 429 响应体与中文消息，但 AstrBot 4.29.1 的 plugin-view bridge 在异常路径丢弃服务端消息（`PluginViewPage` 的 catch 兜底为 `Plugin bridge request failed.`），页面实际显示“测试失败，请手动重试；未修改站点配置。”（`danger`）。插桩探针实测 `BRANCH: swallowed`、`TEXT: "测试失败，请手动重试；未修改站点配置。"`、`TONE: danger`。脚本对两种结果都有断言：文案透传时必须为繁忙警告态，被宿主吞掉时必须为通用失败态。该限制属于宿主行为，不记为插件错误分类通过，也不代表并发限制未生效。
-- 未验证：真实消息平台与真实账号发送、公开上游真实实例的浏览器全链路、Chromium 以外的浏览器、AstrBot 4.29.1 / Python 3.13.13 以外的环境。
+- 未验证：真实消息平台与真实账号发送、公开上游真实实例的浏览器全链路、Chromium 以外的浏览器、AstrBot 4.29.1 / Python 3.12.13、3.13.13 以外的环境。
 
 ### 运行方式与环境要求
 

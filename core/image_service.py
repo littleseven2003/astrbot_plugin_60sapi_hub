@@ -1,19 +1,25 @@
-"""组合图片渲染的并发、排队、超时和生命周期管理。"""
+"""组合图片渲染的并发、排队、超时和生命周期管理。
+
+渲染结果是「每个栏目一张长图」，按组合配置顺序返回；本模块不拆分、不合并，
+只负责调度、并发名额和取消传递。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .profile_image import (
-    ImagePage,
     ImageRenderCancelled,
     ImageRenderLimits,
     ProfileImageError,
     ProfileImageRenderer,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - 仅用于类型标注
+    from .profile_image import SectionImage
 
 DEFAULT_MAX_CONCURRENT_RENDERS = 2
 DEFAULT_MAX_QUEUED_RENDERS = 4
@@ -75,7 +81,7 @@ class ProfileImageService:
             thread_name_prefix="60sapi-image",
         )
         self._active_events: set[threading.Event] = set()
-        self._futures: set[Future[list[ImagePage]]] = set()
+        self._futures: set[Future[tuple["SectionImage", ...]]] = set()
         self._closed = False
         self._closed_event = asyncio.Event()
         self._close_task: asyncio.Task[None] | None = None
@@ -110,7 +116,7 @@ class ProfileImageService:
         data: dict[str, Any],
         *,
         created_at: str = "",
-    ) -> list[ImagePage]:
+    ) -> tuple["SectionImage", ...]:
         if self._closed:
             raise ImageServiceClosedError("图片服务当前不可用。")
         loop = asyncio.get_running_loop()
@@ -122,7 +128,7 @@ class ProfileImageService:
 
         cancel_event = threading.Event()
         self._active_events.add(cancel_event)
-        future: Future[list[ImagePage]] | None = None
+        future: Future[tuple["SectionImage", ...]] | None = None
         try:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -228,7 +234,7 @@ class ProfileImageService:
 
     def _on_render_done(
         self,
-        future: Future[list[ImagePage]],
+        future: Future[tuple["SectionImage", ...]],
         cancel_event: threading.Event,
     ) -> None:
         self._active_events.discard(cancel_event)
@@ -257,7 +263,7 @@ class ProfileImageService:
         data: dict[str, Any],
         created_at: str,
         cancel_event: threading.Event,
-    ) -> list[ImagePage]:
+    ) -> tuple["SectionImage", ...]:
         if cancel_event.is_set():
             raise ImageRenderCancelled("图片渲染已取消。")
         renderer = ProfileImageRenderer(
@@ -265,8 +271,9 @@ class ProfileImageService:
             limits=self._limits,
         )
         try:
-            return renderer.render(
+            rendered = renderer.render(
                 data,
+                limits=self._limits,
                 created_at=created_at,
                 cancel_event=cancel_event,
             )
@@ -276,6 +283,15 @@ class ProfileImageService:
             raise
         except Exception as exc:
             raise ImageRenderFailedError("图片渲染失败。") from exc
+        return _as_section_images(rendered)
+
+
+def _as_section_images(rendered: Any) -> tuple["SectionImage", ...]:
+    if isinstance(rendered, tuple):
+        return rendered
+    if isinstance(rendered, list):
+        return tuple(rendered)
+    raise ImageRenderFailedError("图片渲染结果格式异常。")
 
 
 def _consume_task(task: asyncio.Task[Any]) -> None:

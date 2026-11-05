@@ -3,6 +3,10 @@
 快照只保存已经由组合预览服务验证并截取的数据，不保存 HTML、URL、文件路径
 或任意前端内容。快照有过期时间、数量上限和总字节上限；图片生成不读取后来
 的缓存或重新请求上游。
+
+栏目长图按「每个栏目一张」生成，图片字节不进入快照：快照字节只衡量预览数据
+JSON，渲染结果合计大小由 DEFAULT_MAX_RENDER_OUTPUT_BYTES 约束，单图高度、单图
+字节和栏目数由渲染器的 ImageRenderLimits 约束。
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ DEFAULT_SNAPSHOT_TTL_SECONDS = 300.0
 DEFAULT_MAX_SNAPSHOTS = 32
 DEFAULT_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
+# 一次图片渲染返回的全部栏目长图合计字节上限（PNG 原始字节，不含 base64）。
+DEFAULT_MAX_RENDER_OUTPUT_BYTES = 8 * 1024 * 1024
 
 
 class ImageSnapshotError(Exception):
@@ -183,6 +189,7 @@ class ImageSnapshotStore:
 
 
 __all__ = [
+    "DEFAULT_MAX_RENDER_OUTPUT_BYTES",
     "DEFAULT_MAX_SNAPSHOT_BYTES",
     "DEFAULT_MAX_SNAPSHOTS",
     "DEFAULT_MAX_TOTAL_BYTES",

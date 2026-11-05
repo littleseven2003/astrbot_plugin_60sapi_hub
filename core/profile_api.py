@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import base64
-import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from .content_api import content_snapshot_dict
 from .content_service import ContentService
+from .content_types import CONTENT_LABELS
 from .news import (
     NewsBusinessError,
     NewsClientClosedError,
@@ -27,6 +28,7 @@ from .image_service import (
     ProfileImageService,
 )
 from .image_snapshots import (
+    DEFAULT_MAX_RENDER_OUTPUT_BYTES,
     ImageSnapshotClosedError,
     ImageSnapshotError,
     ImageSnapshotStore,
@@ -56,6 +58,9 @@ from .sites import (
     SiteStorageError,
     SiteValidationError,
 )
+
+_SECTION_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})
+_SAFE_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,7 +434,7 @@ class ProfileApi:
             return _stale_snapshot_error()
 
         try:
-            pages = await self._image_service.render(
+            section_images = await self._image_service.render(
                 snapshot.data,
                 created_at=snapshot.created_at,
             )
@@ -448,7 +453,7 @@ class ProfileApi:
         except ImageLimitError:
             return _error(
                 422,
-                "图片内容超过页数或大小限制，请缩小组合或条数后重试。",
+                "图片内容超过高度或大小限制，请减少栏目或条数后重试。",
                 code="image_limit_exceeded",
             )
         except ImageServiceClosedError:
@@ -470,35 +475,45 @@ class ProfileApi:
                 code="image_internal_error",
             )
 
-        page_payloads: list[dict[str, Any]] = []
-        total_base64 = 0
-        for page in pages:
-            encoded = base64.b64encode(page.png).decode("ascii")
-            total_base64 += len(encoded)
-            page_payloads.append(
-                {
-                    "index": page.index,
-                    "width": page.width,
-                    "height": page.height,
-                    "sha256": hashlib.sha256(page.png).hexdigest(),
-                    "png_base64": encoded,
-                },
-            )
-        if total_base64 > 16 * 1024 * 1024:
+        images: list[dict[str, Any]] = []
+        failed_sections: list[str] = []
+        total_png_bytes = 0
+        for position, section_image in enumerate(section_images, start=1):
+            entry = _section_image_payload(section_image, position)
+            if entry["status"] == "failed":
+                failed_sections.append(entry["label"])
+                images.append(entry)
+                continue
+            png = getattr(section_image, "png", None)
+            if not isinstance(png, bytes) or not png:
+                # 渲染器声明成功却没有图片：按该栏目失败处理，不伪造成功。
+                entry["status"] = "failed"
+                entry["error"] = "render_failed"
+                failed_sections.append(entry["label"])
+                images.append(entry)
+                continue
+            total_png_bytes += len(png)
+            if total_png_bytes > DEFAULT_MAX_RENDER_OUTPUT_BYTES:
+                return _error(
+                    422,
+                    "图片总大小超过上限，请减少栏目或条数后重试。",
+                    code="image_limit_exceeded",
+                )
+            entry["png_base64"] = base64.b64encode(png).decode("ascii")
+            images.append(entry)
+        if not any(entry.get("png_base64") for entry in images):
+            # 全部栏目都失败时和「全部栏目获取失败」一致：不返回成功图片。
             return _error(
                 422,
-                "图片响应超过大小限制，请缩小组合或条数后重试。",
-                code="image_limit_exceeded",
+                "所有栏目图片生成失败，请减少栏目或条数后重试；文字和 Markdown 仍可使用。",
+                code="image_render_failed",
+                data={"images": images, "failed_sections": failed_sections},
             )
         return _ok(
             {
+                "images": images,
+                "failed_sections": failed_sections,
                 "snapshot_id": snapshot.id,
-                "profile_id": profile.id,
-                "profile_revision": profile.revision,
-                "page_count": len(page_payloads),
-                "width": pages[0].width if pages else 0,
-                "height": pages[0].height if pages else 0,
-                "pages": page_payloads,
             },
         )
 
@@ -555,6 +570,58 @@ async def _safe_site(
         return await sites.get_site(site_id)
     except Exception:
         return None
+
+
+def _section_image_payload(section_image: Any, position: int) -> dict[str, Any]:
+    """把一个栏目长图整理成冻结的响应结构，不回显渲染器内部异常。"""
+    raw_index = getattr(section_image, "index", position)
+    index = raw_index if type(raw_index) is int and raw_index >= 1 else position
+    content_type = _safe_text(getattr(section_image, "content_type", ""))
+    label = _safe_text(getattr(section_image, "label", "")) or CONTENT_LABELS.get(
+        content_type,
+        "栏目",
+    )
+    raw_status = getattr(section_image, "status", "")
+    known_status = raw_status in _SECTION_IMAGE_STATUSES
+    status = raw_status if known_status else "failed"
+    payload: dict[str, Any] = {
+        "index": index,
+        "content_type": content_type,
+        "label": label,
+        "status": status,
+        "width": _safe_size(getattr(section_image, "width", 0)),
+        "height": _safe_size(getattr(section_image, "height", 0)),
+    }
+    if status == "failed":
+        payload["error"] = (
+            _safe_error_code(getattr(section_image, "error", None))
+            if known_status else "render_failed"
+        )
+    return payload
+
+
+def _safe_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = "".join(
+        " " if ord(char) < 32 or ord(char) == 127 else char
+        for char in value
+    )
+    return " ".join(text.split())[:200]
+
+
+def _safe_size(value: Any) -> int:
+    if type(value) is int and value >= 0:
+        return value
+    return 0
+
+
+def _safe_error_code(value: Any) -> str:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if _SAFE_ERROR_CODE.fullmatch(candidate):
+            return candidate
+    return "render_failed"
 
 
 def _image_snapshot_data(data: dict[str, Any]) -> dict[str, Any]:

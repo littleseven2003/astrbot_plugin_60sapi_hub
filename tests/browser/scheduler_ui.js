@@ -47,10 +47,37 @@ async function closeHostPrompts(page) {
   );
 }
 
+async function frameOfPage(page){
+  const iframe=page.locator('iframe.plugin-view-frame').first();
+  await iframe.waitFor({state:'attached',timeout:15000});
+  for(let i=0;i<60;i+=1){
+    let frame=null;
+    try{frame=await (await iframe.elementHandle()).contentFrame();}catch{/* iframe 正在重建 */}
+    if(frame){
+      try{
+        await frame.waitForFunction(()=>document.getElementById('sites-list')?.getAttribute('aria-busy')==='false',null,{timeout:2000});
+        return frame;
+      }catch{/* 尚未完成引导 */}
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error('插件 iframe 在等待窗口内未就绪');
+}
 async function showView(frame,view){
   await frame.waitForFunction(()=>document.getElementById('sites-list')?.getAttribute('aria-busy')==='false',null,{timeout:10000});
-  await frame.locator('.nav-item[data-view="'+view+'"]').click();
-  await frame.waitForFunction(v=>{const t=document.getElementById('view-'+v);return Boolean(t)&&!t.hidden;},view,{timeout:10000});
+  let current=frame;
+  const isVisible=(target)=>current.evaluate((v)=>{const t=document.getElementById('view-'+v);return Boolean(t)&&!t.hidden;},target);
+  if(await isVisible(view).catch(()=>false)){return current;}
+  const deadline=Date.now()+10000;let lastError=null;
+  while(Date.now()<deadline){
+    if(typeof current.isDetached==='function'&&current.isDetached()){current=await frameOfPage(current.page());}
+    try{
+      await current.locator('.nav-item[data-view="'+view+'"]').click({timeout:Math.max(1000,Math.min(5000,deadline-Date.now()))});
+      await current.waitForFunction(v=>{const t=document.getElementById('view-'+v);return Boolean(t)&&!t.hidden;},view,{timeout:Math.max(500,Math.min(5000,deadline-Date.now()))});
+      return current;
+    }catch(error){lastError=error;if(Date.now()>=deadline)break;await current.page().waitForTimeout(200);}
+  }
+  throw new Error('切换到视图 '+view+' 失败：'+(lastError?lastError.message:'未知错误'));
 }
 
 const BASE=process.env.ASTRBOT_URL,P=process.env.ASTRBOT_PLUGIN||'astrbot_plugin_60sapi_hub',PW=process.env.ASTRBOT_PASSWORD,CHROME=process.env.CHROME_PATH;
@@ -68,8 +95,8 @@ async function api(method,path,data){const r=await fetch(BASE+path,{method,heade
   await closeHostFirstPrompt(page, PW);
 await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'});await page.waitForTimeout(800);
   const clear=async()=>closeHostPrompts(page);
-  await clear();const iframe=page.locator('iframe').first();let frame=page.frames().find(x=>x!==page.mainFrame()&&x.url().includes('/views/sites/'));if(!frame)frame=await (await iframe.elementHandle()).contentFrame();
-  await showView(frame,'tasks');
+  await clear();let frame=await frameOfPage(page);
+  frame=await showView(frame,'tasks');
   await frame.waitForFunction(n=>document.getElementById('tasks-list')?.innerText.includes(n),name);
   await clear();await frame.locator('#tasks-list li').filter({hasText:name}).getByRole('button',{name:/启用定时调度/}).click();await frame.waitForSelector('#task-power-dialog[open]');
   const confirmText=await frame.locator('#task-power-info').innerText();assert.match(confirmText,new RegExp(name));assert.match(confirmText,/08:30/);assert.match(confirmText,/Asia\/Shanghai/);assert.match(confirmText,/fake_qq_01:GroupMessage:123/);
@@ -99,7 +126,7 @@ await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'
   await clear();await frame.locator('#tasks-list li').filter({hasText:name+'外部'}).getByRole('button',{name:/停用定时调度/}).click();await frame.waitForSelector('#task-power-dialog[open]');await frame.locator('#task-power-confirm-button').click();await frame.waitForFunction(()=>!document.getElementById('task-power-dialog')?.open);
   current=await api('GET',`/api/v1/plugins/extensions/${P}/tasks/${taskId}`);assert.equal(current.body.data.enabled,false);assert.equal(current.body.data.revision,lostRev+1);
   const calls=[];await page.route('**/schedule-runs*',async route=>{const off=Number(new URL(route.request().url()).searchParams.get('offset')||0);calls.push(off);const claim=i=>({task_id:taskId,scheduled_for:`2026-01-0${i}T00:30:00+00:00`,execution_id:`exec-${i}`,status:'unknown',error_code:'send_unknown',created_at:'t',updated_at:'t'});const skip=i=>({task_id:taskId,scheduled_for:`2026-01-0${i}T00:30:00+00:00`,reason:'late',created_at:'t'});await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({status:'ok',data:{limit:2,offset:off,claims:[claim(off+1)],skips:[skip(off+1),skip(off+2)]}})});});
-  await clear();await showView(frame,'executions');await frame.locator('#schedule-runs-refresh-button').click();await frame.waitForFunction(()=>document.getElementById('schedule-claims-list')?.innerText.includes('exec-1'));assert.match(await frame.locator('#schedule-claims-list').innerText(),/结果不确定/);assert.match(await frame.locator('#schedule-skips-list').innerText(),/超过迟到窗口/);
+  await clear();frame=await showView(frame,'executions');await frame.locator('#schedule-runs-refresh-button').click();await frame.waitForFunction(()=>document.getElementById('schedule-claims-list')?.innerText.includes('exec-1'));assert.match(await frame.locator('#schedule-claims-list').innerText(),/结果不确定/);assert.match(await frame.locator('#schedule-skips-list').innerText(),/超过迟到窗口/);
   await frame.locator('#schedule-runs-more-button').click();await frame.waitForFunction(()=>document.getElementById('schedule-claims-list')?.innerText.includes('exec-3'));assert.deepEqual(calls.slice(-2),[0,2]);
   await page.unroute('**/schedule-runs*');await page.route('**/schedule-runs*',route=>route.abort('failed'));
   await frame.locator('#schedule-runs-refresh-button').click();await frame.waitForFunction(()=>!document.getElementById('schedule-runs-state')?.hidden);

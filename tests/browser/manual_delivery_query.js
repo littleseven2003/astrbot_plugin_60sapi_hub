@@ -35,6 +35,12 @@ async function login() {
   return (await response.json()).data.token;
 }
 
+async function showView(frame, view) {
+  await frame.waitForFunction(() => document.getElementById("sites-list")?.getAttribute("aria-busy") === "false", null, { timeout: 10000 });
+  await frame.locator('.nav-item[data-view="' + view + '"]').click();
+  await frame.waitForFunction((name) => { const node = document.getElementById("view-" + name); return Boolean(node) && !node.hidden; }, view, { timeout: 10000 });
+}
+
 async function frameOf(page) {
   const iframe = page.locator("iframe").first();
   await iframe.waitFor({ state: "attached" });
@@ -42,7 +48,7 @@ async function frameOf(page) {
     (item) => item !== page.mainFrame() && item.url().includes("/views/sites/"),
   );
   if (!frame) frame = await (await iframe.elementHandle()).contentFrame();
-  await frame.waitForSelector("#tasks-list");
+  await frame.waitForSelector("#tasks-list", { state: "attached" });
   return frame;
 }
 
@@ -260,6 +266,7 @@ async function waitBridgeResponse(frame, requestId) {
       )) node.remove();
     });
     const frame = await frameOf(page);
+    await showView(frame, "tasks");
     await frame.waitForFunction(() => document.getElementById("tasks-list")?.innerText.includes("夹具任务三"));
 
     // Scenario 1: first submit B, lost response, only query B.
@@ -290,6 +297,7 @@ async function waitBridgeResponse(frame, requestId) {
     await closeDeliveryDialog(frame, page);
 
     // Scenario 2/3: history A fails, retry still A; then B after history queries B.
+    await showView(frame, "executions");
     historyVisible = true;
     await frame.locator("#delivery-refresh-button").click({ force: true });
     await frame.waitForFunction(
@@ -324,6 +332,7 @@ async function waitBridgeResponse(frame, requestId) {
     await frame.locator("#delivery-close-button").click({ force: true });
     await frame.waitForFunction(() => !document.getElementById("delivery-dialog")?.open);
     await page.locator(".v-overlay__scrim").last().waitFor({ state: "hidden" }).catch(() => {});
+    await showView(frame, "tasks");
     await frame.locator("#tasks-list li").filter({ hasText: TASK_2.name })
       .getByRole("button", { name: "测试投递" }).click({ force: true });
     await waitPreview(frame);
@@ -355,6 +364,7 @@ async function waitBridgeResponse(frame, requestId) {
     // Scenario 4: delayed old success while switching to a fresh confirmation.
     for (const status of [200, 500]) {
       historyVisible = true;
+      await showView(frame, "executions");
       await frame.locator("#delivery-refresh-button").click({ force: true });
       await frame.waitForFunction(
         (id) => document.getElementById("delivery-list")?.innerText.includes(id),
@@ -383,6 +393,7 @@ async function waitBridgeResponse(frame, requestId) {
         "delayed response must not have arrived before release",
       );
       await closeDeliveryDialog(frame, page);
+      await showView(frame, "tasks");
       await frame.locator("#tasks-list li").filter({ hasText: TASK_3.name })
         .getByRole("button", { name: "测试投递" }).click({ force: true });
       await waitPreview(frame);

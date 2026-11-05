@@ -447,6 +447,7 @@ function openDialog(dialog) {
   } else {
     dialog.setAttribute("open", "");
   }
+  captureFormBaselines(dialog);
 }
 
 function closeDialog(dialog) {
@@ -3952,7 +3953,7 @@ function renderDeliveryPreview(data, token) {
     ["任务", data.task_name], ["组合", data.profile_name],
     ["来源站点", data.site_name], ["输出方式", data.output_label],
     ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision} · 站点 ${data.site_revision}`],
-    ["内容策略", "确认后获取最新内容，不复用页面旧预览"],
+    ["内容策略", "重新准备内容，不复用页面旧预览；可能命中内容缓存（默认 300 秒），不保证重新请求上游"],
   ]) {
     const p = document.createElement("p");
     p.textContent = `${label}：${value}`;
@@ -4576,18 +4577,20 @@ function bindEvents() {
   );
   elements.taskCancelButton.addEventListener("click", () => {
     if (!state.taskSaving && !state.taskPending) {
-      closeDialog(elements.taskDialog);
+      requestCloseFormDialog(elements.taskDialog);
     }
   });
   elements.taskCloseDialogButton.addEventListener("click", () => {
     if (!state.taskSaving && !state.taskPending) {
-      closeDialog(elements.taskDialog);
+      requestCloseFormDialog(elements.taskDialog);
     }
   });
   elements.taskDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
     if (state.taskSaving || state.taskPending) {
-      event.preventDefault();
+      return;
     }
+    requestCloseFormDialog(elements.taskDialog);
   });
   elements.taskDeleteCancelButton.addEventListener("click", () => {
     if (!state.taskDeleting && !state.taskPending) {
@@ -4654,18 +4657,20 @@ function bindEvents() {
   );
   elements.profileCloseDialogButton.addEventListener("click", () => {
     if (!state.profileSaving && !state.profilePending) {
-      closeDialog(elements.profileDialog);
+      requestCloseFormDialog(elements.profileDialog);
     }
   });
   elements.profileCancelButton.addEventListener("click", () => {
     if (!state.profileSaving && !state.profilePending) {
-      closeDialog(elements.profileDialog);
+      requestCloseFormDialog(elements.profileDialog);
     }
   });
   elements.profileDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
     if (state.profileSaving || state.profilePending) {
-      event.preventDefault();
+      return;
     }
+    requestCloseFormDialog(elements.profileDialog);
   });
   elements.profileDeleteCancelButton.addEventListener("click", () => {
     if (!state.profileDeleting && !state.profilePending) {
@@ -4714,12 +4719,12 @@ function bindEvents() {
   );
   elements.cancelButton.addEventListener("click", () => {
     if (!state.saving && !state.pendingWrite) {
-      closeDialog(elements.siteDialog);
+      requestCloseFormDialog(elements.siteDialog);
     }
   });
   elements.closeDialogButton.addEventListener("click", () => {
     if (!state.saving && !state.pendingWrite) {
-      closeDialog(elements.siteDialog);
+      requestCloseFormDialog(elements.siteDialog);
     }
   });
   elements.siteForm.addEventListener("submit", handleSave);
@@ -4736,9 +4741,11 @@ function bindEvents() {
     );
   });
   elements.siteDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
     if (state.saving || state.pendingWrite) {
-      event.preventDefault();
+      return;
     }
+    requestCloseFormDialog(elements.siteDialog);
   });
   elements.deleteCancelButton.addEventListener("click", () => {
     if (!state.deleting && !state.pendingWrite) {
@@ -4764,6 +4771,325 @@ function bindEvents() {
       state.deleteTarget = null;
     }
   });
+}
+
+/* ---------- 视图导航：只切换显示状态，不读取或写入任何业务数据 ---------- */
+
+const NAV_VIEW_DEFINITIONS = [
+  { view: "sites", label: "站点管理" },
+  { view: "preview", label: "内容预览" },
+  { view: "profiles", label: "内容组合" },
+  { view: "tasks", label: "推送任务" },
+  { view: "executions", label: "执行记录" },
+];
+
+const NAV_VIEW_IDS = new Set(
+  NAV_VIEW_DEFINITIONS.map((item) => item.view),
+);
+const NAV_VIEW_LABELS = new Map(
+  NAV_VIEW_DEFINITIONS.map((item) => [item.view, item.label]),
+);
+const NAV_DEFAULT_VIEW = "sites";
+
+const navState = {
+  current: null,
+};
+
+function navViewNodes() {
+  return Array.from(document.querySelectorAll(".view[data-view]"));
+}
+
+function navItemNodes() {
+  return Array.from(document.querySelectorAll(".nav-item[data-view]"));
+}
+
+function navViewNode(view) {
+  for (const node of navViewNodes()) {
+    if (node.getAttribute("data-view") === view) {
+      return node;
+    }
+  }
+  return null;
+}
+
+function navRawHash() {
+  return String(window.location.hash || "").replace(/^#/, "").trim();
+}
+
+function navHashView() {
+  const raw = navRawHash();
+  return NAV_VIEW_IDS.has(raw) ? raw : null;
+}
+
+function navIsPageAnchor(raw) {
+  return Boolean(raw) && document.getElementById(raw) !== null;
+}
+
+function navWriteHash(view) {
+  const target = "#" + view;
+  if (String(window.location.hash || "") === target) {
+    return;
+  }
+  try {
+    window.history.replaceState(null, "", target);
+  } catch {
+    window.location.hash = target;
+  }
+}
+
+function navUpdateBreadcrumb(view) {
+  const breadcrumb = document.getElementById("breadcrumb-view");
+  if (!breadcrumb) {
+    return;
+  }
+  const label = NAV_VIEW_LABELS.get(view);
+  breadcrumb.textContent = label ? "工作区 / " + label : "工作区";
+}
+
+function navFocusView(view) {
+  const node = navViewNode(view);
+  if (!node) {
+    return;
+  }
+  const heading = node.querySelector("h1") || node;
+  if (!heading.hasAttribute("tabindex")) {
+    heading.setAttribute("tabindex", "-1");
+  }
+  try {
+    heading.focus();
+  } catch {
+    // 焦点移动失败不影响视图切换。
+  }
+}
+
+function navApplyView(view, options) {
+  if (!NAV_VIEW_IDS.has(view)) {
+    return false;
+  }
+  const nodes = navViewNodes();
+  if (nodes.length === 0) {
+    return false;
+  }
+  const settings = options || {};
+  for (const node of nodes) {
+    node.hidden = node.getAttribute("data-view") !== view;
+  }
+  for (const item of navItemNodes()) {
+    const active = item.getAttribute("data-view") === view;
+    item.classList.toggle("is-active", active);
+    if (active) {
+      item.setAttribute("aria-current", "page");
+    } else {
+      item.removeAttribute("aria-current");
+    }
+  }
+  navState.current = view;
+  navUpdateBreadcrumb(view);
+  if (settings.updateHash) {
+    navWriteHash(view);
+  }
+  if (settings.focus) {
+    navFocusView(view);
+  }
+  return true;
+}
+
+function navRequestView(view, options) {
+  if (!NAV_VIEW_IDS.has(view)) {
+    return false;
+  }
+  return navApplyView(view, options || {});
+}
+
+function navHandleHashChange() {
+  const raw = navRawHash();
+  if (!raw) {
+    return;
+  }
+  const view = navHashView();
+  if (view) {
+    navRequestView(view, { focus: true, updateHash: false });
+    return;
+  }
+  if (navIsPageAnchor(raw)) {
+    return;
+  }
+  navRequestView(NAV_DEFAULT_VIEW, { focus: true, updateHash: false });
+}
+
+function bindNavigation() {
+  for (const item of navItemNodes()) {
+    item.addEventListener("click", () => {
+      const view = item.getAttribute("data-view");
+      if (view) {
+        navRequestView(view, { focus: true, updateHash: true });
+      }
+    });
+  }
+  window.addEventListener("hashchange", navHandleHashChange);
+  navApplyView(navHashView() || NAV_DEFAULT_VIEW, {
+    focus: false,
+    updateHash: false,
+  });
+}
+
+/* ---------- 未保存修改守卫：关闭表单对话框前比对初始快照 ---------- */
+
+const formGuardState = {
+  baselines: new WeakMap(),
+  pendingDialog: null,
+};
+
+function formSnapshot(form) {
+  const parts = [];
+  const separator = String.fromCharCode(1);
+  let index = 0;
+  for (const control of form.elements) {
+    index += 1;
+    const tag = String(control.tagName || "").toUpperCase();
+    if (!tag) {
+      continue;
+    }
+    if (
+      tag === "BUTTON"
+      || tag === "FIELDSET"
+      || tag === "OUTPUT"
+      || tag === "OBJECT"
+    ) {
+      continue;
+    }
+    const type = String(control.type || "").toLowerCase();
+    if (
+      type === "submit"
+      || type === "button"
+      || type === "reset"
+      || type === "file"
+      || type === "image"
+    ) {
+      continue;
+    }
+    const key = control.id || control.name || tag + ":" + index;
+    if (type === "checkbox" || type === "radio") {
+      parts.push(key + "=" + (control.checked ? "1" : "0"));
+    } else {
+      parts.push(
+        key + "=" + (control.value === undefined ? "" : control.value),
+      );
+    }
+  }
+  return parts.join(separator);
+}
+
+function captureFormBaselines(dialog) {
+  if (!dialog || typeof dialog.querySelectorAll !== "function") {
+    return;
+  }
+  for (const form of dialog.querySelectorAll("form")) {
+    formGuardState.baselines.set(form, formSnapshot(form));
+  }
+}
+
+function formHasUnsavedChanges(form) {
+  const baseline = formGuardState.baselines.get(form);
+  if (typeof baseline !== "string") {
+    return false;
+  }
+  return formSnapshot(form) !== baseline;
+}
+
+function dialogHasUnsavedChanges(dialog) {
+  if (!dialog) {
+    return false;
+  }
+  for (const form of dialog.querySelectorAll("form")) {
+    if (formHasUnsavedChanges(form)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function closeDiscardDialog() {
+  const dialog = document.getElementById("discard-dialog");
+  if (!dialog) {
+    return;
+  }
+  if (typeof dialog.close === "function") {
+    if (dialog.open) {
+      dialog.close();
+    }
+  } else {
+    dialog.removeAttribute("open");
+  }
+}
+
+function resolveDiscard(leave) {
+  const formDialog = formGuardState.pendingDialog;
+  formGuardState.pendingDialog = null;
+  closeDiscardDialog();
+  if (leave && formDialog && formDialog.open) {
+    closeDialog(formDialog);
+  }
+}
+
+function ensureDiscardDialogBound(dialog) {
+  if (!dialog || dialog.dataset.guardBound === "1") {
+    return;
+  }
+  dialog.dataset.guardBound = "1";
+  const confirmButton = document.getElementById("discard-confirm-button");
+  const cancelButton = document.getElementById("discard-cancel-button");
+  if (confirmButton) {
+    confirmButton.addEventListener("click", () => resolveDiscard(true));
+  }
+  if (cancelButton) {
+    cancelButton.addEventListener("click", () => resolveDiscard(false));
+  }
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    resolveDiscard(false);
+  });
+  dialog.addEventListener("close", () => {
+    formGuardState.pendingDialog = null;
+  });
+}
+
+function openDiscardDialog(formDialog) {
+  const dialog = document.getElementById("discard-dialog");
+  if (!dialog) {
+    // 页面模板尚未提供 #discard-dialog 时不静默丢弃修改。
+    const leave = typeof window.confirm === "function"
+      ? window.confirm("放弃未保存的修改？离开会丢失当前填写的内容。")
+      : false;
+    if (leave) {
+      closeDialog(formDialog);
+    }
+    return;
+  }
+  ensureDiscardDialogBound(dialog);
+  formGuardState.pendingDialog = formDialog;
+  if (typeof dialog.showModal === "function") {
+    if (!dialog.open) {
+      dialog.showModal();
+    }
+  } else {
+    dialog.setAttribute("open", "");
+  }
+  const cancelButton = document.getElementById("discard-cancel-button");
+  if (cancelButton) {
+    cancelButton.focus();
+  }
+}
+
+function requestCloseFormDialog(dialog) {
+  if (!dialog || !dialog.open) {
+    return;
+  }
+  if (!dialogHasUnsavedChanges(dialog)) {
+    closeDialog(dialog);
+    return;
+  }
+  openDiscardDialog(dialog);
 }
 
 async function init() {
@@ -4794,6 +5120,7 @@ async function init() {
   syncDeliveryPendingPanel();
 }
 
+bindNavigation();
 init();
 
 document.getElementById("site-test-close-button")?.addEventListener("click", closeSiteTest);

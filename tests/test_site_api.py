@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from core.site_api import SiteApi
@@ -186,7 +187,7 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     def _read_token(self, site_id: str) -> str | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT bearer_token FROM sites WHERE id = ?",
                 (site_id,),

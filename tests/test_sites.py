@@ -6,6 +6,7 @@ import math
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from core.site_store import SCHEMA_VERSION, StoredSite
@@ -257,7 +258,7 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     def _read_token(self, site_id: str) -> str | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection:
             row = connection.execute(
                 "SELECT bearer_token FROM sites WHERE id = ?",
                 (site_id,),
@@ -586,7 +587,7 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         site = await self.service.create_site(
             make_create(name="原始名称", bearer_token="alpha-token"),
         )
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection, connection:
             connection.execute(
                 "CREATE TRIGGER fail_update BEFORE UPDATE ON sites "
                 "BEGIN SELECT RAISE(ABORT, 'forced failure'); END",
@@ -601,7 +602,7 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current, site)
         self.assertEqual(self._read_token(site.id), "alpha-token")
 
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection, connection:
             connection.execute("DROP TRIGGER fail_update")
             connection.execute(
                 "CREATE TRIGGER fail_insert BEFORE INSERT ON sites "
@@ -613,7 +614,7 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_storage_path_and_schema_version(self) -> None:
         self.assertTrue(self.db_path.exists())
-        with sqlite3.connect(self.db_path) as connection:
+        with closing(sqlite3.connect(self.db_path)) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             table = connection.execute(
                 "SELECT name FROM sqlite_master "
@@ -657,7 +658,7 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsupported_schema_version_is_rejected(self) -> None:
         future_path = self._root / "future.sqlite3"
-        with sqlite3.connect(future_path) as connection:
+        with closing(sqlite3.connect(future_path)) as connection, connection:
             connection.execute("PRAGMA user_version = 999")
         service = SiteService(future_path)
         with self.assertRaises(SiteStorageError):

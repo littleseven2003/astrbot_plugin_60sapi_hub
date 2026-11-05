@@ -10,769 +10,829 @@
   <body>
     <a class="skip-link" href="#sites-list">跳到站点列表</a>
 
-    <main class="page">
-      <header class="page-header">
-        <div class="page-heading">
+    <div class="shell">
+      <aside class="rail">
+        <div class="page-heading rail-brand">
           <p class="product">60sAPI Hub</p>
-          <h1>站点管理</h1>
-          <p class="lede">
-            维护 60s API 的基础地址、超时和访问凭据，并预览每日新闻、Bilibili 热搜、知乎热榜、抖音热搜或今日头条热榜。
-          </p>
+          <p class="lede">站点、内容与推送任务的统一工作区</p>
         </div>
-        <div class="header-actions">
-          <button id="refresh-button" class="button button-secondary" type="button">
-            刷新
-          </button>
-          <button id="create-button" class="button button-primary" type="button">
-            新增站点
-          </button>
+        <p class="rail-label">工作区</p>
+        <nav class="rail-nav" aria-label="工作区导航">
+          <button type="button" class="nav-item is-active" data-view="sites" aria-current="page">站点管理</button>
+          <button type="button" class="nav-item" data-view="preview">内容预览</button>
+          <button type="button" class="nav-item" data-view="profiles">内容组合</button>
+          <button type="button" class="nav-item" data-view="tasks">推送任务</button>
+          <button type="button" class="nav-item" data-view="executions">执行记录</button>
+        </nav>
+        <div class="rail-note">
+          <p class="rail-note-title">关于发送</p>
+          <p>保存配置、预览内容和查看记录都不会自动发送消息；只有管理员显式确认的手动测试投递才会进入发送流程。</p>
         </div>
-      </header>
+      </aside>
 
-      <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+      <main class="page">
+        <header class="page-header">
+          <nav class="crumbs" aria-label="面包屑">
+            <span id="breadcrumb-view">工作区 / 站点管理</span>
+          </nav>
+          <div class="header-actions">
+            <button id="refresh-button" class="button button-secondary" type="button">
+              刷新
+            </button>
+            <button id="create-button" class="button button-primary" type="button">
+              新增站点
+            </button>
+          </div>
+        </header>
 
-      <section class="list-section" aria-labelledby="sites-heading">
-        <div class="section-head">
-          <h2 id="sites-heading">已保存站点</h2>
-          <span id="site-count" class="count">0 个</span>
-        </div>
+        <div id="status" class="status" role="status" aria-live="polite" hidden></div>
 
-        <div id="list-state" class="list-state" hidden>
-          <p id="list-state-text"></p>
-          <button id="retry-button" class="button button-secondary" type="button" hidden>
-            重试
-          </button>
-        </div>
+        <section class="view" id="view-sites" data-view="sites">
+          <div class="view-head">
+            <h1>站点管理</h1>
+            <p class="view-lede">维护 60s API 的基础地址、超时和访问凭据；每张站点卡片可以单独测试五种内容接口的连接。打开页面、切回本视图都不会请求上游。</p>
+          </div>
 
-        <div id="empty-state" class="empty-state" hidden>
-          <p class="empty-title">还没有站点</p>
-          <p>先添加一个 60s API 基础地址，保存后即可在后续功能中使用。</p>
-          <button id="empty-create-button" class="button button-primary" type="button">
-            新增第一个站点
-          </button>
-        </div>
+          <section class="list-section" aria-labelledby="sites-heading">
+            <div class="section-head">
+              <h2 id="sites-heading">已保存站点</h2>
+              <span id="site-count" class="count">0 个</span>
+            </div>
 
-        <ul id="sites-list" class="sites-list" aria-busy="true"></ul>
-      </section>
+            <div id="list-state" class="list-state" hidden>
+              <p id="list-state-text"></p>
+              <button id="retry-button" class="button button-secondary" type="button" hidden>
+                重试
+              </button>
+            </div>
 
-      <section class="preview-section" aria-labelledby="preview-heading">
-        <div class="section-head">
-          <h2 id="preview-heading">内容预览</h2>
-          <span class="count">5 种内容</span>
-        </div>
-        <p class="preview-lede">
-          选择已启用站点和内容类型后主动获取；再次获取优先使用未过期缓存，刷新上游会跳过缓存。打开页面、切换选项或保存站点不会请求上游。
+            <div id="empty-state" class="empty-state" hidden>
+              <p class="empty-title">还没有站点</p>
+              <p>先添加一个 60s API 基础地址，保存后即可在后续功能中使用。</p>
+              <button id="empty-create-button" class="button button-primary" type="button">
+                新增第一个站点
+              </button>
+            </div>
+
+            <ul id="sites-list" class="sites-list" aria-busy="true"></ul>
+          </section>
+        </section>
+
+        <section class="view" id="view-preview" data-view="preview" hidden>
+          <section class="preview-section" aria-labelledby="preview-heading">
+            <div class="section-head">
+              <h1 id="preview-heading">内容预览</h1>
+              <span class="count">5 种内容</span>
+            </div>
+            <p class="preview-lede">
+              选择已启用站点和内容类型后主动获取；再次获取优先使用未过期缓存，刷新上游会跳过缓存。打开页面、切换选项或保存站点不会请求上游。
+            </p>
+            <div class="preview-controls">
+              <label class="field preview-site-field">
+                <span>站点</span>
+                <select id="preview-site" disabled></select>
+              </label>
+              <label class="field preview-type-field">
+                <span>内容类型</span>
+                <select id="preview-content-type" disabled>
+                  <option value="daily_news">每日新闻</option>
+                  <option value="bilibili_hot">Bilibili 热搜</option>
+                  <option value="zhihu_hot">知乎热榜</option>
+                  <option value="douyin_hot">抖音热搜</option>
+                  <option value="toutiao_hot">今日头条热榜</option>
+                </select>
+              </label>
+              <button id="preview-button" class="button button-primary" type="button" disabled>
+                获取内容
+              </button>
+              <button id="preview-refresh-button" class="button button-secondary" type="button" disabled>
+                刷新上游
+              </button>
+            </div>
+            <p id="preview-hint" class="help" hidden></p>
+            <div id="preview-status" class="status preview-status" role="status" aria-live="polite" hidden></div>
+            <div id="preview-result" class="preview-result" hidden>
+              <div class="preview-meta">
+                <div class="preview-meta-item">
+                  <span class="preview-label">来源</span>
+                  <strong id="preview-source"></strong>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">内容类型</span>
+                  <span id="preview-content-type-label"></span>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">接口</span>
+                  <code id="preview-endpoint"></code>
+                </div>
+                <div id="preview-date-item" class="preview-meta-item">
+                  <span class="preview-label">内容日期</span>
+                  <span id="preview-content-date"></span>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">条数</span>
+                  <span id="preview-item-count"></span>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">获取时间</span>
+                  <time id="preview-fetched-at"></time>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">缓存</span>
+                  <span id="preview-cache-state"></span>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">缓存有效至</span>
+                  <span id="preview-cache-expires"></span>
+                </div>
+              </div>
+              <div id="preview-warnings" class="preview-warning" role="note" hidden></div>
+              <div id="preview-empty" class="preview-empty" hidden>
+                <span id="preview-empty-text">上游返回了合法的空内容。</span>
+              </div>
+              <ol id="preview-news-list" class="news-list"></ol>
+              <ul id="preview-bili-list" class="news-list bili-list" hidden></ul>
+              <ul id="preview-zhihu-list" class="news-list zhihu-list" hidden></ul>
+              <ul id="preview-douyin-list" class="news-list douyin-list" hidden></ul>
+              <ul id="preview-toutiao-list" class="news-list toutiao-list" hidden></ul>
+              <p id="preview-tip" class="preview-tip" hidden></p>
+              <p id="preview-source-link" class="preview-source-link" hidden></p>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="view-profiles" data-view="profiles" hidden>
+          <section class="profiles-section" aria-labelledby="profiles-heading">
+            <div class="section-head">
+              <h1 id="profiles-heading">内容组合</h1>
+              <span id="profile-count" class="count">0 个</span>
+            </div>
+            <p class="preview-lede">
+              内容组合引用一个站点并选择多个栏目；保存后可在下方主动预览。打开页面、保存、删除或切换组合不会自动请求上游。
+            </p>
+            <div class="profile-list-actions">
+              <button id="create-profile-button" class="button button-primary" type="button">
+                新增组合
+              </button>
+            </div>
+            <div id="profile-list-state" class="list-state" hidden>
+              <p id="profile-list-state-text"></p>
+              <button id="profile-retry-button" class="button button-secondary" type="button" hidden>
+                重试
+              </button>
+            </div>
+            <div id="profile-empty-state" class="profile-empty-state" hidden>
+              <p class="empty-title">还没有内容组合</p>
+              <p>创建一个组合，选择站点、栏目顺序和每栏展示条数。</p>
+            </div>
+            <ul id="profiles-list" class="sites-list profiles-list" aria-busy="true"></ul>
+          </section>
+
+          <section class="profile-preview-section" aria-labelledby="profile-preview-heading">
+            <div class="section-head">
+              <h2 id="profile-preview-heading">组合预览</h2>
+              <span class="count">已保存组合</span>
+            </div>
+            <p class="preview-lede">
+              选择已保存组合后主动获取；按组合配置顺序展示栏目，普通获取使用缓存，刷新组合会跳过已完成缓存。
+            </p>
+            <div class="preview-controls">
+              <label class="field preview-site-field">
+                <span>内容组合</span>
+                <select id="profile-preview-select" disabled></select>
+              </label>
+              <button id="profile-preview-button" class="button button-primary" type="button" disabled>
+                获取组合
+              </button>
+              <button id="profile-preview-refresh-button" class="button button-secondary" type="button" disabled>
+                刷新组合
+              </button>
+            </div>
+            <p id="profile-preview-hint" class="help" hidden></p>
+            <div id="profile-preview-status" class="status preview-status" role="status" aria-live="polite" hidden></div>
+            <div id="profile-preview-result" class="preview-result" hidden>
+              <div class="preview-meta">
+                <div class="preview-meta-item">
+                  <span class="preview-label">组合</span>
+                  <strong id="profile-preview-name"></strong>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">来源</span>
+                  <span id="profile-preview-source"></span>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">栏目</span>
+                  <span id="profile-preview-counts"></span>
+                </div>
+                <div class="preview-meta-item">
+                  <span class="preview-label">状态</span>
+                  <span id="profile-preview-state"></span>
+                </div>
+              </div>
+              <div id="profile-preview-sections" class="profile-sections"></div>
+              <div id="profile-output-panel" class="profile-output-panel">
+                <div class="profile-output-head">
+                  <fieldset class="profile-output-format" aria-label="输出格式">
+                    <legend>输出格式</legend>
+                    <label class="radio">
+                      <input type="radio" name="profile-output-format" value="text" checked />
+                      <span>纯文字</span>
+                    </label>
+                    <label class="radio">
+                      <input type="radio" name="profile-output-format" value="markdown" />
+                      <span>Markdown 源码</span>
+                    </label>
+                  </fieldset>
+                  <div class="profile-output-actions">
+                    <button id="profile-copy-button" class="button button-secondary" type="button" disabled>
+                      复制
+                    </button>
+                    <button id="profile-download-button" class="button button-secondary" type="button" disabled>
+                      下载 .txt
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  id="profile-output-text"
+                  class="profile-output-text"
+                  rows="14"
+                  readonly
+                  spellcheck="false"
+                  aria-label="当前组合文字输出"
+                ></textarea>
+                <p id="profile-output-hint" class="help" hidden></p>
+              </div>
+              <div class="profile-image-panel">
+                <div class="profile-image-head">
+                  <button id="profile-image-button" class="button button-primary" type="button" disabled>
+                    生成图片
+                  </button>
+                  <span id="profile-image-state" class="help" hidden></span>
+                </div>
+                <p id="profile-image-hint" class="help" hidden></p>
+                <div id="profile-image-pages" class="profile-image-pages"></div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="view-tasks" data-view="tasks" hidden>
+          <section class="tasks-section" aria-labelledby="tasks-heading">
+            <div class="section-head">
+              <h1 id="tasks-heading">推送任务</h1>
+              <span id="task-count" class="count">0 个</span>
+            </div>
+            <p class="preview-lede">
+              保存任务不会发送消息、不请求上游、也不启用调度。任务保存后保持未启用，需在任务卡片上显式启用；请使用对应会话的 /sid 获取完整 UMO，不能直接填写裸群号或 UID。
+            </p>
+            <div class="profile-list-actions">
+              <button id="create-task-button" class="button button-primary" type="button">
+                新增任务
+              </button>
+            </div>
+            <div id="task-list-state" class="list-state" hidden>
+              <p id="task-list-state-text"></p>
+              <button id="task-retry-button" class="button button-secondary" type="button" hidden>
+                重试
+              </button>
+            </div>
+            <div id="task-empty-state" class="profile-empty-state" hidden>
+              <p class="empty-title">还没有推送任务</p>
+              <p>创建一个任务，引用已有内容组合并填写独立的 UMO 白名单。保存不会发送消息。</p>
+            </div>
+            <ul id="tasks-list" class="sites-list profiles-list" aria-busy="true"></ul>
+          </section>
+        </section>
+
+        <section class="view" id="view-executions" data-view="executions" hidden>
+          <div class="view-head">
+            <h1>执行记录</h1>
+            <p class="view-lede">手动测试投递与调度记录分区展示：unknown 表示结果不确定，不会自动重发，这里也不提供补发操作。</p>
+          </div>
+
+          <section class="delivery-section" aria-labelledby="delivery-heading">
+            <div class="section-head">
+              <h2 id="delivery-heading">手动测试投递记录</h2>
+              <button id="delivery-refresh-button" class="button button-secondary" type="button">刷新记录</button>
+            </div>
+            <p class="preview-lede">
+              手动测试只由管理员显式提交；不会启用任务或自动推送。确认后按当前保存配置获取最新内容。unknown 表示结果不确定，不会自动重发。
+            </p>
+            <button id="delivery-show-pending-button" class="button button-secondary" type="button" hidden>查看未确认执行</button>
+            <div id="delivery-pending-panel" class="uncertain" hidden>
+              <h3>有未确认的执行</h3>
+              <p id="delivery-pending-text"></p>
+              <div id="delivery-pending-list" class="delivery-targets"></div>
+              <div class="uncertain-actions">
+                <button id="delivery-clear-pending-button" class="button button-secondary" type="button">仅隐藏提示（保留未确认记录）</button>
+              </div>
+            </div>
+            <div id="delivery-list-state" class="list-state" hidden><p id="delivery-list-state-text"></p></div>
+            <ul id="delivery-list" class="sites-list" aria-busy="true"></ul>
+            <button id="delivery-load-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
+          </section>
+
+          <section class="schedule-runs-section" aria-labelledby="schedule-runs-heading">
+            <div class="section-head">
+              <h2 id="schedule-runs-heading">定时调度记录</h2>
+              <button id="schedule-runs-refresh-button" class="button button-secondary" type="button">刷新记录</button>
+            </div>
+            <p class="preview-lede">
+              展示调度认领和跳过记录。claimed 只表示已认领，succeeded 也不代表平台已读；unknown 不自动重试。这里不提供重试或补发操作。
+            </p>
+            <div id="schedule-runs-state" class="list-state" hidden>
+              <p id="schedule-runs-state-text"></p>
+              <button id="schedule-runs-retry-button" class="button button-secondary" type="button" hidden>重试</button>
+            </div>
+            <div class="schedule-runs-columns">
+              <div>
+                <h3>认领记录</h3>
+                <ul id="schedule-claims-list" class="sites-list" aria-busy="true"></ul>
+                <p id="schedule-claims-empty" class="empty-state" hidden>暂无认领记录。</p>
+              </div>
+              <div>
+                <h3>跳过记录</h3>
+                <ul id="schedule-skips-list" class="sites-list" aria-busy="true"></ul>
+                <p id="schedule-skips-empty" class="empty-state" hidden>暂无跳过记录。</p>
+              </div>
+            </div>
+            <button id="schedule-runs-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
+          </section>
+        </section>
+
+        <p class="footnote">
+          站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。内容组合引用已保存站点，不能填写任意 URL。凭据保存后不会回显。
         </p>
-        <div class="preview-controls">
-          <label class="field preview-site-field">
-            <span>站点</span>
-            <select id="preview-site" disabled></select>
+
+        <dialog id="delivery-dialog" class="dialog" aria-labelledby="delivery-dialog-title">
+          <form id="delivery-form" class="form">
+            <header class="dialog-head">
+              <h2 id="delivery-dialog-title">确认手动测试投递</h2>
+              <button id="delivery-close-button" class="icon-button" type="button" aria-label="关闭">×</button>
+            </header>
+            <div id="delivery-error" class="form-error" role="alert" hidden></div>
+            <div id="delivery-confirm-info"></div>
+            <div id="delivery-targets" class="delivery-targets"></div>
+            <p class="help">确认后会获取最新内容，不是复用页面旧预览。配置或 revision 变化时会要求重新审阅。</p>
+            <div id="delivery-result" class="delivery-result" hidden></div>
+            <div id="delivery-uncertain" class="uncertain" role="alert" hidden>
+              <h3>结果未确认</h3>
+              <p id="delivery-uncertain-text"></p>
+              <p>执行标识：<code id="delivery-execution-id"></code></p>
+              <button id="delivery-query-button" class="button button-primary" type="button">只查询该标识</button>
+            </div>
+            <footer class="dialog-actions">
+              <button id="delivery-cancel-button" class="button button-secondary" type="button">取消</button>
+              <button id="delivery-confirm-button" class="button button-danger" type="submit">确认并投递</button>
+            </footer>
+          </form>
+        </dialog>
+
+        <dialog id="task-dialog" class="dialog" aria-labelledby="task-dialog-title">
+          <form id="task-form" class="form">
+            <header class="dialog-head">
+              <h2 id="task-dialog-title">新增推送任务</h2>
+              <button id="task-close-dialog-button" class="icon-button" type="button" aria-label="关闭">
+                ×
+              </button>
+            </header>
+
+            <div id="task-form-error" class="form-error" role="alert" hidden></div>
+
+            <div id="task-write-uncertain" class="uncertain" role="alert" hidden>
+              <h3>保存结果未确认</h3>
+              <p id="task-write-uncertain-text" class="uncertain-text"></p>
+              <div class="uncertain-actions">
+                <button id="task-recheck-button" class="button button-primary" type="button">
+                  重新读取最新任务
+                </button>
+                <button id="task-review-close-button" class="button button-secondary" type="button" hidden>
+                  关闭并查看最新任务
+                </button>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>任务名称</span>
+              <input id="task-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览推送" />
+            </label>
+
+            <label class="field">
+              <span>内容组合</span>
+              <select id="task-profile" required></select>
+              <small>必须引用已保存组合；可以引用站点已停用的组合，保存不会发送。</small>
+            </label>
+
+            <label class="field">
+              <span>输出方式</span>
+              <select id="task-output-format">
+                <option value="text">纯文字</option>
+                <option value="markdown">Markdown</option>
+                <option value="image">图片</option>
+              </select>
+            </label>
+
+            <div class="field">
+              <span>定时计划</span>
+              <div class="schedule-mode" role="radiogroup" aria-label="定时计划">
+                <label><input id="task-schedule-none" name="task-schedule-mode" type="radio" value="none" checked /> 无计划</label>
+                <label><input id="task-schedule-daily" name="task-schedule-mode" type="radio" value="daily" /> 每日</label>
+                <label><input id="task-schedule-weekly" name="task-schedule-mode" type="radio" value="weekly" /> 每周</label>
+                <label><input id="task-schedule-interval" name="task-schedule-mode" type="radio" value="interval" /> 间隔</label>
+                <label><input id="task-schedule-cron" name="task-schedule-mode" type="radio" value="cron" /> Cron</label>
+              </div>
+              <div id="task-schedule-fields" class="schedule-fields" hidden>
+                <div id="task-cron-fields" class="schedule-cron-fields" hidden>
+                  <label>Cron 表达式 <input id="task-schedule-expression" type="text" maxlength="128" placeholder="30 8 * * 1-5" /></label>
+                  <p class="help">五字段：分 时 日 月 星期；星期 0/7 均为周日，与 weekly 的 1=周一不同。日与星期同时受限时取并集。</p>
+                </div>
+                <div id="task-interval-fields" class="schedule-interval-fields" hidden>
+                  <label>本地起点 <input id="task-schedule-start-at" type="datetime-local" step="60" /></label>
+                  <label>间隔分钟 <input id="task-schedule-interval-minutes" type="number" min="1" max="10080" step="1" /></label>
+                  <p class="help">起点按所选 IANA 时区的本地时间解释；间隔是固定经过分钟数，跨 DST 时本地显示可能变化。</p>
+                </div>
+                <div id="task-weekdays" class="weekday-picker" hidden>
+                  <span>星期（ISO，1=周一）</span>
+                  <label><input type="checkbox" value="1" /> 一</label>
+                  <label><input type="checkbox" value="2" /> 二</label>
+                  <label><input type="checkbox" value="3" /> 三</label>
+                  <label><input type="checkbox" value="4" /> 四</label>
+                  <label><input type="checkbox" value="5" /> 五</label>
+                  <label><input type="checkbox" value="6" /> 六</label>
+                  <label><input type="checkbox" value="7" /> 日</label>
+                </div>
+                <label id="task-time-field" class="field">
+                  <span>时间（HH:mm）</span>
+                  <input id="task-schedule-time" type="text" inputmode="numeric" value="08:30" maxlength="5" placeholder="08:30" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>IANA 时区</span>
+                  <input id="task-schedule-timezone" type="text" value="Asia/Shanghai" maxlength="128" autocomplete="off" list="task-timezone-suggestions" placeholder="例如：Asia/Shanghai" />
+                  <datalist id="task-timezone-suggestions">
+                    <option value="Asia/Shanghai"></option>
+                    <option value="Asia/Tokyo"></option>
+                    <option value="Asia/Kathmandu"></option>
+                    <option value="UTC"></option>
+                    <option value="Europe/London"></option>
+                    <option value="America/New_York"></option>
+                  </datalist>
+                  <small>必须填写 IANA 时区，不会根据浏览器时区自动推断。</small>
+                </label>
+              </div>
+              <p id="task-schedule-error" class="form-error" role="alert" hidden></p>
+              <p id="task-schedule-saved" class="task-schedule-saved" hidden></p>
+            </div>
+
+            <label class="field">
+              <span>UMO 白名单（一行一个）</span>
+              <textarea id="task-umos" rows="6" spellcheck="false" placeholder="aiocqhttp:GroupMessage:123456789&#10;aiocqhttp:FriendMessage:987654321"></textarea>
+              <small>
+                在目标会话中发送 /sid 获取完整 UMO。格式为平台适配器实例 ID:消息类型:完整会话 ID；
+                只接受 GroupMessage 或 FriendMessage，不能填写裸群号或 UID。群成员隔离标识会原样保留，不会自动改写为群级目标。
+                留空表示白名单为空，可以保存但不能投递。
+              </small>
+            </label>
+
+            <p class="help">任务保存后仍保持未启用；保存本身不发送消息。后台“测试投递”是独立的手动操作；“定时计划”保存配置和理论时间；保存会自动停用，需显式启用后才实际调度。</p>
+
+            <footer class="dialog-actions">
+              <button id="task-cancel-button" class="button button-secondary" type="button">取消</button>
+              <button id="task-save-button" class="button button-primary" type="submit">保存任务</button>
+            </footer>
+          </form>
+        </dialog>
+
+        <dialog id="task-power-dialog" class="dialog dialog-small" aria-labelledby="task-power-title">
+          <form id="task-power-form" class="form">
+            <header class="dialog-head">
+              <h2 id="task-power-title">启用定时调度</h2>
+              <button id="task-power-close-button" class="icon-button" type="button" aria-label="关闭">×</button>
+            </header>
+            <div id="task-power-error" class="form-error" role="alert" hidden></div>
+            <div id="task-power-uncertain" class="uncertain" role="alert" hidden>
+              <h3>启停结果未确认</h3>
+              <p id="task-power-uncertain-text"></p>
+              <div class="uncertain-actions">
+                <button id="task-power-recheck-button" class="button button-primary" type="button">重新读取最新任务</button>
+                <button id="task-power-review-close-button" class="button button-secondary" type="button" hidden>关闭并查看最新状态</button>
+              </div>
+            </div>
+            <div id="task-power-info"></div>
+            <p id="task-power-note" class="help"></p>
+            <footer class="dialog-actions">
+              <button id="task-power-cancel-button" class="button button-secondary" type="button">取消</button>
+              <button id="task-power-confirm-button" class="button button-primary" type="button">确认启用</button>
+            </footer>
+          </form>
+        </dialog>
+
+        <dialog id="task-delete-dialog" class="dialog dialog-small" aria-labelledby="task-delete-title">
+          <div class="form">
+            <header class="dialog-head">
+              <h2 id="task-delete-title">删除推送任务</h2>
+            </header>
+            <p id="task-delete-message"></p>
+            <div id="task-delete-error" class="form-error" role="alert" hidden></div>
+            <div id="task-delete-uncertain" class="uncertain" role="alert" hidden>
+              <h3>删除结果未确认</h3>
+              <p id="task-delete-uncertain-text" class="uncertain-text"></p>
+              <div class="uncertain-actions">
+                <button id="task-delete-recheck-button" class="button button-primary" type="button">重新读取最新任务</button>
+                <button id="task-delete-review-close-button" class="button button-secondary" type="button" hidden>关闭并查看最新任务</button>
+              </div>
+            </div>
+            <footer class="dialog-actions">
+              <button id="task-delete-cancel-button" class="button button-secondary" type="button">取消</button>
+              <button id="task-delete-confirm-button" class="button button-danger" type="button">删除</button>
+            </footer>
+          </div>
+        </dialog>
+      </main>
+
+      <dialog id="site-dialog" class="dialog" aria-labelledby="dialog-title">
+        <form id="site-form" class="form">
+          <header class="dialog-head">
+            <h2 id="dialog-title">新增站点</h2>
+            <button id="close-dialog-button" class="icon-button" type="button" aria-label="关闭">
+              ×
+            </button>
+          </header>
+
+          <div id="form-error" class="form-error" role="alert" hidden></div>
+
+          <div id="write-uncertain" class="uncertain" role="alert" hidden>
+            <h3>保存结果未确认</h3>
+            <p id="write-uncertain-text" class="uncertain-text"></p>
+            <div class="uncertain-actions">
+              <button id="recheck-write-button" class="button button-primary" type="button">
+                重新读取最新列表
+              </button>
+              <button id="review-close-button" class="button button-secondary" type="button" hidden>
+                关闭并查看最新列表
+              </button>
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <label class="field">
+              <span>站点名称</span>
+              <input
+                id="name"
+                name="name"
+                type="text"
+                maxlength="80"
+                required
+                autocomplete="off"
+                placeholder="例如：主站"
+              />
+            </label>
+
+            <label class="field">
+              <span>超时（秒）</span>
+              <input
+                id="timeout"
+                name="timeout_seconds"
+                type="number"
+                min="1"
+                max="120"
+                step="0.1"
+                value="10"
+                required
+              />
+            </label>
+
+            <label class="field field-wide">
+              <span>基础地址</span>
+              <input
+                id="base-url"
+                name="base_url"
+                type="url"
+                maxlength="2048"
+                required
+                inputmode="url"
+                autocomplete="url"
+                spellcheck="false"
+                placeholder="https://api.example.com/news"
+              />
+              <small>
+                不要包含末尾 /v2；支持内网、Docker 主机名、方括号 IPv6 和反向代理路径前缀。
+              </small>
+            </label>
+          </div>
+
+          <label class="toggle">
+            <input id="enabled" name="enabled" type="checkbox" />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span class="toggle-copy">
+              <strong>启用站点</strong>
+              <small>关闭后保留配置，但不会参与后续内容获取。</small>
+            </span>
           </label>
-          <label class="field preview-type-field">
-            <span>内容类型</span>
-            <select id="preview-content-type" disabled>
+
+          <fieldset id="credential-section" class="credential-section">
+            <legend>访问凭据</legend>
+            <p id="credential-state" class="help" hidden></p>
+
+            <div id="credential-actions" class="credential-actions" hidden>
+              <label class="radio">
+                <input type="radio" name="credential_action" value="keep" checked />
+                <span>保留原凭据</span>
+              </label>
+              <label class="radio">
+                <input type="radio" name="credential_action" value="set" />
+                <span>设置新凭据</span>
+              </label>
+              <label class="radio">
+                <input type="radio" name="credential_action" value="clear" />
+                <span>清除凭据</span>
+              </label>
+            </div>
+
+            <label id="token-field" class="field token-field">
+              <span id="token-label">Bearer 凭据（可选）</span>
+              <input
+                id="bearer-token"
+                name="bearer_token"
+                type="password"
+                maxlength="4096"
+                autocomplete="new-password"
+                spellcheck="false"
+              />
+              <small id="token-help">
+                留空表示不设置凭据。只填写凭据本身，不要带 Bearer 前缀；保存后不会回显。
+              </small>
+            </label>
+          </fieldset>
+
+          <footer class="dialog-actions">
+            <button id="cancel-button" class="button button-secondary" type="button">
+              取消
+            </button>
+            <button id="save-button" class="button button-primary" type="submit">
+              保存站点
+            </button>
+          </footer>
+        </form>
+      </dialog>
+
+      <dialog id="delete-dialog" class="dialog dialog-small" aria-labelledby="delete-title">
+        <div class="form">
+          <header class="dialog-head">
+            <h2 id="delete-title">删除站点</h2>
+          </header>
+          <p id="delete-message"></p>
+          <div id="delete-error" class="form-error" role="alert" hidden></div>
+          <div id="delete-uncertain" class="uncertain" role="alert" hidden>
+            <h3>删除结果未确认</h3>
+            <p id="delete-uncertain-text" class="uncertain-text"></p>
+            <div class="uncertain-actions">
+              <button id="recheck-delete-button" class="button button-primary" type="button">
+                重新读取最新列表
+              </button>
+              <button id="delete-review-close-button" class="button button-secondary" type="button" hidden>
+                关闭并查看最新列表
+              </button>
+            </div>
+          </div>
+          <footer class="dialog-actions">
+            <button id="delete-cancel-button" class="button button-secondary" type="button">
+              取消
+            </button>
+            <button id="delete-confirm-button" class="button button-danger" type="button">
+              删除
+            </button>
+          </footer>
+        </div>
+      </dialog>
+
+      <dialog id="site-test-dialog" class="dialog dialog-small" aria-labelledby="site-test-title">
+        <div class="form">
+          <header class="dialog-head"><h2 id="site-test-title">测试连接</h2></header>
+          <p id="site-test-site"></p>
+          <label class="field"><span>内容接口</span>
+            <select id="site-test-content-type">
               <option value="daily_news">每日新闻</option>
               <option value="bilibili_hot">Bilibili 热搜</option>
               <option value="zhihu_hot">知乎热榜</option>
               <option value="douyin_hot">抖音热搜</option>
-              <option value="toutiao_hot">今日头条热榜</option>
+              <option value="toutiao_hot">今日头条热搜</option>
             </select>
           </label>
-          <button id="preview-button" class="button button-primary" type="button" disabled>
-            获取内容
-          </button>
-          <button id="preview-refresh-button" class="button button-secondary" type="button" disabled>
-            刷新上游
-          </button>
+          <p class="help">会主动请求上游，只验证所选接口本次连接和数据格式；不修改配置、不启用站点、不发送消息。</p>
+          <div id="site-test-result" class="site-test-result" role="status" hidden></div>
+          <footer class="dialog-actions">
+            <button id="site-test-close-button" class="button button-secondary" type="button">关闭</button>
+            <button id="site-test-run-button" class="button button-primary" type="button">开始测试</button>
+          </footer>
         </div>
-        <p id="preview-hint" class="help" hidden></p>
-        <div id="preview-status" class="status preview-status" role="status" aria-live="polite" hidden></div>
-        <div id="preview-result" class="preview-result" hidden>
-          <div class="preview-meta">
-            <div class="preview-meta-item">
-              <span class="preview-label">来源</span>
-              <strong id="preview-source"></strong>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">内容类型</span>
-              <span id="preview-content-type-label"></span>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">接口</span>
-              <code id="preview-endpoint"></code>
-            </div>
-            <div id="preview-date-item" class="preview-meta-item">
-              <span class="preview-label">内容日期</span>
-              <span id="preview-content-date"></span>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">条数</span>
-              <span id="preview-item-count"></span>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">获取时间</span>
-              <time id="preview-fetched-at"></time>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">缓存</span>
-              <span id="preview-cache-state"></span>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">缓存有效至</span>
-              <span id="preview-cache-expires"></span>
-            </div>
-          </div>
-          <div id="preview-warnings" class="preview-warning" role="note" hidden></div>
-          <div id="preview-empty" class="preview-empty" hidden>
-            <span id="preview-empty-text">上游返回了合法的空内容。</span>
-          </div>
-          <ol id="preview-news-list" class="news-list"></ol>
-          <ul id="preview-bili-list" class="news-list bili-list" hidden></ul>
-          <ul id="preview-zhihu-list" class="news-list zhihu-list" hidden></ul>
-          <ul id="preview-douyin-list" class="news-list douyin-list" hidden></ul>
-          <ul id="preview-toutiao-list" class="news-list toutiao-list" hidden></ul>
-          <p id="preview-tip" class="preview-tip" hidden></p>
-          <p id="preview-source-link" class="preview-source-link" hidden></p>
-        </div>
-      </section>
+      </dialog>
 
-      <section class="profiles-section" aria-labelledby="profiles-heading">
-        <div class="section-head">
-          <h2 id="profiles-heading">内容组合</h2>
-          <span id="profile-count" class="count">0 个</span>
-        </div>
-        <p class="preview-lede">
-          内容组合引用一个站点并选择多个栏目；保存后可在下方主动预览。打开页面、保存、删除或切换组合不会自动请求上游。
-        </p>
-        <div class="profile-list-actions">
-          <button id="create-profile-button" class="button button-primary" type="button">
-            新增组合
-          </button>
-        </div>
-        <div id="profile-list-state" class="list-state" hidden>
-          <p id="profile-list-state-text"></p>
-          <button id="profile-retry-button" class="button button-secondary" type="button" hidden>
-            重试
-          </button>
-        </div>
-        <div id="profile-empty-state" class="profile-empty-state" hidden>
-          <p class="empty-title">还没有内容组合</p>
-          <p>创建一个组合，选择站点、栏目顺序和每栏展示条数。</p>
-        </div>
-        <ul id="profiles-list" class="sites-list profiles-list" aria-busy="true"></ul>
-      </section>
+      <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-dialog-title">
+        <form id="profile-form" class="form">
+          <header class="dialog-head">
+            <h2 id="profile-dialog-title">新增组合</h2>
+            <button id="profile-close-dialog-button" class="icon-button" type="button" aria-label="关闭">
+              ×
+            </button>
+          </header>
 
-      <section class="tasks-section" aria-labelledby="tasks-heading">
-        <div class="section-head">
-          <h2 id="tasks-heading">推送任务</h2>
-          <span id="task-count" class="count">0 个</span>
-        </div>
-        <p class="preview-lede">
-          本轮只保存推送任务配置，不发送消息、不请求上游、不执行调度。任务保持未启用；请使用对应会话的 /sid 获取完整 UMO，不能直接填写裸群号或 UID。
-        </p>
-        <div class="profile-list-actions">
-          <button id="create-task-button" class="button button-primary" type="button">
-            新增任务
-          </button>
-        </div>
-        <div id="task-list-state" class="list-state" hidden>
-          <p id="task-list-state-text"></p>
-          <button id="task-retry-button" class="button button-secondary" type="button" hidden>
-            重试
-          </button>
-        </div>
-        <div id="task-empty-state" class="profile-empty-state" hidden>
-          <p class="empty-title">还没有推送任务</p>
-          <p>创建一个任务，引用已有内容组合并填写独立的 UMO 白名单。保存不会发送消息。</p>
-        </div>
-        <ul id="tasks-list" class="sites-list profiles-list" aria-busy="true"></ul>
-      </section>
+          <div id="profile-form-error" class="form-error" role="alert" hidden></div>
 
-      <section class="schedule-runs-section" aria-labelledby="schedule-runs-heading">
-        <div class="section-head">
-          <h2 id="schedule-runs-heading">定时调度记录</h2>
-          <button id="schedule-runs-refresh-button" class="button button-secondary" type="button">刷新记录</button>
-        </div>
-        <p class="preview-lede">
-          展示调度认领和跳过记录。claimed 只表示已认领，succeeded 也不代表平台已读；unknown 不自动重试。这里不提供重试或补发操作。
-        </p>
-        <div id="schedule-runs-state" class="list-state" hidden>
-          <p id="schedule-runs-state-text"></p>
-          <button id="schedule-runs-retry-button" class="button button-secondary" type="button" hidden>重试</button>
-        </div>
-        <div class="schedule-runs-columns">
-          <div>
-            <h3>认领记录</h3>
-            <ul id="schedule-claims-list" class="sites-list" aria-busy="true"></ul>
-            <p id="schedule-claims-empty" class="empty-state" hidden>暂无认领记录。</p>
-          </div>
-          <div>
-            <h3>跳过记录</h3>
-            <ul id="schedule-skips-list" class="sites-list" aria-busy="true"></ul>
-            <p id="schedule-skips-empty" class="empty-state" hidden>暂无跳过记录。</p>
-          </div>
-        </div>
-        <button id="schedule-runs-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
-      </section>
-
-      <section class="delivery-section" aria-labelledby="delivery-heading">
-        <div class="section-head">
-          <h2 id="delivery-heading">手动测试与执行记录</h2>
-          <button id="delivery-refresh-button" class="button button-secondary" type="button">刷新记录</button>
-        </div>
-        <p class="preview-lede">
-          手动测试只由管理员显式提交；不会启用任务或自动推送。确认后按当前保存配置获取最新内容。unknown 表示结果不确定，不会自动重发。
-        </p>
-        <button id="delivery-show-pending-button" class="button button-secondary" type="button" hidden>查看未确认执行</button>
-        <div id="delivery-pending-panel" class="uncertain" hidden>
-          <h3>有未确认的执行</h3>
-          <p id="delivery-pending-text"></p>
-          <div id="delivery-pending-list" class="delivery-targets"></div>
-          <div class="uncertain-actions">
-            <button id="delivery-clear-pending-button" class="button button-secondary" type="button">仅隐藏提示（保留未确认记录）</button>
-          </div>
-        </div>
-        <div id="delivery-list-state" class="list-state" hidden><p id="delivery-list-state-text"></p></div>
-        <ul id="delivery-list" class="sites-list" aria-busy="true"></ul>
-        <button id="delivery-load-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
-      </section>
-
-      <section class="profile-preview-section" aria-labelledby="profile-preview-heading">
-        <div class="section-head">
-          <h2 id="profile-preview-heading">组合预览</h2>
-          <span class="count">已保存组合</span>
-        </div>
-        <p class="preview-lede">
-          选择已保存组合后主动获取；按组合配置顺序展示栏目，普通获取使用缓存，刷新组合会跳过已完成缓存。
-        </p>
-        <div class="preview-controls">
-          <label class="field preview-site-field">
-            <span>内容组合</span>
-            <select id="profile-preview-select" disabled></select>
-          </label>
-          <button id="profile-preview-button" class="button button-primary" type="button" disabled>
-            获取组合
-          </button>
-          <button id="profile-preview-refresh-button" class="button button-secondary" type="button" disabled>
-            刷新组合
-          </button>
-        </div>
-        <p id="profile-preview-hint" class="help" hidden></p>
-        <div id="profile-preview-status" class="status preview-status" role="status" aria-live="polite" hidden></div>
-        <div id="profile-preview-result" class="preview-result" hidden>
-          <div class="preview-meta">
-            <div class="preview-meta-item">
-              <span class="preview-label">组合</span>
-              <strong id="profile-preview-name"></strong>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">来源</span>
-              <span id="profile-preview-source"></span>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">栏目</span>
-              <span id="profile-preview-counts"></span>
-            </div>
-            <div class="preview-meta-item">
-              <span class="preview-label">状态</span>
-              <span id="profile-preview-state"></span>
-            </div>
-          </div>
-          <div id="profile-preview-sections" class="profile-sections"></div>
-          <div id="profile-output-panel" class="profile-output-panel">
-            <div class="profile-output-head">
-              <fieldset class="profile-output-format" aria-label="输出格式">
-                <legend>输出格式</legend>
-                <label class="radio">
-                  <input type="radio" name="profile-output-format" value="text" checked />
-                  <span>纯文字</span>
-                </label>
-                <label class="radio">
-                  <input type="radio" name="profile-output-format" value="markdown" />
-                  <span>Markdown 源码</span>
-                </label>
-              </fieldset>
-              <div class="profile-output-actions">
-                <button id="profile-copy-button" class="button button-secondary" type="button" disabled>
-                  复制
-                </button>
-                <button id="profile-download-button" class="button button-secondary" type="button" disabled>
-                  下载 .txt
-                </button>
-              </div>
-            </div>
-            <textarea
-              id="profile-output-text"
-              class="profile-output-text"
-              rows="14"
-              readonly
-              spellcheck="false"
-              aria-label="当前组合文字输出"
-            ></textarea>
-            <p id="profile-output-hint" class="help" hidden></p>
-          </div>
-          <div class="profile-image-panel">
-            <div class="profile-image-head">
-              <button id="profile-image-button" class="button button-primary" type="button" disabled>
-                生成图片
+          <div id="profile-write-uncertain" class="uncertain" role="alert" hidden>
+            <h3>保存结果未确认</h3>
+            <p id="profile-write-uncertain-text" class="uncertain-text"></p>
+            <div class="uncertain-actions">
+              <button id="profile-recheck-button" class="button button-primary" type="button">
+                重新读取最新组合
               </button>
-              <span id="profile-image-state" class="help" hidden></span>
+              <button id="profile-review-close-button" class="button button-secondary" type="button" hidden>
+                关闭并查看最新组合
+              </button>
             </div>
-            <p id="profile-image-hint" class="help" hidden></p>
-            <div id="profile-image-pages" class="profile-image-pages"></div>
           </div>
-        </div>
-      </section>
 
-      <p class="footnote">
-        站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。内容组合引用已保存站点，不能填写任意 URL。凭据保存后不会回显。
-      </p>
-
-    <dialog id="delivery-dialog" class="dialog" aria-labelledby="delivery-dialog-title">
-      <form id="delivery-form" class="form">
-        <header class="dialog-head">
-          <h2 id="delivery-dialog-title">确认手动测试投递</h2>
-          <button id="delivery-close-button" class="icon-button" type="button" aria-label="关闭">×</button>
-        </header>
-        <div id="delivery-error" class="form-error" role="alert" hidden></div>
-        <div id="delivery-confirm-info"></div>
-        <div id="delivery-targets" class="delivery-targets"></div>
-        <p class="help">确认后会获取最新内容，不是复用页面旧预览。配置或 revision 变化时会要求重新审阅。</p>
-        <div id="delivery-result" class="delivery-result" hidden></div>
-        <div id="delivery-uncertain" class="uncertain" role="alert" hidden>
-          <h3>结果未确认</h3>
-          <p id="delivery-uncertain-text"></p>
-          <p>执行标识：<code id="delivery-execution-id"></code></p>
-          <button id="delivery-query-button" class="button button-primary" type="button">只查询该标识</button>
-        </div>
-        <footer class="dialog-actions">
-          <button id="delivery-cancel-button" class="button button-secondary" type="button">取消</button>
-          <button id="delivery-confirm-button" class="button button-danger" type="submit">确认并投递</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="task-dialog" class="dialog" aria-labelledby="task-dialog-title">
-      <form id="task-form" class="form">
-        <header class="dialog-head">
-          <h2 id="task-dialog-title">新增推送任务</h2>
-          <button id="task-close-dialog-button" class="icon-button" type="button" aria-label="关闭">
-            ×
-          </button>
-        </header>
-
-        <div id="task-form-error" class="form-error" role="alert" hidden></div>
-
-        <div id="task-write-uncertain" class="uncertain" role="alert" hidden>
-          <h3>保存结果未确认</h3>
-          <p id="task-write-uncertain-text" class="uncertain-text"></p>
-          <div class="uncertain-actions">
-            <button id="task-recheck-button" class="button button-primary" type="button">
-              重新读取最新任务
-            </button>
-            <button id="task-review-close-button" class="button button-secondary" type="button" hidden>
-              关闭并查看最新任务
-            </button>
-          </div>
-        </div>
-
-        <label class="field">
-          <span>任务名称</span>
-          <input id="task-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览推送" />
-        </label>
-
-        <label class="field">
-          <span>内容组合</span>
-          <select id="task-profile" required></select>
-          <small>必须引用已保存组合；可以引用站点已停用的组合，保存不会发送。</small>
-        </label>
-
-        <label class="field">
-          <span>输出方式</span>
-          <select id="task-output-format">
-            <option value="text">纯文字</option>
-            <option value="markdown">Markdown</option>
-            <option value="image">图片</option>
-          </select>
-        </label>
-
-        <div class="field">
-          <span>定时计划</span>
-          <div class="schedule-mode" role="radiogroup" aria-label="定时计划">
-            <label><input id="task-schedule-none" name="task-schedule-mode" type="radio" value="none" checked /> 无计划</label>
-            <label><input id="task-schedule-daily" name="task-schedule-mode" type="radio" value="daily" /> 每日</label>
-            <label><input id="task-schedule-weekly" name="task-schedule-mode" type="radio" value="weekly" /> 每周</label>
-            <label><input id="task-schedule-interval" name="task-schedule-mode" type="radio" value="interval" /> 间隔</label>
-            <label><input id="task-schedule-cron" name="task-schedule-mode" type="radio" value="cron" /> Cron</label>
-          </div>
-          <div id="task-schedule-fields" class="schedule-fields" hidden>
-            <div id="task-cron-fields" class="schedule-cron-fields" hidden>
-              <label>Cron 表达式 <input id="task-schedule-expression" type="text" maxlength="128" placeholder="30 8 * * 1-5" /></label>
-              <p class="help">五字段：分 时 日 月 星期；星期 0/7 均为周日，与 weekly 的 1=周一不同。日与星期同时受限时取并集。</p>
-            </div>
-            <div id="task-interval-fields" class="schedule-interval-fields" hidden>
-              <label>本地起点 <input id="task-schedule-start-at" type="datetime-local" step="60" /></label>
-              <label>间隔分钟 <input id="task-schedule-interval-minutes" type="number" min="1" max="10080" step="1" /></label>
-              <p class="help">起点按所选 IANA 时区的本地时间解释；间隔是固定经过分钟数，跨 DST 时本地显示可能变化。</p>
-            </div>
-            <div id="task-weekdays" class="weekday-picker" hidden>
-              <span>星期（ISO，1=周一）</span>
-              <label><input type="checkbox" value="1" /> 一</label>
-              <label><input type="checkbox" value="2" /> 二</label>
-              <label><input type="checkbox" value="3" /> 三</label>
-              <label><input type="checkbox" value="4" /> 四</label>
-              <label><input type="checkbox" value="5" /> 五</label>
-              <label><input type="checkbox" value="6" /> 六</label>
-              <label><input type="checkbox" value="7" /> 日</label>
-            </div>
-            <label id="task-time-field" class="field">
-              <span>时间（HH:mm）</span>
-              <input id="task-schedule-time" type="text" inputmode="numeric" value="08:30" maxlength="5" placeholder="08:30" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>IANA 时区</span>
-              <input id="task-schedule-timezone" type="text" value="Asia/Shanghai" maxlength="128" autocomplete="off" list="task-timezone-suggestions" placeholder="例如：Asia/Shanghai" />
-              <datalist id="task-timezone-suggestions">
-                <option value="Asia/Shanghai"></option>
-                <option value="Asia/Tokyo"></option>
-                <option value="Asia/Kathmandu"></option>
-                <option value="UTC"></option>
-                <option value="Europe/London"></option>
-                <option value="America/New_York"></option>
-              </datalist>
-              <small>必须填写 IANA 时区，不会根据浏览器时区自动推断。</small>
-            </label>
-          </div>
-          <p id="task-schedule-error" class="form-error" role="alert" hidden></p>
-          <p id="task-schedule-saved" class="task-schedule-saved" hidden></p>
-        </div>
-
-        <label class="field">
-          <span>UMO 白名单（一行一个）</span>
-          <textarea id="task-umos" rows="6" spellcheck="false" placeholder="aiocqhttp:GroupMessage:123456789&#10;aiocqhttp:FriendMessage:987654321"></textarea>
-          <small>
-            在目标会话中发送 /sid 获取完整 UMO。格式为平台适配器实例 ID:消息类型:完整会话 ID；
-            只接受 GroupMessage 或 FriendMessage，不能填写裸群号或 UID。群成员隔离标识会原样保留，不会自动改写为群级目标。
-            留空表示白名单为空，可以保存但不能投递。
-          </small>
-        </label>
-
-        <p class="help">任务保存后仍保持未启用；保存本身不发送消息。后台“测试投递”是独立的手动操作；“定时计划”保存配置和理论时间；保存会自动停用，需显式启用后才实际调度。</p>
-
-        <footer class="dialog-actions">
-          <button id="task-cancel-button" class="button button-secondary" type="button">取消</button>
-          <button id="task-save-button" class="button button-primary" type="submit">保存任务</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="task-power-dialog" class="dialog dialog-small" aria-labelledby="task-power-title">
-      <form id="task-power-form" class="form">
-        <header class="dialog-head">
-          <h2 id="task-power-title">启用定时调度</h2>
-          <button id="task-power-close-button" class="icon-button" type="button" aria-label="关闭">×</button>
-        </header>
-        <div id="task-power-error" class="form-error" role="alert" hidden></div>
-        <div id="task-power-uncertain" class="uncertain" role="alert" hidden>
-          <h3>启停结果未确认</h3>
-          <p id="task-power-uncertain-text"></p>
-          <div class="uncertain-actions">
-            <button id="task-power-recheck-button" class="button button-primary" type="button">重新读取最新任务</button>
-            <button id="task-power-review-close-button" class="button button-secondary" type="button" hidden>关闭并查看最新状态</button>
-          </div>
-        </div>
-        <div id="task-power-info"></div>
-        <p id="task-power-note" class="help"></p>
-        <footer class="dialog-actions">
-          <button id="task-power-cancel-button" class="button button-secondary" type="button">取消</button>
-          <button id="task-power-confirm-button" class="button button-primary" type="button">确认启用</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="task-delete-dialog" class="dialog dialog-small" aria-labelledby="task-delete-title">
-      <div class="form">
-        <header class="dialog-head">
-          <h2 id="task-delete-title">删除推送任务</h2>
-        </header>
-        <p id="task-delete-message"></p>
-        <div id="task-delete-error" class="form-error" role="alert" hidden></div>
-        <div id="task-delete-uncertain" class="uncertain" role="alert" hidden>
-          <h3>删除结果未确认</h3>
-          <p id="task-delete-uncertain-text" class="uncertain-text"></p>
-          <div class="uncertain-actions">
-            <button id="task-delete-recheck-button" class="button button-primary" type="button">重新读取最新任务</button>
-            <button id="task-delete-review-close-button" class="button button-secondary" type="button" hidden>关闭并查看最新任务</button>
-          </div>
-        </div>
-        <footer class="dialog-actions">
-          <button id="task-delete-cancel-button" class="button button-secondary" type="button">取消</button>
-          <button id="task-delete-confirm-button" class="button button-danger" type="button">删除</button>
-        </footer>
-      </div>
-    </dialog>
-    </main>
-
-    <dialog id="site-dialog" class="dialog" aria-labelledby="dialog-title">
-      <form id="site-form" class="form">
-        <header class="dialog-head">
-          <h2 id="dialog-title">新增站点</h2>
-          <button id="close-dialog-button" class="icon-button" type="button" aria-label="关闭">
-            ×
-          </button>
-        </header>
-
-        <div id="form-error" class="form-error" role="alert" hidden></div>
-
-        <div id="write-uncertain" class="uncertain" role="alert" hidden>
-          <h3>保存结果未确认</h3>
-          <p id="write-uncertain-text" class="uncertain-text"></p>
-          <div class="uncertain-actions">
-            <button id="recheck-write-button" class="button button-primary" type="button">
-              重新读取最新列表
-            </button>
-            <button id="review-close-button" class="button button-secondary" type="button" hidden>
-              关闭并查看最新列表
-            </button>
-          </div>
-        </div>
-
-        <div class="form-grid">
           <label class="field">
-            <span>站点名称</span>
-            <input
-              id="name"
-              name="name"
-              type="text"
-              maxlength="80"
-              required
-              autocomplete="off"
-              placeholder="例如：主站"
-            />
+            <span>组合名称</span>
+            <input id="profile-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览" />
           </label>
 
           <label class="field">
-            <span>超时（秒）</span>
-            <input
-              id="timeout"
-              name="timeout_seconds"
-              type="number"
-              min="1"
-              max="120"
-              step="0.1"
-              value="10"
-              required
-            />
+            <span>站点</span>
+            <select id="profile-site" required></select>
+            <small>可以使用已停用站点保存组合，但预览会明确拒绝。</small>
           </label>
 
-          <label class="field field-wide">
-            <span>基础地址</span>
-            <input
-              id="base-url"
-              name="base_url"
-              type="url"
-              maxlength="2048"
-              required
-              inputmode="url"
-              autocomplete="url"
-              spellcheck="false"
-              placeholder="https://api.example.com/news"
-            />
-            <small>
-              不要包含末尾 /v2；支持内网、Docker 主机名、方括号 IPv6 和反向代理路径前缀。
-            </small>
-          </label>
-        </div>
+          <fieldset class="profile-items-fieldset">
+            <legend>栏目、顺序与每栏条数</legend>
+            <p class="help">至少选择一个栏目；全部内容留空表示展示全部，最多 1000 条。当前五类接口没有可配置参数。</p>
+            <div id="profile-item-editor" class="profile-item-editor"></div>
+          </fieldset>
 
-        <label class="toggle">
-          <input id="enabled" name="enabled" type="checkbox" />
-          <span class="toggle-track" aria-hidden="true"></span>
-          <span class="toggle-copy">
-            <strong>启用站点</strong>
-            <small>关闭后保留配置，但不会参与后续内容获取。</small>
-          </span>
-        </label>
+          <footer class="dialog-actions">
+            <button id="profile-cancel-button" class="button button-secondary" type="button">
+              取消
+            </button>
+            <button id="profile-save-button" class="button button-primary" type="submit">
+              保存组合
+            </button>
+          </footer>
+        </form>
+      </dialog>
 
-        <fieldset id="credential-section" class="credential-section">
-          <legend>访问凭据</legend>
-          <p id="credential-state" class="help" hidden></p>
-
-          <div id="credential-actions" class="credential-actions" hidden>
-            <label class="radio">
-              <input type="radio" name="credential_action" value="keep" checked />
-              <span>保留原凭据</span>
-            </label>
-            <label class="radio">
-              <input type="radio" name="credential_action" value="set" />
-              <span>设置新凭据</span>
-            </label>
-            <label class="radio">
-              <input type="radio" name="credential_action" value="clear" />
-              <span>清除凭据</span>
-            </label>
+      <dialog id="profile-delete-dialog" class="dialog dialog-small" aria-labelledby="profile-delete-title">
+        <div class="form">
+          <header class="dialog-head">
+            <h2 id="profile-delete-title">删除内容组合</h2>
+          </header>
+          <p id="profile-delete-message"></p>
+          <div id="profile-delete-error" class="form-error" role="alert" hidden></div>
+          <div id="profile-delete-uncertain" class="uncertain" role="alert" hidden>
+            <h3>删除结果未确认</h3>
+            <p id="profile-delete-uncertain-text" class="uncertain-text"></p>
+            <div class="uncertain-actions">
+              <button id="profile-delete-recheck-button" class="button button-primary" type="button">
+                重新读取最新组合
+              </button>
+              <button id="profile-delete-review-close-button" class="button button-secondary" type="button" hidden>
+                关闭并查看最新组合
+              </button>
+            </div>
           </div>
+          <footer class="dialog-actions">
+            <button id="profile-delete-cancel-button" class="button button-secondary" type="button">
+              取消
+            </button>
+            <button id="profile-delete-confirm-button" class="button button-danger" type="button">
+              删除
+            </button>
+          </footer>
+        </div>
+      </dialog>
 
-          <label id="token-field" class="field token-field">
-            <span id="token-label">Bearer 凭据（可选）</span>
-            <input
-              id="bearer-token"
-              name="bearer_token"
-              type="password"
-              maxlength="4096"
-              autocomplete="new-password"
-              spellcheck="false"
-            />
-            <small id="token-help">
-              留空表示不设置凭据。只填写凭据本身，不要带 Bearer 前缀；保存后不会回显。
-            </small>
-          </label>
-        </fieldset>
-
-        <footer class="dialog-actions">
-          <button id="cancel-button" class="button button-secondary" type="button">
-            取消
-          </button>
-          <button id="save-button" class="button button-primary" type="submit">
-            保存站点
-          </button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="delete-dialog" class="dialog dialog-small" aria-labelledby="delete-title">
-      <div class="form">
+      <dialog
+        id="discard-dialog"
+        class="dialog dialog-small"
+        role="alertdialog"
+        aria-labelledby="discard-title"
+        aria-describedby="discard-desc"
+      >
         <header class="dialog-head">
-          <h2 id="delete-title">删除站点</h2>
+          <h2 id="discard-title">放弃未保存的修改？</h2>
         </header>
-        <p id="delete-message"></p>
-        <div id="delete-error" class="form-error" role="alert" hidden></div>
-        <div id="delete-uncertain" class="uncertain" role="alert" hidden>
-          <h3>删除结果未确认</h3>
-          <p id="delete-uncertain-text" class="uncertain-text"></p>
-          <div class="uncertain-actions">
-            <button id="recheck-delete-button" class="button button-primary" type="button">
-              重新读取最新列表
-            </button>
-            <button id="delete-review-close-button" class="button button-secondary" type="button" hidden>
-              关闭并查看最新列表
-            </button>
-          </div>
-        </div>
+        <p id="discard-desc" class="dialog-text">
+          当前表单有尚未保存的内容，关闭后会丢失。
+        </p>
         <footer class="dialog-actions">
-          <button id="delete-cancel-button" class="button button-secondary" type="button">
-            取消
+          <button id="discard-cancel-button" class="button button-secondary" type="button">
+            继续编辑
           </button>
-          <button id="delete-confirm-button" class="button button-danger" type="button">
-            删除
+          <button id="discard-confirm-button" class="button button-danger" type="button">
+            放弃修改并关闭
           </button>
         </footer>
-      </div>
-    </dialog>
+      </dialog>
 
-    <dialog id="site-test-dialog" class="dialog dialog-small" aria-labelledby="site-test-title">
-      <div class="form">
-        <header class="dialog-head"><h2 id="site-test-title">测试连接</h2></header>
-        <p id="site-test-site"></p>
-        <label class="field"><span>内容接口</span>
-          <select id="site-test-content-type">
-            <option value="daily_news">每日新闻</option>
-            <option value="bilibili_hot">Bilibili 热搜</option>
-            <option value="zhihu_hot">知乎热榜</option>
-            <option value="douyin_hot">抖音热搜</option>
-            <option value="toutiao_hot">今日头条热搜</option>
-          </select>
-        </label>
-        <p class="help">会主动请求上游，只验证所选接口本次连接和数据格式；不修改配置、不启用站点、不发送消息。</p>
-        <div id="site-test-result" class="site-test-result" role="status" hidden></div>
-        <footer class="dialog-actions">
-          <button id="site-test-close-button" class="button button-secondary" type="button">关闭</button>
-          <button id="site-test-run-button" class="button button-primary" type="button">开始测试</button>
-        </footer>
-      </div>
-    </dialog>
-
-    <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-dialog-title">
-      <form id="profile-form" class="form">
-        <header class="dialog-head">
-          <h2 id="profile-dialog-title">新增组合</h2>
-          <button id="profile-close-dialog-button" class="icon-button" type="button" aria-label="关闭">
-            ×
-          </button>
-        </header>
-
-        <div id="profile-form-error" class="form-error" role="alert" hidden></div>
-
-        <div id="profile-write-uncertain" class="uncertain" role="alert" hidden>
-          <h3>保存结果未确认</h3>
-          <p id="profile-write-uncertain-text" class="uncertain-text"></p>
-          <div class="uncertain-actions">
-            <button id="profile-recheck-button" class="button button-primary" type="button">
-              重新读取最新组合
-            </button>
-            <button id="profile-review-close-button" class="button button-secondary" type="button" hidden>
-              关闭并查看最新组合
-            </button>
-          </div>
-        </div>
-
-        <label class="field">
-          <span>组合名称</span>
-          <input id="profile-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览" />
-        </label>
-
-        <label class="field">
-          <span>站点</span>
-          <select id="profile-site" required></select>
-          <small>可以使用已停用站点保存组合，但预览会明确拒绝。</small>
-        </label>
-
-        <fieldset class="profile-items-fieldset">
-          <legend>栏目、顺序与每栏条数</legend>
-          <p class="help">至少选择一个栏目；全部内容留空表示展示全部，最多 1000 条。当前五类接口没有可配置参数。</p>
-          <div id="profile-item-editor" class="profile-item-editor"></div>
-        </fieldset>
-
-        <footer class="dialog-actions">
-          <button id="profile-cancel-button" class="button button-secondary" type="button">
-            取消
-          </button>
-          <button id="profile-save-button" class="button button-primary" type="submit">
-            保存组合
-          </button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="profile-delete-dialog" class="dialog dialog-small" aria-labelledby="profile-delete-title">
-      <div class="form">
-        <header class="dialog-head">
-          <h2 id="profile-delete-title">删除内容组合</h2>
-        </header>
-        <p id="profile-delete-message"></p>
-        <div id="profile-delete-error" class="form-error" role="alert" hidden></div>
-        <div id="profile-delete-uncertain" class="uncertain" role="alert" hidden>
-          <h3>删除结果未确认</h3>
-          <p id="profile-delete-uncertain-text" class="uncertain-text"></p>
-          <div class="uncertain-actions">
-            <button id="profile-delete-recheck-button" class="button button-primary" type="button">
-              重新读取最新组合
-            </button>
-            <button id="profile-delete-review-close-button" class="button button-secondary" type="button" hidden>
-              关闭并查看最新组合
-            </button>
-          </div>
-        </div>
-        <footer class="dialog-actions">
-          <button id="profile-delete-cancel-button" class="button button-secondary" type="button">
-            取消
-          </button>
-          <button id="profile-delete-confirm-button" class="button button-danger" type="button">
-            删除
-          </button>
-        </footer>
-      </div>
-    </dialog>
-
-    <script type="module" src="./app.js"></script>
+      <script type="module" src="./app.js"></script>
+    </div>
   </body>
 </html>

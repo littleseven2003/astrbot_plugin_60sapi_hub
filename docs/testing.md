@@ -381,3 +381,25 @@ mock 测试通过不等于真实投递成功。检查报告区分通过、失败
 - 脚本使用本地 HTTP 上游与应用内请求门闩，不依赖公开上游。
 - 429/503、A/B 跨站点并发旧响应、请求中失败重试、编辑/删除/刷新旧结果仍未加入仓库内浏览器断言。
 - 错误分类、并发、旧生命周期、缓存和运行记录不变的完整专项覆盖尚未完成。
+
+### 运行方式与环境要求
+
+脚本连接真实隔离宿主，需要具备本插件的 AstrBot v4.29.1 根目录、Dashboard 密码和本地 Chromium；不连接公开上游，也不发送消息：
+
+```bash
+ASTRBOT_URL=<isolated-host-url> \
+ASTRBOT_PASSWORD=<test-dashboard-password> \
+ASTRBOT_PLUGIN=astrbot_plugin_60sapi_hub \
+CHROME_PATH=<chromium> \
+NODE_PATH=<playwright-core-node-modules> \
+SITE_TEST_SCREENSHOT=<repo-external-screenshot-path> \
+node tests/browser/site_connection_ui.js
+```
+
+- 环境变量：`ASTRBOT_URL`、`ASTRBOT_PASSWORD`、`CHROME_PATH` 必填，缺少任一项时脚本打印缺失项并以退出码 2 中止；`ASTRBOT_PLUGIN` 默认 `astrbot_plugin_60sapi_hub`，需与视图路由一致才能打开 iframe；宿主首次登录强制改密时用 `ASTRBOT_NEW_PASSWORD` 提供新密码。
+- Node 与 Playwright：Node 需支持全局 `fetch`（Node 18 及以上）；`playwright-core` 不随插件分发，用 `NODE_PATH` 指向已有安装目录，浏览器由 `CHROME_PATH` 指定，不需要 `npx playwright install`。未安装或未指向 `playwright-core` 时脚本在 `require` 阶段即以 `MODULE_NOT_FOUND` 退出（退出码 1），不会走到环境变量检查。脚本以 `--no-sandbox` 无头启动 Chromium。
+- 隔离要求：使用临时数据库和隔离宿主，登录用户名固定为 `astrbot`；脚本自建的临时站点只指向 `127.0.0.1` 上的内置 HTTP 上游，不写真实 UMO、不执行真实投递。截图、日志和临时文件放在仓库外，不提交。
+- 等待方式：只用 `waitForFunction`、`waitForSelector`、`waitForURL` 等 DOM 与 URL 状态判断，不用固定 sleep；已有等待的显式超时为 10～15 秒，超时按失败处理。内置上游故意让知乎延迟 1.2 秒、抖音延迟 2 秒，用于覆盖“测试中”按钮状态，属于被测场景而不是测试等待。
+- 总时长：整轮用外层超时约束（例如 shell 的 `timeout 600 node tests/browser/site_connection_ui.js`），避免宿主或网络异常时挂住；中断或超时记为未通过。
+- 资源清理：`finally` 中按最新 revision 删除本轮创建的临时站点，再关闭浏览器和内置上游，断言失败也会执行。被强制中断（Ctrl-C、CI 取消）时需手动清理残留临时站点，或改用临时数据库重跑后再开始下一轮。
+- 失败判据：断言失败以非零退出码结束并打印错误；`node --check` 只验证语法，不能当作浏览器通过。

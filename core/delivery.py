@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import math
+import re
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -479,7 +480,6 @@ class DeliveryService:
         raw_failed = data.get("failed_sections") or []
         if not isinstance(raw_failed, list):
             raise DeliveryNoContentError("preview_invalid")
-        failed: list[object] = list(raw_failed)
         if task.output_format in ("text", "markdown"):
             if not isinstance(outputs, dict):
                 raise DeliveryNoContentError("render_failed")
@@ -488,6 +488,7 @@ class DeliveryService:
                 raise DeliveryNoContentError("render_failed")
             # 文字/Markdown 是一条逻辑消息，只有一张“栏目图”槽位。
             slots: tuple[tuple[int, str | bytes | None], ...] = ((1, body),)
+            failed = _merge_failed_sections(raw_failed, [], (), ())
         else:
             snapshot = data.get("image_snapshot")
             if not isinstance(snapshot, dict) or not snapshot.get("id"):
@@ -507,12 +508,15 @@ class DeliveryService:
             raw_image_failed = image_data.get("failed_sections") or []
             if not isinstance(raw_image_failed, list):
                 raise DeliveryNoContentError("image_invalid")
-            slots, image_failed_entries = decoded
+            slots, image_failed_entries, image_refs = decoded
             if not any(payload is not None for _, payload in slots):
                 # 全部栏目都没生成出图：不发送、不降级、不伪造成功。
                 raise DeliveryNoContentError("image_failed")
-            _merge_failed_sections(
-                failed, raw_image_failed, image_failed_entries,
+            failed = _merge_failed_sections(
+                raw_failed,
+                raw_image_failed,
+                image_failed_entries,
+                image_refs,
             )
         content_status = data.get("status", "complete")
         if not isinstance(content_status, str):
@@ -599,6 +603,7 @@ class DeliveryService:
                         target_status = (
                             "partial" if sent_images else "skipped"
                         )
+                        target_error = "config_changed"
                         partial_reasons.add("config_changed")
                         break
                 try:
@@ -631,6 +636,7 @@ class DeliveryService:
                         error_code="config_changed",
                     )
                     target_status = final_target_status
+                    target_error = "config_changed"
                     partial_reasons.add("config_changed")
                     break
                 try:
@@ -714,6 +720,13 @@ class DeliveryService:
             final_status = "failed"
         finish_code = None
         if (
+            final_status in ("partial", "stopped")
+            and partial_reasons == {"config_changed"}
+            and not any_failed
+            and not any_unknown
+        ):
+            finish_code = "config_changed"
+        elif (
             final_status == "partial"
             and partial_reasons == {"section_image_failed"}
             and not any_failed
@@ -916,32 +929,65 @@ MAX_SECTION_IMAGE_BYTES = 2 * 1024 * 1024
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+_MAX_FAILED_SECTIONS = 16
+_FAILURE_CODE_RE = re.compile(r"[a-z0-9_]{1,32}")
+
+
+def _clean_failure_text(value: object, *, limit: int = 120) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = "".join(
+        " " if ord(char) < 32 or ord(char) == 127 else char
+        for char in value
+    )
+    return " ".join(text.split()).strip()[:limit]
+
+
+def _failure_reason(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    code = value.strip().lower()
+    return code if _FAILURE_CODE_RE.fullmatch(code) else ""
+
+
+def _failure_index(value: object) -> int | None:
+    if type(value) is not int or value < 1:
+        return None
+    return value
+
+
 def _decode_section_images(
     raw: object,
 ) -> tuple[
     tuple[tuple[int, str | bytes | None], ...],
     tuple[dict[str, object], ...],
+    tuple[tuple[int, str, str], ...],
 ] | None:
-    """把按栏目返回的 images 解析为发送槽位；失败栏目保留为 None 槽位。"""
+    """解析 images 为槽位、失败条目与栏目索引表；失败栏目保留 None 槽位。"""
     if not isinstance(raw, list) or not raw:
         return None
     if len(raw) > MAX_SECTION_IMAGES:
         return None
-    parsed: list[tuple[int, bytes | None, str | None]] = []
+    parsed: list[tuple[int, bytes | None, str | None, str]] = []
+    refs: list[tuple[int, str, str]] = []
     for item in raw:
         if not isinstance(item, dict):
             return None
         index = item.get("index")
         status = item.get("status")
         label = item.get("label")
+        content_type = item.get("content_type")
         if type(index) is not int or index < 1:
             return None
         if not isinstance(status, str) or status not in ALLOWED_IMAGE_STATUSES:
             return None
         if not isinstance(label, str) or not label.strip():
             return None
+        if not isinstance(content_type, str):
+            content_type = ""
+        refs.append((index, label.strip(), content_type.strip()[:64]))
         if status == "failed":
-            parsed.append((index, None, label.strip()))
+            parsed.append((index, None, label.strip(), content_type))
             continue
         encoded = item.get("png_base64")
         if not isinstance(encoded, str) or not encoded:
@@ -954,49 +1000,112 @@ def _decode_section_images(
             return None
         if len(png) > MAX_SECTION_IMAGE_BYTES:
             return None
-        parsed.append((index, png, None))
+        parsed.append((index, png, None, content_type))
     parsed.sort(key=lambda entry: entry[0])
     if [entry[0] for entry in parsed] != list(range(1, len(parsed) + 1)):
         return None
-    slots = tuple(
-        (index, png) for index, png, _ in parsed
-    )
+    slots = tuple((index, png) for index, png, _, _ in parsed)
     failed_entries = tuple(
         {
             "label": label,
             "reason": "image_failed",
             "image_index": index,
         }
-        for index, png, label in parsed
+        for index, png, label, _ in parsed
         if png is None and label
     )
-    return slots, failed_entries
+    refs.sort(key=lambda entry: entry[0])
+    return slots, failed_entries, tuple(refs)
 
 
 def _merge_failed_sections(
-    target: list[object],
-    extra: list[object],
-    failed_entries: tuple[dict[str, object], ...],
-) -> None:
-    """合并预览阶段与出图阶段的失败栏目，按标签去重。"""
-    seen = {
-        entry.get("label") if isinstance(entry, dict) else entry
-        for entry in target
-    }
-    # 出图阶段先写入结构化条目（带 image_index），再补预览阶段条目；
-    # 两者只按标签去重，历史读取仍兼容纯字符串列表。
-    for entry in failed_entries:
-        label = entry.get("label")
-        if not isinstance(label, str) or label in seen:
-            continue
-        target.append(dict(entry))
-        seen.add(label)
-    for entry in extra:
-        key = entry.get("label") if isinstance(entry, dict) else entry
-        if key in seen:
-            continue
-        target.append(entry)
-        seen.add(key)
+    preview: list[object],
+    image_labels: list[object],
+    image_failed: tuple[dict[str, object], ...],
+    image_refs: tuple[tuple[int, str, str], ...],
+) -> list[dict[str, object]]:
+    """合并预览与出图阶段失败栏目，并做安全字段白名单。
+
+    只保留 label / reason / image_index；上游 message、响应正文等一律不落库。
+    image_index 仅在能从 images[] 的唯一条目（优先 label，必要时 content_type）
+    或条目自身确认时填写，匹配不到就不填。
+    """
+    refs = [
+        (index, label, content_type)
+        for index, label, content_type in image_refs
+        if _failure_index(index) is not None and label
+    ]
+
+    def lookup(label: str, content_type: str) -> int | None:
+        matches = [ref for ref in refs if ref[1] == label]
+        if len(matches) == 1:
+            return matches[0][0]
+        if content_type:
+            filtered = [
+                ref for ref in matches if ref[2] == content_type
+            ]
+            if len(filtered) == 1:
+                return filtered[0][0]
+        return None
+
+    merged: list[dict[str, object]] = []
+
+    def merge(raw: object, default_reason: str = "") -> None:
+        if isinstance(raw, str):
+            label = _clean_failure_text(raw)
+            content_type = ""
+            reason = ""
+            explicit_index = None
+        elif isinstance(raw, dict):
+            label = _clean_failure_text(raw.get("label"))
+            content_type = _clean_failure_text(
+                raw.get("content_type"), limit=64,
+            )
+            reason = _failure_reason(
+                raw.get("reason") or raw.get("code"),
+            )
+            explicit_index = _failure_index(raw.get("image_index"))
+        else:
+            return
+        if not label:
+            return
+        reason = reason or default_reason
+        image_index = (
+            explicit_index
+            if explicit_index is not None
+            else lookup(label, content_type)
+        )
+        for entry in merged:
+            if entry.get("label") != label:
+                continue
+            known_index = entry.get("image_index")
+            if (
+                known_index is not None
+                and image_index is not None
+                and known_index != image_index
+            ):
+                continue
+            if "reason" not in entry and reason:
+                entry["reason"] = reason
+            if known_index is None and image_index is not None:
+                entry["image_index"] = image_index
+            return
+        if len(merged) >= _MAX_FAILED_SECTIONS:
+            return
+        item: dict[str, object] = {"label": label}
+        if reason:
+            item["reason"] = reason
+        if image_index is not None:
+            item["image_index"] = image_index
+        merged.append(item)
+
+    for entry in preview:
+        merge(entry)
+    for entry in image_labels:
+        merge(entry)
+    for entry in image_failed:
+        merge(entry, default_reason="image_failed")
+    return merged
 
 
 def _normalize_send_status(value: object) -> SendStatus:

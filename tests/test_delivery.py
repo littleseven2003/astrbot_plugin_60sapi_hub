@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from contextlib import closing
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 from core.delivery import (
@@ -51,6 +52,7 @@ class StubApi:
         ]
         self.image_status = 200
         self.partial = False
+        self.preview_failed = [{"label": "失败栏目"}]
 
     async def preview_profile(self, payload, *, owner=None):
         self.preview_calls += 1
@@ -62,7 +64,9 @@ class StubApi:
         return ProfileApiResult(200, {"status": "ok", "data": {
             "status": "partial" if self.partial else "complete",
             "outputs": {"text": self.text, "markdown": self.markdown},
-            "failed_sections": ([{"label": "失败栏目"}] if self.partial else []),
+            "failed_sections": (
+                list(self.preview_failed) if self.partial else []
+            ),
             "image_snapshot": {"id": "snap-1"},
         }})
 
@@ -589,8 +593,132 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(len(self.sender.calls), 1)
-        # 图片失败与配置变化并存时，执行级错误码不能只归因于图片失败。
-        self.assertIsNone(result.error_code)
+        # 图片失败与配置变化并存时，执行级错误码归因于实际终止发送的配置变化，
+        # 不能只写成 section_image_failed。
+        self.assertEqual(result.error_code, "config_changed")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
+
+    async def test_config_change_before_first_image_marks_config_changed(
+        self,
+    ) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        with patch.object(
+            self.service, "_config_unchanged",
+            AsyncMock(return_value=False),
+        ):
+            result = await self.service.execute(
+                task.id, "config-before-first",
+            )
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.error_code, "config_changed")
+        self.assertEqual(result.targets[0].status, "skipped")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
+        self.assertEqual(
+            [(p.page_index, p.status, p.error_code) for p in result.pages],
+            [
+                (1, "skipped", "config_changed"),
+                (2, "skipped", "config_changed"),
+            ],
+        )
+        self.assertEqual(len(self.sender.calls), 0)
+
+    async def test_config_change_at_final_check_after_first_image(
+        self,
+    ) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        checks = AsyncMock(side_effect=[True, True, True, False])
+        with patch.object(self.service, "_config_unchanged", checks):
+            result = await self.service.execute(
+                task.id, "config-final-check",
+            )
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.error_code, "config_changed")
+        self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
+        self.assertEqual(
+            [(p.page_index, p.status, p.error_code) for p in result.pages],
+            [(1, "success", None), (2, "skipped", "config_changed")],
+        )
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_preview_failure_matches_image_index_and_drops_message(
+        self,
+    ) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "知乎热榜",
+            "content_type": "zhihu_hot",
+            "message": "上游敏感响应正文",
+        }]
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-image-merge")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [{
+            "label": "知乎热榜",
+            "reason": "image_failed",
+            "image_index": 2,
+        }])
+        self.assertNotIn("上游敏感响应正文", result.failed_sections_json or "")
+        self.assertNotIn("message", result.failed_sections_json or "")
+
+    async def test_preview_failure_reason_is_preserved_with_index(self) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "每日新闻",
+            "content_type": "daily_news",
+            "code": "upstream_timeout",
+            "message": "上游敏感正文",
+        }]
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-reason")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [{
+            "label": "每日新闻",
+            "reason": "upstream_timeout",
+            "image_index": 1,
+        }])
+        self.assertNotIn("上游敏感正文", result.failed_sections_json or "")
+
+    async def test_preview_failure_without_match_keeps_no_index(self) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "不在图里的栏目",
+            "content_type": "unknown_type",
+            "message": "secret",
+        }]
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-no-match")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [{"label": "不在图里的栏目"}])
+        self.assertNotIn("secret", result.failed_sections_json or "")
+
+    async def test_preview_and_image_failures_merge_with_indexes(self) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "每日新闻",
+            "content_type": "daily_news",
+            "message": "上游错误",
+        }]
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-image-both")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [
+            {"label": "每日新闻", "image_index": 1},
+            {
+                "label": "知乎热榜",
+                "reason": "image_failed",
+                "image_index": 2,
+            },
+        ])
+        self.assertNotIn("上游错误", result.failed_sections_json or "")
 
     async def test_all_section_images_failed_never_calls_sender(self) -> None:
         for section in self.api.image_sections:
@@ -795,8 +923,15 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.sender.hook = change_task
         result = await self.service.execute(task.id, "page-change-1")
         self.assertEqual(result.status, "partial")
+        self.assertEqual(result.error_code, "config_changed")
         self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
         self.assertEqual([p.status for p in result.pages], ["success", "skipped"])
+        self.assertEqual(
+            [p.error_code for p in result.pages], [None, "config_changed"],
+        )
         self.assertEqual(len(self.sender.calls), 1)
 
     async def test_history_survives_task_deletion(self) -> None:

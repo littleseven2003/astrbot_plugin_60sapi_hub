@@ -1,5 +1,5 @@
 /*
- * 投递状态文案回归：栏目图数量、未送达原因分解、列表与详情一致性。
+ * 投递状态文案回归：image_model 分档、三个数量、跳过原因分解、列表/详情一致。
  * executions 列表与详情用 route fixture 返回冻结契约字段，不发真实投递。
  *
  * ASTRBOT_URL=... ASTRBOT_PASSWORD=... ASTRBOT_PLUGIN=... \
@@ -20,116 +20,173 @@ if (!BASE || !PASSWORD || !CHROME) {
 
 const WAIT = 20000;
 
-function detail(fields) {
+function detail(caseData) {
+  const isSections = caseData.model === "sections";
   return {
-    id: fields.id, task_id: "task-1", task_name: fields.taskName || "文案任务",
-    profile_id: "profile-1", profile_revision: 1, site_id: "site-1", site_revision: 1,
-    output_format: fields.outputFormat || "image",
-    content_status: fields.contentStatus || "partial",
-    content_hash: "hash", status: fields.status || "partial", error_code: null,
+    id: caseData.id,
+    task_id: "task-1",
+    task_name: caseData.taskName,
+    profile_id: "profile-1", profile_revision: 1,
+    site_id: "site-1", site_revision: 1,
+    output_format: caseData.outputFormat || "image",
+    content_status: caseData.contentStatus || (caseData.status === "success" ? "complete" : "partial"),
+    content_hash: "hash",
+    status: caseData.status || "partial",
+    error_code: null,
     created_at: "2026-11-06T00:00:00Z", updated_at: "2026-11-06T00:00:00Z",
-    failed_sections: fields.failedSections || [],
-    image_partial: fields.imagePartial !== false,
-    delivered_image_count: fields.delivered || 0,
-    skipped_image_count: fields.skipped || 0,
-    section_image_count: fields.sectionImages,
-    skipped_section_image_failed_count: fields.skippedSectionFailed || 0,
-    skipped_config_changed_count: fields.skippedConfig || 0,
-    skipped_other_count: fields.skippedOther || 0,
-    targets: fields.targets || [],
+    image_model: caseData.model,
+    image_record_count: caseData.records,
+    image_count: caseData.records,
+    section_slot_count: isSections ? caseData.slots : null,
+    generated_image_count: isSections ? caseData.generated : null,
+    section_image_count: isSections ? caseData.slots : null,
+    failed_section_count: (caseData.failedSections || []).length,
+    failed_sections: caseData.failedSections || [],
+    image_partial: caseData.imagePartial === true,
+    delivered_image_count: caseData.delivered,
+    skipped_image_count: caseData.skipped,
+    skipped_section_image_failed_count: caseData.skippedSectionFailed || 0,
+    skipped_config_changed_count: caseData.skippedConfig || 0,
+    skipped_other_count: caseData.skippedOther || 0,
+    targets: caseData.targets || [],
   };
 }
 
-function target(position, images) {
+function summary(caseData) {
+  const payload = detail(caseData);
+  return {
+    id: payload.id, task_id: payload.task_id, task_name: payload.task_name,
+    output_format: payload.output_format, status: payload.status,
+    content_status: payload.content_status,
+    created_at: payload.created_at, updated_at: payload.updated_at,
+    target_count: (caseData.targets || []).length,
+    image_model: payload.image_model,
+    image_record_count: payload.image_record_count,
+    image_count: payload.image_count,
+    section_slot_count: payload.section_slot_count,
+    generated_image_count: payload.generated_image_count,
+    section_image_count: payload.section_image_count,
+    failed_section_count: payload.failed_section_count,
+    image_partial: payload.image_partial,
+    delivered_image_count: payload.delivered_image_count,
+    skipped_image_count: payload.skipped_image_count,
+    skipped_section_image_failed_count: payload.skipped_section_image_failed_count,
+    skipped_config_changed_count: payload.skipped_config_changed_count,
+    skipped_other_count: payload.skipped_other_count,
+  };
+}
+
+function imageTarget(position, images) {
   return {
     position,
     umo: "fake_qq_01:GroupMessage:g" + position,
     status: "partial",
     error_code: "section_image_failed",
-    delivered_image_count: images.filter((image) => image.status === "success").length,
-    skipped_image_count: images.filter((image) => image.status !== "success").length,
+    delivered_image_count: images.filter((item) => item.status === "success").length,
+    skipped_image_count: images.filter((item) => item.status !== "success").length,
     section_image_count: images.length,
     images,
   };
 }
 
+const SECTION_IMAGES = [
+  { image_index: 1, status: "success", label: "每日新闻" },
+  { image_index: 2, status: "success", label: "知乎热榜" },
+  { image_index: 3, status: "success", label: "Bilibili 热搜" },
+];
+
 const CASES = {
-  "all-success": {
-    id: "copy-all-success", taskName: "全部成功",
-    status: "success", contentStatus: "complete", imagePartial: false,
-    delivered: 6, skipped: 0, sectionImages: 3,
+  "copy-all-success": {
+    id: "copy-all-success", taskName: "全部成功", model: "sections",
+    status: "success", imagePartial: false,
+    slots: 3, generated: 3, records: 6, delivered: 6, skipped: 0,
     failedSections: [],
-    targets: [target(0, [
-      { image_index: 1, status: "success", label: "每日新闻" },
-      { image_index: 2, status: "success", label: "知乎热榜" },
-      { image_index: 3, status: "success", label: "Bilibili 热搜" },
-    ]), target(1, [
-      { image_index: 1, status: "success", label: "每日新闻" },
-      { image_index: 2, status: "success", label: "知乎热榜" },
-      { image_index: 3, status: "success", label: "Bilibili 热搜" },
-    ])],
+    targets: [imageTarget(0, SECTION_IMAGES), imageTarget(1, SECTION_IMAGES)],
   },
-  "section-failed": {
-    id: "copy-section-failed", taskName: "栏目生成失败",
-    delivered: 4, skipped: 2, sectionImages: 3,
-    failedSections: [
-      { label: "知乎热榜", reason: "image_failed", image_index: 2 },
-    ],
-    skippedSectionFailed: 2, skippedConfig: 0, skippedOther: 0,
-    targets: [target(0, [
+  "copy-section-failed": {
+    id: "copy-section-failed", taskName: "栏目未生成", model: "sections",
+    slots: 3, generated: 2, records: 6, delivered: 4, skipped: 2,
+    imagePartial: true, skippedSectionFailed: 2,
+    failedSections: [{ label: "知乎热榜", reason: "image_failed", image_index: 2 }],
+    targets: [imageTarget(0, [
       { image_index: 1, status: "success", label: "每日新闻" },
       { image_index: 2, status: "skipped", error_code: "section_image_failed", label: "知乎热榜" },
       { image_index: 3, status: "success", label: "Bilibili 热搜" },
-    ]), target(1, [
+    ]), imageTarget(1, [
       { image_index: 1, status: "success", label: "每日新闻" },
       { image_index: 2, status: "skipped", error_code: "section_image_failed", label: "知乎热榜" },
       { image_index: 3, status: "success", label: "Bilibili 热搜" },
     ])],
   },
-  "config-changed": {
-    id: "copy-config-changed", taskName: "配置变化",
-    delivered: 3, skipped: 3, sectionImages: 3,
+  "copy-config-changed": {
+    id: "copy-config-changed", taskName: "配置变化", model: "sections",
+    slots: 3, generated: 3, records: 6, delivered: 3, skipped: 3,
+    imagePartial: true, skippedConfig: 2, skippedOther: 1,
     failedSections: [],
-    skippedSectionFailed: 0, skippedConfig: 2, skippedOther: 1,
-    targets: [target(0, [
+    targets: [imageTarget(0, [
       { image_index: 1, status: "success", label: "每日新闻" },
       { image_index: 2, status: "success", label: "知乎热榜" },
       { image_index: 3, status: "skipped", error_code: "config_changed", label: "Bilibili 热搜" },
-    ]), target(1, [
+    ]), imageTarget(1, [
       { image_index: 1, status: "success", label: "每日新闻" },
       { image_index: 2, status: "skipped", error_code: "config_changed" },
-      { image_index: 3, status: "skipped", error_code: "config_changed" },
+      { image_index: 3, status: "skipped", error_code: "unknown" },
     ])],
   },
-  mixed: {
-    id: "copy-mixed", taskName: "混合原因",
-    delivered: 2, skipped: 4, sectionImages: 3,
-    failedSections: [
-      { label: "知乎热榜", reason: "image_failed", image_index: 2 },
-    ],
-    skippedSectionFailed: 2, skippedConfig: 1, skippedOther: 1,
-    targets: [target(0, [
+  "copy-mixed": {
+    id: "copy-mixed", taskName: "混合原因", model: "sections",
+    slots: 3, generated: 2, records: 6, delivered: 2, skipped: 4,
+    imagePartial: true, skippedSectionFailed: 2, skippedConfig: 1, skippedOther: 1,
+    failedSections: [{ label: "知乎热榜", reason: "image_failed", image_index: 2 }],
+    targets: [imageTarget(0, [
       { image_index: 1, status: "success", label: "每日新闻" },
       { image_index: 2, status: "skipped", error_code: "section_image_failed", label: "知乎热榜" },
       { image_index: 3, status: "success", label: "Bilibili 热搜" },
-    ]), target(1, [
+    ]), imageTarget(1, [
       { image_index: 1, status: "skipped", error_code: "config_changed", label: "每日新闻" },
       { image_index: 2, status: "skipped", error_code: "section_image_failed", label: "知乎热榜" },
       { image_index: 3, status: "skipped", error_code: "interrupted", label: "Bilibili 热搜" },
     ])],
   },
-  "text-output": {
-    id: "copy-text-output", taskName: "文字任务",
-    outputFormat: "text", status: "success", contentStatus: "complete",
-    imagePartial: false, delivered: 2, skipped: 0, sectionImages: undefined,
+  "copy-legacy-pages": {
+    id: "copy-legacy-pages", taskName: "旧版分页记录", model: "unknown",
+    slots: null, generated: null, records: 6, delivered: 4, skipped: 2,
+    imagePartial: true, skippedConfig: 1, skippedOther: 1,
+    failedSections: [],
+    targets: [{
+      position: 0, umo: "fake_qq_01:GroupMessage:g0", status: "partial",
+      error_code: null, delivered_image_count: 2, skipped_image_count: 1,
+      section_image_count: null,
+      images: [
+        { image_index: 1, status: "success" },
+        { image_index: 2, status: "success" },
+        { image_index: 3, status: "skipped", error_code: "config_changed" },
+      ],
+    }, {
+      position: 1, umo: "fake_qq_01:GroupMessage:g1", status: "partial",
+      error_code: null, delivered_image_count: 2, skipped_image_count: 1,
+      section_image_count: null,
+      images: [
+        { image_index: 1, status: "success" },
+        { image_index: 2, status: "success" },
+        { image_index: 3, status: "skipped", error_code: "unknown" },
+      ],
+    }],
+  },
+  "copy-text-output": {
+    id: "copy-text-output", taskName: "文字历史记录", model: "unknown",
+    outputFormat: "text", status: "success", imagePartial: false,
+    slots: null, generated: null, records: 2, delivered: 2, skipped: 0,
     failedSections: [],
     targets: [{
       position: 0, umo: "fake_qq_01:GroupMessage:g0", status: "success",
       error_code: null, delivered_image_count: 1, skipped_image_count: 0,
+      section_image_count: null,
       images: [{ image_index: 1, status: "success" }],
     }, {
       position: 1, umo: "fake_qq_01:GroupMessage:g1", status: "success",
       error_code: null, delivered_image_count: 1, skipped_image_count: 0,
+      section_image_count: null,
       images: [{ image_index: 1, status: "success" }],
     }],
   },
@@ -165,26 +222,12 @@ async function frameOf(page) {
         });
         return;
       }
-      const summaries = Object.values(CASES).map((item) => ({
-        id: item.id, task_id: "task-1", task_name: item.taskName,
-        output_format: item.outputFormat || "image",
-        status: item.status || "partial",
-        content_status: item.contentStatus || "partial",
-        created_at: "2026-11-06T00:00:00Z", updated_at: "2026-11-06T00:00:00Z",
-        target_count: (item.targets || []).length,
-        image_count: (item.delivered || 0) + (item.skipped || 0),
-        delivered_image_count: item.delivered || 0,
-        skipped_image_count: item.skipped || 0,
-        section_image_count: item.sectionImages,
-        failed_section_count: (item.failedSections || []).length,
-        image_partial: item.imagePartial !== false,
-        skipped_section_image_failed_count: item.skippedSectionFailed || 0,
-        skipped_config_changed_count: item.skippedConfig || 0,
-        skipped_other_count: item.skippedOther || 0,
-      }));
+      const summaries = Object.values(CASES).map(summary);
       await route.fulfill({
         status: 200, contentType: "application/json",
-        body: JSON.stringify({ status: "ok", data: { count: summaries.length, executions: summaries } }),
+        body: JSON.stringify({
+          status: "ok", data: { count: summaries.length, executions: summaries },
+        }),
       });
     });
 
@@ -217,66 +260,104 @@ async function frameOf(page) {
       document.getElementById("delivery-list")?.innerText.includes("copy-all-success"),
     null, { timeout: WAIT });
 
-    const listText = await frame.evaluate(() => document.getElementById("delivery-list").innerText);
     const cardText = async (id) => frame.evaluate((executionId) => {
       const card = [...document.querySelectorAll("#delivery-list li")]
         .find((node) => node.innerText.includes(executionId));
       return card ? card.innerText : "";
     }, id);
+    const listText = await frame.evaluate(() => document.getElementById("delivery-list").innerText);
 
-    // 1) 多目标多栏目全部成功：栏目图数按去重栏目算，不出现「未送达」
+    // 1) 多目标多栏目全部成功：栏目图数按槽位计，记录数另给
     const success = await cardText("copy-all-success");
-    check(success.includes("3 张栏目图"), "全部成功应按栏目数展示: " + success);
+    check(success.includes("3 张栏目图"), "全部成功应展示栏目图数: " + success);
+    check(success.includes("6 条图片记录"), "全部成功应展示记录数: " + success);
     check(!success.includes("未送达"), "全部成功不应出现未送达: " + success);
-    check(!success.includes("记录"), "全部成功不应出现记录数: " + success);
 
-    // 2) 栏目生成失败：栏目数 + 记录数 + 原因分别给数
+    // 2) 新格式部分栏目未生成：槽位数 / 实际生成数 / 记录数 三者可区分
     const sectionFailed = await cardText("copy-section-failed");
-    check(sectionFailed.includes("1 个栏目未生成图片"), "栏目失败要按栏目计数: " + sectionFailed);
-    check(sectionFailed.includes("2 条发送记录未送达"), "记录数要按记录计数: " + sectionFailed);
-    check(sectionFailed.includes("2 因栏目图片生成失败"), "记录原因要分解: " + sectionFailed);
-    check(!sectionFailed.includes("页"), "不应出现分页字样");
+    check(sectionFailed.includes("3 个栏目（槽位）"), "要给出栏目槽位数: " + sectionFailed);
+    check(sectionFailed.includes("实际生成 2 张图"), "要给出实际生成数: " + sectionFailed);
+    check(sectionFailed.includes("6 条图片记录"), "要给出记录数: " + sectionFailed);
+    check(sectionFailed.includes("1 个栏目未生成图片"), "要说明有栏目没出图: " + sectionFailed);
+    check(sectionFailed.includes("2 条发送记录未送达"), "记录维度要单独给数: " + sectionFailed);
+    check(sectionFailed.includes("2 条因栏目图片生成失败"), "原因要分解: " + sectionFailed);
 
-    // 3) 配置变化：原因里必须出现配置变化，且不能说成栏目未生成
+    // 3) 配置变化 + 其他原因：不得说成栏目未生成，也不得出现「发送前终止」
     const configChanged = await cardText("copy-config-changed");
+    check(configChanged.includes("3 张栏目图"), "配置变化场景栏目数不变: " + configChanged);
     check(configChanged.includes("3 条发送记录未送达"), "配置变化按记录计数: " + configChanged);
-    check(configChanged.includes("2 因配置变化"), "配置变化原因要单列: " + configChanged);
-    check(configChanged.includes("1 因发送前终止"), "其它原因要单列: " + configChanged);
+    check(configChanged.includes("2 条因配置变化"), "配置变化原因单列: " + configChanged);
+    check(configChanged.includes("1 条因其他或未知原因"), "其它原因单列: " + configChanged);
     check(!configChanged.includes("栏目未生成图片"), "无栏目失败时不得声称栏目未生成: " + configChanged);
+    check(!listText.includes("发送前终止"), "不得再出现发送前终止: " + configChanged);
 
-    // 4) 混合：两种原因同时出现且分别有数
+    // 4) 混合原因：栏目数与记录数、三个原因分别有数
     const mixed = await cardText("copy-mixed");
-    check(mixed.includes("1 个栏目未生成图片"), "混合场景栏目数: " + mixed);
+    check(mixed.includes("3 个栏目（槽位）"), "混合场景槽位数: " + mixed);
+    check(mixed.includes("实际生成 2 张图"), "混合场景实际生成数: " + mixed);
+    check(mixed.includes("1 个栏目未生成图片"), "混合场景栏目失败数: " + mixed);
     check(mixed.includes("4 条发送记录未送达"), "混合场景记录数: " + mixed);
-    check(mixed.includes("2 因栏目图片生成失败"), "混合场景原因一: " + mixed);
-    check(mixed.includes("1 因配置变化"), "混合场景原因二: " + mixed);
-    check(mixed.includes("1 因发送前终止"), "混合场景原因三: " + mixed);
+    check(mixed.includes("2 条因栏目图片生成失败"), "混合原因一: " + mixed);
+    check(mixed.includes("1 条因配置变化"), "混合原因二: " + mixed);
+    check(mixed.includes("1 条因其他或未知原因"), "混合原因三: " + mixed);
 
-    // 5) 文字/Markdown 输出不得出现「张栏目图」
+    // 5) 旧版分页记录：只说图片记录，全文不得出现栏目相关词
+    const legacy = await cardText("copy-legacy-pages");
+    check(legacy.includes("6 条图片记录"), "旧记录只给中性记录数: " + legacy);
+    check(!legacy.includes("栏目"), "旧记录不得出现栏目字样: " + legacy);
+    check(!legacy.includes("张栏目图"), "旧记录不得出现张栏目图: " + legacy);
+    check(!legacy.includes("槽位"), "旧记录不得出现槽位: " + legacy);
+    check(legacy.includes("2 条发送记录未送达"), "旧记录仍要给出未送达记录数: " + legacy);
+    check(legacy.includes("1 条因配置变化"), "旧记录原因一: " + legacy);
+    check(legacy.includes("1 条因其他或未知原因"), "旧记录原因二: " + legacy);
+
+    // 6) 文字/Markdown 历史记录：条消息，无栏目词
     const textOutput = await cardText("copy-text-output");
+    check(textOutput.includes("2 条消息"), "文字输出按条消息计数: " + textOutput);
     check(!textOutput.includes("张栏目图"), "文字输出不得出现张栏目图: " + textOutput);
-    check(textOutput.includes("条消息"), "文字输出按条消息计数: " + textOutput);
+    check(!textOutput.includes("栏目"), "文字输出不得出现栏目字样: " + textOutput);
 
-    // 详情：列表与详情必须使用同一句摘要（此时列表已渲染完成）
+    // 7) 列表与详情使用同一句摘要
     await frame.evaluate(() => {
       const button = document.querySelector('button[aria-label="查看执行 copy-mixed"]');
       if (button) button.click();
     });
-    await frame.waitForFunction(() =>
-      document.getElementById("delivery-result")?.hidden === false,
-    null, { timeout: WAIT });
+    await frame.waitForFunction(
+      () => document.getElementById("delivery-result")?.hidden === false,
+      null, { timeout: WAIT },
+    );
     const detailText = await frame.evaluate(() =>
       document.getElementById("delivery-result").innerText);
     check(detailText.includes("部分成功"), "详情标题应为部分成功: " + detailText);
-    check(detailText.includes("1 个栏目未生成图片"), "详情栏目数与列表一致: " + detailText);
-    check(detailText.includes("4 条发送记录未送达"), "详情记录数与列表一致: " + detailText);
-    check(detailText.includes("2 因栏目图片生成失败"), "详情原因与列表一致: " + detailText);
-    check(detailText.includes("第 2 张 未送达（知乎热榜）"), "槽位文案带 label: " + detailText);
-    check(detailText.includes("栏目图片生成失败"), "错误码要翻译成可读文案: " + detailText);
+    for (const sentence of [
+      "1 个栏目未生成图片",
+      "4 条发送记录未送达",
+      "2 条因栏目图片生成失败",
+      "1 条因配置变化",
+      "1 条因其他或未知原因",
+    ]) {
+      check(detailText.includes(sentence), "详情缺少列表同款文案 " + sentence + ": " + detailText);
+      check(mixed.includes(sentence), "列表缺少文案 " + sentence + ": " + mixed);
+    }
+    check(detailText.includes("第 2 张 未送达（知乎热榜）"), "槽位文案要带 label: " + detailText);
+    check(detailText.includes("栏目图片生成失败"), "错误码要译成可读文案: " + detailText);
     check(!detailText.includes("重发") && !detailText.includes("补发"),
       "不得出现重发/补发入口: " + detailText);
 
-    check(listText.includes("copy-all-success"), "列表必须加载夹具执行记录");
+    // 8) 旧记录详情同样不得出现栏目字样
+    await frame.evaluate(() => {
+      const button = document.querySelector('button[aria-label="查看执行 copy-legacy-pages"]');
+      if (button) button.click();
+    });
+    await frame.waitForFunction(
+      () => document.getElementById("delivery-result")?.innerText.includes("2 条发送记录未送达"),
+      null, { timeout: WAIT },
+    );
+    const legacyDetail = await frame.evaluate(() =>
+      document.getElementById("delivery-result").innerText);
+    check(!legacyDetail.includes("栏目"), "旧记录详情不得出现栏目字样: " + legacyDetail);
+    check(!legacyDetail.includes("张栏目图"), "旧记录详情不得出现张栏目图: " + legacyDetail);
+
     console.log("DELIVERY STATUS COPY PASS", { assertions });
   } finally {
     await page.unrouteAll({ behavior: "ignoreErrors" });

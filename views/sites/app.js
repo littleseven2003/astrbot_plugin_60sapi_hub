@@ -3866,20 +3866,60 @@ function deliverySkippedRecordCount(execution) {
   return execution.skipped_image_count;
 }
 
-// 栏目数（去重）与「目标 × 图片」记录数不是一个量纲，多目标时必须分开说。
+// 栏目图数量（按 image_index 去重）与「目标 × 图片」记录数不是一个量纲。
+function deliverySectionImageCount(execution) {
+  if (!execution) {
+    return null;
+  }
+  if (Number.isInteger(execution.section_image_count)) {
+    return execution.section_image_count;
+  }
+  if (Array.isArray(execution.targets)) {
+    const indexes = new Set();
+    for (const target of execution.targets) {
+      for (const image of target.images || []) {
+        if (Number.isInteger(image.image_index)) {
+          indexes.add(image.image_index);
+        }
+      }
+    }
+    if (indexes.size > 0) {
+      return indexes.size;
+    }
+  }
+  return null;
+}
+
+function deliverySkippedReasons(execution) {
+  if (!execution) {
+    return [];
+  }
+  return [
+    [execution.skipped_section_image_failed_count, "因栏目图片生成失败"],
+    [execution.skipped_config_changed_count, "因配置变化"],
+    [execution.skipped_other_count, "因发送前终止"],
+  ]
+    .filter(([count]) => Number.isInteger(count) && count > 0)
+    .map(([count, label]) => `${count} ${label}`);
+}
+
+// 栏目图没生成 与 发送记录被跳过 是两件事，必须分别给数，不能都算成一个原因。
 function deliveryPartialSummary(execution) {
   const sections = deliveryFailedSectionCount(execution);
   const records = deliverySkippedRecordCount(execution);
-  if (sections > 0 && records > 0) {
-    return `${sections} 个栏目未送达 · 涉及 ${records} 条发送记录`;
-  }
+  const reasons = deliverySkippedReasons(execution);
+  const parts = [];
   if (sections > 0) {
-    return `${sections} 个栏目未送达`;
+    parts.push(`${sections} 个栏目未生成图片`);
   }
   if (records > 0) {
-    return `${records} 条发送记录未送达`;
+    parts.push(
+      reasons.length > 0
+        ? `${records} 条发送记录未送达（${reasons.join("，")}）`
+        : `${records} 条发送记录未送达`,
+    );
   }
-  return "";
+  return parts.join("；");
 }
 
 function deliveryExecutionStatusLabel(execution) {
@@ -3899,11 +3939,16 @@ function deliverySlotLabel(execution, index) {
   return `第 ${index} ${unit}`;
 }
 
+// 图片输出用「栏目图数量」；拿不到去重栏目数时退回记录数并明确标注记录。
 function deliverySlotCountLabel(execution, count) {
-  const unit = execution && execution.output_format === "image"
-    ? "张栏目图"
-    : "条消息";
-  return `${count} ${unit}`;
+  if (execution && execution.output_format === "image") {
+    const sections = deliverySectionImageCount(execution);
+    if (Number.isInteger(sections)) {
+      return `${sections} 张栏目图`;
+    }
+    return `${count} 条图片记录`;
+  }
+  return `${count} 条消息`;
 }
 
 function readStoredDeliveryPending() {

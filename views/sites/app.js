@@ -3832,8 +3832,32 @@ function deliveryStatusLabel(status) {
   return ({
     preparing: "准备中", running: "运行中", success: "成功",
     partial: "部分成功", failed: "失败", unknown: "结果未知",
-    no_targets: "空名单", stopped: "已停止",
+    no_targets: "空名单", stopped: "已停止", skipped: "未送达",
   })[status] || status;
+}
+
+const DELIVERY_ERROR_LABELS = {
+  section_image_failed: "栏目图片生成失败",
+};
+
+function deliveryErrorLabel(code) {
+  if (!code) {
+    return "";
+  }
+  return DELIVERY_ERROR_LABELS[code] || code;
+}
+
+function deliveryExecutionStatusLabel(execution) {
+  const base = deliveryStatusLabel(execution && execution.status);
+  if (execution && execution.status === "partial" && execution.image_partial) {
+    const skipped = Number.isInteger(execution.skipped_image_count)
+      ? execution.skipped_image_count
+      : 0;
+    if (skipped > 0) {
+      return `${base}（${skipped} 个栏目未送达）`;
+    }
+  }
+  return base;
 }
 
 // 投递记录的一个槽位 = 一个栏目长图（图片输出）或一条逻辑消息（文字/Markdown）。
@@ -4142,7 +4166,7 @@ function renderDeliveryExecution(execution) {
   elements.deliveryResult.hidden = false;
   elements.deliveryResult.replaceChildren();
   const title = document.createElement("h3");
-  title.textContent = `执行结果：${deliveryStatusLabel(execution.status)}`;
+  title.textContent = `执行结果：${deliveryExecutionStatusLabel(execution)}`;
   const id = document.createElement("p");
   id.textContent = `执行标识：${execution.id}`;
   const content = document.createElement("p");
@@ -4161,11 +4185,15 @@ function renderDeliveryExecution(execution) {
     const umo = document.createElement("code");
     umo.textContent = target.umo;
     const detail = document.createElement("span");
-    const images = (target.images || []).map((page) =>
-      `${deliverySlotLabel(execution, page.image_index)} ` +
-      `${deliveryStatusLabel(page.status)}` +
-      (page.error_code ? `（${page.error_code}）` : "")
-    ).join("；");
+    const images = (target.images || []).map((page) => {
+      const label = typeof page.label === "string" && page.label
+        ? `（${page.label}）`
+        : "";
+      const code = deliveryErrorLabel(page.error_code);
+      return `${deliverySlotLabel(execution, page.image_index)} ` +
+        `${deliveryStatusLabel(page.status)}${label}` +
+        (code ? `（${code}）` : "");
+    }).join("；");
     detail.textContent = `${deliveryStatusLabel(target.status)} · ${images}`;
     row.append(umo, detail);
     elements.deliveryResult.append(row);
@@ -4346,8 +4374,13 @@ function renderDeliveries(executions, append = false) {
     const id = document.createElement("span");
     id.textContent = `执行：${execution.id}`;
     const counts = document.createElement("span");
-    counts.textContent = `目标 ${execution.target_count} · ` +
+    let countsText = `目标 ${execution.target_count} · ` +
       deliverySlotCountLabel(execution, execution.image_count);
+    if (execution.image_partial) {
+      countsText += ` · 已送达 ${execution.delivered_image_count ?? 0}` +
+        ` · 未送达 ${execution.skipped_image_count ?? 0}`;
+    }
+    counts.textContent = countsText;
     const time = document.createElement("span");
     time.textContent = execution.created_at;
     meta.append(id, counts, time);

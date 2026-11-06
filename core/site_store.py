@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS delivery_pages (
                    'unknown', 'skipped')
     ),
     error_code TEXT,
+    image_generated INTEGER,
     PRIMARY KEY (execution_id, position, page_index),
     FOREIGN KEY (execution_id, position)
         REFERENCES delivery_targets(execution_id, position)
@@ -347,6 +348,7 @@ class StoredDeliveryPage:
     page_index: int
     status: str
     error_code: str | None
+    image_generated: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,6 +604,15 @@ class SiteStore:
                 await connection.execute(
                     "ALTER TABLE delivery_executions "
                     "ADD COLUMN image_model TEXT",
+                )
+            async with connection.execute(
+                "PRAGMA table_info(delivery_pages)",
+            ) as cursor:
+                page_columns = {row[1] for row in await cursor.fetchall()}
+            if "image_generated" not in page_columns:
+                await connection.execute(
+                    "ALTER TABLE delivery_pages "
+                    "ADD COLUMN image_generated INTEGER",
                 )
             # Older push_tasks tables may lack schedule columns. Inspect the
             # actual table so partially migrated/test fixtures are safe too.
@@ -1870,19 +1881,32 @@ class SiteStore:
         *,
         position: int,
         page_count: int,
+        image_generated: tuple[int | None, ...] | None = None,
     ) -> None:
+        if image_generated is not None:
+            if len(image_generated) != page_count:
+                raise SiteStoreError("投递页生成标记数量不匹配")
+            for value in image_generated:
+                if value not in (0, 1, None):
+                    raise SiteStoreError("投递页生成标记不合法")
         async with self._lock:
             connection = self._require_connection()
 
             async def perform() -> None:
-                for page_index in range(1, page_count + 1):
+                for offset in range(page_count):
+                    page_index = offset + 1
+                    generated = (
+                        image_generated[offset]
+                        if image_generated is not None else None
+                    )
                     await connection.execute(
                         """
                         INSERT INTO delivery_pages (
-                            execution_id, position, page_index, status, error_code
-                       ) VALUES (?, ?, ?, 'pending', NULL)
+                            execution_id, position, page_index, status,
+                            error_code, image_generated
+                       ) VALUES (?, ?, ?, 'pending', NULL, ?)
                         """,
-                        (execution_id, position, page_index),
+                        (execution_id, position, page_index, generated),
                     )
 
             await self._commit_write(
@@ -2355,6 +2379,10 @@ def _row_to_delivery(
                 execution_id=r["execution_id"], position=int(r["position"]),
                 page_index=int(r["page_index"]), status=r["status"],
                 error_code=r["error_code"],
+                image_generated=(
+                    r["image_generated"]
+                    if "image_generated" in r.keys() else None
+                ),
             ) for r in page_rows
         ),
     )

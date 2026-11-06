@@ -461,11 +461,15 @@ class DeliveryService:
                 failed_sections_json=metadata,
                 status="running",
             )
+            generated_flags = _slot_image_generated(
+                task.output_format, prepared.slots,
+            )
             for position, _ in enumerate(task.umos):
                 await self._store.add_delivery_pages(
                     execution_id,
                     position=position,
                     page_count=len(prepared.slots),
+                    image_generated=generated_flags,
                 )
         except Exception as exc:
             raise DeliveryStorageError("无法保存投递计划。") from exc
@@ -961,6 +965,19 @@ def _failure_index(value: object) -> int | None:
     if type(value) is not int or value < 1:
         return None
     return value
+
+
+def _slot_image_generated(
+    output_format: str,
+    slots: tuple[tuple[int, str | bytes | None], ...],
+) -> tuple[int | None, ...]:
+    """建槽位时记录准备阶段事实：有 PNG=1，无图=0，非图片输出/未知=NULL。"""
+    if output_format != "image":
+        return tuple(None for _ in slots)
+    return tuple(
+        1 if isinstance(payload, bytes) else 0
+        for _, payload in slots
+    )
 
 
 def _decode_section_images(

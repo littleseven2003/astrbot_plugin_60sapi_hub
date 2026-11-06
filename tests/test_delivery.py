@@ -869,7 +869,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
         self.assertTrue(task.id)
 
-    async def test_v10_database_adds_image_model_without_rewriting_history(
+    async def test_v10_database_adds_image_columns_without_rewriting_history(
         self,
     ) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
@@ -884,6 +884,9 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             "content_hash, content_status, failed_sections_json, status, "
             "error_code, created_at, updated_at"
         )
+        page_columns_sql = (
+            "execution_id, position, page_index, status, error_code"
+        )
         with closing(sqlite3.connect(self.db)) as raw:
             columns = [
                 row[1] for row in raw.execute(
@@ -891,12 +894,26 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 )
             ]
             self.assertIn("image_model", columns)
+            page_columns = [
+                row[1] for row in raw.execute(
+                    "PRAGMA table_info(delivery_pages)",
+                )
+            ]
+            self.assertIn("image_generated", page_columns)
             before = raw.execute(
                 f"SELECT {columns_sql} FROM delivery_executions WHERE id = ?",
                 (execution_id,),
             ).fetchone()
+            before_page = raw.execute(
+                f"SELECT {page_columns_sql} FROM delivery_pages "
+                "WHERE execution_id = ? ORDER BY position, page_index",
+                (execution_id,),
+            ).fetchone()
             raw.execute(
                 "ALTER TABLE delivery_executions DROP COLUMN image_model",
+            )
+            raw.execute(
+                "ALTER TABLE delivery_pages DROP COLUMN image_generated",
             )
             raw.execute("PRAGMA user_version = 10")
             raw.commit()
@@ -915,6 +932,12 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                     )
                 ]
                 self.assertEqual(columns.count("image_model"), 1)
+                page_columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_pages)",
+                    )
+                ]
+                self.assertEqual(page_columns.count("image_generated"), 1)
                 after = check.execute(
                     f"SELECT {columns_sql}, image_model "
                     "FROM delivery_executions WHERE id = ?",
@@ -923,6 +946,14 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 # 只新增可空列，历史行的既有列一个都不改。
                 self.assertEqual(after[:-1], before)
                 self.assertIsNone(after[-1])
+                after_page = check.execute(
+                    f"SELECT {page_columns_sql}, image_generated "
+                    "FROM delivery_pages WHERE execution_id = ? "
+                    "ORDER BY position, page_index",
+                    (execution_id,),
+                ).fetchone()
+                self.assertEqual(after_page[:-1], before_page)
+                self.assertIsNone(after_page[-1])
             stored = await reopened.store.get_delivery_execution(
                 execution_id,
             )
@@ -946,6 +977,12 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                     )
                 ]
                 self.assertEqual(columns.count("image_model"), 1)
+                page_columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_pages)",
+                    )
+                ]
+                self.assertEqual(page_columns.count("image_generated"), 1)
                 after = check.execute(
                     f"SELECT {columns_sql}, image_model "
                     "FROM delivery_executions WHERE id = ?",
@@ -953,6 +990,14 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 ).fetchone()
                 self.assertEqual(after[:-1], before)
                 self.assertIsNone(after[-1])
+                after_page = check.execute(
+                    f"SELECT {page_columns_sql}, image_generated "
+                    "FROM delivery_pages WHERE execution_id = ? "
+                    "ORDER BY position, page_index",
+                    (execution_id,),
+                ).fetchone()
+                self.assertEqual(after_page[:-1], before_page)
+                self.assertIsNone(after_page[-1])
         finally:
             await reopened_again.close()
 

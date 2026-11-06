@@ -223,11 +223,13 @@ class DeliveryApi:
 #   历史记录绝不根据 page_index 推断格式。
 # - image_count / image_record_count: 目标×图片的槽位记录数（文字/Markdown 为
 #   逻辑消息槽位）。image_count 保留兼容，两者数值相同。
-# - section_slot_count: 栏目/槽位数；仅 image_model == 'sections' 时给数字，
-#   历史/文字/Markdown 一律 null，禁止由 page_index 推断。
-# - generated_image_count: 实际生成图片的栏目数；仅 sections 时给数字。只统计
-#   确认有图的槽位（success/failed/unknown 发送结果，或非 section_image_failed
-#   的 skipped），section_image_failed 与未知/未处理槽位不算。
+# - section_slot_count: 栏目/槽位数；仅 image_model == 'sections' 且记录完整时
+#   给数字，历史/文字/Markdown/记录不完整一律 null，禁止由 page_index 推断。
+# - generated_image_count: 实际生成图片的栏目数；仅 sections 且记录完整、所有
+#   槽位 image_generated 均为 0/1 时给数字。只依据准备阶段写入的 image_generated，
+#   绝不看 pending/never_started/skipped 等发送状态。
+# - record_complete: 目标槽位记录是否完整（每个目标都有相同的 1..N 页）；建立
+#   槽位过程中断导致目标缺页/不满时为 false，此时栏目与生成数量均为 null。
 # - failed_section_count: failed_sections 去重后的失败栏目数（label + image_index）
 # - skipped_image_count: 目标×图片的未送达记录数（同一栏目跨目标会重复计数）
 # - skipped_section_image_failed_count / skipped_config_changed_count /
@@ -235,15 +237,20 @@ class DeliveryApi:
 #   三者之和恒等于 skipped_image_count。skipped_other_count 表示「其他或未知原因」，
 #   包含原因缺失/未知错误码/发送前终止，文案不得写成只有「发送前终止」。
 # - section_image_count / distinct_skipped_section_count / skipped_section_count:
-#   旧字段保留兼容，仅在 sections 时给数字，未知/文字/Markdown 返回 null。
+#   旧字段保留兼容，仅在 sections 且记录完整时给数字，否则 null。
 # - delivered_image_count: 目标×图片的成功送达记录数
 def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
     failed_sections = _project_failed_sections(e.failed_sections_json)
     delivered, skipped = _image_counts(e)
     image_failed, config_changed, other = _skipped_breakdown(e)
     image_model = _project_image_model(e)
-    section_slot_count = _section_slot_count(e, image_model)
-    generated_image_count = _generated_image_count(e, image_model)
+    record_complete = _record_complete(e)
+    section_slot_count = _section_slot_count(
+        e, image_model, record_complete,
+    )
+    generated_image_count = _generated_image_count(
+        e, image_model, record_complete,
+    )
     return {
         "id": e.id, "task_id": e.task_id, "task_name": e.task_name,
         "output_format": e.output_format, "status": e.status,
@@ -251,6 +258,7 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
         "updated_at": e.updated_at,
         "target_count": len(e.targets),
         "image_model": image_model,
+        "record_complete": record_complete,
         "image_count": len(e.pages),
         "image_record_count": len(e.pages),
         "section_slot_count": section_slot_count,
@@ -263,7 +271,7 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
         "skipped_config_changed_count": config_changed,
         "skipped_other_count": other,
         "distinct_skipped_section_count": _distinct_skipped_sections(
-            e, image_model,
+            e, image_model, record_complete,
         ),
         "failed_section_count": len(failed_sections),
         "image_partial": _image_partial(e),
@@ -291,8 +299,13 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
     delivered, skipped = _image_counts(e)
     image_failed, config_changed, other = _skipped_breakdown(e)
     image_model = _project_image_model(e)
-    section_slot_count = _section_slot_count(e, image_model)
-    generated_image_count = _generated_image_count(e, image_model)
+    record_complete = _record_complete(e)
+    section_slot_count = _section_slot_count(
+        e, image_model, record_complete,
+    )
+    generated_image_count = _generated_image_count(
+        e, image_model, record_complete,
+    )
     return {
         "id": e.id,
         "task_id": e.task_id,
@@ -312,6 +325,7 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "failed_sections": failed_sections,
         "failed_section_count": len(failed_sections),
         "image_model": image_model,
+        "record_complete": record_complete,
         "image_count": len(e.pages),
         "image_record_count": len(e.pages),
         "section_slot_count": section_slot_count,
@@ -323,7 +337,7 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "skipped_config_changed_count": config_changed,
         "skipped_other_count": other,
         "distinct_skipped_section_count": _distinct_skipped_sections(
-            e, image_model,
+            e, image_model, record_complete,
         ),
         "image_partial": _image_partial(e),
         "targets": [
@@ -333,10 +347,10 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
                 "status": t.status,
                 "error_code": t.error_code,
                 "section_slot_count": _target_section_slot_count(
-                    e, t.position, image_model,
+                    e, t.position, image_model, record_complete,
                 ),
                 "section_image_count": _target_section_slot_count(
-                    e, t.position, image_model,
+                    e, t.position, image_model, record_complete,
                 ),
                 "delivered_image_count": sum(
                     1 for image in images_by_target.get(t.position, [])
@@ -347,7 +361,7 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
                     if image["status"] == "skipped"
                 ),
                 "skipped_section_count": _target_skipped_section_count(
-                    e, t.position, image_model,
+                    e, t.position, image_model, record_complete,
                 ),
                 "images": images_by_target.get(t.position, []),
             }
@@ -425,12 +439,41 @@ def _project_image_model(e: StoredDeliveryExecution) -> str:
     )
 
 
+def _record_complete(e: StoredDeliveryExecution) -> bool:
+    """目标槽位结构是否完整：每个目标都有相同的 1..N 页且无缺失。"""
+    if not e.targets:
+        # 空名单执行没有槽位；若出现孤儿页则视为不完整。
+        return not e.pages
+    positions = {target.position for target in e.targets}
+    if positions != set(range(len(e.targets))):
+        return False
+    pages_by_position: dict[int, list] = {}
+    for page in e.pages:
+        pages_by_position.setdefault(page.position, []).append(page)
+    if set(pages_by_position) != positions:
+        return False
+    page_counts = {
+        len(pages) for pages in pages_by_position.values()
+    }
+    if len(page_counts) != 1:
+        return False
+    page_count = next(iter(page_counts))
+    if page_count < 1:
+        return False
+    expected = set(range(1, page_count + 1))
+    for pages in pages_by_position.values():
+        if {page.page_index for page in pages} != expected:
+            return False
+    return True
+
+
 def _section_slot_count(
     e: StoredDeliveryExecution,
     image_model: str,
+    record_complete: bool,
 ) -> int | None:
-    """栏目/槽位数；只有明确标记 sections 的 execution 才给数字。"""
-    if image_model != IMAGE_MODEL_SECTIONS:
+    """栏目/槽位数；仅 sections 且记录完整时给数字。"""
+    if image_model != IMAGE_MODEL_SECTIONS or not record_complete:
         return None
     return len({page.page_index for page in e.pages})
 
@@ -439,8 +482,9 @@ def _target_section_slot_count(
     e: StoredDeliveryExecution,
     position: int,
     image_model: str,
+    record_complete: bool,
 ) -> int | None:
-    if image_model != IMAGE_MODEL_SECTIONS:
+    if image_model != IMAGE_MODEL_SECTIONS or not record_complete:
         return None
     return len({
         page.page_index for page in e.pages
@@ -451,29 +495,34 @@ def _target_section_slot_count(
 def _generated_image_count(
     e: StoredDeliveryExecution,
     image_model: str,
+    record_complete: bool,
 ) -> int | None:
-    """实际生成图片的栏目数；只统计确认有图的栏目槽位。"""
-    if image_model != IMAGE_MODEL_SECTIONS:
+    """准备阶段实际生成的栏目图数；只看 image_generated。"""
+    if image_model != IMAGE_MODEL_SECTIONS or not record_complete:
         return None
-    generated: set[int] = set()
+    values_by_index: dict[int, list[int | None]] = {}
     for page in e.pages:
-        if page.error_code == "section_image_failed":
-            # 该栏目没有生成图片；即使状态异常也不计入。
-            continue
-        if page.status in ("success", "failed", "unknown"):
-            # 发送流程只有在拿到图片后才会尝试发送。
-            generated.add(page.page_index)
-        elif page.status == "skipped" and page.error_code is not None:
-            # 配置变化/发送后终止只会跳过本来就有图的槽位；缺失原因不猜。
-            generated.add(page.page_index)
-    return len(generated)
+        values_by_index.setdefault(page.page_index, []).append(
+            page.image_generated,
+        )
+    for values in values_by_index.values():
+        # 同一栏目跨目标必须一致且为 0/1；NULL 或矛盾说明事实未知。
+        if len(set(values)) != 1:
+            return None
+        value = values[0]
+        if type(value) is not int or value not in (0, 1):
+            return None
+    return sum(
+        1 for values in values_by_index.values() if values[0] == 1
+    )
 
 
 def _distinct_skipped_sections(
     e: StoredDeliveryExecution,
     image_model: str,
+    record_complete: bool,
 ) -> int | None:
-    if image_model != IMAGE_MODEL_SECTIONS:
+    if image_model != IMAGE_MODEL_SECTIONS or not record_complete:
         return None
     return len({
         page.page_index for page in e.pages
@@ -485,8 +534,9 @@ def _target_skipped_section_count(
     e: StoredDeliveryExecution,
     position: int,
     image_model: str,
+    record_complete: bool,
 ) -> int | None:
-    if image_model != IMAGE_MODEL_SECTIONS:
+    if image_model != IMAGE_MODEL_SECTIONS or not record_complete:
         return None
     return len({
         page.page_index for page in e.pages

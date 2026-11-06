@@ -3859,6 +3859,8 @@ function deliveryFailedSectionCount(execution) {
     : 0;
 }
 
+const DELIVERY_IMAGE_UNKNOWN_TEXT = "图片数量未知（记录不完整）";
+
 function deliveryImageModel(execution) {
   return execution && execution.image_model === "sections" ? "sections" : "unknown";
 }
@@ -3894,13 +3896,26 @@ function deliverySectionSlotCount(execution) {
     : null;
 }
 
+// 生成数只在「记录完整且所有槽位 image_generated 都确定」时给数字；
+// 槽位的发送状态（never_started/skipped 等）不能反推图片是否存在。
 function deliveryGeneratedImageCount(execution) {
   if (!execution || deliveryImageModel(execution) !== "sections") {
+    return null;
+  }
+  if (execution.record_complete === false) {
     return null;
   }
   return Number.isInteger(execution.generated_image_count)
     ? execution.generated_image_count
     : null;
+}
+
+function deliveryImageCountUnknown(execution) {
+  if (!execution || deliveryImageModel(execution) !== "sections") {
+    return false;
+  }
+  return execution.record_complete === false ||
+    deliveryGeneratedImageCount(execution) === null;
 }
 
 function deliverySkippedReasons(execution) {
@@ -3918,12 +3933,16 @@ function deliverySkippedReasons(execution) {
 
 // 「栏目没生成图」与「发送记录被跳过」是两件事；原因缺失时只说总数，不臆造原因。
 function deliveryPartialSummary(execution) {
-  const sections = deliveryImageModel(execution) === "sections"
+  const unknown = deliveryImageCountUnknown(execution);
+  const sections = deliveryImageModel(execution) === "sections" && !unknown
     ? deliveryFailedSectionCount(execution)
     : 0;
   const records = deliverySkippedRecordCount(execution);
   const reasons = deliverySkippedReasons(execution);
   const parts = [];
+  if (unknown) {
+    parts.push(DELIVERY_IMAGE_UNKNOWN_TEXT);
+  }
   if (sections > 0) {
     parts.push(sections + " 个栏目未生成图片");
   }
@@ -3958,22 +3977,29 @@ function deliverySlotCountLabel(execution) {
   if (!execution || execution.output_format !== "image") {
     return records + " 条消息";
   }
+  if (deliveryImageModel(execution) !== "sections") {
+    return records + " 条图片记录";
+  }
   const slots = deliverySectionSlotCount(execution);
   const generated = deliveryGeneratedImageCount(execution);
-  if (deliveryImageModel(execution) === "sections" && slots !== null) {
-    const parts = [];
-    if (generated !== null && generated < slots) {
-      parts.push(slots + " 个栏目（槽位）");
-      parts.push("实际生成 " + generated + " 张图");
-    } else {
-      parts.push(slots + " 张栏目图");
-    }
+  if (deliveryImageCountUnknown(execution) || slots === null || generated === null) {
+    const unknownParts = [DELIVERY_IMAGE_UNKNOWN_TEXT];
     if (records > 0) {
-      parts.push(records + " 条图片记录");
+      unknownParts.push(records + " 条图片记录");
     }
-    return parts.join(" · ");
+    return unknownParts.join(" · ");
   }
-  return records + " 条图片记录";
+  const parts = [];
+  if (generated < slots) {
+    parts.push(slots + " 个栏目（槽位）");
+    parts.push("实际生成 " + generated + " 张图");
+  } else {
+    parts.push(slots + " 张栏目图");
+  }
+  if (records > 0) {
+    parts.push(records + " 条图片记录");
+  }
+  return parts.join(" · ");
 }
 
 function readStoredDeliveryPending() {

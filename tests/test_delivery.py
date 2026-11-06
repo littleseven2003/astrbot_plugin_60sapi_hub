@@ -869,6 +869,93 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
         self.assertTrue(task.id)
 
+    async def test_v10_database_adds_image_model_without_rewriting_history(
+        self,
+    ) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        result = await self.service.execute(task.id, "legacy-image-model")
+        self.assertEqual(result.status, "success")
+        execution_id = "legacy-image-model"
+        await self.sites.close()
+        import sqlite3
+        columns_sql = (
+            "id, task_id, task_name, task_revision, profile_id, "
+            "profile_revision, site_id, site_revision, output_format, "
+            "content_hash, content_status, failed_sections_json, status, "
+            "error_code, created_at, updated_at"
+        )
+        with closing(sqlite3.connect(self.db)) as raw:
+            columns = [
+                row[1] for row in raw.execute(
+                    "PRAGMA table_info(delivery_executions)",
+                )
+            ]
+            self.assertIn("image_model", columns)
+            before = raw.execute(
+                f"SELECT {columns_sql} FROM delivery_executions WHERE id = ?",
+                (execution_id,),
+            ).fetchone()
+            raw.execute(
+                "ALTER TABLE delivery_executions DROP COLUMN image_model",
+            )
+            raw.execute("PRAGMA user_version = 10")
+            raw.commit()
+
+        reopened = SiteService(self.db)
+        await reopened.open()
+        try:
+            with closing(sqlite3.connect(self.db)) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+                columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_executions)",
+                    )
+                ]
+                self.assertEqual(columns.count("image_model"), 1)
+                after = check.execute(
+                    f"SELECT {columns_sql}, image_model "
+                    "FROM delivery_executions WHERE id = ?",
+                    (execution_id,),
+                ).fetchone()
+                # 只新增可空列，历史行的既有列一个都不改。
+                self.assertEqual(after[:-1], before)
+                self.assertIsNone(after[-1])
+            stored = await reopened.store.get_delivery_execution(
+                execution_id,
+            )
+            self.assertIsNone(stored.image_model)
+            self.assertEqual(stored.status, "success")
+        finally:
+            await reopened.close()
+
+        # 再次打开证明迁移幂等：版本不变、列不重复、历史行仍未被改写。
+        reopened_again = SiteService(self.db)
+        await reopened_again.open()
+        try:
+            with closing(sqlite3.connect(self.db)) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+                columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_executions)",
+                    )
+                ]
+                self.assertEqual(columns.count("image_model"), 1)
+                after = check.execute(
+                    f"SELECT {columns_sql}, image_model "
+                    "FROM delivery_executions WHERE id = ?",
+                    (execution_id,),
+                ).fetchone()
+                self.assertEqual(after[:-1], before)
+                self.assertIsNone(after[-1])
+        finally:
+            await reopened_again.close()
+
     async def test_v4_migration_failure_rolls_back(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
         await self.sites.close()

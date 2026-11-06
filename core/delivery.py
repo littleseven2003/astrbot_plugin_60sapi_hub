@@ -151,6 +151,9 @@ PAGE_STATUS_FAILED = "failed"
 PAGE_STATUS_UNKNOWN = "unknown"
 PAGE_STATUS_SKIPPED = "skipped"
 
+# 新版图片投递的持久化格式标记：一个栏目一张长图。历史行保持 NULL。
+IMAGE_MODEL_SECTIONS = "sections"
+
 
 class DeliveryService:
     def __init__(
@@ -329,6 +332,10 @@ class DeliveryService:
                     output_format=task.output_format,
                     umos=task.umos,
                     owner_token=owner_token,
+                    image_model=(
+                        IMAGE_MODEL_SECTIONS
+                        if task.output_format == "image" else None
+                    ),
                 )
             except DeliveryExecutionExistsError:
                 return await self._existing_for_task(execution_key, task_key)

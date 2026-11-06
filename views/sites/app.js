@@ -3859,6 +3859,24 @@ function deliveryFailedSectionCount(execution) {
     : 0;
 }
 
+function deliveryImageModel(execution) {
+  return execution && execution.image_model === "sections" ? "sections" : "unknown";
+}
+
+// 记录数：目标 × 图片的行数，中性表述；旧字段 image_count 保持兼容。
+function deliveryRecordCount(execution) {
+  if (!execution) {
+    return 0;
+  }
+  if (Number.isInteger(execution.image_record_count)) {
+    return execution.image_record_count;
+  }
+  if (Number.isInteger(execution.image_count)) {
+    return execution.image_count;
+  }
+  return 0;
+}
+
 function deliverySkippedRecordCount(execution) {
   if (!execution || !Number.isInteger(execution.skipped_image_count)) {
     return 0;
@@ -3866,28 +3884,23 @@ function deliverySkippedRecordCount(execution) {
   return execution.skipped_image_count;
 }
 
-// 栏目图数量（按 image_index 去重）与「目标 × 图片」记录数不是一个量纲。
-function deliverySectionImageCount(execution) {
-  if (!execution) {
+// 只有 sections 才有栏目（槽位）数与实际生成数；旧记录一律 null，绝不推断。
+function deliverySectionSlotCount(execution) {
+  if (!execution || deliveryImageModel(execution) !== "sections") {
     return null;
   }
-  if (Number.isInteger(execution.section_image_count)) {
-    return execution.section_image_count;
+  return Number.isInteger(execution.section_slot_count)
+    ? execution.section_slot_count
+    : null;
+}
+
+function deliveryGeneratedImageCount(execution) {
+  if (!execution || deliveryImageModel(execution) !== "sections") {
+    return null;
   }
-  if (Array.isArray(execution.targets)) {
-    const indexes = new Set();
-    for (const target of execution.targets) {
-      for (const image of target.images || []) {
-        if (Number.isInteger(image.image_index)) {
-          indexes.add(image.image_index);
-        }
-      }
-    }
-    if (indexes.size > 0) {
-      return indexes.size;
-    }
-  }
-  return null;
+  return Number.isInteger(execution.generated_image_count)
+    ? execution.generated_image_count
+    : null;
 }
 
 function deliverySkippedReasons(execution) {
@@ -3897,27 +3910,27 @@ function deliverySkippedReasons(execution) {
   return [
     [execution.skipped_section_image_failed_count, "因栏目图片生成失败"],
     [execution.skipped_config_changed_count, "因配置变化"],
-    [execution.skipped_other_count, "因发送前终止"],
+    [execution.skipped_other_count, "因其他或未知原因"],
   ]
     .filter(([count]) => Number.isInteger(count) && count > 0)
-    .map(([count, label]) => `${count} ${label}`);
+    .map(([count, label]) => count + " 条" + label);
 }
 
-// 栏目图没生成 与 发送记录被跳过 是两件事，必须分别给数，不能都算成一个原因。
+// 「栏目没生成图」与「发送记录被跳过」是两件事；原因缺失时只说总数，不臆造原因。
 function deliveryPartialSummary(execution) {
-  const sections = deliveryFailedSectionCount(execution);
+  const sections = deliveryImageModel(execution) === "sections"
+    ? deliveryFailedSectionCount(execution)
+    : 0;
   const records = deliverySkippedRecordCount(execution);
   const reasons = deliverySkippedReasons(execution);
   const parts = [];
   if (sections > 0) {
-    parts.push(`${sections} 个栏目未生成图片`);
+    parts.push(sections + " 个栏目未生成图片");
   }
   if (records > 0) {
-    parts.push(
-      reasons.length > 0
-        ? `${records} 条发送记录未送达（${reasons.join("，")}）`
-        : `${records} 条发送记录未送达`,
-    );
+    parts.push(reasons.length > 0
+      ? records + " 条发送记录未送达（" + reasons.join("，") + "）"
+      : records + " 条发送记录未送达");
   }
   return parts.join("；");
 }
@@ -3927,7 +3940,7 @@ function deliveryExecutionStatusLabel(execution) {
   if (execution && execution.status === "partial" && execution.image_partial) {
     const summary = deliveryPartialSummary(execution);
     if (summary) {
-      return `${base}（${summary}）`;
+      return base + "（" + summary + "）";
     }
   }
   return base;
@@ -3936,19 +3949,31 @@ function deliveryExecutionStatusLabel(execution) {
 // 投递记录的一个槽位 = 一个栏目长图（图片输出）或一条逻辑消息（文字/Markdown）。
 function deliverySlotLabel(execution, index) {
   const unit = execution && execution.output_format === "image" ? "张" : "条";
-  return `第 ${index} ${unit}`;
+  return "第 " + index + " " + unit;
 }
 
-// 图片输出用「栏目图数量」；拿不到去重栏目数时退回记录数并明确标注记录。
-function deliverySlotCountLabel(execution, count) {
-  if (execution && execution.output_format === "image") {
-    const sections = deliverySectionImageCount(execution);
-    if (Number.isInteger(sections)) {
-      return `${sections} 张栏目图`;
-    }
-    return `${count} 条图片记录`;
+// 分档：sections 才提栏目/槽位；unknown（旧分页记录）只给中性的记录数。
+function deliverySlotCountLabel(execution) {
+  const records = deliveryRecordCount(execution);
+  if (!execution || execution.output_format !== "image") {
+    return records + " 条消息";
   }
-  return `${count} 条消息`;
+  const slots = deliverySectionSlotCount(execution);
+  const generated = deliveryGeneratedImageCount(execution);
+  if (deliveryImageModel(execution) === "sections" && slots !== null) {
+    const parts = [];
+    if (generated !== null && generated < slots) {
+      parts.push(slots + " 个栏目（槽位）");
+      parts.push("实际生成 " + generated + " 张图");
+    } else {
+      parts.push(slots + " 张栏目图");
+    }
+    if (records > 0) {
+      parts.push(records + " 条图片记录");
+    }
+    return parts.join(" · ");
+  }
+  return records + " 条图片记录";
 }
 
 function readStoredDeliveryPending() {
@@ -4453,7 +4478,7 @@ function renderDeliveries(executions, append = false) {
     id.textContent = `执行：${execution.id}`;
     const counts = document.createElement("span");
     let countsText = `目标 ${execution.target_count} · ` +
-      deliverySlotCountLabel(execution, execution.image_count);
+      deliverySlotCountLabel(execution);
     if (execution.image_partial) {
       const summary = deliveryPartialSummary(execution);
       if (summary) {

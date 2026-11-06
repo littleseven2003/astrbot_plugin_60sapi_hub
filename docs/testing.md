@@ -307,7 +307,7 @@ AstrBot 4.29.1 的视图 bridge 只把失败转换为带一条 `message` 的 `Er
 - 一个栏目一张独立长图，高度随内容增长；多栏目按组合配置顺序返回多张，不再有固定高度分页，也不再把整份组合切成固定页。
 - `POST /<插件名>/profiles/<id>/image` 成功时 `data` 为 `{"images": [...], "failed_sections": [...], "snapshot_id": "..."}`：`images` 每条对应一个栏目，含 `index`、`content_type`、`label`、`status`（`success` / `empty` / `failed`）、`width`、`height`，出图时附 `png_base64`，失败时附安全 `error`；不再返回 `pages` / `page_count`。`empty` 是合法空栏目，仍有图并展示空状态；`failed` 没有图片字节。
 - 全部栏目失败返回 422 `image_render_failed`，响应仍带 `images` 与 `failed_sections`，但不含 `png_base64`；文字/Markdown 保持可用。
-- 资源上限：宽度固定 900px，单张最大高度 8000px、单张 PNG 最大 2 MiB、一次渲染合计最多 8 MiB、栏目最多 5 个、单栏文本最多 200,000 字符。单栏超高度/超大小记该栏目 `failed`（`section_too_tall` / `section_too_large`）；栏目数或合计字节超限返回 422 `image_limit_exceeded`。都不截断、不拆图、不伪造成功。
+- 资源上限：宽度固定 900px，单张最大高度 8000px、单张 PNG 最大 2 MiB、一次渲染合计最多 8 MiB、栏目最多 5 个、单栏文本最多 200,000 字符。逐栏失败码：`section_too_long` / `section_too_tall` / `section_too_large`；累计字节将超 8 MiB 时，触发超限的栏目及其后各栏目记 `total_bytes_exceeded`；预览阶段已失败的栏目记 `section_failed`（或透传其安全错误码）；渲染器返回成功却无 PNG 记 `render_failed`。栏目数超过 5 个整体 422 `image_limit_exceeded`（接口侧另有同值 8 MiB 合计兜底）；全部栏目无图整体 422 `image_render_failed`。都不截断、不拆图、不伪造成功。
 - 执行记录投影字段为 `image_index`（第几张栏目图）与 `image_count`（共几张），数据库表名仍为 `delivery_pages`。投递按栏目顺序逐张发送；某栏目未出图时该槽位记 `skipped` + `section_image_failed`，`unknown` 仍不自动重发。
 - 聊天 `/60s image <任务ID>` 回报“共 N 张栏目长图”，有失败栏目时追加一行“以下栏目未生成图片：…”。
 - 图上不渲染任何链接、URL 或二维码；纯文字与 Markdown 的链接行为不变。

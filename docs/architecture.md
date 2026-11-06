@@ -49,7 +49,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/profile_api.py` / `profile_web.py`：组合 CRUD、组合预览、部分/全部失败映射和后台 API 宿主适配。
 - `core/profile_render.py`：纯函数文字/Markdown 渲染，不依赖 AstrBot、HTTP、数据库或浏览器；只读取已截取的预览响应，不修改快照或缓存。
 - `core/image_snapshots.py`：进程内短期图片快照，TTL 300 秒/最多 32 个/总 8 MiB；保存已验证的截图输入、组合/站点 revision 和用户归属，不保存 HTML、URL 或文件路径。
-- `core/profile_image.py`：Pillow 固定样式中文长图渲染器，一个栏目一张；只读快照数据，按字符宽度换行，宽度固定 900px、高度随内容增长（上限 8000px，单张 PNG 上限 2 MiB，栏目最多 5 个，单栏文本 200,000 字符），不加载远程资源；超限栏目记 `failed`（`section_too_tall` / `section_too_large`），不截断、不拆图。
+- `core/profile_image.py`：Pillow 固定样式中文长图渲染器，一个栏目一张；只读快照数据，按字符宽度换行，宽度固定 900px、高度随内容增长（上限 8000px，单张 PNG 上限 2 MiB，栏目最多 5 个，单栏文本 200,000 字符），不加载远程资源；逐栏失败码为 `section_too_long` / `section_too_tall` / `section_too_large`，累计字节超限后剩余栏目记 `total_bytes_exceeded`；栏目数超过 5 个抛 `ImageLimitError`，由 API 映射为 422 `image_limit_exceeded`；不截断、不拆图。
 - `core/tasks.py`：推送任务领域模型、输出方式、完整 UMO 校验、revision CRUD 和组合引用保护；不持有 HTTP 客户端或发送接口。
 - `core/task_api.py` / `task_web.py`：任务 CRUD 的安全 API 映射和 Dashboard 宿主适配；支持可选每日计划及理论时间预览，拒绝启用、运行状态和调度状态字段。
 - `core/schedule.py`：不可变每日计划模型、严格 IANA/时间解析和纯函数下次时间计算。

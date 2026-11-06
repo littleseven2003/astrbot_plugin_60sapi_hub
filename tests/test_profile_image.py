@@ -69,6 +69,14 @@ def png_size(png: bytes) -> tuple[int, int]:
     with Image.open(io.BytesIO(png)) as image:
         return image.size
 
+def same_color(a, b, tol: int = 3) -> bool:
+    return all(abs(int(x) - int(y)) <= tol for x, y in zip(a, b))
+
+
+def is_ink(color) -> bool:
+    """把深色文字像素与浅蓝底、白底和浅色分隔线区分开。"""
+    return max(color) < 210
+
 
 def has_font() -> bool:
     try:
@@ -442,6 +450,78 @@ class ProfileImageRendererTest(unittest.TestCase):
         self.assertEqual(images[1].status, "failed")
         self.assertEqual(images[1].error, "total_bytes_exceeded")
         self.assertIsNone(images[1].png)
+
+    def test_header_band_keeps_clear_gap_above_first_item(self) -> None:
+        """标题区浅蓝底的平直下边缘必须与正文首行留出间距，不能压字。"""
+        image = self.renderer.render(
+            profile([section("daily_news", "每日新闻", [item("第一条新闻")])]),
+        )[0]
+        assert image.png is not None
+        with Image.open(io.BytesIO(image.png)).convert("RGB") as opened:
+            width, height = opened.size
+            pixels = opened.load()
+            band_bottom = 0
+            for y in range(height // 2):
+                if same_color(pixels[width // 2, y], image_module._HEADER_BG):
+                    band_bottom = y
+            ink_top = None
+            for y in range(band_bottom + 1, height):
+                if any(
+                    is_ink(pixels[x, y])
+                    for x in range(60, width - 60, 3)
+                ):
+                    ink_top = y
+                    break
+        self.assertGreater(band_bottom, 0)
+        self.assertIsNotNone(ink_top)
+        gap = ink_top - band_bottom
+        self.assertGreaterEqual(gap, 20)
+        self.assertLessEqual(gap, 40)
+
+    def test_mixed_statuses_are_distinguishable_in_one_render(self) -> None:
+        """成功 / 空 / 失败三种栏目在同一次渲染里必须可区分且互不影响。"""
+        images = self.renderer.render(
+            profile([
+                section("daily_news", "每日新闻", [item("正常新闻")]),
+                section("douyin_hot", "抖音热搜", items=[]),
+                {
+                    "content_type": "toutiao_hot", "label": "今日头条热榜",
+                    "status": "error", "code": "upstream_timeout",
+                    "items": [],
+                },
+            ]),
+        )
+        self.assertEqual([i.index for i in images], [1, 2, 3])
+        self.assertEqual(
+            [i.status for i in images], ["success", "empty", "failed"],
+        )
+        self.assertIsNotNone(images[0].png)
+        self.assertIsNotNone(images[1].png)
+        self.assertIsNone(images[2].png)
+        self.assertEqual(images[2].error, "upstream_timeout")
+        self.assertEqual(images[2].height, 0)
+        self.assertEqual(len(images), 3)
+
+    def test_total_bytes_exhaustion_keeps_all_sections_in_result(self) -> None:
+        """合计字节耗尽时后续栏目逐项标记失败，不裁切、不丢项、不拆图。"""
+        content = section("daily_news", "每日新闻", [item("新闻一")])
+        measured = self.renderer.render(profile([content]))[0]
+        assert measured.png is not None
+        exact = len(measured.png)
+        with patch.object(image_module.Image, "new", wraps=image_module.Image.new) as new:
+            images = self.renderer.render(
+                profile([content, content, content]),
+                limits=ImageRenderLimits(max_total_bytes=exact),
+            )
+        self.assertEqual(len(images), 3)
+        self.assertEqual(
+            [i.status for i in images],
+            ["success", "failed", "failed"],
+        )
+        self.assertEqual(images[1].error, "total_bytes_exceeded")
+        self.assertEqual(images[2].error, "total_bytes_exceeded")
+        # 超出的那个栏目为了量出字节需要先渲染一次，之后的栏目直接短路不分配。
+        self.assertEqual(new.call_count, 2)
 
     def test_too_many_sections_raise_limit_error(self) -> None:
         sections = [

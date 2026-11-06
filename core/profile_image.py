@@ -89,7 +89,6 @@ _DIVIDER = (220, 229, 240)       # #dce5f0
 _BORDER = (220, 229, 240)
 _WHITE = (255, 255, 255)
 
-_WIDTH = 900
 _CARD_MARGIN = 24
 _CARD_PAD_X = 40
 _CARD_RADIUS = 24
@@ -105,7 +104,6 @@ _DECOR_BAR_H = 64
 _MAX_CONTENT_CHARS = 200_000
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+|.", re.UNICODE)
 _CLOSING_PUNCT = set("，。、；：！？）》】”’…")
-_URL_RE = re.compile(r'''https?://[^\s<>"']+''', re.IGNORECASE)
 _DATE_RE = re.compile(r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?")
 _WEEKDAY_RE = re.compile(r"(星期[一二三四五六日天]|周[一二三四五六日天])")
 _CHINA_TZ = timezone(timedelta(hours=8))
@@ -267,11 +265,14 @@ class ProfileImageRenderer:
             + self._lines_height(header)
             + _HEADER_BOTTOM_PAD
         )
+        # 标题区浅蓝底的平直下边缘比文字区多出一个圆角高度；正文必须从色块
+        # 下边缘之后开始，否则首行会紧贴甚至压到浅蓝底上。
+        band_h = header_h + _CARD_RADIUS
         body_h = self._lines_height(body)
         footer_h = self._lines_height(footer)
         height = (
             _CARD_MARGIN
-            + header_h
+            + band_h
             + _BODY_TOP_GAP
             + body_h
             + _BODY_BOTTOM_GAP
@@ -283,7 +284,7 @@ class ProfileImageRenderer:
             return self._failed(
                 limits, index, label, content_type, _ERROR_TOO_TALL,
             )
-        png = self._draw(header, body, footer, height, limits.width, header_h)
+        png = self._draw(header, body, footer, height, limits.width, band_h)
         if len(png) > limits.max_image_bytes:
             return self._failed(
                 limits, index, label, content_type, _ERROR_TOO_LARGE,
@@ -508,7 +509,7 @@ class ProfileImageRenderer:
         footer: list[_Line],
         height: int,
         width: int,
-        header_h: int,
+        band_h: int,
     ) -> bytes:
         assert Image is not None and ImageDraw is not None
         image = Image.new("RGB", (width, height), _BG)
@@ -523,23 +524,18 @@ class ProfileImageRenderer:
             draw.rounded_rectangle(
                 card, radius=_CARD_RADIUS, fill=_WHITE,
             )
-            band = (
-                _CARD_MARGIN,
-                _CARD_MARGIN,
-                width - _CARD_MARGIN,
-                _CARD_MARGIN + header_h + _CARD_RADIUS,
-            )
+            # 标题区只保留上圆角，下边缘是一条平直边界，正好落在
+            # _CARD_MARGIN + band_h；正文从这条边界之后再开始排版。
             draw.rounded_rectangle(
-                band, radius=_CARD_RADIUS, fill=_HEADER_BG,
-            )
-            draw.rectangle(
                 (
-                    _CARD_MARGIN + 2,
-                    _CARD_MARGIN + header_h,
-                    width - _CARD_MARGIN - 2,
-                    _CARD_MARGIN + header_h + _CARD_RADIUS,
+                    _CARD_MARGIN,
+                    _CARD_MARGIN,
+                    width - _CARD_MARGIN,
+                    _CARD_MARGIN + band_h,
                 ),
+                radius=_CARD_RADIUS,
                 fill=_HEADER_BG,
+                corners=(True, True, False, False),
             )
             bar_x = width - _CARD_MARGIN - _CARD_PAD_X - _DECOR_BAR_W
             draw.rounded_rectangle(
@@ -558,7 +554,7 @@ class ProfileImageRenderer:
             y = self._draw_lines(
                 draw,
                 body,
-                _CARD_MARGIN + header_h + _BODY_TOP_GAP,
+                _CARD_MARGIN + band_h + _BODY_TOP_GAP,
                 width,
             )
             y += _BODY_BOTTOM_GAP

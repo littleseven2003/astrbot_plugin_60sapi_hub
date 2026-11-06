@@ -217,6 +217,11 @@ class DeliveryApi:
         return _ok(_execution_dict(execution))
 
 
+# 计数字段语义（避免把「目标×图片记录数」误读成「栏目数」）：
+# - failed_section_count: failed_sections 去重后的栏目数（label + image_index）
+# - skipped_image_count: 目标×图片的未送达记录数（同一栏目跨目标会重复计数）
+# - distinct_skipped_section_count: 按 image_index 去重后的未送达栏目数
+# - delivered_image_count: 目标×图片的成功送达记录数
 def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
     failed_sections = _project_failed_sections(e.failed_sections_json)
     delivered, skipped = _image_counts(e)
@@ -230,6 +235,7 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
         "target_statuses": sorted({t.status for t in e.targets}),
         "delivered_image_count": delivered,
         "skipped_image_count": skipped,
+        "distinct_skipped_section_count": _distinct_skipped_sections(e),
         "failed_section_count": len(failed_sections),
         "image_partial": _image_partial(e),
     }
@@ -271,8 +277,11 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "created_at": e.created_at,
         "updated_at": e.updated_at,
         "failed_sections": failed_sections,
+        "failed_section_count": len(failed_sections),
+        "image_count": len(e.pages),
         "delivered_image_count": delivered,
         "skipped_image_count": skipped,
+        "distinct_skipped_section_count": _distinct_skipped_sections(e),
         "image_partial": _image_partial(e),
         "targets": [
             {
@@ -288,6 +297,11 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
                     1 for image in images_by_target.get(t.position, [])
                     if image["status"] == "skipped"
                 ),
+                "skipped_section_count": len({
+                    image["image_index"]
+                    for image in images_by_target.get(t.position, [])
+                    if image["status"] == "skipped"
+                }),
                 "images": images_by_target.get(t.position, []),
             }
             for t in e.targets
@@ -320,7 +334,7 @@ def _project_failed_sections(raw: object) -> list[dict[str, Any]]:
     if not isinstance(decoded, list):
         return []
     result: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, int | None]] = set()
     for entry in decoded:
         if isinstance(entry, str):
             label = _safe_label(entry)
@@ -340,7 +354,8 @@ def _project_failed_sections(raw: object) -> list[dict[str, Any]]:
                 image_index = None
         else:
             continue
-        if not label or label in seen:
+        key = (label, image_index)
+        if not label or key in seen:
             continue
         item: dict[str, Any] = {"label": label}
         if reason:
@@ -348,7 +363,7 @@ def _project_failed_sections(raw: object) -> list[dict[str, Any]]:
         if image_index is not None:
             item["image_index"] = image_index
         result.append(item)
-        seen.add(label)
+        seen.add(key)
         if len(result) >= _MAX_FAILED_SECTIONS:
             break
     return result
@@ -358,6 +373,13 @@ def _image_counts(e: StoredDeliveryExecution) -> tuple[int, int]:
     delivered = sum(1 for page in e.pages if page.status == "success")
     skipped = sum(1 for page in e.pages if page.status == "skipped")
     return delivered, skipped
+
+
+def _distinct_skipped_sections(e: StoredDeliveryExecution) -> int:
+    return len({
+        page.page_index for page in e.pages
+        if page.status == "skipped"
+    })
 
 
 def _image_partial(e: StoredDeliveryExecution) -> bool:

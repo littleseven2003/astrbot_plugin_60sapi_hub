@@ -147,8 +147,12 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["status"], "partial")
         self.assertEqual(data["error_code"], "section_image_failed")
         self.assertIs(data["image_partial"], True)
+        self.assertEqual(data["image_model"], "sections")
         self.assertEqual(data["delivered_image_count"], 1)
         self.assertEqual(data["image_count"], 2)
+        self.assertEqual(data["image_record_count"], 2)
+        self.assertEqual(data["section_slot_count"], 2)
+        self.assertEqual(data["generated_image_count"], 1)
         self.assertEqual(data["section_image_count"], 2)
         self.assertEqual(data["skipped_image_count"], 1)
         self.assertEqual(skipped_breakdown(data), (1, 0, 0))
@@ -166,6 +170,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target["delivered_image_count"], 1)
         self.assertEqual(target["skipped_image_count"], 1)
         self.assertEqual(target["skipped_section_count"], 1)
+        self.assertEqual(target["section_slot_count"], 2)
         self.assertEqual(target["section_image_count"], 2)
         self.assertEqual(
             [image["status"] for image in target["images"]],
@@ -183,6 +188,9 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(summary["image_partial"], True)
         self.assertEqual(summary["delivered_image_count"], 1)
         self.assertEqual(summary["image_count"], 2)
+        self.assertEqual(summary["image_record_count"], 2)
+        self.assertEqual(summary["section_slot_count"], 2)
+        self.assertEqual(summary["generated_image_count"], 1)
         self.assertEqual(summary["section_image_count"], 2)
         self.assertEqual(summary["skipped_image_count"], 1)
         self.assertEqual(skipped_breakdown(summary), (1, 0, 0))
@@ -205,7 +213,11 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         detail = await self.api.get_execution("image-partial-multi")
         data = detail.body["data"]
         self.assertEqual(data["status"], "partial")
+        self.assertEqual(data["image_model"], "sections")
         self.assertEqual(data["image_count"], 4)
+        self.assertEqual(data["image_record_count"], 4)
+        self.assertEqual(data["section_slot_count"], 2)
+        self.assertEqual(data["generated_image_count"], 1)
         self.assertEqual(data["section_image_count"], 2)
         self.assertEqual(data["delivered_image_count"], 2)
         # 记录数：两个目标各有一个未送达槽位。
@@ -222,11 +234,15 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         for target in data["targets"]:
             self.assertEqual(target["skipped_image_count"], 1)
             self.assertEqual(target["skipped_section_count"], 1)
+            self.assertEqual(target["section_slot_count"], 2)
             self.assertEqual(target["section_image_count"], 2)
 
         listed = await self.api.list_executions(limit=5, offset=0)
         summary = listed.body["data"]["executions"][0]
         self.assertEqual(summary["skipped_image_count"], 2)
+        self.assertEqual(summary["image_record_count"], 4)
+        self.assertEqual(summary["section_slot_count"], 2)
+        self.assertEqual(summary["generated_image_count"], 1)
         self.assertEqual(summary["section_image_count"], 2)
         self.assertEqual(skipped_breakdown(summary), (2, 0, 0))
         self.assertEqual(summary["distinct_skipped_section_count"], 1)
@@ -293,17 +309,25 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         detail = await self.api.get_execution("image-all-success")
         data = detail.body["data"]
         self.assertEqual(data["status"], "success")
+        self.assertEqual(data["image_model"], "sections")
         self.assertEqual(data["image_count"], 6)
+        self.assertEqual(data["image_record_count"], 6)
+        self.assertEqual(data["section_slot_count"], 3)
+        self.assertEqual(data["generated_image_count"], 3)
         self.assertEqual(data["section_image_count"], 3)
         self.assertEqual(data["delivered_image_count"], 6)
         self.assertEqual(data["skipped_image_count"], 0)
         self.assertEqual(skipped_breakdown(data), (0, 0, 0))
         for target in data["targets"]:
+            self.assertEqual(target["section_slot_count"], 3)
             self.assertEqual(target["section_image_count"], 3)
             self.assertEqual(target["skipped_image_count"], 0)
         listed = await self.api.list_executions(limit=5, offset=0)
         summary = listed.body["data"]["executions"][0]
         self.assertEqual(summary["image_count"], 6)
+        self.assertEqual(summary["image_record_count"], 6)
+        self.assertEqual(summary["section_slot_count"], 3)
+        self.assertEqual(summary["generated_image_count"], 3)
         self.assertEqual(summary["section_image_count"], 3)
         self.assertEqual(skipped_breakdown(summary), (0, 0, 0))
 
@@ -323,14 +347,21 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         detail = await self.api.get_execution("image-config-skip")
         data = detail.body["data"]
         self.assertEqual(data["status"], "stopped")
+        self.assertEqual(data["image_model"], "sections")
         self.assertEqual(data["image_count"], 2)
+        self.assertEqual(data["image_record_count"], 2)
+        self.assertEqual(data["section_slot_count"], 2)
+        self.assertEqual(data["generated_image_count"], 2)
         self.assertEqual(data["section_image_count"], 2)
         self.assertEqual(data["skipped_image_count"], 2)
         self.assertEqual(skipped_breakdown(data), (0, 2, 0))
         self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
+        self.assertEqual(data["targets"][0]["section_slot_count"], 2)
         self.assertEqual(data["targets"][0]["section_image_count"], 2)
         listed = await self.api.list_executions(limit=5, offset=0)
         summary = listed.body["data"]["executions"][0]
+        self.assertEqual(summary["section_slot_count"], 2)
+        self.assertEqual(summary["generated_image_count"], 2)
         self.assertEqual(summary["section_image_count"], 2)
         self.assertEqual(skipped_breakdown(summary), (0, 2, 0))
 
@@ -355,12 +386,17 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         data = detail.body["data"]
         self.assertEqual(data["status"], "partial")
         self.assertEqual(data["error_code"], "config_changed")
+        self.assertEqual(data["image_model"], "sections")
         self.assertEqual(data["image_count"], 3)
+        self.assertEqual(data["image_record_count"], 3)
+        self.assertEqual(data["section_slot_count"], 3)
+        self.assertEqual(data["generated_image_count"], 2)
         self.assertEqual(data["section_image_count"], 3)
         self.assertEqual(data["delivered_image_count"], 1)
         self.assertEqual(data["skipped_image_count"], 2)
         self.assertEqual(skipped_breakdown(data), (1, 1, 0))
         self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
+        self.assertEqual(data["targets"][0]["section_slot_count"], 3)
         self.assertEqual(data["targets"][0]["section_image_count"], 3)
         statuses = [
             (image["image_index"], image["status"], image["error_code"])
@@ -383,11 +419,16 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         text_detail = await self.api.get_execution("text-counts")
         text_data = text_detail.body["data"]
         self.assertEqual(text_data["image_count"], 1)
-        self.assertEqual(text_data["section_image_count"], 0)
+        self.assertEqual(text_data["image_model"], "unknown")
+        self.assertEqual(text_data["image_record_count"], 1)
+        self.assertIsNone(text_data["section_slot_count"])
+        self.assertIsNone(text_data["generated_image_count"])
+        self.assertIsNone(text_data["section_image_count"])
         self.assertEqual(text_data["delivered_image_count"], 1)
         self.assertEqual(text_data["skipped_image_count"], 0)
         self.assertEqual(skipped_breakdown(text_data), (0, 0, 0))
-        self.assertEqual(text_data["targets"][0]["section_image_count"], 0)
+        self.assertIsNone(text_data["targets"][0]["section_slot_count"])
+        self.assertIsNone(text_data["targets"][0]["section_image_count"])
         listed = await self.api.list_executions(limit=5, offset=0)
         text_summary = next(
             execution for execution
@@ -395,7 +436,10 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
             if execution["id"] == "text-counts"
         )
         self.assertEqual(text_summary["image_count"], 1)
-        self.assertEqual(text_summary["section_image_count"], 0)
+        self.assertEqual(text_summary["image_record_count"], 1)
+        self.assertIsNone(text_summary["section_slot_count"])
+        self.assertIsNone(text_summary["generated_image_count"])
+        self.assertIsNone(text_summary["section_image_count"])
         self.assertEqual(skipped_breakdown(text_summary), (0, 0, 0))
 
         markdown_task = await self.tasks.create_task(TaskCreate(
@@ -411,7 +455,11 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         markdown_detail = await self.api.get_execution("markdown-counts")
         markdown_data = markdown_detail.body["data"]
         self.assertEqual(markdown_data["image_count"], 1)
-        self.assertEqual(markdown_data["section_image_count"], 0)
+        self.assertEqual(markdown_data["image_model"], "unknown")
+        self.assertEqual(markdown_data["image_record_count"], 1)
+        self.assertIsNone(markdown_data["section_slot_count"])
+        self.assertIsNone(markdown_data["generated_image_count"])
+        self.assertIsNone(markdown_data["section_image_count"])
         self.assertEqual(markdown_data["skipped_image_count"], 0)
         self.assertEqual(skipped_breakdown(markdown_data), (0, 0, 0))
 
@@ -430,7 +478,10 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         skipped_data = skipped_detail.body["data"]
         self.assertEqual(skipped_data["status"], "stopped")
         self.assertEqual(skipped_data["image_count"], 1)
-        self.assertEqual(skipped_data["section_image_count"], 0)
+        self.assertEqual(skipped_data["image_record_count"], 1)
+        self.assertIsNone(skipped_data["section_slot_count"])
+        self.assertIsNone(skipped_data["generated_image_count"])
+        self.assertIsNone(skipped_data["section_image_count"])
         self.assertEqual(skipped_data["skipped_image_count"], 1)
         self.assertEqual(skipped_breakdown(skipped_data), (0, 1, 0))
         self.assertEqual(
@@ -443,7 +494,8 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
             in listed.body["data"]["executions"]
             if execution["id"] == "text-config-skip"
         )
-        self.assertEqual(skipped_summary["section_image_count"], 0)
+        self.assertIsNone(skipped_summary["section_slot_count"])
+        self.assertIsNone(skipped_summary["section_image_count"])
         self.assertEqual(skipped_breakdown(skipped_summary), (0, 1, 0))
 
     async def test_history_page_without_error_code_falls_into_other(
@@ -465,12 +517,67 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["skipped_image_count"], 1)
         self.assertEqual(skipped_breakdown(data), (0, 0, 1))
         self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
+        self.assertEqual(data["section_slot_count"], 2)
+        self.assertEqual(data["generated_image_count"], 1)
         self.assertEqual(data["section_image_count"], 2)
         self.assertEqual(data["image_count"], 2)
         listed = await self.api.list_executions(limit=5, offset=0)
         summary = listed.body["data"]["executions"][0]
         self.assertEqual(skipped_breakdown(summary), (0, 0, 1))
         self.assertEqual(summary["section_image_count"], 2)
+
+    async def test_legacy_multipage_history_does_not_infer_sections(self) -> None:
+        await self.sites.store.create_delivery_execution(
+            execution_id="legacy-paged-1",
+            task_id="legacy-task", task_name="旧版分页任务", task_revision=1,
+            profile_id="legacy-profile", profile_revision=1,
+            site_id="legacy-site", site_revision=1,
+            output_format="image",
+            umos=(
+                "demo_qq_01:GroupMessage:123",
+                "demo_qq_01:GroupMessage:456",
+            ),
+        )
+        for position in range(2):
+            await self.sites.store.add_delivery_pages(
+                "legacy-paged-1", position=position, page_count=3,
+            )
+            await self.sites.store.set_delivery_target_status(
+                "legacy-paged-1", position=position, status="success",
+            )
+            for page_index in range(1, 4):
+                await self.sites.store.set_delivery_page_status(
+                    "legacy-paged-1", position, page_index,
+                    status="success",
+                )
+        await self.sites.store.set_delivery_execution_status(
+            "legacy-paged-1", status="success",
+        )
+        detail = await self.api.get_execution("legacy-paged-1")
+        data = detail.body["data"]
+        self.assertEqual(data["image_model"], "unknown")
+        self.assertEqual(data["image_count"], 6)
+        self.assertEqual(data["image_record_count"], 6)
+        self.assertIsNone(data["section_slot_count"])
+        self.assertIsNone(data["generated_image_count"])
+        self.assertIsNone(data["section_image_count"])
+        self.assertIsNone(data["distinct_skipped_section_count"])
+        for target in data["targets"]:
+            self.assertIsNone(target["section_slot_count"])
+            self.assertIsNone(target["section_image_count"])
+            self.assertIsNone(target["skipped_section_count"])
+        listed = await self.api.list_executions(limit=5, offset=0)
+        summary = next(
+            execution for execution
+            in listed.body["data"]["executions"]
+            if execution["id"] == "legacy-paged-1"
+        )
+        self.assertEqual(summary["image_model"], "unknown")
+        self.assertEqual(summary["image_record_count"], 6)
+        self.assertIsNone(summary["section_slot_count"])
+        self.assertIsNone(summary["generated_image_count"])
+        self.assertIsNone(summary["section_image_count"])
+        self.assertIsNone(summary["distinct_skipped_section_count"])
 
     async def test_legacy_failed_sections_json_is_sanitized(self) -> None:
         task = await self._task(["demo_qq_01:GroupMessage:123"])
@@ -505,8 +612,13 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret 细节", repr(data))
         self.assertIs(data["image_partial"], False)
         self.assertEqual(data["delivered_image_count"], 1)
+        self.assertEqual(data["image_model"], "unknown")
+        self.assertEqual(data["image_record_count"], 1)
+        self.assertIsNone(data["section_slot_count"])
+        self.assertIsNone(data["generated_image_count"])
         self.assertEqual(data["skipped_image_count"], 0)
-        self.assertEqual(data["distinct_skipped_section_count"], 0)
+        self.assertIsNone(data["section_image_count"])
+        self.assertIsNone(data["distinct_skipped_section_count"])
         listed = await self.api.list_executions(limit=5, offset=0)
         summary = listed.body["data"]["executions"][0]
         self.assertEqual(summary["failed_section_count"], 3)

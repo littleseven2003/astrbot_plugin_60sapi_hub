@@ -37,6 +37,7 @@ function detail(caseData) {
     image_model: caseData.model,
     image_record_count: caseData.records,
     image_count: caseData.records,
+    record_complete: caseData.recordComplete !== false,
     section_slot_count: isSections ? caseData.slots : null,
     generated_image_count: isSections ? caseData.generated : null,
     section_image_count: isSections ? caseData.slots : null,
@@ -63,6 +64,7 @@ function summary(caseData) {
     image_model: payload.image_model,
     image_record_count: payload.image_record_count,
     image_count: payload.image_count,
+    record_complete: payload.record_complete,
     section_slot_count: payload.section_slot_count,
     generated_image_count: payload.generated_image_count,
     section_image_count: payload.section_image_count,
@@ -172,6 +174,33 @@ const CASES = {
         { image_index: 3, status: "skipped", error_code: "unknown" },
       ],
     }],
+  },
+  "copy-never-started": {
+    id: "copy-never-started", taskName: "恢复后未开始", model: "sections",
+    slots: 3, generated: 1, records: 6, delivered: 1, skipped: 5,
+    imagePartial: true, skippedOther: 5,
+    failedSections: [],
+    targets: [imageTarget(0, [
+      { image_index: 1, status: "success", label: "每日新闻" },
+      { image_index: 2, status: "skipped", error_code: "never_started", label: "知乎热榜" },
+      { image_index: 3, status: "skipped", error_code: "never_started", label: "Bilibili 热搜" },
+    ]), imageTarget(1, [
+      { image_index: 1, status: "skipped", error_code: "never_started", label: "每日新闻" },
+      { image_index: 2, status: "skipped", error_code: "never_started", label: "知乎热榜" },
+      { image_index: 3, status: "skipped", error_code: "never_started", label: "Bilibili 热搜" },
+    ])],
+  },
+  "copy-unknown-count": {
+    id: "copy-unknown-count", taskName: "记录不完整", model: "sections",
+    recordComplete: false, slots: null, generated: null,
+    records: 6, delivered: 2, skipped: 2,
+    imagePartial: true, skippedConfig: 1, skippedOther: 1,
+    failedSections: [],
+    targets: [imageTarget(0, [
+      { image_index: 1, status: "success" },
+      { image_index: 2, status: "success" },
+      { image_index: 3, status: "skipped", error_code: "config_changed" },
+    ])],
   },
   "copy-text-output": {
     id: "copy-text-output", taskName: "文字历史记录", model: "unknown",
@@ -316,6 +345,21 @@ async function frameOf(page) {
     check(textOutput.includes("2 条消息"), "文字输出按条消息计数: " + textOutput);
     check(!textOutput.includes("张栏目图"), "文字输出不得出现张栏目图: " + textOutput);
     check(!textOutput.includes("栏目"), "文字输出不得出现栏目字样: " + textOutput);
+
+    // 6b) 恢复后 never_started 槽位：不得算成已生成图片
+    const neverStarted = await cardText("copy-never-started");
+    check(neverStarted.includes("3 个栏目（槽位）"), "恢复记录要给槽位数: " + neverStarted);
+    check(neverStarted.includes("实际生成 1 张图"), "只有真产出的图才算已生成: " + neverStarted);
+    check(!neverStarted.includes("3 张栏目图"), "不得把未开始槽位算成已生成: " + neverStarted);
+    check(!neverStarted.includes("图片数量未知"), "记录完整时不应说未知: " + neverStarted);
+
+    // 6c) 记录不完整 / generated 为 null：必须给未知表述且不给确定数字
+    const unknownCount = await cardText("copy-unknown-count");
+    check(unknownCount.includes("图片数量未知（记录不完整）"), "记录不完整要明确未知: " + unknownCount);
+    check(!unknownCount.includes("张栏目图"), "未知时不得给栏目图数字: " + unknownCount);
+    check(!unknownCount.includes("实际生成"), "未知时不得给实际生成数字: " + unknownCount);
+    check(!unknownCount.includes("个栏目（槽位）"), "未知时不得给槽位数字: " + unknownCount);
+    check(unknownCount.includes("6 条图片记录"), "未知时仍可给中性记录数: " + unknownCount);
 
     // 7) 列表与详情使用同一句摘要
     await frame.evaluate(() => {

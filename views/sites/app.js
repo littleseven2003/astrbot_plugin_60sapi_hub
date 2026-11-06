@@ -3847,14 +3847,47 @@ function deliveryErrorLabel(code) {
   return DELIVERY_ERROR_LABELS[code] || code;
 }
 
+function deliveryFailedSectionCount(execution) {
+  if (!execution) {
+    return 0;
+  }
+  if (Number.isInteger(execution.failed_section_count)) {
+    return execution.failed_section_count;
+  }
+  return Array.isArray(execution.failed_sections)
+    ? execution.failed_sections.length
+    : 0;
+}
+
+function deliverySkippedRecordCount(execution) {
+  if (!execution || !Number.isInteger(execution.skipped_image_count)) {
+    return 0;
+  }
+  return execution.skipped_image_count;
+}
+
+// 栏目数（去重）与「目标 × 图片」记录数不是一个量纲，多目标时必须分开说。
+function deliveryPartialSummary(execution) {
+  const sections = deliveryFailedSectionCount(execution);
+  const records = deliverySkippedRecordCount(execution);
+  if (sections > 0 && records > 0) {
+    return `${sections} 个栏目未送达 · 涉及 ${records} 条发送记录`;
+  }
+  if (sections > 0) {
+    return `${sections} 个栏目未送达`;
+  }
+  if (records > 0) {
+    return `${records} 条发送记录未送达`;
+  }
+  return "";
+}
+
 function deliveryExecutionStatusLabel(execution) {
   const base = deliveryStatusLabel(execution && execution.status);
   if (execution && execution.status === "partial" && execution.image_partial) {
-    const skipped = Number.isInteger(execution.skipped_image_count)
-      ? execution.skipped_image_count
-      : 0;
-    if (skipped > 0) {
-      return `${base}（${skipped} 个栏目未送达）`;
+    const summary = deliveryPartialSummary(execution);
+    if (summary) {
+      return `${base}（${summary}）`;
     }
   }
   return base;
@@ -4377,8 +4410,10 @@ function renderDeliveries(executions, append = false) {
     let countsText = `目标 ${execution.target_count} · ` +
       deliverySlotCountLabel(execution, execution.image_count);
     if (execution.image_partial) {
-      countsText += ` · 已送达 ${execution.delivered_image_count ?? 0}` +
-        ` · 未送达 ${execution.skipped_image_count ?? 0}`;
+      const summary = deliveryPartialSummary(execution);
+      if (summary) {
+        countsText += ` · ${summary}`;
+      }
     }
     counts.textContent = countsText;
     const time = document.createElement("span");

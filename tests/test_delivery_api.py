@@ -38,9 +38,10 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
             name="组合", site_id=self.site.id, items=[item()],
         ))
         self.sender = FakeSender()
+        self.stub = StubApi()
         self.service = DeliveryService(
             tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=StubApi(), store=self.sites.store,
+            profile_api=self.stub, store=self.sites.store,
             sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=5, sender_timeout_seconds=5),
         )
@@ -58,6 +59,12 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         return await self.tasks.create_task(TaskCreate(
             name="任务", profile_id=self.profile.id,
             output_format="text", umos=umos,
+        ))
+
+    async def _image_task(self, umos):
+        return await self.tasks.create_task(TaskCreate(
+            name="图片任务", profile_id=self.profile.id,
+            output_format="image", umos=umos,
         ))
 
     async def test_preview_execute_list_detail_and_projection(self) -> None:
@@ -110,6 +117,107 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(again.status_code, 200)
         self.assertEqual(len(self.sender.calls), 2)
+
+    async def test_partial_image_failure_projection(self) -> None:
+        self.stub.image_sections[1]["status"] = "failed"
+        task = await self._image_task(["demo_qq_01:GroupMessage:123"])
+        result = await self.api.execute(task.id, {
+            "execution_id": "image-partial-1",
+            "expected_task_revision": task.revision,
+            "expected_profile_revision": self.profile.revision,
+            "expected_site_revision": self.site.revision,
+        })
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertEqual(result.body["data"]["status"], "partial")
+        self.assertEqual(
+            result.body["data"]["error_code"], "section_image_failed",
+        )
+
+        detail = await self.api.get_execution("image-partial-1")
+        data = detail.body["data"]
+        self.assertEqual(data["status"], "partial")
+        self.assertEqual(data["error_code"], "section_image_failed")
+        self.assertIs(data["image_partial"], True)
+        self.assertEqual(data["delivered_image_count"], 1)
+        self.assertEqual(data["skipped_image_count"], 1)
+        self.assertEqual(data["failed_sections"], [{
+            "label": "知乎热榜",
+            "reason": "image_failed",
+            "image_index": 2,
+        }])
+        target = data["targets"][0]
+        self.assertEqual(target["status"], "partial")
+        self.assertEqual(target["error_code"], "section_image_failed")
+        self.assertEqual(target["delivered_image_count"], 1)
+        self.assertEqual(target["skipped_image_count"], 1)
+        self.assertEqual(
+            [image["status"] for image in target["images"]],
+            ["success", "skipped"],
+        )
+        self.assertNotIn("label", target["images"][0])
+        self.assertEqual(target["images"][1]["label"], "知乎热榜")
+        self.assertEqual(
+            target["images"][1]["error_code"], "section_image_failed",
+        )
+
+        listed = await self.api.list_executions(limit=5, offset=0)
+        summary = listed.body["data"]["executions"][0]
+        self.assertEqual(summary["status"], "partial")
+        self.assertIs(summary["image_partial"], True)
+        self.assertEqual(summary["delivered_image_count"], 1)
+        self.assertEqual(summary["skipped_image_count"], 1)
+        self.assertEqual(summary["failed_section_count"], 1)
+
+    async def test_legacy_failed_sections_json_is_sanitized(self) -> None:
+        task = await self._task(["demo_qq_01:GroupMessage:123"])
+        result = await self.api.execute(task.id, {
+            "execution_id": "legacy-1",
+            "expected_task_revision": task.revision,
+            "expected_profile_revision": self.profile.revision,
+            "expected_site_revision": self.site.revision,
+        })
+        self.assertEqual(result.status_code, 200, result.body)
+        await self.sites.store.set_delivery_content(
+            "legacy-1",
+            content_hash="legacy",
+            content_status="partial",
+            failed_sections_json=(
+                '[{"label": "旧栏目", "reason": "image_failed"}, '
+                '"字符串栏目", '
+                '{"label": "危险栏目", "code": "Bad Code", '
+                '"message": "secret 细节"}, '
+                '{"label": "", "reason": "empty"}, '
+                '{"label": "旧栏目", "reason": "image_failed"}]'
+            ),
+            status="success",
+        )
+        detail = await self.api.get_execution("legacy-1")
+        data = detail.body["data"]
+        self.assertEqual(data["failed_sections"], [
+            {"label": "旧栏目", "reason": "image_failed"},
+            {"label": "字符串栏目"},
+            {"label": "危险栏目"},
+        ])
+        self.assertNotIn("secret 细节", repr(data))
+        self.assertIs(data["image_partial"], False)
+        listed = await self.api.list_executions(limit=5, offset=0)
+        summary = listed.body["data"]["executions"][0]
+        self.assertEqual(summary["failed_section_count"], 3)
+
+        await self.sites.store.set_delivery_content(
+            "legacy-1",
+            content_hash="legacy",
+            content_status="partial",
+            failed_sections_json="not-json",
+            status="success",
+        )
+        broken = await self.api.get_execution("legacy-1")
+        self.assertEqual(broken.status_code, 200)
+        self.assertEqual(broken.body["data"]["failed_sections"], [])
+        listed = await self.api.list_executions(limit=5, offset=0)
+        self.assertEqual(
+            listed.body["data"]["executions"][0]["failed_section_count"], 0,
+        )
 
     async def test_revision_conflict_and_empty_targets_no_send(self) -> None:
         task = await self._task(["demo_qq_01:GroupMessage:123"])

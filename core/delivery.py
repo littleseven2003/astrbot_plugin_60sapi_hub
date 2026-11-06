@@ -507,12 +507,12 @@ class DeliveryService:
             raw_image_failed = image_data.get("failed_sections") or []
             if not isinstance(raw_image_failed, list):
                 raise DeliveryNoContentError("image_invalid")
-            slots, image_failed_labels = decoded
+            slots, image_failed_entries = decoded
             if not any(payload is not None for _, payload in slots):
                 # 全部栏目都没生成出图：不发送、不降级、不伪造成功。
                 raise DeliveryNoContentError("image_failed")
             _merge_failed_sections(
-                failed, raw_image_failed, image_failed_labels,
+                failed, raw_image_failed, image_failed_entries,
             )
         content_status = data.get("status", "complete")
         if not isinstance(content_status, str):
@@ -549,24 +549,26 @@ class DeliveryService:
         any_unknown = False
         any_failed = False
         any_success = False
+        partial_reasons: set[str] = set()
         slot_total = len(prepared.slots)
-        sendable = [
-            index for index, payload in prepared.slots if payload is not None
-        ]
+        image_failed_slot_count = sum(
+            1 for _, payload in prepared.slots if payload is None
+        )
         for position, umo in enumerate(task.umos):
             unchanged = await self._config_unchanged(
                 task, profile, site, umo,
             )
             if not unchanged:
-                await self._mark_images(
-                    execution_id, position, sendable, "skipped",
-                    "config_changed",
+                await self._mark_skipped_remainder(
+                    execution_id, position, prepared.slots,
+                    1, "config_changed",
                 )
                 await self._mark_target_safely(
                     execution_id, position, status="skipped",
                     error_code="config_changed",
                 )
                 statuses[position] = "skipped"
+                partial_reasons.add("config_changed")
                 continue
             try:
                 await self._store.set_delivery_target_status(
@@ -575,6 +577,7 @@ class DeliveryService:
             except Exception as exc:
                 raise DeliveryStorageError("无法保存发送计划。") from exc
             target_status = "success"
+            target_error: str | None = None
             sent_images = 0
             for index, payload in prepared.slots:
                 if payload is None:
@@ -589,14 +592,14 @@ class DeliveryService:
                         task, profile, site, umo,
                     )
                     if not unchanged:
-                        await self._mark_images(
-                            execution_id, position,
-                            [item for item in sendable if item >= index],
-                            "skipped", "config_changed",
+                        await self._mark_skipped_remainder(
+                            execution_id, position, prepared.slots,
+                            index, "config_changed",
                         )
                         target_status = (
                             "partial" if sent_images else "skipped"
                         )
+                        partial_reasons.add("config_changed")
                         break
                 try:
                     await self._store.set_delivery_page_status(
@@ -616,10 +619,9 @@ class DeliveryService:
                 if self._closed or not await self._config_unchanged(
                     task, profile, site, umo,
                 ):
-                    await self._mark_images(
-                        execution_id, position,
-                        [item for item in sendable if item >= index],
-                        "skipped", "config_changed",
+                    await self._mark_skipped_remainder(
+                        execution_id, position, prepared.slots,
+                        index, "config_changed",
                     )
                     final_target_status = (
                         "partial" if sent_images else "skipped"
@@ -629,6 +631,7 @@ class DeliveryService:
                         error_code="config_changed",
                     )
                     target_status = final_target_status
+                    partial_reasons.add("config_changed")
                     break
                 try:
                     result = await self._call_sender(message)
@@ -677,14 +680,24 @@ class DeliveryService:
                 else:
                     any_failed = True
                     target_status = "failed"
-                await self._mark_images(
-                    execution_id, position,
-                    [item for item in sendable if item > index],
-                    "skipped", "after_" + error_code,
+                await self._mark_skipped_remainder(
+                    execution_id, position, prepared.slots,
+                    index + 1, "after_" + error_code,
                 )
                 break
+            if (
+                target_status == "success"
+                and sent_images > 0
+                and image_failed_slot_count > 0
+            ):
+                # 部分栏目没有长图、其余已成功送达：目标是部分成功，而不是
+                # 全部成功；错误码说明原因，未送达槽位仍逐张留痕。
+                target_status = "partial"
+                target_error = "section_image_failed"
+                partial_reasons.add("section_image_failed")
             await self._mark_target_safely(
                 execution_id, position, status=target_status,
+                error_code=target_error,
             )
             statuses[position] = target_status
 
@@ -699,7 +712,15 @@ class DeliveryService:
             final_status = "partial"
         elif any_failed:
             final_status = "failed"
-        await self._finish(execution_id, final_status, None)
+        finish_code = None
+        if (
+            final_status == "partial"
+            and partial_reasons == {"section_image_failed"}
+            and not any_failed
+            and not any_unknown
+        ):
+            finish_code = "section_image_failed"
+        await self._finish(execution_id, final_status, finish_code)
         return await self._read(execution_id)
 
     async def _call_sender(self, message: DeliveryMessage) -> DeliverySendResult:
@@ -785,6 +806,33 @@ class DeliveryService:
             await self._store.set_delivery_target_status(*args, **kwargs)
         except Exception:
             pass
+
+    async def _mark_skipped_remainder(
+        self,
+        execution_id: str,
+        position: int,
+        slots: tuple[tuple[int, str | bytes | None], ...],
+        start: int,
+        skip_code: str,
+    ) -> None:
+        """终止发送后统一落盘剩余槽位：图片失败与配置跳过原因分开。"""
+        pending_images = [
+            index for index, payload in slots
+            if index >= start and payload is not None
+        ]
+        failed_images = [
+            index for index, payload in slots
+            if index >= start and payload is None
+        ]
+        if pending_images:
+            await self._mark_images(
+                execution_id, position, pending_images, "skipped", skip_code,
+            )
+        if failed_images:
+            await self._mark_images(
+                execution_id, position, failed_images,
+                "skipped", "section_image_failed",
+            )
 
     async def _mark_images(
         self,
@@ -872,7 +920,7 @@ def _decode_section_images(
     raw: object,
 ) -> tuple[
     tuple[tuple[int, str | bytes | None], ...],
-    tuple[str, ...],
+    tuple[dict[str, object], ...],
 ] | None:
     """把按栏目返回的 images 解析为发送槽位；失败栏目保留为 None 槽位。"""
     if not isinstance(raw, list) or not raw:
@@ -913,31 +961,42 @@ def _decode_section_images(
     slots = tuple(
         (index, png) for index, png, _ in parsed
     )
-    labels = tuple(
-        label for _, png, label in parsed if png is None and label
+    failed_entries = tuple(
+        {
+            "label": label,
+            "reason": "image_failed",
+            "image_index": index,
+        }
+        for index, png, label in parsed
+        if png is None and label
     )
-    return slots, labels
+    return slots, failed_entries
 
 
 def _merge_failed_sections(
-    target: list[object], extra: list[object], labels: tuple[str, ...],
+    target: list[object],
+    extra: list[object],
+    failed_entries: tuple[dict[str, object], ...],
 ) -> None:
     """合并预览阶段与出图阶段的失败栏目，按标签去重。"""
     seen = {
         entry.get("label") if isinstance(entry, dict) else entry
         for entry in target
     }
+    # 出图阶段先写入结构化条目（带 image_index），再补预览阶段条目；
+    # 两者只按标签去重，历史读取仍兼容纯字符串列表。
+    for entry in failed_entries:
+        label = entry.get("label")
+        if not isinstance(label, str) or label in seen:
+            continue
+        target.append(dict(entry))
+        seen.add(label)
     for entry in extra:
         key = entry.get("label") if isinstance(entry, dict) else entry
         if key in seen:
             continue
         target.append(entry)
         seen.add(key)
-    for label in labels:
-        if label in seen:
-            continue
-        target.append({"label": label, "reason": "image_failed"})
-        seen.add(label)
 
 
 def _normalize_send_status(value: object) -> SendStatus:

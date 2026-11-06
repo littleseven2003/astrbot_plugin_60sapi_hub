@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -216,6 +218,8 @@ class DeliveryApi:
 
 
 def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
+    failed_sections = _project_failed_sections(e.failed_sections_json)
+    delivered, skipped = _image_counts(e)
     return {
         "id": e.id, "task_id": e.task_id, "task_name": e.task_name,
         "output_format": e.output_format, "status": e.status,
@@ -224,17 +228,32 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
         "target_count": len(e.targets),
         "image_count": len(e.pages),
         "target_statuses": sorted({t.status for t in e.targets}),
+        "delivered_image_count": delivered,
+        "skipped_image_count": skipped,
+        "failed_section_count": len(failed_sections),
+        "image_partial": _image_partial(e),
     }
 
 
 def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
+    failed_sections = _project_failed_sections(e.failed_sections_json)
+    labels_by_index = {
+        entry["image_index"]: entry["label"]
+        for entry in failed_sections
+        if "image_index" in entry
+    }
     images_by_target: dict[int, list[dict[str, Any]]] = {}
     for page in e.pages:
-        images_by_target.setdefault(page.position, []).append({
+        image: dict[str, Any] = {
             "image_index": page.page_index,
             "status": page.status,
             "error_code": page.error_code,
-        })
+        }
+        label = labels_by_index.get(page.page_index)
+        if label:
+            image["label"] = label
+        images_by_target.setdefault(page.position, []).append(image)
+    delivered, skipped = _image_counts(e)
     return {
         "id": e.id,
         "task_id": e.task_id,
@@ -251,17 +270,103 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "error_code": e.error_code,
         "created_at": e.created_at,
         "updated_at": e.updated_at,
+        "failed_sections": failed_sections,
+        "delivered_image_count": delivered,
+        "skipped_image_count": skipped,
+        "image_partial": _image_partial(e),
         "targets": [
             {
                 "position": t.position,
                 "umo": t.umo,
                 "status": t.status,
                 "error_code": t.error_code,
+                "delivered_image_count": sum(
+                    1 for image in images_by_target.get(t.position, [])
+                    if image["status"] == "success"
+                ),
+                "skipped_image_count": sum(
+                    1 for image in images_by_target.get(t.position, [])
+                    if image["status"] == "skipped"
+                ),
                 "images": images_by_target.get(t.position, []),
             }
             for t in e.targets
         ],
     }
+
+
+_SAFE_CODE_RE = re.compile(r"[a-z0-9_]{1,32}")
+_MAX_FAILED_SECTIONS = 16
+
+
+def _safe_label(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = "".join(
+        " " if ord(char) < 32 or ord(char) == 127 else char
+        for char in value
+    )
+    return " ".join(text.split()).strip()[:120]
+
+
+def _project_failed_sections(raw: object) -> list[dict[str, Any]]:
+    """把历史或当前的失败栏目 JSON 投影成安全字段；坏数据按空列表处理。"""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in decoded:
+        if isinstance(entry, str):
+            label = _safe_label(entry)
+            reason = None
+            image_index = None
+        elif isinstance(entry, dict):
+            label = _safe_label(entry.get("label"))
+            reason_raw = entry.get("reason") or entry.get("code")
+            reason = (
+                reason_raw
+                if isinstance(reason_raw, str)
+                and _SAFE_CODE_RE.fullmatch(reason_raw)
+                else None
+            )
+            image_index = entry.get("image_index")
+            if type(image_index) is not int or image_index < 1:
+                image_index = None
+        else:
+            continue
+        if not label or label in seen:
+            continue
+        item: dict[str, Any] = {"label": label}
+        if reason:
+            item["reason"] = reason
+        if image_index is not None:
+            item["image_index"] = image_index
+        result.append(item)
+        seen.add(label)
+        if len(result) >= _MAX_FAILED_SECTIONS:
+            break
+    return result
+
+
+def _image_counts(e: StoredDeliveryExecution) -> tuple[int, int]:
+    delivered = sum(1 for page in e.pages if page.status == "success")
+    skipped = sum(1 for page in e.pages if page.status == "skipped")
+    return delivered, skipped
+
+
+def _image_partial(e: StoredDeliveryExecution) -> bool:
+    delivered, _ = _image_counts(e)
+    return delivered > 0 and any(
+        page.status == "skipped"
+        and page.error_code == "section_image_failed"
+        for page in e.pages
+    )
 
 
 def _ok(data: Any, *, status_code: int = 200) -> DeliveryApiResult:

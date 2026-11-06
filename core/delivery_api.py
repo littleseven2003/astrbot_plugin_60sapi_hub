@@ -217,14 +217,21 @@ class DeliveryApi:
         return _ok(_execution_dict(execution))
 
 
-# 计数字段语义（避免把「目标×图片记录数」误读成「栏目数」）：
-# - failed_section_count: failed_sections 去重后的栏目数（label + image_index）
+# 计数字段语义（避免把「目标×图片记录数」误读成「栏目图数」）：
+# - image_count: 目标×图片的槽位记录数（文字/Markdown 为逻辑消息槽位，不是栏目图数）
+# - section_image_count: 按 image_index 去重的栏目图数量；文字/Markdown 没有
+#   栏目图，固定为 0，不能把逻辑消息槽位误报成栏目图。
+# - failed_section_count: failed_sections 去重后的失败栏目数（label + image_index）
 # - skipped_image_count: 目标×图片的未送达记录数（同一栏目跨目标会重复计数）
+# - skipped_section_image_failed_count / skipped_config_changed_count /
+#   skipped_other_count: 按 delivery_pages.error_code 对 skipped 记录做互斥分解；
+#   三者之和恒等于 skipped_image_count，无法判定原因的 historical 行归入 other。
 # - distinct_skipped_section_count: 按 image_index 去重后的未送达栏目数
 # - delivered_image_count: 目标×图片的成功送达记录数
 def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
     failed_sections = _project_failed_sections(e.failed_sections_json)
     delivered, skipped = _image_counts(e)
+    image_failed, config_changed, other = _skipped_breakdown(e)
     return {
         "id": e.id, "task_id": e.task_id, "task_name": e.task_name,
         "output_format": e.output_format, "status": e.status,
@@ -232,9 +239,13 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
         "updated_at": e.updated_at,
         "target_count": len(e.targets),
         "image_count": len(e.pages),
+        "section_image_count": _section_image_count(e),
         "target_statuses": sorted({t.status for t in e.targets}),
         "delivered_image_count": delivered,
         "skipped_image_count": skipped,
+        "skipped_section_image_failed_count": image_failed,
+        "skipped_config_changed_count": config_changed,
+        "skipped_other_count": other,
         "distinct_skipped_section_count": _distinct_skipped_sections(e),
         "failed_section_count": len(failed_sections),
         "image_partial": _image_partial(e),
@@ -260,6 +271,7 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
             image["label"] = label
         images_by_target.setdefault(page.position, []).append(image)
     delivered, skipped = _image_counts(e)
+    image_failed, config_changed, other = _skipped_breakdown(e)
     return {
         "id": e.id,
         "task_id": e.task_id,
@@ -279,8 +291,12 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "failed_sections": failed_sections,
         "failed_section_count": len(failed_sections),
         "image_count": len(e.pages),
+        "section_image_count": _section_image_count(e),
         "delivered_image_count": delivered,
         "skipped_image_count": skipped,
+        "skipped_section_image_failed_count": image_failed,
+        "skipped_config_changed_count": config_changed,
+        "skipped_other_count": other,
         "distinct_skipped_section_count": _distinct_skipped_sections(e),
         "image_partial": _image_partial(e),
         "targets": [
@@ -289,6 +305,9 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
                 "umo": t.umo,
                 "status": t.status,
                 "error_code": t.error_code,
+                "section_image_count": _target_section_image_count(
+                    e, t.position,
+                ),
                 "delivered_image_count": sum(
                     1 for image in images_by_target.get(t.position, [])
                     if image["status"] == "success"
@@ -367,6 +386,45 @@ def _project_failed_sections(raw: object) -> list[dict[str, Any]]:
         if len(result) >= _MAX_FAILED_SECTIONS:
             break
     return result
+
+
+def _section_image_count(e: StoredDeliveryExecution) -> int:
+    """按 image_index 去重的栏目图数量；文字/Markdown 没有栏目图，固定 0。"""
+    if e.output_format != "image":
+        return 0
+    return len({page.page_index for page in e.pages})
+
+
+def _target_section_image_count(
+    e: StoredDeliveryExecution,
+    position: int,
+) -> int:
+    if e.output_format != "image":
+        return 0
+    return len({
+        page.page_index for page in e.pages
+        if page.position == position
+    })
+
+
+def _skipped_breakdown(
+    e: StoredDeliveryExecution,
+) -> tuple[int, int, int]:
+    """按 error_code 对 skipped 记录做互斥分解；缺失/未知原因归入 other。"""
+    section_image_failed = 0
+    config_changed = 0
+    other = 0
+    for page in e.pages:
+        if page.status != "skipped":
+            continue
+        if page.error_code == "section_image_failed":
+            section_image_failed += 1
+        elif page.error_code == "config_changed":
+            config_changed += 1
+        else:
+            # 历史行缺少可判定的 error_code 时不推断原因。
+            other += 1
+    return section_image_failed, config_changed, other
 
 
 def _image_counts(e: StoredDeliveryExecution) -> tuple[int, int]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from core.delivery import DeliveryLimits, DeliveryService
 from core.delivery_api import DeliveryApi
@@ -21,6 +22,14 @@ class Inspector:
             "target": umo.rsplit(":", 1)[-1].rsplit("_", 1)[-1],
             "isolated": "_" in umo,
         }
+
+
+def skipped_breakdown(payload: dict) -> tuple[int, int, int]:
+    return (
+        payload["skipped_section_image_failed_count"],
+        payload["skipped_config_changed_count"],
+        payload["skipped_other_count"],
+    )
 
 
 class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
@@ -139,7 +148,11 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["error_code"], "section_image_failed")
         self.assertIs(data["image_partial"], True)
         self.assertEqual(data["delivered_image_count"], 1)
+        self.assertEqual(data["image_count"], 2)
+        self.assertEqual(data["section_image_count"], 2)
         self.assertEqual(data["skipped_image_count"], 1)
+        self.assertEqual(skipped_breakdown(data), (1, 0, 0))
+        self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
         self.assertEqual(data["distinct_skipped_section_count"], 1)
         self.assertEqual(data["failed_section_count"], 1)
         self.assertEqual(data["failed_sections"], [{
@@ -153,6 +166,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target["delivered_image_count"], 1)
         self.assertEqual(target["skipped_image_count"], 1)
         self.assertEqual(target["skipped_section_count"], 1)
+        self.assertEqual(target["section_image_count"], 2)
         self.assertEqual(
             [image["status"] for image in target["images"]],
             ["success", "skipped"],
@@ -168,7 +182,10 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["status"], "partial")
         self.assertIs(summary["image_partial"], True)
         self.assertEqual(summary["delivered_image_count"], 1)
+        self.assertEqual(summary["image_count"], 2)
+        self.assertEqual(summary["section_image_count"], 2)
         self.assertEqual(summary["skipped_image_count"], 1)
+        self.assertEqual(skipped_breakdown(summary), (1, 0, 0))
         self.assertEqual(summary["distinct_skipped_section_count"], 1)
         self.assertEqual(summary["failed_section_count"], 1)
 
@@ -189,9 +206,12 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         data = detail.body["data"]
         self.assertEqual(data["status"], "partial")
         self.assertEqual(data["image_count"], 4)
+        self.assertEqual(data["section_image_count"], 2)
         self.assertEqual(data["delivered_image_count"], 2)
         # 记录数：两个目标各有一个未送达槽位。
         self.assertEqual(data["skipped_image_count"], 2)
+        self.assertEqual(skipped_breakdown(data), (2, 0, 0))
+        self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
         # 栏目数：同一栏目跨目标只算一次。
         self.assertEqual(data["distinct_skipped_section_count"], 1)
         self.assertEqual(data["failed_section_count"], 1)
@@ -202,10 +222,13 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         for target in data["targets"]:
             self.assertEqual(target["skipped_image_count"], 1)
             self.assertEqual(target["skipped_section_count"], 1)
+            self.assertEqual(target["section_image_count"], 2)
 
         listed = await self.api.list_executions(limit=5, offset=0)
         summary = listed.body["data"]["executions"][0]
         self.assertEqual(summary["skipped_image_count"], 2)
+        self.assertEqual(summary["section_image_count"], 2)
+        self.assertEqual(skipped_breakdown(summary), (2, 0, 0))
         self.assertEqual(summary["distinct_skipped_section_count"], 1)
         self.assertEqual(summary["failed_section_count"], 1)
 
@@ -249,6 +272,205 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             second["images"][1]["error_code"], "section_image_failed",
         )
+
+    async def test_all_success_multi_target_multi_section_counts(self) -> None:
+        self.stub.image_sections.append({
+            "index": 3, "content_type": "bilibili_hot",
+            "label": "Bilibili 热搜", "status": "success",
+            "png": b"\x89PNG\r\n\x1a\nimage-three",
+        })
+        task = await self._image_task([
+            "demo_qq_01:GroupMessage:123",
+            "demo_qq_01:GroupMessage:456",
+        ])
+        result = await self.api.execute(task.id, {
+            "execution_id": "image-all-success",
+            "expected_task_revision": task.revision,
+            "expected_profile_revision": self.profile.revision,
+            "expected_site_revision": self.site.revision,
+        })
+        self.assertEqual(result.status_code, 200, result.body)
+        detail = await self.api.get_execution("image-all-success")
+        data = detail.body["data"]
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["image_count"], 6)
+        self.assertEqual(data["section_image_count"], 3)
+        self.assertEqual(data["delivered_image_count"], 6)
+        self.assertEqual(data["skipped_image_count"], 0)
+        self.assertEqual(skipped_breakdown(data), (0, 0, 0))
+        for target in data["targets"]:
+            self.assertEqual(target["section_image_count"], 3)
+            self.assertEqual(target["skipped_image_count"], 0)
+        listed = await self.api.list_executions(limit=5, offset=0)
+        summary = listed.body["data"]["executions"][0]
+        self.assertEqual(summary["image_count"], 6)
+        self.assertEqual(summary["section_image_count"], 3)
+        self.assertEqual(skipped_breakdown(summary), (0, 0, 0))
+
+    async def test_config_change_counts_are_decomposed(self) -> None:
+        task = await self._image_task(["demo_qq_01:GroupMessage:123"])
+        with patch.object(
+            self.service, "_config_unchanged",
+            AsyncMock(return_value=False),
+        ):
+            result = await self.api.execute(task.id, {
+                "execution_id": "image-config-skip",
+                "expected_task_revision": task.revision,
+                "expected_profile_revision": self.profile.revision,
+                "expected_site_revision": self.site.revision,
+            })
+        self.assertEqual(result.status_code, 200, result.body)
+        detail = await self.api.get_execution("image-config-skip")
+        data = detail.body["data"]
+        self.assertEqual(data["status"], "stopped")
+        self.assertEqual(data["image_count"], 2)
+        self.assertEqual(data["section_image_count"], 2)
+        self.assertEqual(data["skipped_image_count"], 2)
+        self.assertEqual(skipped_breakdown(data), (0, 2, 0))
+        self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
+        self.assertEqual(data["targets"][0]["section_image_count"], 2)
+        listed = await self.api.list_executions(limit=5, offset=0)
+        summary = listed.body["data"]["executions"][0]
+        self.assertEqual(summary["section_image_count"], 2)
+        self.assertEqual(skipped_breakdown(summary), (0, 2, 0))
+
+    async def test_mixed_image_and_config_change_counts(self) -> None:
+        self.stub.image_sections.append({
+            "index": 3, "content_type": "bilibili_hot",
+            "label": "Bilibili 热搜", "status": "success",
+            "png": b"\x89PNG\r\n\x1a\nimage-three",
+        })
+        self.stub.image_sections[1]["status"] = "failed"
+        task = await self._image_task(["demo_qq_01:GroupMessage:123"])
+        checks = AsyncMock(side_effect=[True, True, True, False])
+        with patch.object(self.service, "_config_unchanged", checks):
+            result = await self.api.execute(task.id, {
+                "execution_id": "image-mixed-skip",
+                "expected_task_revision": task.revision,
+                "expected_profile_revision": self.profile.revision,
+                "expected_site_revision": self.site.revision,
+            })
+        self.assertEqual(result.status_code, 200, result.body)
+        detail = await self.api.get_execution("image-mixed-skip")
+        data = detail.body["data"]
+        self.assertEqual(data["status"], "partial")
+        self.assertEqual(data["error_code"], "config_changed")
+        self.assertEqual(data["image_count"], 3)
+        self.assertEqual(data["section_image_count"], 3)
+        self.assertEqual(data["delivered_image_count"], 1)
+        self.assertEqual(data["skipped_image_count"], 2)
+        self.assertEqual(skipped_breakdown(data), (1, 1, 0))
+        self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
+        self.assertEqual(data["targets"][0]["section_image_count"], 3)
+        statuses = [
+            (image["image_index"], image["status"], image["error_code"])
+            for image in data["targets"][0]["images"]
+        ]
+        self.assertEqual(statuses, [
+            (1, "success", None),
+            (2, "skipped", "section_image_failed"),
+            (3, "skipped", "config_changed"),
+        ])
+
+    async def test_text_and_markdown_counts_are_reasonable(self) -> None:
+        text_task = await self._task(["demo_qq_01:GroupMessage:123"])
+        await self.api.execute(text_task.id, {
+            "execution_id": "text-counts",
+            "expected_task_revision": text_task.revision,
+            "expected_profile_revision": self.profile.revision,
+            "expected_site_revision": self.site.revision,
+        })
+        text_detail = await self.api.get_execution("text-counts")
+        text_data = text_detail.body["data"]
+        self.assertEqual(text_data["image_count"], 1)
+        self.assertEqual(text_data["section_image_count"], 0)
+        self.assertEqual(text_data["delivered_image_count"], 1)
+        self.assertEqual(text_data["skipped_image_count"], 0)
+        self.assertEqual(skipped_breakdown(text_data), (0, 0, 0))
+        self.assertEqual(text_data["targets"][0]["section_image_count"], 0)
+        listed = await self.api.list_executions(limit=5, offset=0)
+        text_summary = next(
+            execution for execution
+            in listed.body["data"]["executions"]
+            if execution["id"] == "text-counts"
+        )
+        self.assertEqual(text_summary["image_count"], 1)
+        self.assertEqual(text_summary["section_image_count"], 0)
+        self.assertEqual(skipped_breakdown(text_summary), (0, 0, 0))
+
+        markdown_task = await self.tasks.create_task(TaskCreate(
+            name="Markdown 任务", profile_id=self.profile.id,
+            output_format="markdown", umos=["demo_qq_01:GroupMessage:123"],
+        ))
+        await self.api.execute(markdown_task.id, {
+            "execution_id": "markdown-counts",
+            "expected_task_revision": markdown_task.revision,
+            "expected_profile_revision": self.profile.revision,
+            "expected_site_revision": self.site.revision,
+        })
+        markdown_detail = await self.api.get_execution("markdown-counts")
+        markdown_data = markdown_detail.body["data"]
+        self.assertEqual(markdown_data["image_count"], 1)
+        self.assertEqual(markdown_data["section_image_count"], 0)
+        self.assertEqual(markdown_data["skipped_image_count"], 0)
+        self.assertEqual(skipped_breakdown(markdown_data), (0, 0, 0))
+
+        skipped_text = await self._task(["demo_qq_01:GroupMessage:456"])
+        with patch.object(
+            self.service, "_config_unchanged",
+            AsyncMock(return_value=False),
+        ):
+            await self.api.execute(skipped_text.id, {
+                "execution_id": "text-config-skip",
+                "expected_task_revision": skipped_text.revision,
+                "expected_profile_revision": self.profile.revision,
+                "expected_site_revision": self.site.revision,
+            })
+        skipped_detail = await self.api.get_execution("text-config-skip")
+        skipped_data = skipped_detail.body["data"]
+        self.assertEqual(skipped_data["status"], "stopped")
+        self.assertEqual(skipped_data["image_count"], 1)
+        self.assertEqual(skipped_data["section_image_count"], 0)
+        self.assertEqual(skipped_data["skipped_image_count"], 1)
+        self.assertEqual(skipped_breakdown(skipped_data), (0, 1, 0))
+        self.assertEqual(
+            sum(skipped_breakdown(skipped_data)),
+            skipped_data["skipped_image_count"],
+        )
+        listed = await self.api.list_executions(limit=5, offset=0)
+        skipped_summary = next(
+            execution for execution
+            in listed.body["data"]["executions"]
+            if execution["id"] == "text-config-skip"
+        )
+        self.assertEqual(skipped_summary["section_image_count"], 0)
+        self.assertEqual(skipped_breakdown(skipped_summary), (0, 1, 0))
+
+    async def test_history_page_without_error_code_falls_into_other(
+        self,
+    ) -> None:
+        task = await self._image_task(["demo_qq_01:GroupMessage:123"])
+        await self.api.execute(task.id, {
+            "execution_id": "history-no-code",
+            "expected_task_revision": task.revision,
+            "expected_profile_revision": self.profile.revision,
+            "expected_site_revision": self.site.revision,
+        })
+        await self.sites.store.set_delivery_page_status(
+            "history-no-code", 0, 2,
+            status="skipped", error_code=None,
+        )
+        detail = await self.api.get_execution("history-no-code")
+        data = detail.body["data"]
+        self.assertEqual(data["skipped_image_count"], 1)
+        self.assertEqual(skipped_breakdown(data), (0, 0, 1))
+        self.assertEqual(sum(skipped_breakdown(data)), data["skipped_image_count"])
+        self.assertEqual(data["section_image_count"], 2)
+        self.assertEqual(data["image_count"], 2)
+        listed = await self.api.list_executions(limit=5, offset=0)
+        summary = listed.body["data"]["executions"][0]
+        self.assertEqual(skipped_breakdown(summary), (0, 0, 1))
+        self.assertEqual(summary["section_image_count"], 2)
 
     async def test_legacy_failed_sections_json_is_sanitized(self) -> None:
         task = await self._task(["demo_qq_01:GroupMessage:123"])

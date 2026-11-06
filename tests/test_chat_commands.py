@@ -515,9 +515,13 @@ class ImageFixture:
         self.site = SimpleNamespace(id="s1", enabled=True, revision=3)
         self.owners = []
         self.preview_owners = []
-        self.pages = [
-            {"index": 2, "png_base64": "iVBORw0KGgoB", "sha256": None},
-            {"index": 1, "png_base64": "iVBORw0KGgoA", "sha256": None},
+        self.images = [
+            {"index": 2, "content_type": "zhihu_hot", "label": "知乎热榜",
+             "status": "success", "width": 900, "height": 1400,
+             "png_base64": "iVBORw0KGgoB"},
+            {"index": 1, "content_type": "daily_news", "label": "每日新闻",
+             "status": "success", "width": 900, "height": 1200,
+             "png_base64": "iVBORw0KGgoA"},
         ]
 
     async def get_config_snapshot(self, task_id):
@@ -540,7 +544,7 @@ class ImageFixture:
     async def generate_image(self, profile_id, payload, *, owner=None):
         self.owners.append(owner)
         return SimpleNamespace(status_code=200, body={"data": {
-            "pages": list(self.pages),
+            "images": list(self.images),
         }})
 
 
@@ -555,12 +559,12 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
             content_query=None, image_query=query,
         )
 
-    async def test_exact_auth_owner_and_page_order(self) -> None:
+    async def test_exact_auth_owner_and_image_order(self) -> None:
         service = self.build()
         reply = await service.handle("bot:GroupMessage:g", "/60s image task-image")
-        self.assertEqual(reply.page_count, 2)
-        self.assertEqual(reply.pages, (b"\x89PNG\r\n\x1a\n\x00", b"\x89PNG\r\n\x1a\n\x01"))
-        self.assertIn("共 2 页", reply.text)
+        self.assertEqual(reply.image_count, 2)
+        self.assertEqual(reply.images, (b"\x89PNG\r\n\x1a\n\x00", b"\x89PNG\r\n\x1a\n\x01"))
+        self.assertIn("共 2 张栏目长图", reply.text)
         self.assertTrue(self.f.owners[0].startswith("chat:"))
         self.assertEqual(self.f.owners[0], self.f.preview_owners[0])
         other = await service.handle("bot:GroupMessage:other", "/60s image task-image")
@@ -590,9 +594,12 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
             "任务或配置已变化，请重新查询。",
         )
 
-    async def test_invalid_pages_and_usage(self) -> None:
+    async def test_invalid_images_and_usage(self) -> None:
         service = self.build()
-        self.f.pages = [{"index": 3, "png_base64": "iVBORw0KGgo="}]
+        self.f.images = [{"index": 3, "content_type": "daily_news",
+                        "label": "每日新闻", "status": "success",
+                        "width": 900, "height": 1200,
+                        "png_base64": "iVBORw0KGgo="}]
         self.assertEqual(
             await service.handle("bot:GroupMessage:g", "/60s image task-image"),
             "图片查询暂时不可用，请使用 /60s get <任务ID> 查看文字版。",
@@ -601,8 +608,10 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
             await service.handle("bot:GroupMessage:g", "/60s image"),
             "用法：/60s image <任务ID>。",
         )
-        self.f.pages = [
-            {"index": i, "png_base64": "iVBORw0KGgo="}
+        self.f.images = [
+            {"index": i, "content_type": "daily_news", "label": "栏目",
+             "status": "success", "width": 900, "height": 1200,
+             "png_base64": "iVBORw0KGgo="}
             for i in range(1, 8)
         ]
         self.assertEqual(
@@ -719,6 +728,8 @@ class ImageRacePreview:
         self.render_started.set()
         await self.render_release.wait()
         encoded = "iVBORw0KGgo="
-        return SimpleNamespace(status_code=200, body={"data": {"pages": [
-            {"index": 1, "png_base64": encoded},
+        return SimpleNamespace(status_code=200, body={"data": {"images": [
+            {"index": 1, "content_type": "daily_news",
+             "label": "每日新闻", "status": "success",
+             "width": 900, "height": 1200, "png_base64": encoded},
         ]}})

@@ -179,7 +179,7 @@ class SixtySAPIHub(Star):
             return
         if isinstance(text, ChatImageReply):
             chain = [Plain(text.text)]
-            chain.extend(Image.fromBytes(page) for page in text.pages)
+            chain.extend(Image.fromBytes(image) for image in text.images)
             yield event.chain_result(chain)
         elif text:
             yield event.plain_result(text)

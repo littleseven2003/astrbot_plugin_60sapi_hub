@@ -1,9 +1,8 @@
-"""聊天图片查询：复用文字授权、组合快照和现有图片渲染链路。"""
+"""聊天图片查询：复用文字授权、组合快照与按栏目生成的长图渲染链路。"""
 
 from __future__ import annotations
 
 import base64
-import hashlib
 import secrets
 from dataclasses import dataclass
 
@@ -24,18 +23,23 @@ IMAGE_FAILED_TEXT = (
     "图片查询暂时不可用，请使用 /60s get <任务ID> 查看文字版。"
 )
 IMAGE_CHANGED_TEXT = CHANGED_TEXT
-_MAX_IMAGE_PAGES = 6
+# 一个栏目一张长图；栏目数受现有五种内容接口限制。
+MAX_SECTION_IMAGES = 5
+MAX_SECTION_IMAGE_BYTES = 2 * 1024 * 1024
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_ALLOWED_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})
 
 
 @dataclass(frozen=True, slots=True)
 class ChatImageReply:
-    pages: tuple[bytes, ...]
+    """一次聊天图片回复：按栏目顺序排列的长图与可选失败说明。"""
+
+    images: tuple[bytes, ...]
     text: str
 
     @property
-    def page_count(self) -> int:
-        return len(self.pages)
+    def image_count(self) -> int:
+        return len(self.images)
 
 
 class ChatImageQuery:
@@ -85,18 +89,29 @@ class ChatImageQuery:
         rendered_data = (
             rendered.body.get("data") if isinstance(rendered.body, dict) else None
         )
-        pages = _decode_pages(rendered_data)
-        if pages is None:
+        decoded = _decode_section_images(rendered_data)
+        if decoded is None:
+            return IMAGE_FAILED_TEXT
+        images, failed_labels = decoded
+        if not images:
+            # 全部栏目都没生成出图：不伪造图片，也不拆分重试。
             return IMAGE_FAILED_TEXT
         if await config_changed(self._tasks, umo, authorized):
             return IMAGE_CHANGED_TEXT
         return ChatImageReply(
-            pages=pages,
-            text=(
-                f"共 {len(pages)} 页图片。\n"
-                f"可发送 /60s get {normalized_id} 获取文字版。"
-            ),
+            images=images,
+            text=_reply_text(len(images), failed_labels, normalized_id),
         )
+
+
+def _reply_text(
+    count: int, failed_labels: tuple[str, ...], task_id: str,
+) -> str:
+    lines = [f"共 {count} 张栏目长图。"]
+    if failed_labels:
+        lines.append("以下栏目未生成图片：" + "、".join(failed_labels) + "。")
+    lines.append(f"可发送 /60s get {task_id} 获取文字版。")
+    return "\n".join(lines)
 
 
 def _owner() -> str:
@@ -105,36 +120,51 @@ def _owner() -> str:
     return f"chat:{secrets.token_urlsafe(24)}"
 
 
-def _decode_pages(data: object) -> tuple[bytes, ...] | None:
+def _decode_section_images(
+    data: object,
+) -> tuple[tuple[bytes, ...], tuple[str, ...]] | None:
+    """按栏目顺序取出可发送的 PNG；失败栏目只收集标签，不伪造图片。"""
     if not isinstance(data, dict):
         return None
-    page_items = data.get("pages")
-    if not isinstance(page_items, list) or not page_items:
+    items = data.get("images")
+    if not isinstance(items, list) or not items:
         return None
-    if len(page_items) > _MAX_IMAGE_PAGES:
+    if len(items) > MAX_SECTION_IMAGES:
         return None
-    decoded: list[tuple[int, bytes]] = []
-    for item in page_items:
+    parsed: list[tuple[int, bytes | None, str | None]] = []
+    for item in items:
         if not isinstance(item, dict):
             return None
         index = item.get("index")
+        status = item.get("status")
+        label = item.get("label")
+        if type(index) is not int or index < 1:
+            return None
+        if not isinstance(status, str) or status not in _ALLOWED_IMAGE_STATUSES:
+            return None
+        if not isinstance(label, str) or not label.strip():
+            return None
+        if status == "failed":
+            parsed.append((index, None, label.strip()))
+            continue
         encoded = item.get("png_base64")
-        if type(index) is not int or not isinstance(encoded, str):
+        if not isinstance(encoded, str) or not encoded:
             return None
         try:
             png = base64.b64decode(encoded, validate=True)
         except Exception:
             return None
-        expected = item.get("sha256")
-        if isinstance(expected, str) and hashlib.sha256(png).hexdigest() != expected:
-            return None
         if not png.startswith(_PNG_SIGNATURE):
             return None
-        decoded.append((index, png))
-    decoded.sort(key=lambda item: item[0])
-    if [item[0] for item in decoded] != list(range(1, len(decoded) + 1)):
+        if len(png) > MAX_SECTION_IMAGE_BYTES:
+            return None
+        parsed.append((index, png, None))
+    parsed.sort(key=lambda entry: entry[0])
+    if [entry[0] for entry in parsed] != list(range(1, len(parsed) + 1)):
         return None
-    return tuple(item[1] for item in decoded)
+    images = tuple(png for _, png, _ in parsed if png is not None)
+    failed_labels = tuple(label for _, png, label in parsed if png is None and label)
+    return images, failed_labels
 
 
 __all__ = ["ChatImageQuery", "ChatImageReply", "IMAGE_FAILED_TEXT"]

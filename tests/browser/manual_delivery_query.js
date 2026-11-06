@@ -71,7 +71,7 @@ function historySummary(id = HISTORY_ID) {
     id, task_id: TASK_1.id, task_name: "历史任务A", output_format: "text",
     status: "unknown", content_status: "complete",
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
-    target_count: 1, page_count: 1,
+    target_count: 1, image_count: 1,
   };
 }
 
@@ -236,7 +236,7 @@ async function waitBridgeResponse(frame, requestId) {
               id, task_id: TASK_1.id, task_name: "历史任务A",
               output_format: "text", status: "success",
               content_status: "complete", error_code: null,
-              targets: [], pages: [],
+              targets: [], images: [],
             }}),
           });
         }

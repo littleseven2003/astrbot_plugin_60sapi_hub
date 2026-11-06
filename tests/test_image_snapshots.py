@@ -4,6 +4,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from core.image_snapshots import (
+    DEFAULT_MAX_RENDER_OUTPUT_BYTES,
+    DEFAULT_MAX_SNAPSHOT_BYTES,
+    DEFAULT_MAX_SNAPSHOTS,
+    DEFAULT_MAX_TOTAL_BYTES,
+    DEFAULT_SNAPSHOT_TTL_SECONDS,
     ImageSnapshotClosedError,
     ImageSnapshotStore,
 )
@@ -117,3 +122,33 @@ class ImageSnapshotStoreTest(unittest.TestCase):
             self.store.get(snapshot.id)
         with self.assertRaises(ImageSnapshotClosedError):
             put(self.store)
+
+
+class MultiSectionImageBudgetTest(unittest.TestCase):
+    """栏目长图不计入快照字节；渲染结果合计字节有独立上限。"""
+
+    def test_documented_limits(self) -> None:
+        self.assertEqual(DEFAULT_SNAPSHOT_TTL_SECONDS, 300.0)
+        self.assertEqual(DEFAULT_MAX_SNAPSHOTS, 32)
+        self.assertEqual(DEFAULT_MAX_TOTAL_BYTES, 8 * 1024 * 1024)
+        self.assertEqual(DEFAULT_MAX_SNAPSHOT_BYTES, 2 * 1024 * 1024)
+        self.assertEqual(DEFAULT_MAX_RENDER_OUTPUT_BYTES, 8 * 1024 * 1024)
+
+    def test_snapshot_bytes_measure_preview_payload_only(self) -> None:
+        store = ImageSnapshotStore(max_total_bytes=4096, max_snapshot_bytes=2048)
+        try:
+            snapshot = store.put(
+                owner="alice",
+                profile_id="profile-1",
+                profile_revision=1,
+                site_id="site-1",
+                site_revision=1,
+                data={"profile_name": "组合", "sections": [{"label": "每日新闻"}]},
+            )
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            # 快照大小只包含预览数据 JSON，不含图片字节。
+            self.assertLess(snapshot.size_bytes, 2048)
+            self.assertEqual(store.total_bytes, snapshot.size_bytes)
+        finally:
+            store.close()

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS delivery_executions (
     content_hash TEXT,
     content_status TEXT,
     failed_sections_json TEXT,
+    image_model TEXT,
     status TEXT NOT NULL CHECK (
         status IN ('preparing', 'running', 'success', 'partial',
                    'failed', 'unknown', 'no_targets', 'stopped')
@@ -203,6 +204,7 @@ CREATE TABLE IF NOT EXISTS delivery_pages (
                    'unknown', 'skipped')
     ),
     error_code TEXT,
+    image_generated INTEGER,
     PRIMARY KEY (execution_id, position, page_index),
     FOREIGN KEY (execution_id, position)
         REFERENCES delivery_targets(execution_id, position)
@@ -346,6 +348,7 @@ class StoredDeliveryPage:
     page_index: int
     status: str
     error_code: str | None
+    image_generated: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +370,7 @@ class StoredDeliveryExecution:
     error_code: str | None
     created_at: str
     updated_at: str
+    image_model: str | None = None
     targets: tuple[StoredDeliveryTarget, ...] = ()
     pages: tuple[StoredDeliveryPage, ...] = ()
 
@@ -489,7 +493,7 @@ class SiteStore:
                     row = await cursor.fetchone()
                 version = int(row[0]) if row is not None else 0
 
-                if version in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+                if 0 <= version < SCHEMA_VERSION:
                     await self._migrate_schema(connection, version)
                 elif version != SCHEMA_VERSION:
                     raise SiteStoreError(
@@ -587,6 +591,28 @@ class SiteStore:
                 await connection.execute(
                     "ALTER TABLE delivery_executions "
                     "ADD COLUMN owner_token TEXT",
+                )
+            # 兼容 version 10 及更早的库：增加可空 image_model，只加列不改写
+            # 历史行；已存在列时跳过，保证迁移幂等。
+            async with connection.execute(
+                "PRAGMA table_info(delivery_executions)",
+            ) as cursor:
+                delivery_columns = {
+                    row[1] for row in await cursor.fetchall()
+                }
+            if "image_model" not in delivery_columns:
+                await connection.execute(
+                    "ALTER TABLE delivery_executions "
+                    "ADD COLUMN image_model TEXT",
+                )
+            async with connection.execute(
+                "PRAGMA table_info(delivery_pages)",
+            ) as cursor:
+                page_columns = {row[1] for row in await cursor.fetchall()}
+            if "image_generated" not in page_columns:
+                await connection.execute(
+                    "ALTER TABLE delivery_pages "
+                    "ADD COLUMN image_generated INTEGER",
                 )
             # Older push_tasks tables may lack schedule columns. Inspect the
             # actual table so partially migrated/test fixtures are safe too.
@@ -1689,6 +1715,7 @@ class SiteStore:
         output_format: str,
         umos: tuple[str, ...],
         owner_token: str | None = None,
+        image_model: str | None = None,
     ) -> None:
         async with self._lock:
             connection = self._require_connection()
@@ -1702,15 +1729,15 @@ class SiteStore:
                             id, task_id, task_name, task_revision,
                             profile_id, profile_revision, site_id, site_revision,
                             output_format, owner_token, content_hash,
-                            content_status, failed_sections_json, status,
-                            error_code, created_at, updated_at
+                            content_status, failed_sections_json, image_model,
+                            status, error_code, created_at, updated_at
                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
-                                  NULL, 'preparing', NULL, ?, ?)
+                                  NULL, ?, 'preparing', NULL, ?, ?)
                         """,
                         (
                             execution_id, task_id, task_name, task_revision,
                             profile_id, profile_revision, site_id, site_revision,
-                            output_format, owner_token, now, now,
+                            output_format, owner_token, image_model, now, now,
                         ),
                     )
                 except sqlite3.IntegrityError as exc:
@@ -1854,19 +1881,32 @@ class SiteStore:
         *,
         position: int,
         page_count: int,
+        image_generated: tuple[int | None, ...] | None = None,
     ) -> None:
+        if image_generated is not None:
+            if len(image_generated) != page_count:
+                raise SiteStoreError("投递页生成标记数量不匹配")
+            for value in image_generated:
+                if value not in (0, 1, None):
+                    raise SiteStoreError("投递页生成标记不合法")
         async with self._lock:
             connection = self._require_connection()
 
             async def perform() -> None:
-                for page_index in range(1, page_count + 1):
+                for offset in range(page_count):
+                    page_index = offset + 1
+                    generated = (
+                        image_generated[offset]
+                        if image_generated is not None else None
+                    )
                     await connection.execute(
                         """
                         INSERT INTO delivery_pages (
-                            execution_id, position, page_index, status, error_code
-                       ) VALUES (?, ?, ?, 'pending', NULL)
+                            execution_id, position, page_index, status,
+                            error_code, image_generated
+                       ) VALUES (?, ?, ?, 'pending', NULL, ?)
                         """,
-                        (execution_id, position, page_index),
+                        (execution_id, position, page_index, generated),
                     )
 
             await self._commit_write(
@@ -2322,6 +2362,10 @@ def _row_to_delivery(
         content_hash=row["content_hash"],
         content_status=row["content_status"],
         failed_sections_json=row["failed_sections_json"],
+        image_model=(
+            row["image_model"]
+            if "image_model" in row.keys() else None
+        ),
         status=row["status"], error_code=row["error_code"],
         created_at=row["created_at"], updated_at=row["updated_at"],
         targets=tuple(
@@ -2335,6 +2379,10 @@ def _row_to_delivery(
                 execution_id=r["execution_id"], position=int(r["position"]),
                 page_index=int(r["page_index"]), status=r["status"],
                 error_code=r["error_code"],
+                image_generated=(
+                    r["image_generated"]
+                    if "image_generated" in r.keys() else None
+                ),
             ) for r in page_rows
         ),
     )

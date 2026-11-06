@@ -1555,51 +1555,92 @@ function syncProfileImageButton() {
     state.profileImageLoading ? "正在生成…" : "生成图片";
 }
 
+const PROFILE_IMAGE_STATUS_LABELS = {
+  success: "已生成",
+  empty: "空栏目",
+  failed: "未生成",
+};
+
 function renderProfileImages(data) {
-  if (!data || !Array.isArray(data.pages) || data.pages.length === 0) {
+  if (!data || !Array.isArray(data.images) || data.images.length === 0) {
     throw new Error("图片数据格式异常。");
   }
   elements.profileImagePages.replaceChildren();
-  const total = data.pages.length;
-  for (const page of data.pages) {
+  let generated = 0;
+  let missing = 0;
+  for (const section of data.images) {
     if (
-      !page ||
-      typeof page.png_base64 !== "string" ||
-      !Number.isInteger(page.index) ||
-      !Number.isInteger(page.width) ||
-      !Number.isInteger(page.height)
+      !section ||
+      !Number.isInteger(section.index) ||
+      typeof section.content_type !== "string" ||
+      typeof section.label !== "string" ||
+      !section.label ||
+      !PROFILE_IMAGE_STATUS_LABELS[section.status]
     ) {
-      throw new Error("图片分页数据格式异常。");
+      throw new Error("栏目长图数据格式异常。");
     }
     const figure = document.createElement("figure");
     figure.className = "profile-image-page";
-    const image = document.createElement("img");
-    image.src = `data:image/png;base64,${page.png_base64}`;
-    image.alt = `组合图片第 ${page.index} 页`;
-    image.width = page.width;
-    image.height = page.height;
-    image.loading = "lazy";
+    figure.dataset.status = section.status;
+    const hasImage = section.status !== "failed";
+    if (hasImage) {
+      if (
+        typeof section.png_base64 !== "string" ||
+        !Number.isInteger(section.width) ||
+        !Number.isInteger(section.height)
+      ) {
+        throw new Error("栏目长图数据格式异常。");
+      }
+      const image = document.createElement("img");
+      image.src = "data:image/png;base64," + section.png_base64;
+      image.alt = section.label + "栏目长图";
+      image.width = section.width;
+      image.height = section.height;
+      image.loading = "lazy";
+      figure.append(image);
+      generated += 1;
+    } else {
+      missing += 1;
+    }
     const caption = document.createElement("figcaption");
-    caption.textContent =
-      `第 ${page.index} / ${total} 页 · ${page.width}×${page.height}`;
-    const download = makeButton(
-      `下载第 ${page.index} 页 PNG`,
-      "button button-secondary",
-      () => downloadProfileImagePage(page, data.profile_id),
-      `下载组合图片第 ${page.index} 页`,
-    );
-    figure.append(image, caption, download);
+    if (hasImage) {
+      caption.textContent =
+        section.index + ". " + section.label + " · " +
+        section.width + "×" + section.height + " · " +
+        PROFILE_IMAGE_STATUS_LABELS[section.status];
+    } else {
+      caption.className = "task-disabled";
+      const reason = typeof section.error === "string" && section.error
+        ? section.error
+        : "未生成";
+      caption.textContent =
+        section.index + ". " + section.label + " · 未生成（" + reason + "）";
+    }
+    figure.append(caption);
+    if (hasImage) {
+      const download = makeButton(
+        "下载「" + section.label + "」PNG",
+        "button button-secondary",
+        () => downloadProfileImageSection(section),
+        "下载" + section.label + "栏目长图",
+      );
+      figure.append(download);
+    }
     elements.profileImagePages.append(figure);
   }
-  elements.profileImageState.textContent = `已生成 ${total} 页`;
+  elements.profileImageState.textContent = missing
+    ? "已生成 " + generated + " 张栏目长图，" + missing + " 个栏目未生成"
+    : "已生成 " + generated + " 张栏目长图";
   elements.profileImageState.hidden = false;
-  elements.profileImageHint.textContent = "";
-  elements.profileImageHint.hidden = true;
+  elements.profileImageHint.textContent = missing
+    ? "未生成的栏目没有可用图片；如需完整出图，请减少栏目条数后重新预览再生成。"
+    : "";
+  elements.profileImageHint.hidden = !missing;
 }
 
-function downloadProfileImagePage(page, profileId) {
+function downloadProfileImageSection(section) {
   try {
-    const raw = atob(page.png_base64);
+    const raw = atob(section.png_base64);
     const bytes = new Uint8Array(raw.length);
     for (let index = 0; index < raw.length; index += 1) {
       bytes[index] = raw.charCodeAt(index);
@@ -1608,11 +1649,14 @@ function downloadProfileImagePage(page, profileId) {
         bytes[2] !== 0x4e || bytes[3] !== 0x47) {
       throw new Error("not a png");
     }
-    const safeId = String(profileId || state.profilePreviewId || "profile")
+    const safeId = String(state.profilePreviewId || "profile")
       .replace(/[^A-Za-z0-9_-]/g, "")
       .slice(0, 64) || "profile";
+    const safeType = String(section.content_type || "section")
+      .replace(/[^A-Za-z0-9_-]/g, "")
+      .slice(0, 32) || "section";
     const filename =
-      `60sapi-profile-${safeId}-page-${page.index}.png`;
+      "60sapi-profile-" + safeId + "-" + safeType + "-" + section.index + ".png";
     const blob = new Blob([bytes], { type: "image/png" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -1623,7 +1667,7 @@ function downloadProfileImagePage(page, profileId) {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    elements.profileImageHint.textContent = `已下载 ${filename}。`;
+    elements.profileImageHint.textContent = "已下载 " + filename + "。";
     elements.profileImageHint.hidden = false;
   } catch {
     elements.profileImageHint.textContent = "图片下载失败，请重新生成。";
@@ -3788,8 +3832,174 @@ function deliveryStatusLabel(status) {
   return ({
     preparing: "准备中", running: "运行中", success: "成功",
     partial: "部分成功", failed: "失败", unknown: "结果未知",
-    no_targets: "空名单", stopped: "已停止",
+    no_targets: "空名单", stopped: "已停止", skipped: "未送达",
   })[status] || status;
+}
+
+const DELIVERY_ERROR_LABELS = {
+  section_image_failed: "栏目图片生成失败",
+};
+
+function deliveryErrorLabel(code) {
+  if (!code) {
+    return "";
+  }
+  return DELIVERY_ERROR_LABELS[code] || code;
+}
+
+function deliveryFailedSectionCount(execution) {
+  if (!execution) {
+    return 0;
+  }
+  if (Number.isInteger(execution.failed_section_count)) {
+    return execution.failed_section_count;
+  }
+  return Array.isArray(execution.failed_sections)
+    ? execution.failed_sections.length
+    : 0;
+}
+
+const DELIVERY_IMAGE_UNKNOWN_TEXT = "图片数量未知（记录不完整）";
+
+function deliveryImageModel(execution) {
+  return execution && execution.image_model === "sections" ? "sections" : "unknown";
+}
+
+// 记录数：目标 × 图片的行数，中性表述；旧字段 image_count 保持兼容。
+function deliveryRecordCount(execution) {
+  if (!execution) {
+    return 0;
+  }
+  if (Number.isInteger(execution.image_record_count)) {
+    return execution.image_record_count;
+  }
+  if (Number.isInteger(execution.image_count)) {
+    return execution.image_count;
+  }
+  return 0;
+}
+
+function deliverySkippedRecordCount(execution) {
+  if (!execution || !Number.isInteger(execution.skipped_image_count)) {
+    return 0;
+  }
+  return execution.skipped_image_count;
+}
+
+// 只有 sections 才有栏目（槽位）数与实际生成数；旧记录一律 null，绝不推断。
+function deliverySectionSlotCount(execution) {
+  if (!execution || deliveryImageModel(execution) !== "sections") {
+    return null;
+  }
+  return Number.isInteger(execution.section_slot_count)
+    ? execution.section_slot_count
+    : null;
+}
+
+// 生成数只在「记录完整且所有槽位 image_generated 都确定」时给数字；
+// 槽位的发送状态（never_started/skipped 等）不能反推图片是否存在。
+function deliveryGeneratedImageCount(execution) {
+  if (!execution || deliveryImageModel(execution) !== "sections") {
+    return null;
+  }
+  if (execution.record_complete === false) {
+    return null;
+  }
+  return Number.isInteger(execution.generated_image_count)
+    ? execution.generated_image_count
+    : null;
+}
+
+function deliveryImageCountUnknown(execution) {
+  if (!execution || deliveryImageModel(execution) !== "sections") {
+    return false;
+  }
+  return execution.record_complete === false ||
+    deliveryGeneratedImageCount(execution) === null;
+}
+
+function deliverySkippedReasons(execution) {
+  if (!execution) {
+    return [];
+  }
+  return [
+    [execution.skipped_section_image_failed_count, "因栏目图片生成失败"],
+    [execution.skipped_config_changed_count, "因配置变化"],
+    [execution.skipped_other_count, "因其他或未知原因"],
+  ]
+    .filter(([count]) => Number.isInteger(count) && count > 0)
+    .map(([count, label]) => count + " 条" + label);
+}
+
+// 「栏目没生成图」与「发送记录被跳过」是两件事；原因缺失时只说总数，不臆造原因。
+function deliveryPartialSummary(execution) {
+  const unknown = deliveryImageCountUnknown(execution);
+  const sections = deliveryImageModel(execution) === "sections" && !unknown
+    ? deliveryFailedSectionCount(execution)
+    : 0;
+  const records = deliverySkippedRecordCount(execution);
+  const reasons = deliverySkippedReasons(execution);
+  const parts = [];
+  if (unknown) {
+    parts.push(DELIVERY_IMAGE_UNKNOWN_TEXT);
+  }
+  if (sections > 0) {
+    parts.push(sections + " 个栏目未生成图片");
+  }
+  if (records > 0) {
+    parts.push(reasons.length > 0
+      ? records + " 条发送记录未送达（" + reasons.join("，") + "）"
+      : records + " 条发送记录未送达");
+  }
+  return parts.join("；");
+}
+
+function deliveryExecutionStatusLabel(execution) {
+  const base = deliveryStatusLabel(execution && execution.status);
+  if (execution && execution.status === "partial" && execution.image_partial) {
+    const summary = deliveryPartialSummary(execution);
+    if (summary) {
+      return base + "（" + summary + "）";
+    }
+  }
+  return base;
+}
+
+// 投递记录的一个槽位 = 一个栏目长图（图片输出）或一条逻辑消息（文字/Markdown）。
+function deliverySlotLabel(execution, index) {
+  const unit = execution && execution.output_format === "image" ? "张" : "条";
+  return "第 " + index + " " + unit;
+}
+
+// 分档：sections 才提栏目/槽位；unknown（旧分页记录）只给中性的记录数。
+function deliverySlotCountLabel(execution) {
+  const records = deliveryRecordCount(execution);
+  if (!execution || execution.output_format !== "image") {
+    return records + " 条消息";
+  }
+  if (deliveryImageModel(execution) !== "sections") {
+    return records + " 条图片记录";
+  }
+  const slots = deliverySectionSlotCount(execution);
+  const generated = deliveryGeneratedImageCount(execution);
+  if (deliveryImageCountUnknown(execution) || slots === null || generated === null) {
+    const unknownParts = [DELIVERY_IMAGE_UNKNOWN_TEXT];
+    if (records > 0) {
+      unknownParts.push(records + " 条图片记录");
+    }
+    return unknownParts.join(" · ");
+  }
+  const parts = [];
+  if (generated < slots) {
+    parts.push(slots + " 个栏目（槽位）");
+    parts.push("实际生成 " + generated + " 张图");
+  } else {
+    parts.push(slots + " 张栏目图");
+  }
+  if (records > 0) {
+    parts.push(records + " 条图片记录");
+  }
+  return parts.join(" · ");
 }
 
 function readStoredDeliveryPending() {
@@ -4085,7 +4295,7 @@ function renderDeliveryExecution(execution) {
   elements.deliveryResult.hidden = false;
   elements.deliveryResult.replaceChildren();
   const title = document.createElement("h3");
-  title.textContent = `执行结果：${deliveryStatusLabel(execution.status)}`;
+  title.textContent = `执行结果：${deliveryExecutionStatusLabel(execution)}`;
   const id = document.createElement("p");
   id.textContent = `执行标识：${execution.id}`;
   const content = document.createElement("p");
@@ -4104,11 +4314,16 @@ function renderDeliveryExecution(execution) {
     const umo = document.createElement("code");
     umo.textContent = target.umo;
     const detail = document.createElement("span");
-    const pages = (target.pages || []).map((page) =>
-      `第 ${page.page_index} 页 ${deliveryStatusLabel(page.status)}` +
-      (page.error_code ? `（${page.error_code}）` : "")
-    ).join("；");
-    detail.textContent = `${deliveryStatusLabel(target.status)} · ${pages}`;
+    const images = (target.images || []).map((page) => {
+      const label = typeof page.label === "string" && page.label
+        ? `（${page.label}）`
+        : "";
+      const code = deliveryErrorLabel(page.error_code);
+      return `${deliverySlotLabel(execution, page.image_index)} ` +
+        `${deliveryStatusLabel(page.status)}${label}` +
+        (code ? `（${code}）` : "");
+    }).join("；");
+    detail.textContent = `${deliveryStatusLabel(target.status)} · ${images}`;
     row.append(umo, detail);
     elements.deliveryResult.append(row);
   }
@@ -4288,7 +4503,15 @@ function renderDeliveries(executions, append = false) {
     const id = document.createElement("span");
     id.textContent = `执行：${execution.id}`;
     const counts = document.createElement("span");
-    counts.textContent = `目标 ${execution.target_count} · 页 ${execution.page_count}`;
+    let countsText = `目标 ${execution.target_count} · ` +
+      deliverySlotCountLabel(execution);
+    if (execution.image_partial) {
+      const summary = deliveryPartialSummary(execution);
+      if (summary) {
+        countsText += ` · ${summary}`;
+      }
+    }
+    counts.textContent = countsText;
     const time = document.createElement("span");
     time.textContent = execution.created_at;
     meta.append(id, counts, time);

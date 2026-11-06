@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import tempfile
 import unittest
 from contextlib import closing
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 from core.delivery import (
@@ -22,6 +24,14 @@ from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 
 
+PNG_PREFIX = b"\x89PNG\r\n\x1a\n"
+
+
+def fake_png(tag: bytes) -> bytes:
+    """测试夹具的最小合法 PNG 前缀；渲染器真实输出由图片线提供。"""
+    return PNG_PREFIX + tag
+
+
 def item():
     return {"content_type": "daily_news", "params": {}, "limit": None}
 
@@ -34,9 +44,15 @@ class StubApi:
         self.preview_code = "all_sections_failed"
         self.text = "共享正文"
         self.markdown = "# 共享正文"
-        self.image_pages = [b"page-one", b"page-two"]
+        self.image_sections = [
+            {"index": 1, "content_type": "daily_news", "label": "每日新闻",
+             "status": "success", "png": fake_png(b"image-one")},
+            {"index": 2, "content_type": "zhihu_hot", "label": "知乎热榜",
+             "status": "success", "png": fake_png(b"image-two")},
+        ]
         self.image_status = 200
         self.partial = False
+        self.preview_failed = [{"label": "失败栏目"}]
 
     async def preview_profile(self, payload, *, owner=None):
         self.preview_calls += 1
@@ -48,7 +64,9 @@ class StubApi:
         return ProfileApiResult(200, {"status": "ok", "data": {
             "status": "partial" if self.partial else "complete",
             "outputs": {"text": self.text, "markdown": self.markdown},
-            "failed_sections": ([{"label": "失败栏目"}] if self.partial else []),
+            "failed_sections": (
+                list(self.preview_failed) if self.partial else []
+            ),
             "image_snapshot": {"id": "snap-1"},
         }})
 
@@ -58,12 +76,31 @@ class StubApi:
             return ProfileApiResult(self.image_status, {
                 "status": "error", "data": {"code": "image_render_failed"},
             })
+        images = []
+        failed_labels = []
+        for section in self.image_sections:
+            item = {
+                "index": section["index"],
+                "content_type": section["content_type"],
+                "label": section["label"],
+                "status": section["status"],
+                "width": 900,
+                "height": 1200,
+            }
+            if section["status"] == "failed":
+                item["error"] = section.get("error", "image_limit_exceeded")
+                failed_labels.append(section["label"])
+            else:
+                png = section["png"]
+                encoded = section.get("png_base64")
+                if encoded is None:
+                    encoded = base64.b64encode(png).decode()
+                item["png_base64"] = encoded
+            images.append(item)
         return ProfileApiResult(200, {"status": "ok", "data": {
-            "page_count": len(self.image_pages),
-            "pages": [
-                {"index": i, "png_base64": base64.b64encode(png).decode()}
-                for i, png in enumerate(self.image_pages, 1)
-            ],
+            "images": images,
+            "failed_sections": failed_labels,
+            "snapshot_id": "snap-1",
         }})
 
 
@@ -161,7 +198,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(result.pages), 2)
 
-    async def test_image_pages_shared_and_ordered(self) -> None:
+    async def test_section_images_shared_and_ordered(self) -> None:
         task = await self._task([
             "aiocqhttp:GroupMessage:g:1",
             "aiocqhttp:FriendMessage:u1",
@@ -174,10 +211,10 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [(m.umo, m.page_index, m.image_png) for m in self.sender.calls],
             [
-                ("aiocqhttp:GroupMessage:g:1", 1, b"page-one"),
-                ("aiocqhttp:GroupMessage:g:1", 2, b"page-two"),
-                ("aiocqhttp:FriendMessage:u1", 1, b"page-one"),
-                ("aiocqhttp:FriendMessage:u1", 2, b"page-two"),
+                ("aiocqhttp:GroupMessage:g:1", 1, fake_png(b"image-one")),
+                ("aiocqhttp:GroupMessage:g:1", 2, fake_png(b"image-two")),
+                ("aiocqhttp:FriendMessage:u1", 1, fake_png(b"image-one")),
+                ("aiocqhttp:FriendMessage:u1", 2, fake_png(b"image-two")),
             ],
         )
         self.assertEqual(len(result.pages), 4)
@@ -359,13 +396,347 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(image_result.error_code, "image_render_failed")
         self.assertEqual(len(self.sender.calls), 0)
 
-    async def test_second_page_explicit_failure_is_partial(self) -> None:
+    async def test_second_section_image_failure_is_partial(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
         self.sender.modes = ["success", "failed"]
-        result = await self.service.execute(task.id, "page-fail-1")
+        result = await self.service.execute(task.id, "image-fail-2")
         self.assertEqual(result.status, "partial")
         self.assertEqual(result.targets[0].status, "failed")
         self.assertEqual([p.status for p in result.pages], ["success", "failed"])
+
+    async def test_failed_section_image_is_skipped_but_others_sent(self) -> None:
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "section-failed-1")
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.error_code, "section_image_failed")
+        self.assertEqual(result.content_status, "partial")
+        self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            result.targets[0].error_code, "section_image_failed",
+        )
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].page_index, 1)
+        self.assertEqual(
+            self.sender.calls[0].image_png, fake_png(b"image-one"),
+        )
+        statuses = {p.page_index: p.status for p in result.pages}
+        self.assertEqual(statuses, {1: "success", 2: "skipped"})
+        codes = {p.page_index: p.error_code for p in result.pages}
+        self.assertEqual(codes[2], "section_image_failed")
+        self.assertIn("知乎热榜", result.failed_sections_json or "")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(
+            [(entry["label"], entry["image_index"]) for entry in failed],
+            [("知乎热榜", 2)],
+        )
+
+        repeated = await self.service.execute(task.id, "section-failed-1")
+        self.assertEqual(repeated.status, "partial")
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_first_section_image_failure_marks_partial(self) -> None:
+        self.api.image_sections[0]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "first-image-failed")
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.error_code, "section_image_failed")
+        self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            [p.status for p in result.pages], ["skipped", "success"],
+        )
+        self.assertEqual(
+            [p.error_code for p in result.pages],
+            ["section_image_failed", None],
+        )
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].page_index, 2)
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed[0]["label"], "每日新闻")
+        self.assertEqual(failed[0]["image_index"], 1)
+
+    async def test_middle_section_image_failure_marks_partial(self) -> None:
+        self.api.image_sections.append({
+            "index": 3, "content_type": "bilibili_hot",
+            "label": "Bilibili 热搜", "status": "success",
+            "png": fake_png(b"image-three"),
+        })
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "middle-image-failed")
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.error_code, "section_image_failed")
+        self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            [p.status for p in result.pages],
+            ["success", "skipped", "success"],
+        )
+        self.assertEqual(
+            [call.page_index for call in self.sender.calls], [1, 3],
+        )
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(
+            [(entry["label"], entry["image_index"]) for entry in failed],
+            [("知乎热榜", 2)],
+        )
+
+    async def test_multi_target_image_failure_marks_each_target_partial(
+        self,
+    ) -> None:
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task([
+            "aiocqhttp:GroupMessage:g1",
+            "aiocqhttp:FriendMessage:u1",
+        ], output="image")
+        result = await self.service.execute(task.id, "multi-image-failed")
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(
+            [target.status for target in result.targets],
+            ["partial", "partial"],
+        )
+        self.assertEqual(
+            [target.error_code for target in result.targets],
+            ["section_image_failed", "section_image_failed"],
+        )
+        self.assertEqual(len(self.sender.calls), 2)
+        self.assertEqual(
+            [(p.position, p.page_index, p.status) for p in result.pages],
+            [
+                (0, 1, "success"), (0, 2, "skipped"),
+                (1, 1, "success"), (1, 2, "skipped"),
+            ],
+        )
+
+    async def test_send_failure_and_image_failure_stay_distinguishable(
+        self,
+    ) -> None:
+        self.api.image_sections[1]["status"] = "failed"
+        self.sender.modes = ["failed"]
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "send-and-image-failed")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.targets[0].status, "failed")
+        codes = {
+            p.page_index: (p.status, p.error_code) for p in result.pages
+        }
+        self.assertEqual(codes[1], ("failed", "send_failed"))
+        self.assertEqual(codes[2], ("skipped", "section_image_failed"))
+        self.assertIn("知乎热榜", result.failed_sections_json or "")
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_unknown_send_and_image_failure_stays_unknown(self) -> None:
+        self.api.image_sections[1]["status"] = "failed"
+        self.sender.modes = ["unknown"]
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "unknown-and-image-failed")
+        self.assertEqual(result.status, "unknown")
+        self.assertEqual(result.targets[0].status, "unknown")
+        codes = {
+            p.page_index: (p.status, p.error_code) for p in result.pages
+        }
+        self.assertEqual(codes[1], ("unknown", "send_unknown"))
+        self.assertEqual(codes[2], ("skipped", "section_image_failed"))
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_mixed_partial_and_failed_targets_keep_code_generic(
+        self,
+    ) -> None:
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task([
+            "aiocqhttp:GroupMessage:g1",
+            "aiocqhttp:FriendMessage:u1",
+        ], output="image")
+        self.sender.modes = ["success", "failed"]
+        result = await self.service.execute(task.id, "mixed-partial-failed")
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(
+            [target.status for target in result.targets],
+            ["partial", "failed"],
+        )
+        self.assertIsNone(result.error_code)
+
+    async def test_config_change_with_image_failure_is_not_config_only(
+        self,
+    ) -> None:
+        from core.tasks import TaskUpdate
+
+        self.api.image_sections.append({
+            "index": 3, "content_type": "bilibili_hot",
+            "label": "Bilibili 热搜", "status": "success",
+            "png": fake_png(b"image-three"),
+        })
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+
+        async def change_task(message):
+            if message.page_index == 1:
+                await self.tasks.update_task(
+                    task.id,
+                    TaskUpdate(
+                        name="栏目图变更", profile_id=task.profile_id,
+                        output_format=task.output_format,
+                        umos=list(task.umos),
+                        expected_revision=task.revision,
+                    ),
+                )
+
+        self.sender.hook = change_task
+        result = await self.service.execute(task.id, "config-image-failed")
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            [(p.page_index, p.status, p.error_code) for p in result.pages],
+            [
+                (1, "success", None),
+                (2, "skipped", "section_image_failed"),
+                (3, "skipped", "config_changed"),
+            ],
+        )
+        self.assertEqual(len(self.sender.calls), 1)
+        # 图片失败与配置变化并存时，执行级错误码归因于实际终止发送的配置变化，
+        # 不能只写成 section_image_failed。
+        self.assertEqual(result.error_code, "config_changed")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
+
+    async def test_config_change_before_first_image_marks_config_changed(
+        self,
+    ) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        with patch.object(
+            self.service, "_config_unchanged",
+            AsyncMock(return_value=False),
+        ):
+            result = await self.service.execute(
+                task.id, "config-before-first",
+            )
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.error_code, "config_changed")
+        self.assertEqual(result.targets[0].status, "skipped")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
+        self.assertEqual(
+            [(p.page_index, p.status, p.error_code) for p in result.pages],
+            [
+                (1, "skipped", "config_changed"),
+                (2, "skipped", "config_changed"),
+            ],
+        )
+        self.assertEqual(len(self.sender.calls), 0)
+
+    async def test_config_change_at_final_check_after_first_image(
+        self,
+    ) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        checks = AsyncMock(side_effect=[True, True, True, False])
+        with patch.object(self.service, "_config_unchanged", checks):
+            result = await self.service.execute(
+                task.id, "config-final-check",
+            )
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.error_code, "config_changed")
+        self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
+        self.assertEqual(
+            [(p.page_index, p.status, p.error_code) for p in result.pages],
+            [(1, "success", None), (2, "skipped", "config_changed")],
+        )
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_preview_failure_matches_image_index_and_drops_message(
+        self,
+    ) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "知乎热榜",
+            "content_type": "zhihu_hot",
+            "message": "上游敏感响应正文",
+        }]
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-image-merge")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [{
+            "label": "知乎热榜",
+            "reason": "image_failed",
+            "image_index": 2,
+        }])
+        self.assertNotIn("上游敏感响应正文", result.failed_sections_json or "")
+        self.assertNotIn("message", result.failed_sections_json or "")
+
+    async def test_preview_failure_reason_is_preserved_with_index(self) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "每日新闻",
+            "content_type": "daily_news",
+            "code": "upstream_timeout",
+            "message": "上游敏感正文",
+        }]
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-reason")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [{
+            "label": "每日新闻",
+            "reason": "upstream_timeout",
+            "image_index": 1,
+        }])
+        self.assertNotIn("上游敏感正文", result.failed_sections_json or "")
+
+    async def test_preview_failure_without_match_keeps_no_index(self) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "不在图里的栏目",
+            "content_type": "unknown_type",
+            "message": "secret",
+        }]
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-no-match")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [{"label": "不在图里的栏目"}])
+        self.assertNotIn("secret", result.failed_sections_json or "")
+
+    async def test_preview_and_image_failures_merge_with_indexes(self) -> None:
+        self.api.partial = True
+        self.api.preview_failed = [{
+            "label": "每日新闻",
+            "content_type": "daily_news",
+            "message": "上游错误",
+        }]
+        self.api.image_sections[1]["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "preview-image-both")
+        failed = json.loads(result.failed_sections_json or "[]")
+        self.assertEqual(failed, [
+            {"label": "每日新闻", "image_index": 1},
+            {
+                "label": "知乎热榜",
+                "reason": "image_failed",
+                "image_index": 2,
+            },
+        ])
+        self.assertNotIn("上游错误", result.failed_sections_json or "")
+
+    async def test_all_section_images_failed_never_calls_sender(self) -> None:
+        for section in self.api.image_sections:
+            section["status"] = "failed"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "all-image-failed-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "image_failed")
+        self.assertEqual(self.api.image_calls, 1)
+        self.assertEqual(len(self.sender.calls), 0)
+
+    async def test_invalid_section_image_payload_never_calls_sender(self) -> None:
+        self.api.image_sections[0]["png_base64"] = "bm90LWEtcG5n"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "image-invalid-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "image_invalid")
+        self.assertEqual(len(self.sender.calls), 0)
 
     async def test_close_cancels_own_execution_but_not_unrelated_task(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
@@ -498,6 +869,138 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
         self.assertTrue(task.id)
 
+    async def test_v10_database_adds_image_columns_without_rewriting_history(
+        self,
+    ) -> None:
+        task = await self._task(["aiocqhttp:GroupMessage:g1"])
+        result = await self.service.execute(task.id, "legacy-image-model")
+        self.assertEqual(result.status, "success")
+        execution_id = "legacy-image-model"
+        await self.sites.close()
+        import sqlite3
+        columns_sql = (
+            "id, task_id, task_name, task_revision, profile_id, "
+            "profile_revision, site_id, site_revision, output_format, "
+            "content_hash, content_status, failed_sections_json, status, "
+            "error_code, created_at, updated_at"
+        )
+        page_columns_sql = (
+            "execution_id, position, page_index, status, error_code"
+        )
+        with closing(sqlite3.connect(self.db)) as raw:
+            columns = [
+                row[1] for row in raw.execute(
+                    "PRAGMA table_info(delivery_executions)",
+                )
+            ]
+            self.assertIn("image_model", columns)
+            page_columns = [
+                row[1] for row in raw.execute(
+                    "PRAGMA table_info(delivery_pages)",
+                )
+            ]
+            self.assertIn("image_generated", page_columns)
+            before = raw.execute(
+                f"SELECT {columns_sql} FROM delivery_executions WHERE id = ?",
+                (execution_id,),
+            ).fetchone()
+            before_page = raw.execute(
+                f"SELECT {page_columns_sql} FROM delivery_pages "
+                "WHERE execution_id = ? ORDER BY position, page_index",
+                (execution_id,),
+            ).fetchone()
+            raw.execute(
+                "ALTER TABLE delivery_executions DROP COLUMN image_model",
+            )
+            raw.execute(
+                "ALTER TABLE delivery_pages DROP COLUMN image_generated",
+            )
+            raw.execute("PRAGMA user_version = 10")
+            raw.commit()
+
+        reopened = SiteService(self.db)
+        await reopened.open()
+        try:
+            with closing(sqlite3.connect(self.db)) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+                columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_executions)",
+                    )
+                ]
+                self.assertEqual(columns.count("image_model"), 1)
+                page_columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_pages)",
+                    )
+                ]
+                self.assertEqual(page_columns.count("image_generated"), 1)
+                after = check.execute(
+                    f"SELECT {columns_sql}, image_model "
+                    "FROM delivery_executions WHERE id = ?",
+                    (execution_id,),
+                ).fetchone()
+                # 只新增可空列，历史行的既有列一个都不改。
+                self.assertEqual(after[:-1], before)
+                self.assertIsNone(after[-1])
+                after_page = check.execute(
+                    f"SELECT {page_columns_sql}, image_generated "
+                    "FROM delivery_pages WHERE execution_id = ? "
+                    "ORDER BY position, page_index",
+                    (execution_id,),
+                ).fetchone()
+                self.assertEqual(after_page[:-1], before_page)
+                self.assertIsNone(after_page[-1])
+            stored = await reopened.store.get_delivery_execution(
+                execution_id,
+            )
+            self.assertIsNone(stored.image_model)
+            self.assertEqual(stored.status, "success")
+        finally:
+            await reopened.close()
+
+        # 再次打开证明迁移幂等：版本不变、列不重复、历史行仍未被改写。
+        reopened_again = SiteService(self.db)
+        await reopened_again.open()
+        try:
+            with closing(sqlite3.connect(self.db)) as check:
+                self.assertEqual(
+                    check.execute("PRAGMA user_version").fetchone()[0],
+                    SCHEMA_VERSION,
+                )
+                columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_executions)",
+                    )
+                ]
+                self.assertEqual(columns.count("image_model"), 1)
+                page_columns = [
+                    row[1] for row in check.execute(
+                        "PRAGMA table_info(delivery_pages)",
+                    )
+                ]
+                self.assertEqual(page_columns.count("image_generated"), 1)
+                after = check.execute(
+                    f"SELECT {columns_sql}, image_model "
+                    "FROM delivery_executions WHERE id = ?",
+                    (execution_id,),
+                ).fetchone()
+                self.assertEqual(after[:-1], before)
+                self.assertIsNone(after[-1])
+                after_page = check.execute(
+                    f"SELECT {page_columns_sql}, image_generated "
+                    "FROM delivery_pages WHERE execution_id = ? "
+                    "ORDER BY position, page_index",
+                    (execution_id,),
+                ).fetchone()
+                self.assertEqual(after_page[:-1], before_page)
+                self.assertIsNone(after_page[-1])
+        finally:
+            await reopened_again.close()
+
     async def test_v4_migration_failure_rolls_back(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
         await self.sites.close()
@@ -534,7 +1037,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         finally:
             raw.close()
 
-    async def test_config_change_between_image_pages_marks_target_partial(self) -> None:
+    async def test_config_change_between_section_images_marks_target_partial(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
 
         async def change_task(message):
@@ -543,7 +1046,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 await self.tasks.update_task(
                     task.id,
                     TaskUpdate(
-                        name="页面变更", profile_id=task.profile_id,
+                        name="栏目图变更", profile_id=task.profile_id,
                         output_format=task.output_format, umos=list(task.umos),
                         expected_revision=task.revision,
                     ),
@@ -552,8 +1055,15 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.sender.hook = change_task
         result = await self.service.execute(task.id, "page-change-1")
         self.assertEqual(result.status, "partial")
+        self.assertEqual(result.error_code, "config_changed")
         self.assertEqual(result.targets[0].status, "partial")
+        self.assertEqual(
+            result.targets[0].error_code, "config_changed",
+        )
         self.assertEqual([p.status for p in result.pages], ["success", "skipped"])
+        self.assertEqual(
+            [p.error_code for p in result.pages], [None, "config_changed"],
+        )
         self.assertEqual(len(self.sender.calls), 1)
 
     async def test_history_survives_task_deletion(self) -> None:

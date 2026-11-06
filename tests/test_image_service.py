@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 from core.image_service import (
     ImageQueueTimeoutError,
+    ImageRenderFailedError,
     ImageServiceClosedError,
+    ImageServiceError,
     ImageTimeoutError,
     ProfileImageService,
 )
@@ -33,7 +35,7 @@ class BlockingRenderer:
     def __init__(self, **_kwargs) -> None:
         pass
 
-    def render(self, _data, *, created_at="", cancel_event=None):
+    def render(self, _data, *, limits=None, created_at="", cancel_event=None):
         state = type(self).state
         with state.lock:
             state.started_count += 1
@@ -49,7 +51,7 @@ class BlockingRenderer:
                 ):
                     raise ImageRenderCancelled("cancelled")
                 time.sleep(0.005)
-            return []
+            return ()
         finally:
             with state.lock:
                 state.active -= 1
@@ -148,7 +150,7 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 state.release.set()
                 await wait_for(lambda: service.active_renders == 0)
                 ok = await asyncio.wait_for(service.render({}), 2)
-                self.assertEqual(ok, [])
+                self.assertEqual(ok, ())
         finally:
             state.release.set()
             await service.close()
@@ -172,7 +174,7 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
                     await waiting
                 state.release.set()
                 await wait_for(lambda: service.active_renders == 0)
-                self.assertEqual(await service.render({}), [])
+                self.assertEqual(await service.render({}), ())
                 await running
         finally:
             state.release.set()
@@ -214,8 +216,8 @@ class ImmediateRenderer:
     def __init__(self, **_kwargs) -> None:
         pass
 
-    def render(self, _data, *, created_at="", cancel_event=None):
-        return []
+    def render(self, _data, *, limits=None, created_at="", cancel_event=None):
+        return ()
 
 
 class AdmissionCancellationTest(unittest.IsolatedAsyncioTestCase):
@@ -255,7 +257,7 @@ class AdmissionCancellationTest(unittest.IsolatedAsyncioTestCase):
             await self._run_cancel_during_cleanup(service)
             self.assertEqual(service._admission._value, 1)
             with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
-                self.assertEqual(await service.render({}), [])
+                self.assertEqual(await service.render({}), ())
         finally:
             await service.close()
 
@@ -293,7 +295,7 @@ class AdmissionCancellationTest(unittest.IsolatedAsyncioTestCase):
             await self._run_cancel_during_cleanup(service, second_cancel=True)
             self.assertEqual(service._admission._value, 1)
             with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
-                self.assertEqual(await service.render({}), [])
+                self.assertEqual(await service.render({}), ())
         finally:
             await service.close()
 
@@ -310,7 +312,7 @@ class AdmissionCancellationTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(service._admission._value, initial_capacity)
             with patch("core.image_service.ProfileImageRenderer", ImmediateRenderer):
                 for _ in range(3):
-                    self.assertEqual(await service.render({}), [])
+                    self.assertEqual(await service.render({}), ())
             await wait_until(
                 lambda: (
                     service.active_renders == 0
@@ -347,3 +349,90 @@ class AdmissionCancellationTest(unittest.IsolatedAsyncioTestCase):
                     await task
                 await asyncio.wait_for(close_task, 2)
         self.assertFalse(service.is_open)
+
+
+class FakeSectionImage:
+    """测试用的栏目长图替身：与渲染器冻结的 SectionImage 同形。"""
+
+    def __init__(self, index, content_type, label, status, png=None, error=None):
+        self.index = index
+        self.content_type = content_type
+        self.label = label
+        self.status = status
+        self.width = 900
+        self.height = 640
+        self.png = png
+        self.error = error
+
+
+class FrozenRendererContractTest(unittest.IsolatedAsyncioTestCase):
+    """渲染器接口已冻结为 render(data, *, limits)。"""
+
+    async def test_render_passes_data_limits_time_and_cancel_event(self) -> None:
+        received = {}
+
+        class RecordingRenderer:
+            def __init__(self, **kwargs) -> None:
+                received['font_path'] = kwargs.get('font_path')
+
+            def render(self, data, *, limits, created_at='', cancel_event=None):
+                received['data'] = data
+                received['limits'] = limits
+                received['created_at'] = created_at
+                received['cancel_event'] = cancel_event
+                return (
+                    FakeSectionImage(1, 'daily_news', '每日新闻', 'success', png=b'a'),
+                    FakeSectionImage(2, 'zhihu_hot', '知乎热榜', 'failed', error='too_tall'),
+                )
+
+        service = ProfileImageService(max_concurrent_renders=1)
+        try:
+            with patch('core.image_service.ProfileImageRenderer', RecordingRenderer):
+                result = await service.render(
+                    {'profile_name': 'p'},
+                    created_at='2026-11-05T00:00:00+00:00',
+                )
+        finally:
+            await service.close()
+        self.assertEqual(received['data'], {'profile_name': 'p'})
+        self.assertIs(received['limits'], service._limits)
+        self.assertEqual(received['created_at'], '2026-11-05T00:00:00+00:00')
+        self.assertTrue(callable(received['cancel_event'].is_set))
+        self.assertIsInstance(result, tuple)
+        self.assertEqual([item.index for item in result], [1, 2])
+        self.assertEqual(result[1].status, 'failed')
+
+    async def test_list_result_is_normalised_to_tuple(self) -> None:
+        class ListRenderer:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def render(self, _data, *, limits, created_at='', cancel_event=None):
+                return [
+                    FakeSectionImage(1, 'daily_news', '每日新闻', 'empty', png=b'a'),
+                ]
+
+        service = ProfileImageService(max_concurrent_renders=1)
+        try:
+            with patch('core.image_service.ProfileImageRenderer', ListRenderer):
+                result = await service.render({})
+        finally:
+            await service.close()
+        self.assertIsInstance(result, tuple)
+        self.assertEqual(len(result), 1)
+
+    async def test_invalid_result_shape_raises_render_failed(self) -> None:
+        class BadRenderer:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def render(self, _data, *, limits, created_at='', cancel_event=None):
+                return 'not-a-sequence'
+
+        service = ProfileImageService(max_concurrent_renders=1)
+        try:
+            with patch('core.image_service.ProfileImageRenderer', BadRenderer):
+                with self.assertRaises(ImageServiceError):
+                    await service.render({})
+        finally:
+            await service.close()

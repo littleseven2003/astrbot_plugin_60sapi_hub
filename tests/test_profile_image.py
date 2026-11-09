@@ -74,7 +74,7 @@ def same_color(a, b, tol: int = 3) -> bool:
 
 
 def is_ink(color) -> bool:
-    """把深色文字像素与浅蓝底、白底和浅色分隔线区分开。"""
+    """把深色文字像素与白底、浅色分隔线和浅灰页面底色区分开。"""
     return max(color) < 210
 
 
@@ -259,10 +259,22 @@ class ProfileImageRendererTest(unittest.TestCase):
             "每日新闻",
             [item("新闻一")],
             content_date="2026-10-26",
+            displayed_count=1,
+            total_item_count=1,
         )
-        meta = self.renderer._meta_text(daily, "daily_news")
-        self.assertIn("内容日期：2026 年 10 月 26 日", meta)
-        self.assertIn("显示 1 条", meta)
+        self.assertIn(
+            "内容日期 2026 年 10 月 26 日",
+            image_module._content_date_text(daily, "daily_news"),
+        )
+        self.assertEqual(image_module._count_text(daily), "1 条")
+        header_text = text_of(
+            self.renderer._header_lines(
+                daily, "每日新闻", "daily_news", self.renderer.limits.width,
+            ),
+        )
+        self.assertIn("每日新闻", header_text)
+        self.assertIn("1 条", header_text)
+        self.assertIn("内容日期 2026 年 10 月 26 日", header_text)
 
         zhihu = section(
             "zhihu_hot",
@@ -451,8 +463,8 @@ class ProfileImageRendererTest(unittest.TestCase):
         self.assertEqual(images[1].error, "total_bytes_exceeded")
         self.assertIsNone(images[1].png)
 
-    def test_header_band_keeps_clear_gap_above_first_item(self) -> None:
-        """标题区浅蓝底的平直下边缘必须与正文首行留出间距，不能压字。"""
+    def test_header_rule_keeps_clear_gap_above_first_item(self) -> None:
+        """标题分隔线必须与正文首行留出间距，不能压字或贴线。"""
         image = self.renderer.render(
             profile([section("daily_news", "每日新闻", [item("第一条新闻")])]),
         )[0]
@@ -460,22 +472,25 @@ class ProfileImageRendererTest(unittest.TestCase):
         with Image.open(io.BytesIO(image.png)).convert("RGB") as opened:
             width, height = opened.size
             pixels = opened.load()
-            band_bottom = 0
-            for y in range(height // 2):
-                if same_color(pixels[width // 2, y], image_module._HEADER_BG):
-                    band_bottom = y
+            rule_y = None
+            for y in range(1, height // 2):
+                if (
+                    same_color(pixels[width // 2, y], image_module._BORDER)
+                    and same_color(pixels[60, y], image_module._BORDER)
+                ):
+                    rule_y = y
             ink_top = None
-            for y in range(band_bottom + 1, height):
+            for y in range((rule_y or 0) + 1, height):
                 if any(
                     is_ink(pixels[x, y])
                     for x in range(60, width - 60, 3)
                 ):
                     ink_top = y
                     break
-        self.assertGreater(band_bottom, 0)
+        self.assertIsNotNone(rule_y)
         self.assertIsNotNone(ink_top)
-        gap = ink_top - band_bottom
-        self.assertGreaterEqual(gap, 20)
+        gap = ink_top - (rule_y or 0)
+        self.assertGreaterEqual(gap, 14)
         self.assertLessEqual(gap, 40)
 
     def test_mixed_statuses_are_distinguishable_in_one_render(self) -> None:
@@ -704,8 +719,19 @@ class ProfileImageRendererTest(unittest.TestCase):
             image_module._format_content_date("2026-13-40", {}),
             "2026-13-40",
         )
-        missing = self.renderer._meta_text(section("daily_news", "每日新闻", []), "daily_news")
-        self.assertNotIn("内容日期", missing)
+        missing = image_module._content_date_text(
+            section("daily_news", "每日新闻", []), "daily_news",
+        )
+        self.assertEqual(missing, "")
+        unknown = image_module._content_date_text(
+            section("daily_news", "每日新闻", [], date_is_unknown=True),
+            "daily_news",
+        )
+        self.assertEqual(unknown, "内容日期 未知")
+        hot_without_date = image_module._content_date_text(
+            section("douyin_hot", "抖音热搜", []), "douyin_hot",
+        )
+        self.assertEqual(hot_without_date, "")
 
     def test_footer_uses_two_columns_without_overlap(self) -> None:
         target = section(
@@ -737,7 +763,7 @@ class ProfileImageRendererTest(unittest.TestCase):
             if part.right is not None
         ]
         self.assertGreaterEqual(len(right_parts), 3)
-        font = self.renderer._font(15)
+        font = self.renderer._font(image_module._FOOTER_SIZE)
         for part in right_parts:
             text_width = font.getlength(part.text)
             start = content_width - text_width
@@ -773,7 +799,8 @@ class ProfileImageRendererTest(unittest.TestCase):
             if "热度" in part.text
         ]
         self.assertEqual(len(hot_parts), 1)
-        self.assertEqual(hot_parts[0].color, image_module._MUTED)
+        self.assertEqual(hot_parts[0].color, image_module._HEAT)
+        self.assertIsNotNone(hot_parts[0].right)
         index_parts = [
             part
             for line in lines
@@ -790,6 +817,7 @@ class ProfileImageRendererTest(unittest.TestCase):
         ]
         self.assertEqual(len(title_parts), 1)
         self.assertEqual(title_parts[0].color, image_module._INK)
+        self.assertFalse(title_parts[0].bold)
 
     def test_default_limits_match_frozen_contract(self) -> None:
         limits = ImageRenderLimits()
@@ -799,6 +827,288 @@ class ProfileImageRendererTest(unittest.TestCase):
         self.assertEqual(limits.max_total_bytes, 8 * 1024 * 1024)
         self.assertEqual(limits.max_sections, 5)
         self.assertEqual(self.renderer.limits, limits)
+
+    def test_white_card_palette_matches_poster_spec(self) -> None:
+        """白底卡片、1px 外框、圆角外页面底色、顶部莓红强调条。"""
+        image = self.renderer.render(
+            profile([section("daily_news", "每日新闻", [item("新闻一")])]),
+        )[0]
+        assert image.png is not None
+        with Image.open(io.BytesIO(image.png)).convert("RGB") as opened:
+            width, height = opened.size
+            pixels = opened.load()
+            self.assertEqual(pixels[0, 0], image_module._PAGE_BG)
+            self.assertEqual(pixels[0, height // 2], image_module._BORDER)
+            self.assertEqual(pixels[20, 20], image_module._WHITE)
+            self.assertEqual(pixels[60, 3], image_module._ACCENT)
+            self.assertEqual(pixels[width // 2, 120], image_module._WHITE)
+
+    def test_row_rhythm_is_compact_and_uniform(self) -> None:
+        """单行条目固定 57px（10 上留白 + 36 行高 + 10 下留白 + 1 分隔线）。"""
+        row_height = (
+            image_module._TITLE_LEADING
+            + 2 * image_module._ROW_PAD_Y
+            + 1
+        )
+        self.assertEqual(row_height, 57)
+        one = self.renderer.render(
+            profile([section("daily_news", "每日新闻", [item("第一条")])]),
+        )[0]
+        two = self.renderer.render(
+            profile([
+                section("daily_news", "每日新闻", [item("第一条"), item("第二条")]),
+            ]),
+        )[0]
+        self.assertEqual(two.height - one.height, row_height)
+        hot20 = self.renderer.render(
+            profile([
+                section(
+                    "bilibili_hot", "Bilibili 热榜",
+                    [item(f"热点{index}", hot_value=index) for index in range(1, 21)],
+                ),
+            ]),
+        )[0]
+        hot50 = self.renderer.render(
+            profile([
+                section(
+                    "bilibili_hot", "Bilibili 热榜",
+                    [item(f"热点{index}", hot_value=index) for index in range(1, 51)],
+                ),
+            ]),
+        )[0]
+        self.assertEqual(hot50.height - hot20.height, 30 * row_height)
+
+    def test_hot_value_sits_inline_when_it_fits(self) -> None:
+        data = section(
+            "douyin_hot", "抖音热搜", [item("抖音热点", hot_value=12345)],
+        )
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(image_module._items(data), width)
+        first = lines[0]
+        self.assertEqual(len(first.parts), 3)
+        number, title, heat = first.parts
+        content_width = self.renderer._content_width(width)
+        self.assertIsNotNone(heat.right)
+        self.assertEqual(heat.right, content_width)
+        self.assertEqual(heat.size, image_module._HEAT_SIZE)
+        self.assertFalse(title.bold)
+        title_end = title.x + self.renderer._text_width(title.text, title.size)
+        heat_start = content_width - self.renderer._text_width(
+            heat.text, heat.size,
+        )
+        self.assertLessEqual(title_end + image_module._HEAT_GAP, heat_start + 1)
+        self.assertEqual(
+            [part.text for part in first.parts],
+            ["01", "抖音热点", "热度：12345"],
+        )
+
+    def test_long_hot_value_moves_below_the_title(self) -> None:
+        long_hot = "热度：1.2 亿（较昨日上升 3 位，来自站内实时榜单）"
+        data = section(
+            "bilibili_hot", "Bilibili 热榜",
+            [
+                item("标题", hot_value_desc=long_hot),
+                item("第二条", hot_value=1),
+            ],
+        )
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(image_module._items(data), width)
+        first = lines[0]
+        self.assertEqual([part.text for part in first.parts], ["01", "标题"])
+        hot_lines = [
+            line for line in lines
+            if any(part.text == long_hot for part in line.parts)
+        ]
+        self.assertEqual(len(hot_lines), 1)
+        hot_part = hot_lines[0].parts[0]
+        self.assertIsNotNone(hot_part.right)
+        self.assertEqual(hot_part.right, self.renderer._content_width(width))
+        self.assertGreater(lines.index(hot_lines[0]), 0)
+        self.assertNotIn(
+            long_hot,
+            [part.text for part in first.parts],
+        )
+
+    def test_hot_value_wider_than_content_wraps_without_loss(self) -> None:
+        huge = "热度：" + "超长热度描述" * 30
+        data = section(
+            "douyin_hot", "抖音热搜", [item("热点", hot_value_desc=huge)],
+        )
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(image_module._items(data), width)
+        hot_parts = [
+            part for line in lines for part in line.parts
+            if part.size == image_module._HEAT_SIZE
+        ]
+        self.assertGreater(len(hot_parts), 1)
+        self.assertEqual("".join(part.text for part in hot_parts), huge)
+        limit = self.renderer._content_width(width) - (
+            image_module._NUM_COL + image_module._NUM_GAP
+        )
+        for part in hot_parts:
+            self.assertLessEqual(
+                self.renderer._text_width(part.text, part.size), limit + 1,
+            )
+
+    def test_long_title_in_body_is_not_truncated(self) -> None:
+        data = section("daily_news", "每日新闻", [item(LONG_TITLE)])
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(image_module._items(data), width)
+        title_parts = [
+            part for line in lines for part in line.parts
+            if part.size == image_module._TITLE_SIZE
+        ]
+        self.assertGreater(len(title_parts), 1)
+        self.assertEqual("".join(part.text for part in title_parts), LONG_TITLE)
+        self.assertTrue(all(not part.bold for part in title_parts))
+        self.assertEqual(
+            sum(
+                1 for line in lines for part in line.parts if part.text == "01"
+            ),
+            1,
+        )
+
+    def test_long_english_word_wraps_inside_text_column(self) -> None:
+        token = "Supercalifragilisticexpialidocious" * 8
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(
+            image_module._items(section("daily_news", "每日新闻", [item(token)])),
+            width,
+        )
+        title_parts = [
+            part for line in lines for part in line.parts
+            if part.size == image_module._TITLE_SIZE
+        ]
+        self.assertGreater(len(title_parts), 1)
+        self.assertEqual("".join(part.text for part in title_parts), token)
+        limit = self.renderer._content_width(width) - (
+            image_module._NUM_COL + image_module._NUM_GAP
+        )
+        for part in title_parts:
+            self.assertLessEqual(
+                self.renderer._text_width(part.text, part.size), limit + 1,
+            )
+
+    def test_missing_hot_values_render_without_heat_text(self) -> None:
+        data = section(
+            "douyin_hot", "抖音热搜",
+            [
+                item("只有标题"),
+                item("空值", hot_value_desc="   ", hot_value=None),
+                item("负数", hot_value=-5),
+            ],
+        )
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(image_module._items(data), width)
+        self.assertFalse(
+            any(
+                part.size == image_module._HEAT_SIZE
+                for line in lines for part in line.parts
+            ),
+        )
+        image = self.renderer.render(profile([data]))[0]
+        self.assertEqual(image.status, "success")
+        self.assertIsNotNone(image.png)
+
+    def test_news_numbers_are_gray_and_hot_numbers_are_accent(self) -> None:
+        width = self.renderer.limits.width
+        news = self.renderer._body_lines(
+            image_module._items(
+                section("daily_news", "每日新闻", [item("新闻一")]),
+            ),
+            width,
+            "daily_news",
+        )
+        hot = self.renderer._body_lines(
+            image_module._items(
+                section("douyin_hot", "抖音热搜", [item("热点", hot_value=1)]),
+            ),
+            width,
+        )
+        news_index = [
+            part for line in news for part in line.parts if part.text == "01"
+        ]
+        hot_index = [
+            part for line in hot for part in line.parts if part.text == "01"
+        ]
+        self.assertEqual(news_index[0].color, image_module._NUM)
+        self.assertEqual(hot_index[0].color, image_module._ACCENT)
+
+    def test_no_ink_outside_content_margins(self) -> None:
+        image = self.renderer.render(
+            profile([
+                section(
+                    "zhihu_hot", "知乎热榜",
+                    [item(LONG_TITLE, detail=LONG_DETAIL, hot_value_desc="1670 万热度")],
+                ),
+            ]),
+        )[0]
+        assert image.png is not None
+        with Image.open(io.BytesIO(image.png)).convert("L") as opened:
+            width, height = opened.size
+            left = opened.crop((1, 1, 40, height - 1)).getextrema()[0]
+            right = opened.crop((861, 1, width - 1, height - 1)).getextrema()[0]
+        self.assertGreater(left, 200)
+        self.assertGreater(right, 200)
+
+    def test_long_label_wraps_and_count_stays_inside(self) -> None:
+        label = "很长的栏目名称" * 20
+        width = self.renderer.limits.width
+        data = section(
+            "daily_news", label, [item("新闻一")], displayed_count=1,
+        )
+        lines = self.renderer._header_lines(data, label, "daily_news", width)
+        label_parts = [
+            part for line in lines for part in line.parts
+            if part.size == image_module._LABEL_SIZE
+        ]
+        self.assertGreater(len(label_parts), 1)
+        self.assertEqual("".join(part.text for part in label_parts), label)
+        count_parts = [
+            part for line in lines for part in line.parts
+            if part.size == image_module._COUNT_SIZE and part.text == "1 条"
+        ]
+        self.assertEqual(len(count_parts), 1)
+        content_width = self.renderer._content_width(width)
+        self.assertLessEqual(
+            count_parts[0].x
+            + self.renderer._text_width(
+                count_parts[0].text, image_module._COUNT_SIZE,
+            ),
+            content_width + 0.5,
+        )
+
+    def test_hot_numbers_are_accent_even_without_heat_values(self) -> None:
+        """Bilibili 适配器没有热度字段，热榜序号仍必须是强调色。"""
+        width = self.renderer.limits.width
+        data = section(
+            "bilibili_hot", "Bilibili 热搜",
+            [item("热搜一"), item("热搜二")],
+        )
+        lines = self.renderer._body_lines(
+            image_module._items(data), width, "bilibili_hot",
+        )
+        index_parts = [
+            part for line in lines for part in line.parts
+            if part.text in {"01", "02"}
+        ]
+        self.assertEqual(len(index_parts), 2)
+        for part in index_parts:
+            self.assertEqual(part.color, image_module._ACCENT)
+        self.assertFalse(
+            any(part.size == image_module._HEAT_SIZE for line in lines for part in line.parts),
+        )
+
+    def test_daily_news_numbers_stay_neutral_gray(self) -> None:
+        width = self.renderer.limits.width
+        data = section("daily_news", "每日新闻", [item("新闻一")])
+        lines = self.renderer._body_lines(
+            image_module._items(data), width, "daily_news",
+        )
+        index_parts = [
+            part for line in lines for part in line.parts if part.text == "01"
+        ]
+        self.assertEqual(index_parts[0].color, image_module._NUM)
 
 
 if __name__ == "__main__":

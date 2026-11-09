@@ -79,27 +79,61 @@ _FONT_CANDIDATES = (
     "C:/Windows/Fonts/simhei.ttf",
 )
 
-# 视觉规范配色：主蓝、标题区浅蓝、正文深蓝、次要文字、分隔线、浅蓝底。
-_ACCENT = (49, 95, 200)          # #315fc8
-_HEADER_BG = (234, 241, 255)     # 标题区浅蓝
-_BG = (241, 245, 250)            # #f1f5fa
-_INK = (36, 50, 74)              # #24324a
-_MUTED = (108, 125, 148)         # #6c7d94
-_DIVIDER = (220, 229, 240)       # #dce5f0
-_BORDER = (220, 229, 240)
+# 视觉规范：白底卡片、深灰正文、莓红强调色、细分隔线；正文常规字重，不用
+# 标题色块和逐条描边加粗，只保留栏目标题的字号层次。
+_ACCENT = (161, 60, 98)          # #a13c62 莓红强调色
+_PAGE_BG = (238, 240, 243)       # #eef0f3 卡片圆角外的页面底色
+_INK = (48, 52, 59)              # #30343b 正文深灰
+_TITLE_INK = (32, 36, 44)        # #20242c 栏目标题
+_MUTED = (115, 121, 131)         # #737983 次要文字
+_NUM = (146, 152, 162)           # #9298a2 新闻序号
+_HEAT = (129, 135, 145)          # #818791 热度
+_DIVIDER = (237, 240, 243)       # #edf0f3 条目分隔线
+_BORDER = (223, 226, 232)        # #dfe2e8 外框与标题分隔线
 _WHITE = (255, 255, 255)
 
-_CARD_MARGIN = 24
-_CARD_PAD_X = 40
-_CARD_RADIUS = 24
-_HEADER_TOP_PAD = 32
-_HEADER_BOTTOM_PAD = 28
-_BODY_TOP_GAP = 26
-_BODY_BOTTOM_GAP = 24
-_FOOTER_BOTTOM_PAD = 28
-_ITEM_TEXT_X = 52
-_DECOR_BAR_W = 6
-_DECOR_BAR_H = 64
+_CARD_BORDER = 1
+_CARD_RADIUS = 20
+_PAD_X = 40
+_ACCENT_BAR_W = 44
+_ACCENT_BAR_H = 5
+
+_HEADER_TOP_PAD = 26
+_BRAND_SIZE = 18
+_BRAND_LEADING = 26
+_BRAND_GAP = 12
+_LABEL_SIZE = 42
+_LABEL_LEADING = 55
+_COUNT_SIZE = 18
+_COUNT_GAP = 18
+_SUB_SIZE = 17
+_SUB_LEADING = 26
+_SUB_GAP = 10
+_HEADER_BOTTOM_PAD = 20
+_BODY_TOP_GAP = 6
+
+_ROW_PAD_Y = 10
+_NUM_COL = 32
+_NUM_GAP = 16
+_NUM_SIZE = 20
+_TITLE_SIZE = 25
+_TITLE_LEADING = 36
+_DETAIL_SIZE = 19
+_DETAIL_LEADING = 27
+_DETAIL_GAP = 4
+_HEAT_SIZE = 17
+_HEAT_COL = 112
+_HEAT_GAP = 16
+_HOT_LEADING = 26
+_HOT_GAP = 4
+
+_FOOTER_MARGIN_TOP = 2
+_FOOTER_TOP_PAD = 20
+_FOOTER_BOTTOM_PAD = 25
+_FOOTER_SIZE = 16
+_FOOTER_LEADING = 25
+_FOOTER_LEFT_WIDTH = 300
+_FOOTER_COLUMN_GAP = 40
 
 _MAX_CONTENT_CHARS = 200_000
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+|.", re.UNICODE)
@@ -131,14 +165,17 @@ class _Part:
     bold: bool = False
     x: int = 0
     right: int | None = None
+    baseline: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class _Line:
     parts: tuple[_Part, ...] = ()
     rule: bool = False
+    strong: bool = False
     gap_before: int = 0
     gap_after: int = 0
+    leading: int = 0
 
 
 class ProfileImageRenderer:
@@ -256,35 +293,26 @@ class ProfileImageRenderer:
         header = self._header_lines(
             section, label, content_type, limits.width,
         )
-        body = self._body_lines(items, limits.width)
+        body = self._body_lines(items, limits.width, content_type)
         footer = self._footer_lines(
             section, site_name, created_at, limits.width,
         )
-        header_h = (
-            _HEADER_TOP_PAD
-            + self._lines_height(header)
-            + _HEADER_BOTTOM_PAD
-        )
-        # 标题区浅蓝底的平直下边缘比文字区多出一个圆角高度；正文必须从色块
-        # 下边缘之后开始，否则首行会紧贴甚至压到浅蓝底上。
-        band_h = header_h + _CARD_RADIUS
-        body_h = self._lines_height(body)
-        footer_h = self._lines_height(footer)
+        # 外框与上内边距之后是标题区；标题区最后一行是整幅宽度的分隔线，
+        # 正文分隔线与页脚上边线都由各自的 _Line 计入高度。
         height = (
-            _CARD_MARGIN
-            + band_h
-            + _BODY_TOP_GAP
-            + body_h
-            + _BODY_BOTTOM_GAP
-            + footer_h
+            _CARD_BORDER
+            + _HEADER_TOP_PAD
+            + self._lines_height(header)
+            + self._lines_height(body)
+            + self._lines_height(footer)
             + _FOOTER_BOTTOM_PAD
-            + _CARD_MARGIN
+            + _CARD_BORDER
         )
         if height > limits.max_height:
             return self._failed(
                 limits, index, label, content_type, _ERROR_TOO_TALL,
             )
-        png = self._draw(header, body, footer, height, limits.width, band_h)
+        png = self._draw(header, body, footer, height, limits.width)
         if len(png) > limits.max_image_bytes:
             return self._failed(
                 limits, index, label, content_type, _ERROR_TOO_LARGE,
@@ -327,45 +355,85 @@ class ProfileImageRenderer:
         content_type: str,
         width: int,
     ) -> list[_Line]:
+        content_width = self._content_width(width)
+        brand_width = self._text_width("60s", _BRAND_SIZE)
         lines: list[_Line] = [
             _Line(
-                parts=(_Part("60sAPI Hub", 18, _ACCENT, True, 0),),
-                gap_after=12,
+                parts=(
+                    _Part("60s", _BRAND_SIZE, _ACCENT, False, 0),
+                    _Part("API Hub", _BRAND_SIZE, _MUTED, False, brand_width),
+                ),
+                leading=_BRAND_LEADING,
+                gap_after=_BRAND_GAP,
             ),
         ]
-        label_width = self._content_width(width) - 90
-        for part in self._wrap(label, 38, label_width, bold=True):
-            lines.append(
-                _Line(
-                    parts=(_Part(part, 38, _INK, True, 0),),
-                    gap_after=6,
-                ),
-            )
-        meta = self._meta_text(section, content_type)
-        if meta:
-            for part in self._wrap(meta, 17, label_width):
-                lines.append(
-                    _Line(
-                        parts=(_Part(part, 17, _MUTED, False, 0),),
-                        gap_after=2,
+        count = _count_text(section)
+        count_width = self._text_width(count, _COUNT_SIZE)
+        # 数量与标题同一行时先为它留出宽度，避免长栏目名换行后压到数量。
+        label_width = content_width - count_width - _COUNT_GAP
+        for offset, part in enumerate(
+            self._wrap(label, _LABEL_SIZE, label_width, bold=True),
+        ):
+            parts: list[_Part] = [
+                _Part(part, _LABEL_SIZE, _TITLE_INK, True, 0, baseline=True),
+            ]
+            if offset == 0:
+                parts.append(
+                    _Part(
+                        count,
+                        _COUNT_SIZE,
+                        _MUTED,
+                        False,
+                        self._text_width(part, _LABEL_SIZE, bold=True)
+                        + _COUNT_GAP,
+                        baseline=True,
                     ),
                 )
+            lines.append(
+                _Line(parts=tuple(parts), leading=_LABEL_LEADING),
+            )
+        sub = _content_date_text(section, content_type)
+        if sub:
+            for part in self._wrap(sub, _SUB_SIZE, content_width):
+                lines.append(
+                    _Line(
+                        parts=(_Part(part, _SUB_SIZE, _MUTED, False, 0),),
+                        leading=_SUB_LEADING,
+                        gap_before=_SUB_GAP,
+                    ),
+                )
+        lines.append(
+            _Line(
+                rule=True,
+                strong=True,
+                gap_before=_HEADER_BOTTOM_PAD,
+                gap_after=_BODY_TOP_GAP,
+            ),
+        )
         return lines
 
     def _body_lines(
         self,
         items: list[dict[str, Any]],
         width: int,
+        content_type: str = "",
     ) -> list[_Line]:
+        content_width = self._content_width(width)
+        text_x = _NUM_COL + _NUM_GAP
+        full_text_width = content_width - text_x
         lines: list[_Line] = []
         if not items:
+            # 空状态与条目正文同一左边线，保持整栏对齐。
             lines.append(
                 _Line(
                     parts=(
-                        _Part("（上游本次没有返回内容）", 22, _MUTED, True, 0),
+                        _Part(
+                            "（上游本次没有返回内容）", 22, _MUTED, False, text_x,
+                        ),
                     ),
-                    gap_before=6,
-                    gap_after=8,
+                    leading=32,
+                    gap_before=_ROW_PAD_Y,
+                    gap_after=4,
                 ),
             )
             lines.append(
@@ -373,60 +441,106 @@ class ProfileImageRenderer:
                     parts=(
                         _Part(
                             "合法空栏目：获取成功，但本次没有可展示条目。",
-                            18, _MUTED, False, 0,
+                            18, _MUTED, False, text_x,
                         ),
                     ),
-                    gap_after=10,
+                    leading=28,
+                    gap_after=_ROW_PAD_Y,
                 ),
             )
             return lines
-        text_width = self._content_width(width) - _ITEM_TEXT_X
+        # 序号配色按栏目类型判定：只有每日新闻用中性灰，其余热榜栏目一律用
+        # 强调色。不能依赖“有没有热度值”，Bilibili 等适配器本身没有热度字段。
+        num_color = _NUM if content_type == "daily_news" else _ACCENT
+        last = len(items)
         for position, item in enumerate(items, start=1):
             title = _display_text(item.get("title"))
-            title_lines = self._wrap(title, 24, text_width, bold=True)
-            for offset, part in enumerate(title_lines):
+            detail = _display_text(item.get("detail"))
+            hot = _hot_text(item)
+            # 短热度与标题并排：为热度列留出固定宽度，标题在剩余宽度内换行；
+            # 热度放不下时整体移到标题下方，标题恢复整行宽度。
+            inline_hot = bool(hot) and (
+                self._text_width(hot, _HEAT_SIZE) <= _HEAT_COL
+            )
+            text_width = full_text_width
+            if inline_hot:
+                text_width = full_text_width - _HEAT_COL - _HEAT_GAP
+            for offset, part in enumerate(
+                self._wrap(title, _TITLE_SIZE, text_width),
+            ):
                 parts: list[_Part] = []
                 if offset == 0:
                     parts.append(
-                        _Part(f"{position:02d}", 22, _ACCENT, True, 0),
+                        _Part(f"{position:02d}", _NUM_SIZE, num_color, False, 0),
                     )
-                parts.append(_Part(part, 24, _INK, True, _ITEM_TEXT_X))
+                parts.append(
+                    _Part(part, _TITLE_SIZE, _INK, False, text_x),
+                )
+                if offset == 0 and inline_hot:
+                    parts.append(
+                        _Part(
+                            hot, _HEAT_SIZE, _HEAT, False, 0,
+                            right=content_width,
+                        ),
+                    )
                 lines.append(
                     _Line(
                         parts=tuple(parts),
-                        gap_before=8 if position > 1 and offset == 0 else 0,
-                        gap_after=2,
+                        leading=_TITLE_LEADING,
+                        gap_before=_ROW_PAD_Y if offset == 0 else 0,
                     ),
                 )
-            detail = _display_text(item.get("detail"))
             if detail:
+                # 热度只落在标题行，摘要不与热度列抢宽度：整行宽度排版
+                # 更紧凑，也不会与右对齐的热度重叠。
                 for offset, part in enumerate(
-                    self._wrap(detail, 19, text_width),
+                    self._wrap(detail, _DETAIL_SIZE, full_text_width),
                 ):
                     lines.append(
                         _Line(
                             parts=(
-                                _Part(part, 19, _MUTED, False, _ITEM_TEXT_X),
+                                _Part(part, _DETAIL_SIZE, _MUTED, False, text_x),
                             ),
-                            gap_before=4 if offset == 0 else 0,
-                            gap_after=2,
+                            leading=_DETAIL_LEADING,
+                            gap_before=_DETAIL_GAP if offset == 0 else 0,
                         ),
                     )
-            hot = _hot_text(item)
-            if hot:
-                for offset, part in enumerate(
-                    self._wrap(hot, 18, text_width),
-                ):
+            if hot and not inline_hot:
+                hot_width = self._text_width(hot, _HEAT_SIZE)
+                if hot_width <= full_text_width:
+                    # 一行放得下：右对齐到内容右边缘，与标题序号区分。
                     lines.append(
                         _Line(
                             parts=(
-                                _Part(part, 18, _MUTED, False, _ITEM_TEXT_X),
+                                _Part(
+                                    hot, _HEAT_SIZE, _HEAT, False, 0,
+                                    right=content_width,
+                                ),
                             ),
-                            gap_before=4 if offset == 0 else 0,
-                            gap_after=2,
+                            leading=_HOT_LEADING,
+                            gap_before=_HOT_GAP,
                         ),
                     )
-            lines.append(_Line(rule=True, gap_before=12, gap_after=12))
+                else:
+                    for offset, part in enumerate(
+                        self._wrap(hot, _HEAT_SIZE, full_text_width),
+                    ):
+                        lines.append(
+                            _Line(
+                                parts=(
+                                    _Part(
+                                        part, _HEAT_SIZE, _HEAT, False, text_x,
+                                    ),
+                                ),
+                                leading=_HOT_LEADING,
+                                gap_before=_HOT_GAP if offset == 0 else 0,
+                            ),
+                        )
+            if position < last:
+                # 分隔线前的 10px 是条目的下留白，和上留白一起构成 57px 行距。
+                lines.append(_Line(rule=True, gap_before=_ROW_PAD_Y))
+            else:
+                lines.append(_Line(gap_after=_ROW_PAD_Y))
         return lines
 
     def _footer_lines(
@@ -451,56 +565,38 @@ class ProfileImageRenderer:
         left_width = min(_FOOTER_LEFT_WIDTH, content_width // 2)
         right_width = content_width - left_width - _FOOTER_COLUMN_GAP
         left_lines: list[_Part] = [
-            _Part("60sAPI Hub", 16, _ACCENT, True, 0),
-            _Part("由插件根据接口数据生成", 15, _MUTED, False, 0),
+            _Part("60sAPI Hub", _FOOTER_SIZE, _ACCENT, False, 0),
+            _Part("由插件根据接口数据生成", _FOOTER_SIZE, _MUTED, False, 0),
         ]
         right_lines: list[_Part] = []
         for part in self._wrap(
-            f"数据来源：{source}", 15, right_width,
+            f"数据来源：{source}", _FOOTER_SIZE, right_width,
         ):
             right_lines.append(
-                _Part(part, 15, _MUTED, False, 0, content_width),
+                _Part(part, _FOOTER_SIZE, _MUTED, False, 0, content_width),
             )
         for part in self._wrap(
-            f"获取时间：{fetched_text}", 15, right_width,
+            f"获取时间：{fetched_text}", _FOOTER_SIZE, right_width,
         ):
             right_lines.append(
-                _Part(part, 15, _MUTED, False, 0, content_width),
+                _Part(part, _FOOTER_SIZE, _MUTED, False, 0, content_width),
             )
-        lines: list[_Line] = [_Line(rule=True, gap_after=12)]
+        lines: list[_Line] = [
+            _Line(
+                rule=True,
+                strong=True,
+                gap_before=_FOOTER_MARGIN_TOP,
+                gap_after=_FOOTER_TOP_PAD,
+            ),
+        ]
         for index in range(max(len(left_lines), len(right_lines))):
             parts: list[_Part] = []
             if index < len(left_lines):
                 parts.append(left_lines[index])
             if index < len(right_lines):
                 parts.append(right_lines[index])
-            lines.append(_Line(parts=tuple(parts), gap_after=4))
+            lines.append(_Line(parts=tuple(parts), leading=_FOOTER_LEADING))
         return lines
-
-    def _meta_text(
-        self,
-        section: dict[str, Any],
-        content_type: str,
-    ) -> str:
-        parts: list[str] = []
-        content_date = _format_content_date(
-            section.get("content_date"), section,
-        )
-        if content_date:
-            parts.append(f"内容日期：{content_date}")
-        elif content_type == "daily_news" and section.get("date_is_unknown"):
-            parts.append("内容日期：未知")
-        shown = _int_or_none(section.get("displayed_count"))
-        if shown is None:
-            shown = _int_or_none(section.get("item_count"))
-        if shown is None:
-            shown = len(_items(section))
-        total = _int_or_none(section.get("total_item_count"))
-        count_text = f"显示 {shown} 条"
-        if total is not None and total > shown:
-            count_text += f" ｜ 共 {total} 条"
-        parts.append(count_text)
-        return " ｜ ".join(parts)
 
     def _draw(
         self,
@@ -509,59 +605,37 @@ class ProfileImageRenderer:
         footer: list[_Line],
         height: int,
         width: int,
-        band_h: int,
     ) -> bytes:
         assert Image is not None and ImageDraw is not None
-        image = Image.new("RGB", (width, height), _BG)
+        image = Image.new("RGB", (width, height), _PAGE_BG)
         try:
             draw = ImageDraw.Draw(image)
-            card = (
-                _CARD_MARGIN,
-                _CARD_MARGIN,
-                width - _CARD_MARGIN,
-                height - _CARD_MARGIN,
-            )
+            # 整张图就是卡片本身：白色圆角矩形铺满画布，圆角外露出页面底色，
+            # 1px 外框画在画布最外沿。
             draw.rounded_rectangle(
-                card, radius=_CARD_RADIUS, fill=_WHITE,
-            )
-            # 标题区只保留上圆角，下边缘是一条平直边界，正好落在
-            # _CARD_MARGIN + band_h；正文从这条边界之后再开始排版。
-            draw.rounded_rectangle(
-                (
-                    _CARD_MARGIN,
-                    _CARD_MARGIN,
-                    width - _CARD_MARGIN,
-                    _CARD_MARGIN + band_h,
-                ),
+                (0, 0, width - 1, height - 1),
                 radius=_CARD_RADIUS,
-                fill=_HEADER_BG,
-                corners=(True, True, False, False),
+                fill=_WHITE,
+                outline=_BORDER,
+                width=_CARD_BORDER,
             )
-            bar_x = width - _CARD_MARGIN - _CARD_PAD_X - _DECOR_BAR_W
+            bar_x = _CARD_BORDER + _PAD_X
             draw.rounded_rectangle(
                 (
                     bar_x,
-                    _CARD_MARGIN + _HEADER_TOP_PAD + 2,
-                    bar_x + _DECOR_BAR_W,
-                    _CARD_MARGIN + _HEADER_TOP_PAD + 2 + _DECOR_BAR_H,
+                    _CARD_BORDER,
+                    bar_x + _ACCENT_BAR_W - 1,
+                    _CARD_BORDER + _ACCENT_BAR_H - 1,
                 ),
                 radius=3,
                 fill=_ACCENT,
+                corners=(False, False, True, True),
             )
             y = self._draw_lines(
-                draw, header, _CARD_MARGIN + _HEADER_TOP_PAD, width,
+                draw, header, _CARD_BORDER + _HEADER_TOP_PAD, width,
             )
-            y = self._draw_lines(
-                draw,
-                body,
-                _CARD_MARGIN + band_h + _BODY_TOP_GAP,
-                width,
-            )
-            y += _BODY_BOTTOM_GAP
+            y = self._draw_lines(draw, body, y, width)
             self._draw_lines(draw, footer, y, width)
-            draw.rounded_rectangle(
-                card, radius=_CARD_RADIUS, outline=_BORDER, width=2,
-            )
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             return buffer.getvalue()
@@ -576,19 +650,34 @@ class ProfileImageRenderer:
         width: int,
     ) -> int:
         y = start_y
-        left = _CARD_MARGIN + _CARD_PAD_X
-        right = width - _CARD_MARGIN - _CARD_PAD_X
+        left = _CARD_BORDER + _PAD_X
+        right = width - _CARD_BORDER - _PAD_X
         for line in lines:
             self._check_cancelled()
             y += line.gap_before
             if line.rule:
-                draw.line((left, y, right, y), fill=_DIVIDER, width=1)
+                draw.line(
+                    (left, y, right, y),
+                    fill=_BORDER if line.strong else _DIVIDER,
+                    width=1,
+                )
                 y += 1 + line.gap_after
                 continue
             line_h = self._line_text_height(line)
+            half_leading = (line_h - self._line_content_height(line)) // 2
+            max_ascent = max(
+                (self._ascent(part.size) for part in line.parts),
+                default=0,
+            )
             for part in line.parts:
-                part_h = self._text_height(part.size)
-                part_y = y + (line_h - part_h) // 2
+                if part.baseline:
+                    # 同一行不同字号按基线对齐（栏目标题与数量、序号与标题）。
+                    part_y = y + half_leading + max_ascent - self._ascent(
+                        part.size,
+                    )
+                else:
+                    part_h = self._text_height(part.size)
+                    part_y = y + (line_h - part_h) // 2
                 self._draw_text(draw, part, left + part.x, part_y)
             y += line_h + line.gap_after
         return y
@@ -629,6 +718,11 @@ class ProfileImageRenderer:
     def _line_text_height(self, line: _Line) -> int:
         if not line.parts:
             return 0
+        return max(line.leading, self._line_content_height(line))
+
+    def _line_content_height(self, line: _Line) -> int:
+        if not line.parts:
+            return 0
         return max(self._text_height(part.size) for part in line.parts)
 
     def _text_height(self, size: int) -> int:
@@ -637,7 +731,15 @@ class ProfileImageRenderer:
 
     @staticmethod
     def _content_width(width: int) -> int:
-        return width - 2 * (_CARD_MARGIN + _CARD_PAD_X)
+        return width - 2 * (_CARD_BORDER + _PAD_X)
+
+    def _text_width(self, text: str, size: int, *, bold: bool = False) -> float:
+        width = self._font(size).getlength(text)
+        return width + 2 if bold else width
+
+    def _ascent(self, size: int) -> int:
+        ascent, _ = self._font(size).getmetrics()
+        return int(ascent)
 
     def _wrap(
         self,
@@ -891,6 +993,35 @@ def _int_or_none(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value if value >= 0 else None
+
+
+def _count_text(section: dict[str, Any]) -> str:
+    """标题旁的数量文案；只用真实条数，不补造或改写上游数值。"""
+    shown = _int_or_none(section.get("displayed_count"))
+    if shown is None:
+        shown = _int_or_none(section.get("item_count"))
+    if shown is None:
+        shown = len(_items(section))
+    total = _int_or_none(section.get("total_item_count"))
+    text = f"{shown} 条"
+    if total is not None and total > shown:
+        text += f" ｜ 共 {total} 条"
+    return text
+
+
+def _content_date_text(
+    section: dict[str, Any],
+    content_type: str,
+) -> str:
+    """内容日期副标题；没有真实日期时留空，只有明确的未知态才写“未知”。"""
+    content_date = _format_content_date(
+        section.get("content_date"), section,
+    )
+    if content_date:
+        return f"内容日期 {content_date}"
+    if content_type == "daily_news" and section.get("date_is_unknown"):
+        return "内容日期 未知"
+    return ""
 
 
 def _items(section: dict[str, Any]) -> list[dict[str, Any]]:

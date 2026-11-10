@@ -834,5 +834,36 @@
 
       <script type="module" src="./app.js"></script>
     </div>
+
+    <dialog
+      id="profile-image-viewer"
+      class="profile-image-viewer"
+      aria-labelledby="profile-image-viewer-title"
+      aria-describedby="profile-image-viewer-hint"
+    >
+      <header class="profile-image-viewer-head">
+        <h2 id="profile-image-viewer-title">栏目长图</h2>
+        <button id="profile-image-viewer-close" class="button button-secondary" type="button">
+          关闭
+        </button>
+      </header>
+      <div id="profile-image-viewer-body" class="profile-image-viewer-body" tabindex="0">
+        <img
+          id="profile-image-viewer-img"
+          class="profile-image-viewer-img"
+          alt=""
+          width="900"
+          height="0"
+        />
+      </div>
+      <footer class="profile-image-viewer-foot">
+        <p id="profile-image-viewer-hint" class="profile-image-viewer-hint">
+          按原始 900px 显示，窄屏可左右滑动查看。
+        </p>
+        <button id="profile-image-viewer-download" class="button button-secondary" type="button">
+          下载 PNG
+        </button>
+      </footer>
+    </dialog>
   </body>
 </html>

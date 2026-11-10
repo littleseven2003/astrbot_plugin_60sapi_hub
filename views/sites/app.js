@@ -118,6 +118,13 @@ const elements = {
   profileImageState: document.getElementById("profile-image-state"),
   profileImageHint: document.getElementById("profile-image-hint"),
   profileImagePages: document.getElementById("profile-image-pages"),
+  profileImageViewer: document.getElementById("profile-image-viewer"),
+  profileImageViewerTitle: document.getElementById("profile-image-viewer-title"),
+  profileImageViewerBody: document.getElementById("profile-image-viewer-body"),
+  profileImageViewerImg: document.getElementById("profile-image-viewer-img"),
+  profileImageViewerHint: document.getElementById("profile-image-viewer-hint"),
+  profileImageViewerClose: document.getElementById("profile-image-viewer-close"),
+  profileImageViewerDownload: document.getElementById("profile-image-viewer-download"),
   taskCount: document.getElementById("task-count"),
   tasksList: document.getElementById("tasks-list"),
   taskListState: document.getElementById("task-list-state"),
@@ -248,6 +255,9 @@ const state = {
   profileImageSnapshotId: null,
   profileImageRequestId: 0,
   profileImageLoading: false,
+  imageViewerSection: null,
+  imageViewerTrigger: null,
+  imageViewerScrollY: 0,
   tasks: [],
   taskMode: "create",
   editingTaskId: null,
@@ -1533,12 +1543,27 @@ function resetProfileImages() {
   state.profileImageRequestId += 1;
   state.profileImageLoading = false;
   state.profileImageSnapshotId = null;
+  const hadViewer = Boolean(
+    elements.profileImageViewer && elements.profileImageViewer.open,
+  );
   elements.profileImagePages.replaceChildren();
+  closeProfileImageViewer(false);
   elements.profileImageState.textContent = "";
   elements.profileImageState.hidden = true;
   elements.profileImageHint.textContent = "";
   elements.profileImageHint.hidden = true;
   syncProfileImageButton();
+  if (hadViewer) {
+    // 浮层因预览刷新被收起时，按钮可能同时被禁用；把焦点交给视图标题，
+    // 避免焦点落到 body 或已关闭的浮层里。
+    const heading = document.querySelector("#view-profiles h1");
+    if (heading) {
+      if (!heading.hasAttribute("tabindex")) {
+        heading.setAttribute("tabindex", "-1");
+      }
+      heading.focus({ preventScroll: true });
+    }
+  }
 }
 
 function syncProfileImageButton() {
@@ -1561,11 +1586,119 @@ const PROFILE_IMAGE_STATUS_LABELS = {
   failed: "未生成",
 };
 
+const PROFILE_IMAGE_VIEWER_CLASS = "profile-image-viewer-open";
+const PROFILE_IMAGE_VIEWER_HINT = "按原始 900px 显示，窄屏可左右滑动查看。";
+
+function profileImageViewerFocusFallback() {
+  const candidates = [
+    elements.profileImageButton,
+    elements.profilePreviewSelect,
+    elements.profilePreviewButton,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && !candidate.disabled && !candidate.hidden) {
+      return candidate;
+    }
+  }
+  // 预览进行中时上述控件都可能被禁用，退到当前视图标题，避免焦点落到 body。
+  const heading = document.querySelector("#view-profiles h1");
+  if (heading) {
+    if (!heading.hasAttribute("tabindex")) {
+      heading.setAttribute("tabindex", "-1");
+    }
+    return heading;
+  }
+  return null;
+}
+
+function openProfileImageViewer(section, trigger) {
+  const viewer = elements.profileImageViewer;
+  if (!viewer || typeof viewer.showModal !== "function" || viewer.open) {
+    return;
+  }
+  if (!section || typeof section.png_base64 !== "string" || !section.png_base64) {
+    return;
+  }
+  state.imageViewerSection = section;
+  state.imageViewerTrigger = trigger || null;
+  state.imageViewerScrollY = window.scrollY;
+  elements.profileImageViewerTitle.textContent = section.index + ". " + section.label;
+  elements.profileImageViewerImg.src = "data:image/png;base64," + section.png_base64;
+  elements.profileImageViewerImg.width = section.width;
+  elements.profileImageViewerImg.height = section.height;
+  elements.profileImageViewerImg.alt = section.label + "栏目长图（大图）";
+  elements.profileImageViewerHint.textContent = PROFILE_IMAGE_VIEWER_HINT;
+  elements.profileImageViewerDownload.textContent = "下载「" + section.label + "」PNG";
+  elements.profileImageViewerDownload.setAttribute(
+    "aria-label",
+    "下载" + section.label + "栏目长图",
+  );
+  document.documentElement.classList.add(PROFILE_IMAGE_VIEWER_CLASS);
+  elements.profileImageViewerBody.scrollTop = 0;
+  elements.profileImageViewerBody.scrollLeft = 0;
+  viewer.showModal();
+  elements.profileImageViewerClose.focus();
+}
+
+function closeProfileImageViewer(restoreFocus = true) {
+  document.documentElement.classList.remove(PROFILE_IMAGE_VIEWER_CLASS);
+  const viewer = elements.profileImageViewer;
+  if (!viewer || !viewer.open) {
+    return;
+  }
+  const trigger = state.imageViewerTrigger;
+  const scrollY = state.imageViewerScrollY;
+  state.imageViewerSection = null;
+  state.imageViewerTrigger = null;
+  viewer.close();
+  elements.profileImageViewerImg.removeAttribute("src");
+  elements.profileImageViewerImg.alt = "";
+  elements.profileImageViewerImg.width = 900;
+  elements.profileImageViewerImg.height = 0;
+  elements.profileImageViewerHint.textContent = PROFILE_IMAGE_VIEWER_HINT;
+  if (restoreFocus) {
+    const target = trigger && document.contains(trigger)
+      ? trigger
+      : profileImageViewerFocusFallback();
+    if (target && typeof target.focus === "function") {
+      target.focus({ preventScroll: true });
+    }
+  }
+  if (window.scrollY !== scrollY) {
+    window.scrollTo(0, scrollY);
+  }
+}
+
+function bindProfileImageViewer() {
+  const viewer = elements.profileImageViewer;
+  if (!viewer) {
+    return;
+  }
+  elements.profileImageViewerClose?.addEventListener("click", () => {
+    closeProfileImageViewer(true);
+  });
+  elements.profileImageViewerDownload?.addEventListener("click", () => {
+    if (state.imageViewerSection) {
+      downloadProfileImageSection(state.imageViewerSection);
+    }
+  });
+  viewer.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeProfileImageViewer(true);
+  });
+  viewer.addEventListener("click", (event) => {
+    if (event.target === viewer) {
+      closeProfileImageViewer(true);
+    }
+  });
+}
+
 function renderProfileImages(data) {
   if (!data || !Array.isArray(data.images) || data.images.length === 0) {
     throw new Error("图片数据格式异常。");
   }
   elements.profileImagePages.replaceChildren();
+  closeProfileImageViewer(true);
   let generated = 0;
   let missing = 0;
   for (const section of data.images) {
@@ -1597,6 +1730,20 @@ function renderProfileImages(data) {
       image.width = section.width;
       image.height = section.height;
       image.loading = "lazy";
+      image.tabIndex = 0;
+      image.setAttribute("role", "button");
+      image.setAttribute("aria-haspopup", "dialog");
+      image.setAttribute("aria-label", "查看「" + section.label + "」大图");
+      image.title = "点击查看大图";
+      image.addEventListener("click", () => {
+        openProfileImageViewer(section, image);
+      });
+      image.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+          event.preventDefault();
+          openProfileImageViewer(section, image);
+        }
+      });
       figure.append(image);
       generated += 1;
     } else {
@@ -1618,13 +1765,22 @@ function renderProfileImages(data) {
     }
     figure.append(caption);
     if (hasImage) {
+      const actions = document.createElement("div");
+      actions.className = "profile-image-actions";
       const download = makeButton(
         "下载「" + section.label + "」PNG",
         "button button-secondary",
         () => downloadProfileImageSection(section),
         "下载" + section.label + "栏目长图",
       );
-      figure.append(download);
+      const view = makeButton(
+        "查看大图",
+        "button button-secondary",
+        () => openProfileImageViewer(section, view),
+        "查看" + section.label + "大图",
+      );
+      actions.append(download, view);
+      figure.append(actions);
     }
     elements.profileImagePages.append(figure);
   }
@@ -5343,6 +5499,7 @@ async function init() {
   syncDeliveryPendingPanel();
 }
 
+bindProfileImageViewer();
 bindNavigation();
 init();
 

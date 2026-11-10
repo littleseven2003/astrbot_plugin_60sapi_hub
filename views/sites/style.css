@@ -1380,7 +1380,8 @@ textarea:focus-visible {
 
 .profile-image-pages {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(480px, 100%), 1fr));
+  align-items: start;
   gap: 12px;
   margin-top: 12px;
 }
@@ -1397,6 +1398,12 @@ textarea:focus-visible {
   display: block;
   width: 100%;
   height: auto;
+  cursor: zoom-in;
+}
+
+.profile-image-page img:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 
 .profile-image-page figcaption {
@@ -1415,6 +1422,109 @@ textarea:focus-visible {
   min-height: 32px;
   padding: 6px 10px;
   font-size: 12px;
+}
+
+.profile-image-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.profile-image-actions .button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 栏目长图放大查看：按 900px 原始尺寸显示，窄屏横向滑动查看。 */
+.profile-image-viewer {
+  width: min(940px, calc(100vw - 24px));
+  height: min(calc(100vh - 24px), 1000px);
+  height: min(calc(100dvh - 24px), 1000px);
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--white);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.profile-image-viewer[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.profile-image-viewer::backdrop {
+  background: rgba(15, 23, 36, 0.62);
+}
+
+.profile-image-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.profile-image-viewer-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.profile-image-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+  background: #eef0f3;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.profile-image-viewer-body:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.profile-image-viewer-img {
+  display: block;
+  width: 900px;
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+  background: var(--white);
+}
+
+.profile-image-viewer-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.profile-image-viewer-hint {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.profile-image-viewer-foot .button {
+  min-height: 40px;
+}
+
+/* 浮层打开期间锁住页面滚动；关闭后由脚本移除并恢复位置。 */
+.profile-image-viewer-open,
+.profile-image-viewer-open body {
+  overflow: hidden;
 }
 
 .profile-item-editor {
@@ -1749,6 +1859,20 @@ dialog.dialog button {
   .profile-output-actions .button,
   .profile-image-page .button {
     min-height: 40px;
+  }
+
+  .profile-image-viewer {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+    height: calc(100dvh - 16px);
+  }
+
+  .profile-image-viewer-body {
+    padding: 8px;
+  }
+
+  .profile-image-viewer-foot .button {
+    flex: 1 1 100%;
   }
 
   .dialog {

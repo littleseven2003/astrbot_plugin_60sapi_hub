@@ -135,6 +135,25 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(douyin.items[0].hot_value, 123)
         self.assertEqual(toutiao.items[0].title, "头条")
         self.assertEqual(toutiao.items[0].hot_value, 456)
+        # 每个栏目记录本次实际请求地址：保留站点路径前缀和各自 endpoint，
+        # 且不包含凭据。
+        self.assertEqual(
+            daily.source_url, "http://example.test/proxy/v2/60s",
+        )
+        self.assertEqual(
+            bili.source_url, "http://example.test/proxy/v2/bili",
+        )
+        self.assertEqual(
+            zhihu.source_url, "http://example.test/proxy/v2/zhihu",
+        )
+        self.assertEqual(
+            douyin.source_url, "http://example.test/proxy/v2/douyin",
+        )
+        self.assertEqual(
+            toutiao.source_url, "http://example.test/proxy/v2/toutiao",
+        )
+        for snapshot in (daily, bili, zhihu, douyin, toutiao):
+            self.assertNotIn("token", snapshot.source_url)
         self.assertIs(content.news._client, content.bili._client)
         self.assertIs(content.news._client, content.zhihu._client)
         self.assertIs(content.news._client, content.douyin._client)

@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from .source_url import SOURCE_UNAVAILABLE_TEXT, sanitize_source_url
+
 _STATUS_TEXT = {
     "complete": "完整成功",
     "partial": "部分成功",
@@ -83,6 +85,7 @@ def _text_section(section: dict[str, Any]) -> list[str]:
         return lines
 
     lines.append(f"获取时间：{_clean(section.get('fetched_at')) or '未知'}")
+    lines.append(f"数据来源：{_source_text(section)}")
     lines.append(f"展示条数：{_display_count(section)}")
     content_date = _plain_inline(section.get("content_date"))
     if content_date:
@@ -123,6 +126,7 @@ def _markdown_section(section: dict[str, Any]) -> list[str]:
         return lines
 
     lines.append(f"- 获取时间：{_clean(section.get('fetched_at')) or '未知'}")
+    lines.append(f"- 数据来源：{_markdown_source(section)}")
     lines.append(f"- 展示条数：{_display_count(section)}")
     content_date = _md_inline(section.get("content_date"))
     if content_date:
@@ -156,6 +160,19 @@ def _markdown_section(section: dict[str, Any]) -> list[str]:
             else:
                 lines.append(f"   - 链接：{_md_inline(link)}")
     return lines
+
+
+def _source_text(section: dict[str, Any]) -> str:
+    """本栏目实际请求地址；没有可展示来源时明确写不可用。"""
+    return sanitize_source_url(section.get("source_url")) or SOURCE_UNAVAILABLE_TEXT
+
+
+def _markdown_source(section: dict[str, Any]) -> str:
+    url = sanitize_source_url(section.get("source_url"))
+    if url is None:
+        return SOURCE_UNAVAILABLE_TEXT
+    # 已校验为纯 http(s) 地址且不含控制字符与尖括号，可作为自动链接展示。
+    return f"<{url}>"
 
 
 def _items(section: dict[str, Any]) -> list[dict[str, Any]]:

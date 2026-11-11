@@ -42,8 +42,18 @@ M3 验收日期为 2026-10-27，最终代码提交 `7b48ee6`，PR #10 合并提�
 - `POST /<插件名>/profiles/<id>/image` 成功时 `data` 为 `{"images": [...], "failed_sections": [...], "snapshot_id": "..."}`；`images` 每条含 `index`、`content_type`、`label`、`status`（`success` / `empty` / `failed`）、`width`、`height`，出图时附 `png_base64`，失败时附安全 `error`；不再返回 `pages` / `page_count`。`empty` 是合法空栏目（仍有图），`failed` 无图；全部栏目失败返回 422 `image_render_failed`。
 - 资源上限：宽度固定 900px，单张最大高度 8000px、单张 PNG 最大 2 MiB、一次渲染合计最多 8 MiB、栏目最多 5 个、单栏文本最多 200,000 字符。单栏超限只记该栏目 `failed`（`section_too_long` / `section_too_tall` / `section_too_large`），累计超字节后触发超限的栏目及其后栏目记 `total_bytes_exceeded`；栏目数超过 5 个整体 422 `image_limit_exceeded`，全部栏目失败 422 `image_render_failed`；都不截断、不拆图、不伪造成功。
 - 执行记录投影字段改为 `image_index` / `image_count`（数据库表名未变）；投递按栏目顺序逐张发送，未出图槽位记 `skipped` + `section_image_failed`，`unknown` 不自动重发；聊天命令文案改为“共 N 张栏目长图”。
-- 图上不渲染链接、URL 或二维码；纯文字与 Markdown 链接行为不变。
+- 图上不渲染文章链接或二维码；页脚只显示该栏目本次实际请求的接口地址（见下文“来源地址展示”）。
 - 未验证：真实平台的图片上传与显示；现有证据均来自隔离宿主、本地模拟上游与假机器人，其他平台字体环境同样未验证。范围见[测试手册](testing.md#图片每栏目一张长图)。
+
+## 来源地址展示
+
+2026-11-11 完成本轮改动（未单独发布版本，版本保持 `v0.1.0-dev.1`）。内容输出从“只显示管理员设置的站点名称”改为“按栏目显示本次实际请求的接口地址”：
+
+- 五种内容快照新增 `source_url`：获取成功时记录本次实际使用的 URL，保留站点基础地址的路径前缀和该栏目 endpoint；文字、Markdown、栏目长图页脚和后台单内容/组合预览共用同一份快照值。
+- 地址经统一规范化：只保留 http(s)、主机、端口和路径，去掉 Bearer 凭据、用户信息、查询串和 fragment；凭据仍只随请求头发送。
+- 站点之后改名或改地址只影响新获取；已生成快照和输出不变。旧缓存或旧快照缺少字段时显示“来源不可用”，不用站点名称或接口路径补造。
+- 长地址在图片页脚按字符换行、图片高度随之增加；后台页面允许任意位置换行，不产生横向溢出。
+- 未验证：真实宿主 iframe 中的桌面/390px 浏览器回归（本环境无 AstrBot 与 Chromium），以及真实平台图片显示。范围见[测试手册](testing.md#来源地址展示验证)。
 
 ## 实现前需要核验
 

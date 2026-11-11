@@ -146,6 +146,78 @@ class ProfileRenderTest(unittest.TestCase):
         self.assertIn("热度：0", markdown)
         self.assertIn("热度：42", markdown)
 
+    def test_section_source_url_is_rendered_per_section(self) -> None:
+        payload = {
+            "profile_name": "组合",
+            "site_name": "站点",
+            "status": "complete",
+            "success_count": 2,
+            "failure_count": 0,
+            "sections": [
+                {
+                    "content_type": "daily_news",
+                    "label": "每日新闻",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:00:00+00:00",
+                    "source_url": (
+                        "https://user:pass@example.test/proxy/v2/60s"
+                        "?token=secret#frag"
+                    ),
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+                {
+                    "content_type": "zhihu_hot",
+                    "label": "知乎热榜",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:01:00+00:00",
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+            ],
+        }
+        text = render_profile_text(payload)
+        markdown = render_profile_markdown(payload)
+        # 有来源的栏目展示脱敏后的实际地址。
+        self.assertIn("数据来源：https://example.test/proxy/v2/60s", text)
+        self.assertIn(
+            "- 数据来源：<https://example.test/proxy/v2/60s>", markdown,
+        )
+        self.assertNotIn("user", text)
+        self.assertNotIn("secret", text)
+        self.assertNotIn("secret", markdown)
+        # 旧快照缺少来源字段时明确写不可用，不用站点名称冒充。
+        self.assertIn("数据来源：来源不可用", text)
+        self.assertIn("- 数据来源：来源不可用", markdown)
+
+    def test_long_source_url_is_not_truncated(self) -> None:
+        url = "https://example.test/" + "very-long-path-segment/" * 30 + "v2/60s"
+        payload = {
+            "profile_name": "组合",
+            "site_name": "站点",
+            "status": "complete",
+            "success_count": 1,
+            "failure_count": 0,
+            "sections": [
+                {
+                    "content_type": "daily_news",
+                    "label": "每日新闻",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:00:00+00:00",
+                    "source_url": url,
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+            ],
+        }
+        text = render_profile_text(payload)
+        markdown = render_profile_markdown(payload)
+        self.assertIn(url, text)
+        self.assertIn(f"<{url}>", markdown)
+
     def test_unknown_or_stale_daily_warning_is_rendered(self) -> None:
         payload = {
             "profile_name": "组合",

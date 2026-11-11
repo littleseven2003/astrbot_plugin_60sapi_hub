@@ -139,7 +139,10 @@ class BiliParserTest(unittest.TestCase):
         self.assertEqual(item_fields, {"title", "link"})
         self.assertEqual(
             snapshot_fields,
-            {"site_id", "site_name", "endpoint", "fetched_at", "items"},
+            {
+                "site_id", "site_name", "endpoint", "fetched_at",
+                "items", "source_url",
+            },
         )
         serialized = repr(snapshot).lower()
         for forbidden in ("rank", "heat", "hot_score", "updated_at"):

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from .content_client import ContentHttpClient
 from .sites import SiteService
+from .source_url import sanitize_source_url
 from .toutiao import (
     ToutiaoHotSnapshot,
     ToutiaoInvalidJSONError,
@@ -64,6 +65,7 @@ class ToutiaoHotService:
             site_id=site.id,
             site_name=site.name,
             fetched_at=self._clock(),
+            source_url=sanitize_source_url(url),
         )
 
 

@@ -148,7 +148,10 @@ class DouyinParserTest(unittest.TestCase):
         self.assertEqual(item_fields, {"title", "hot_value", "link"})
         self.assertEqual(
             snapshot_fields,
-            {"site_id", "site_name", "endpoint", "fetched_at", "items"},
+            {
+                "site_id", "site_name", "endpoint", "fetched_at",
+                "items", "source_url",
+            },
         )
         serialized = repr(snapshot).lower()
         for forbidden in ("rank", "ranking", "updated_at", "event_time", "active_time", "cover"):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from pathlib import Path
 import httpx
 
 from core.bili import BiliHotItem, BiliHotSnapshot
-from core.content_api import ContentApi
+from core.content_api import ContentApi, content_snapshot_dict
 from core.content_cache import CacheResult
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
@@ -633,6 +634,53 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(missing)
         self.assertEqual(missing.status_code, 502)
         self.assertEqual(missing.body["data"]["code"], "upstream_structure")
+
+
+class SnapshotSourceUrlTest(unittest.TestCase):
+    def test_each_snapshot_type_exposes_its_own_request_url(self) -> None:
+        urls = {
+            "daily_news": "http://example.test/proxy/v2/60s",
+            "bilibili_hot": "http://example.test/proxy/v2/bili",
+            "zhihu_hot": "http://example.test/proxy/v2/zhihu",
+            "douyin_hot": "http://example.test/proxy/v2/douyin",
+            "toutiao_hot": "http://example.test/proxy/v2/toutiao",
+        }
+        snapshots = {
+            "daily_news": DAILY,
+            "bilibili_hot": BILI,
+            "zhihu_hot": ZHIHU,
+            "douyin_hot": DOUYIN,
+            "toutiao_hot": TOUTIAO,
+        }
+        for content_type, snapshot in snapshots.items():
+            with self.subTest(content_type=content_type):
+                data = content_snapshot_dict(
+                    content_type,
+                    dataclasses.replace(snapshot, source_url=urls[content_type]),
+                )
+                self.assertEqual(data["source_url"], urls[content_type])
+                self.assertEqual(data["endpoint"], "/v2/" + {
+                    "daily_news": "60s",
+                    "bilibili_hot": "bili",
+                    "zhihu_hot": "zhihu",
+                    "douyin_hot": "douyin",
+                    "toutiao_hot": "toutiao",
+                }[content_type])
+                self.assertNotIn("token", json.dumps(data["source_url"]))
+
+    def test_old_snapshot_without_source_url_serializes_as_null(self) -> None:
+        # 旧缓存或旧快照没有来源字段：保持 null，由展示层写“来源不可用”，
+        # 不用站点名称或 endpoint 补造地址。
+        for content_type, snapshot in (
+            ("daily_news", DAILY),
+            ("bilibili_hot", BILI),
+            ("zhihu_hot", ZHIHU),
+            ("douyin_hot", DOUYIN),
+            ("toutiao_hot", TOUTIAO),
+        ):
+            with self.subTest(content_type=content_type):
+                data = content_snapshot_dict(content_type, snapshot)
+                self.assertIsNone(data["source_url"])
 
 
 if __name__ == "__main__":

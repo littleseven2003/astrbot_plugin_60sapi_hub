@@ -215,6 +215,72 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(full.snapshot.items), 3)
         self.assertTrue(full.hit)
 
+    async def test_sections_and_outputs_show_each_section_source_url(self) -> None:
+        created = await self._create()
+        result = await self.api.preview_profile({"profile_id": created["id"]})
+        self.assertEqual(result.status_code, 200, result.body)
+        data = result.body["data"]
+        sections = {item["content_type"]: item for item in data["sections"]}
+        self.assertEqual(
+            sections["daily_news"]["source_url"],
+            "http://example.test/proxy/v2/60s",
+        )
+        self.assertEqual(
+            sections["zhihu_hot"]["source_url"],
+            "http://example.test/proxy/v2/zhihu",
+        )
+        self.assertEqual(
+            sections["douyin_hot"]["source_url"],
+            "http://example.test/proxy/v2/douyin",
+        )
+        text = data["outputs"]["text"]
+        markdown = data["outputs"]["markdown"]
+        self.assertIn("数据来源：http://example.test/proxy/v2/60s", text)
+        self.assertIn("数据来源：http://example.test/proxy/v2/zhihu", text)
+        self.assertIn("<http://example.test/proxy/v2/douyin>", markdown)
+        # 凭据只用于请求头，不出现在来源地址或任何输出里。
+        self.assertNotIn("profile-secret", json.dumps(data, ensure_ascii=False))
+
+    async def test_existing_outputs_keep_old_source_after_site_change(self) -> None:
+        created = await self._create(items=[profile_item("daily_news")])
+        first = await self.api.preview_profile({"profile_id": created["id"]})
+        self.assertEqual(first.status_code, 200, first.body)
+        data = first.body["data"]
+        section = data["sections"][0]
+        self.assertEqual(
+            section["source_url"], "http://example.test/proxy/v2/60s",
+        )
+        text_before = data["outputs"]["text"]
+        markdown_before = data["outputs"]["markdown"]
+
+        updated = await self.sites.update_site(
+            self.site.id,
+            SiteUpdate(
+                name="改名后的站点",
+                base_url="http://new.example.test/other-prefix",
+                enabled=True,
+                timeout_seconds=5,
+                expected_revision=self.site.revision,
+            ),
+        )
+        self.assertEqual(updated.revision, self.site.revision + 1)
+
+        # 已生成的内容快照和文字/Markdown 保持原地址，不被新配置覆盖。
+        self.assertEqual(section["source_url"], "http://example.test/proxy/v2/60s")
+        self.assertEqual(data["outputs"]["text"], text_before)
+        self.assertEqual(data["outputs"]["markdown"], markdown_before)
+        self.assertIn("http://example.test/proxy/v2/60s", text_before)
+        self.assertNotIn("new.example.test", text_before)
+
+        # 新配置下的新获取才使用新地址。
+        refreshed = await self.content.preview_cached(
+            "daily_news", self.site.id, force_refresh=True,
+        )
+        self.assertEqual(
+            refreshed.snapshot.source_url,
+            "http://new.example.test/other-prefix/v2/60s",
+        )
+
     async def test_profile_update_uses_new_order_and_site_revision(self) -> None:
         created = await self._create(
             items=[profile_item("daily_news", 1), profile_item("zhihu_hot", 1)],

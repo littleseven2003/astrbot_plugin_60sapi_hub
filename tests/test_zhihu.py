@@ -145,7 +145,10 @@ class ZhihuParserTest(unittest.TestCase):
         )
         self.assertEqual(
             snapshot_fields,
-            {"site_id", "site_name", "endpoint", "fetched_at", "items"},
+            {
+                "site_id", "site_name", "endpoint", "fetched_at",
+                "items", "source_url",
+            },
         )
         serialized = repr(snapshot).lower()
         for forbidden in ("rank", "ranking", "heat_value", "updated_at"):

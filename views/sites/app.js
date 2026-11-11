@@ -19,6 +19,7 @@ const elements = {
   previewSource: document.getElementById("preview-source"),
   previewContentTypeLabel: document.getElementById("preview-content-type-label"),
   previewEndpoint: document.getElementById("preview-endpoint"),
+  previewSourceUrl: document.getElementById("preview-source-url"),
   previewDateItem: document.getElementById("preview-date-item"),
   previewContentDate: document.getElementById("preview-content-date"),
   previewItemCount: document.getElementById("preview-item-count"),
@@ -783,6 +784,8 @@ function clearPreviewResult() {
   elements.previewSource.removeAttribute("title");
   elements.previewContentTypeLabel.textContent = "";
   elements.previewEndpoint.textContent = "";
+  elements.previewSourceUrl.textContent = "";
+  elements.previewSourceUrl.removeAttribute("title");
   elements.previewDateItem.hidden = false;
   elements.previewContentDate.textContent = "";
   elements.previewItemCount.textContent = "";
@@ -903,6 +906,16 @@ function renderPreview(snapshot) {
             : isToutiao
               ? "/v2/toutiao"
               : "/v2/60s";
+  const sourceUrl =
+    typeof snapshot.source_url === "string" && snapshot.source_url
+      ? snapshot.source_url
+      : "";
+  elements.previewSourceUrl.textContent = sourceUrl || "来源不可用";
+  if (sourceUrl) {
+    elements.previewSourceUrl.title = sourceUrl;
+  } else {
+    elements.previewSourceUrl.removeAttribute("title");
+  }
   elements.previewDateItem.hidden = !isDaily;
   elements.previewContentDate.textContent = isDaily
     ? typeof snapshot.content_date === "string" && snapshot.content_date
@@ -2484,6 +2497,21 @@ function renderProfileSection(section) {
   if (fetched) {
     addMeta(meta, "获取时间", fetched);
   }
+  const sourceUrl =
+    typeof section.source_url === "string" && section.source_url
+      ? section.source_url
+      : "";
+  const sourceItem = document.createElement("span");
+  sourceItem.className = "meta-source";
+  const sourceLabel = document.createElement("strong");
+  sourceLabel.textContent = "数据来源 ";
+  const sourceValue = document.createElement("span");
+  sourceValue.textContent = sourceUrl || "来源不可用";
+  if (sourceUrl) {
+    sourceValue.title = sourceUrl;
+  }
+  sourceItem.append(sourceLabel, sourceValue);
+  meta.append(sourceItem);
   article.append(meta);
   if (Array.isArray(section.warnings) && section.warnings.length > 0) {
     const warning = document.createElement("p");

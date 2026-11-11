@@ -554,7 +554,7 @@ class ProfileImageRendererTest(unittest.TestCase):
             self.renderer._body_lines(image_module._items(target), self.renderer.limits.width),
         )
         rendered += text_of(
-            self.renderer._footer_lines(target, "本地模拟站点", "", self.renderer.limits.width),
+            self.renderer._footer_lines(target, "", self.renderer.limits.width),
         )
         self.assertNotIn("http", rendered)
         self.assertNotIn("链接", rendered)
@@ -668,12 +668,64 @@ class ProfileImageRendererTest(unittest.TestCase):
         section_data = section("daily_news", "每日新闻", [item("新闻一")])
         footer = text_of(
             self.renderer._footer_lines(
-                section_data, "本地模拟站点", "", self.renderer.limits.width,
+                section_data, "", self.renderer.limits.width,
             ),
         )
         self.assertIn("获取时间：2026-10-26 13:00", footer)
-        self.assertIn("数据来源：本地模拟站点", footer)
+        # 旧快照没有来源字段：明确写不可用，不用站点名称冒充来源。
+        self.assertIn("数据来源：来源不可用", footer)
         self.assertNotIn("T05:00:00", footer)
+
+    def test_footer_shows_source_url_and_marks_missing_source(self) -> None:
+        url = "http://example.test/proxy/v2/60s"
+        with_source = section(
+            "daily_news", "每日新闻", [item("新闻一")], source_url=url,
+        )
+        footer = text_of(
+            self.renderer._footer_lines(
+                with_source, "", self.renderer.limits.width,
+            ),
+        )
+        self.assertIn(f"数据来源：{url}", footer)
+        self.assertIn("获取时间：2026-10-26 13:00", footer)
+
+        without_source = section("daily_news", "每日新闻", [item("新闻一")])
+        missing_footer = text_of(
+            self.renderer._footer_lines(
+                without_source, "", self.renderer.limits.width,
+            ),
+        )
+        self.assertIn("数据来源：来源不可用", missing_footer)
+        # 旧快照仍带 site_name，但不能拿它冒充来源地址。
+        self.assertNotIn("数据来源：本地模拟站点", missing_footer)
+
+    def test_long_source_url_wraps_within_content_width_and_grows_image(self) -> None:
+        url = (
+            "https://example.test/" + "very-long-path-segment/" * 24 + "v2/60s"
+        )
+        width = self.renderer.limits.width
+        content_width = self.renderer._content_width(width)
+        with_url = section(
+            "daily_news", "每日新闻", [item("新闻一")], source_url=url,
+        )
+        lines = self.renderer._footer_lines(with_url, "", width)
+        right_parts = [
+            part for line in lines for part in line.parts if part.right is not None
+        ]
+        # 右栏按字符换行后仍拼回完整地址，不截断。
+        self.assertIn(url, "".join(part.text for part in right_parts))
+        self.assertGreater(len(right_parts), 2)
+        for part in right_parts:
+            self.assertLessEqual(part.right, content_width)
+
+        short = self.renderer.render(
+            profile([section("daily_news", "每日新闻", [item("新闻一")])]),
+        )[0]
+        long = self.renderer.render(profile([with_url]))[0]
+        self.assertEqual(short.status, "success")
+        self.assertEqual(long.status, "success")
+        self.assertEqual(png_size(long.png), (width, long.height))
+        self.assertGreater(long.height, short.height)
 
     def test_content_date_is_chinese_and_weekday_is_optional(self) -> None:
         self.assertEqual(
@@ -712,13 +764,14 @@ class ProfileImageRendererTest(unittest.TestCase):
             "daily_news",
             "每日新闻",
             [item("新闻一")],
-            site_name="一个非常长的站点名称用于验证右栏换行不会与左栏文字重叠或越界",
+            source_url=(
+                "http://example.test/very/long/proxy/prefix/that/keeps/going/"
+                "and/keeps/going/even/more/v2/60s"
+            ),
         )
         width = self.renderer.limits.width
         content_width = self.renderer._content_width(width)
-        lines = self.renderer._footer_lines(
-            target, "本地模拟站点", "", width,
-        )
+        lines = self.renderer._footer_lines(target, "", width)
         self.assertGreaterEqual(len(lines), 4)
         both = [
             line for line in lines

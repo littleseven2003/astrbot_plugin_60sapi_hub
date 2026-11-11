@@ -1039,6 +1039,18 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
+/* 每栏数据来源可能是很长的带路径地址：独占一行并允许任意位置换行。 */
+.site-meta .meta-source {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-url {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
 .site-actions {
   display: flex;
   flex-wrap: wrap;

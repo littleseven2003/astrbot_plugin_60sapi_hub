@@ -102,6 +102,7 @@ class NewsSnapshot:
     items: tuple[NewsItem, ...]
     tip: str | None = None
     source_link: str | None = None
+    source_url: str | None = None
 
 
 def build_daily_news_url(base_url: str) -> str:
@@ -115,6 +116,7 @@ def parse_daily_news(
     site_id: str,
     site_name: str,
     fetched_at: datetime,
+    source_url: str | None = None,
 ) -> NewsSnapshot:
     """解析官方/兼容实例的每日新闻 JSON 响应。
 
@@ -168,6 +170,7 @@ def parse_daily_news(
         items=items,
         tip=_optional_text(data.get("tip")),
         source_link=optional_http_url(data.get("link")),
+        source_url=source_url,
     )
 
 

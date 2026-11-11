@@ -437,6 +437,16 @@ node tests/browser/site_connection_ui.js
 - 资源清理：`finally` 中按最新 revision 删除本轮创建的临时站点，再关闭浏览器和内置上游，断言失败也会执行。被强制中断（Ctrl-C、CI 取消）时需手动清理残留临时站点，或改用临时数据库重跑后再开始下一轮。
 - 失败判据：断言失败以非零退出码结束并打印错误；`node --check` 只验证语法，不能当作浏览器通过。
 
+## 来源地址展示验证
+
+2026-11-11 本轮改动，分支 `feat/source-url`。范围为：五种内容快照记录本次实际请求地址，文字、Markdown、栏目长图和后台预览按栏目展示，并处理脱敏与旧快照兼容；不包含公开实例、测速、多站点切换或界面重排。
+
+- 自动化：Python 3.12.15 下 `python -m unittest discover -s tests -q` 共 514 项，492 项通过、22 项跳过（跳过项需要 AstrBot 宿主、平台或浏览器环境）。新增 `tests/test_source_url.py` 4 项，并扩充 `test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
+- 覆盖范围：带路径前缀的五类 endpoint 各记录自己的 URL；多栏目各自 URL 不同；获取后修改站点地址，已有快照和文字/Markdown 输出仍为原地址，新获取才用新地址；旧快照/旧缓存缺少字段时 API 为 `null`、展示为“来源不可用”，不用站点名称或 endpoint 补造；用户信息、查询串、fragment、控制字符和不可展示字符被拒绝；Bearer 凭据不出现在来源地址或任何输出；文字、Markdown、图片页脚、后台栏目投影使用同一份快照值；长地址在图片页脚按字符换行、图片高度随之增加，不越界。
+- 实际渲染：Python 3.12 + Pillow + 宿主 Noto CJK 实际生成 900px 宽 PNG。查看 8 段路径的长来源地址：页脚换行后右对齐、无横向越界、与左栏不重叠；无来源栏目显示“数据来源：来源不可用”；空栏目仍正常出图。
+- 静态检查：`node --check views/sites/app.js`、`git diff --check` 通过。
+- 未验证：真实 AstrBot v4.29.1 Dashboard iframe 内的桌面 1400px 与 390px 浏览器回归（本环境没有宿主和 Chromium），以及真实平台图片显示、真实公开实例响应。后台长地址换行依赖 `overflow-wrap: anywhere` / `word-break: break-all`，尚未在真实浏览器中实测。
+
 ## 真实平台验证准备
 
 本节面向有意在自己授权范围内做真实平台测试的管理员，只说明准备前提、观察方法和脱敏记录判据。仓库内的自动化、隔离宿主和假发送器验证都不包含真实账号发送或真实定时投递；本节描述的是“怎么测”，不是测试结果，也不能当作任何平台能力的验证结论、插件市场收录或最低兼容版本的依据。

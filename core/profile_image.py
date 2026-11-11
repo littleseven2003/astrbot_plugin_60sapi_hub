@@ -15,6 +15,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .source_url import SOURCE_UNAVAILABLE_TEXT, sanitize_source_url
+
 try:
     from PIL import Image, ImageDraw, ImageFont
 except Exception:  # pragma: no cover - 由渲染入口给出可理解错误
@@ -192,7 +194,6 @@ class ProfileImageRenderer:
         self._cancel_event = cancel_event
         self._check_cancelled()
 
-        site_name = _clean(data.get("site_name")) or "60sAPI Hub"
         results: list[SectionImage] = []
         total_bytes = 0
         bytes_exhausted = False
@@ -211,7 +212,7 @@ class ProfileImageRenderer:
             try:
                 result = self._render_section(
                     section, index, label, content_type,
-                    active, created_at, site_name,
+                    active, created_at,
                 )
             except ImageRenderCancelled:
                 raise
@@ -241,7 +242,6 @@ class ProfileImageRenderer:
         content_type: str,
         limits: ImageRenderLimits,
         created_at: str,
-        site_name: str,
     ) -> SectionImage:
         if _section_failed(section):
             return self._failed(
@@ -257,9 +257,7 @@ class ProfileImageRenderer:
             section, label, content_type, limits.width,
         )
         body = self._body_lines(items, limits.width)
-        footer = self._footer_lines(
-            section, site_name, created_at, limits.width,
-        )
+        footer = self._footer_lines(section, created_at, limits.width)
         header_h = (
             _HEADER_TOP_PAD
             + self._lines_height(header)
@@ -432,15 +430,13 @@ class ProfileImageRenderer:
     def _footer_lines(
         self,
         section: dict[str, Any],
-        site_name: str,
         created_at: str,
         width: int,
     ) -> list[_Line]:
-        source = (
-            _display_text(section.get("site_name"))
-            or _display_text(site_name)
-            or "60sAPI Hub"
-        )
+        # 页脚展示本次实际请求地址；旧快照没有该字段时明确写“来源不可用”，
+        # 不用站点名称冒充来源。
+        source = sanitize_source_url(section.get("source_url"))
+        source_text = source or SOURCE_UNAVAILABLE_TEXT
         fetched = (
             _display_text(section.get("fetched_at"))
             or _display_text(created_at)
@@ -456,7 +452,7 @@ class ProfileImageRenderer:
         ]
         right_lines: list[_Part] = []
         for part in self._wrap(
-            f"数据来源：{source}", 15, right_width,
+            f"数据来源：{source_text}", 15, right_width,
         ):
             right_lines.append(
                 _Part(part, 15, _MUTED, False, 0, content_width),

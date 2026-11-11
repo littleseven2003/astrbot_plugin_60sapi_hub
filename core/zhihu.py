@@ -56,6 +56,7 @@ class ZhihuHotSnapshot:
     endpoint: str
     fetched_at: str
     items: tuple[ZhihuHotItem, ...]
+    source_url: str | None = None
 
 
 def build_zhihu_hot_url(base_url: str) -> str:
@@ -69,6 +70,7 @@ def parse_zhihu_hot(
     site_id: str,
     site_name: str,
     fetched_at: datetime,
+    source_url: str | None = None,
 ) -> ZhihuHotSnapshot:
     """解析官方/兼容实例的知乎热榜 JSON 响应。
 
@@ -101,6 +103,7 @@ def parse_zhihu_hot(
         endpoint=ENDPOINT,
         fetched_at=_as_utc(fetched_at).isoformat(timespec="seconds"),
         items=items,
+        source_url=source_url,
     )
 
 

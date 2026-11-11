@@ -48,7 +48,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/profiles.py`：内容组合领域模型、栏目校验、revision CRUD 和站点存在性检查；允许保存已停用站点，预览前再拒绝。
 - `core/profile_api.py` / `profile_web.py`：组合 CRUD、组合预览、部分/全部失败映射和后台 API 宿主适配。
 - `core/profile_render.py`：纯函数文字/Markdown 渲染，不依赖 AstrBot、HTTP、数据库或浏览器；只读取已截取的预览响应，不修改快照或缓存。
-- `core/source_url.py`：来源地址的规范化。`sanitize_source_url` 只保留 http(s) 协议、主机、端口和路径，去掉用户信息、查询串和 fragment，拒绝控制字符与不可展示字符；`snapshot_source_url` 在完整地址超过长度上限时退化为只含协议与主机，避免丢失可展示域名；`source_domain_text` 只取域名（IPv6 保留方括号）供对外展示；无法展示时统一返回“来源不可用”。
+- `core/source_url.py`：来源地址的规范化。`sanitize_source_url` 只保留 http(s) 协议、主机、端口和路径，去掉用户信息、查询串和 fragment，拒绝控制字符与不可展示字符；`snapshot_source_url` 保留端口和编码后的路径，超出长度上限时返回空来源，不再静默缩短；`source_domain_text` 只取域名（IPv6 保留方括号）供对外展示；无法展示时统一返回“来源不可用”。
 - `core/image_snapshots.py`：进程内短期图片快照，TTL 300 秒/最多 32 个/总 8 MiB；保存已验证的截图输入、组合/站点 revision 和用户归属，不保存 HTML 或文件路径；栏目数据包含来源地址；URL 用户信息、查询串和 fragment 已去除，但路径可能包含敏感信息。
 - `core/profile_image.py`：Pillow 固定样式中文长图渲染器，一个栏目一张；只读快照数据，按字符宽度换行，宽度固定 900px、高度随内容增长（上限 8000px，单张 PNG 上限 2 MiB，栏目最多 5 个，单栏文本 200,000 字符），不加载远程资源；逐栏失败码为 `section_too_long` / `section_too_tall` / `section_too_large`，累计字节超限后剩余栏目记 `total_bytes_exceeded`；栏目数超过 5 个抛 `ImageLimitError`，由 API 映射为 422 `image_limit_exceeded`；不截断、不拆图。
 - `core/tasks.py`：推送任务领域模型、输出方式、完整 UMO 校验、revision CRUD 和组合引用保护；不持有 HTTP 客户端或发送接口。

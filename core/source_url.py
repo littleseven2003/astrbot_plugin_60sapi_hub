@@ -3,6 +3,8 @@
 来源地址来自服务端实际拼好的请求 URL，不是用户输入。这里仍做一次收敛：
 只保留 http(s)、主机与路径，丢掉用户信息、查询串和 fragment，避免凭据或
 敏感参数随快照进入文字、Markdown、图片和后台页面。
+
+公开来源对外只展示域名，不展示路径、查询串或凭据；自建站点只写标签。
 """
 
 from __future__ import annotations
@@ -10,17 +12,48 @@ from __future__ import annotations
 from urllib.parse import urlsplit, urlunsplit
 
 MAX_SOURCE_URL_LENGTH = 2048
+# 只提取域名时不需要整串地址都合规：拼接 endpoint 后的长地址、路径里的
+# 特殊字符都不应让可展示的域名丢失。这里仍给解析一个上界，避免异常输入。
+MAX_SOURCE_SCAN_LENGTH = 8192
 SOURCE_UNAVAILABLE_TEXT = "来源不可用"
 SOURCE_SELF_BUILT_TEXT = "自建服务"
 SOURCE_KIND_PUBLIC = "public"
 SOURCE_KIND_SELF_BUILT = "self_built"
 SOURCE_KINDS = frozenset({SOURCE_KIND_PUBLIC, SOURCE_KIND_SELF_BUILT})
 
-_UNSAFE_CHARS = frozenset('<>"`')
+_UNSAFE_CHARS = frozenset('<>"' + "`")
+
+
+def _split_source(value: object) -> tuple[str, str, object] | None:
+    """解析出来源的 scheme、主机与解析结果；不合规时返回 None。"""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > MAX_SOURCE_SCAN_LENGTH:
+        return None
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
+        return None
+    try:
+        parsed = urlsplit(text)
+    except (UnicodeError, ValueError):
+        return None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return None
+    try:
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if not host:
+        return None
+    host = host.lower()
+    if any(char in _UNSAFE_CHARS or char.isspace() for char in host):
+        return None
+    return scheme, host, parsed
 
 
 def sanitize_source_url(value: object) -> str | None:
-    """把一次实际请求地址收成可展示的来源；无法安全展示时返回 ``None``。"""
+    """把一次实际请求地址收成可展示的完整来源；无法安全展示时返回 None。"""
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -31,22 +64,14 @@ def sanitize_source_url(value: object) -> str | None:
         for char in text
     ):
         return None
-    try:
-        parsed = urlsplit(text)
-    except (UnicodeError, ValueError):
+    split = _split_source(text)
+    if split is None:
         return None
-
-    scheme = parsed.scheme.lower()
-    if scheme not in {"http", "https"}:
-        return None
+    scheme, host, parsed = split
     try:
-        host = parsed.hostname
         port = parsed.port
     except ValueError:
         return None
-    if not host:
-        return None
-    host = host.lower()
     if ":" in host:
         # IPv6 必须保留方括号，否则拼出的地址无法再被解析。
         netloc = f"[{host}]" if port is None else f"[{host}]:{port}"
@@ -62,28 +87,62 @@ def sanitize_source_url(value: object) -> str | None:
     return result
 
 
+def source_domain_text(value: object) -> str | None:
+    """只取可展示的域名，丢弃协议、端口、路径、查询串与用户信息。
+
+    IPv6 保留方括号，避免 ::1 这类地址在文本里产生歧义。路径是否包含
+    特殊字符、整串地址是否超过长度上限都不影响域名本身的可展示性。
+    """
+    split = _split_source(value)
+    if split is None:
+        return None
+    _scheme, host, _parsed = split
+    if ":" in host:
+        return f"[{host}]"
+    return host
+
+
+def snapshot_source_url(value: object) -> str | None:
+    """写入快照的来源地址。
+
+    优先保留完整的安全地址；当地址本身超过长度上限等无法整体保留时，
+    退化为只含协议与主机的形式，避免丢掉可展示的域名。仍然无法解析时
+    返回 None，由展示层写“来源不可用”。
+    """
+    full = sanitize_source_url(value)
+    if full is not None:
+        return full
+    split = _split_source(value)
+    if split is None:
+        return None
+    scheme, host, _parsed = split
+    netloc = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{netloc}"
+
+
 def source_url_text(value: object) -> str:
-    """展示用来源：无法展示时明确写“来源不可用”，不猜测或补全。"""
+    """展示用完整来源地址：无法展示时写“来源不可用”，不猜测或补全。"""
     return sanitize_source_url(value) or SOURCE_UNAVAILABLE_TEXT
 
 
 def source_display_text(source_url: object, source_kind: object) -> str:
-    """按站点来源类型给出可展示文本。
+    """按站点来源类型给出对外可展示的文本。
 
-    公开实例显示本次实际请求地址；自建站点只写“自建服务”，不暴露地址。
-    未知类型有地址时按自建隐藏，避免旧快照意外泄露内网地址；完全没有
-    来源信息时写“来源不可用”，不做任何推测。
+    公开实例只写域名，不暴露路径、查询串或凭据；自建站点只写“自建服务”。
+    未知类型有可展示域名时按自建隐藏，避免旧快照意外泄露内网地址；完全
+    没有来源信息时写“来源不可用”，不做任何推测。
     """
     if source_kind == SOURCE_KIND_PUBLIC:
-        return sanitize_source_url(source_url) or SOURCE_UNAVAILABLE_TEXT
+        return source_domain_text(source_url) or SOURCE_UNAVAILABLE_TEXT
     if source_kind == SOURCE_KIND_SELF_BUILT:
         return SOURCE_SELF_BUILT_TEXT
-    if sanitize_source_url(source_url) is None:
+    if source_domain_text(source_url) is None:
         return SOURCE_UNAVAILABLE_TEXT
     return SOURCE_SELF_BUILT_TEXT
 
 
 __all__ = [
+    "MAX_SOURCE_SCAN_LENGTH",
     "MAX_SOURCE_URL_LENGTH",
     "SOURCE_KIND_PUBLIC",
     "SOURCE_KIND_SELF_BUILT",
@@ -91,6 +150,8 @@ __all__ = [
     "SOURCE_SELF_BUILT_TEXT",
     "SOURCE_UNAVAILABLE_TEXT",
     "sanitize_source_url",
+    "snapshot_source_url",
     "source_display_text",
+    "source_domain_text",
     "source_url_text",
 ]

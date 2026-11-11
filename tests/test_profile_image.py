@@ -687,8 +687,10 @@ class ProfileImageRendererTest(unittest.TestCase):
                 with_source, "", self.renderer.limits.width,
             ),
         )
-        self.assertIn(f"数据来源：{url}", footer)
+        # 公开站点在图片里也只写域名，路径不得进入页脚。
+        self.assertIn("数据来源：example.test", footer)
         self.assertIn("获取时间：2026-10-26 13:00", footer)
+        self.assertNotIn("proxy/v2", footer)
 
         without_source = section("daily_news", "每日新闻", [item("新闻一")])
         missing_footer = text_of(
@@ -714,7 +716,7 @@ class ProfileImageRendererTest(unittest.TestCase):
         self.assertIn("数据来源：自建服务", self_hosted_footer)
         self.assertNotIn("10.0.0.5", self_hosted_footer)
 
-    def test_long_source_url_wraps_within_content_width_and_grows_image(self) -> None:
+    def test_long_source_url_keeps_domain_without_growing_image(self) -> None:
         url = (
             "https://example.test/" + "very-long-path-segment/" * 24 + "v2/60s"
         )
@@ -728,11 +730,16 @@ class ProfileImageRendererTest(unittest.TestCase):
         right_parts = [
             part for line in lines for part in line.parts if part.right is not None
         ]
-        # 右栏按字符换行后仍拼回完整地址，不截断。
-        self.assertIn(url, "".join(part.text for part in right_parts))
-        self.assertGreater(len(right_parts), 2)
+        joined = "".join(part.text for part in right_parts)
+        # 超长路径不进入图片，只保留域名，且不越界。
+        self.assertIn("数据来源：example.test", joined)
+        self.assertNotIn("very-long-path-segment", joined)
         for part in right_parts:
             self.assertLessEqual(part.right, content_width)
+            self.assertLessEqual(
+                self.renderer._font(part.size).getlength(part.text),
+                content_width,
+            )
 
         short = self.renderer.render(
             profile([section("daily_news", "每日新闻", [item("新闻一")])]),
@@ -741,7 +748,8 @@ class ProfileImageRendererTest(unittest.TestCase):
         self.assertEqual(short.status, "success")
         self.assertEqual(long.status, "success")
         self.assertEqual(png_size(long.png), (width, long.height))
-        self.assertGreater(long.height, short.height)
+        # 只显示域名后，页脚不再因为路径很长而撑高整张图。
+        self.assertEqual(long.height, short.height)
 
     def test_content_date_is_chinese_and_weekday_is_optional(self) -> None:
         self.assertEqual(
@@ -789,7 +797,7 @@ class ProfileImageRendererTest(unittest.TestCase):
         width = self.renderer.limits.width
         content_width = self.renderer._content_width(width)
         lines = self.renderer._footer_lines(target, "", width)
-        self.assertGreaterEqual(len(lines), 4)
+        self.assertGreaterEqual(len(lines), 3)
         both = [
             line for line in lines
             if len(line.parts) == 2
@@ -806,7 +814,7 @@ class ProfileImageRendererTest(unittest.TestCase):
             for part in line.parts
             if part.right is not None
         ]
-        self.assertGreaterEqual(len(right_parts), 3)
+        self.assertGreaterEqual(len(right_parts), 2)
         font = self.renderer._font(15)
         for part in right_parts:
             text_width = font.getlength(part.text)

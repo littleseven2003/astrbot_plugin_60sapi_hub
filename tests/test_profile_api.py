@@ -246,15 +246,16 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             sections["daily_news"]["source_kind"], "public",
         )
+        # 后台投影保留完整地址，对外来源展示只给域名。
         self.assertEqual(
-            sections["daily_news"]["source_display"],
-            "http://example.test/proxy/v2/60s",
+            sections["daily_news"]["source_display"], "example.test",
         )
         text = data["outputs"]["text"]
         markdown = data["outputs"]["markdown"]
-        self.assertIn("数据来源：http://example.test/proxy/v2/60s", text)
-        self.assertIn("数据来源：http://example.test/proxy/v2/zhihu", text)
-        self.assertIn("<http://example.test/proxy/v2/douyin>", markdown)
+        self.assertIn("数据来源：example.test", text)
+        self.assertIn("数据来源：example.test", markdown)
+        self.assertNotIn("proxy/v2", text)
+        self.assertNotIn("proxy/v2", markdown)
         # 凭据只用于请求头，不出现在来源地址或任何输出里。
         self.assertNotIn("profile-secret", json.dumps(data, ensure_ascii=False))
         self.assertNotIn("public-token", json.dumps(data, ensure_ascii=False))
@@ -305,7 +306,8 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(section["source_url"], "http://example.test/proxy/v2/60s")
         self.assertEqual(data["outputs"]["text"], text_before)
         self.assertEqual(data["outputs"]["markdown"], markdown_before)
-        self.assertIn("http://example.test/proxy/v2/60s", text_before)
+        self.assertIn("数据来源：example.test", text_before)
+        self.assertNotIn("proxy/v2", text_before)
         self.assertNotIn("new.example.test", text_before)
 
         # 新配置下的新获取才使用新地址。

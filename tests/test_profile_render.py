@@ -192,11 +192,11 @@ class ProfileRenderTest(unittest.TestCase):
         }
         text = render_profile_text(payload)
         markdown = render_profile_markdown(payload)
-        # 有来源的栏目展示脱敏后的实际地址。
-        self.assertIn("数据来源：https://example.test/proxy/v2/60s", text)
-        self.assertIn(
-            "- 数据来源：<https://example.test/proxy/v2/60s>", markdown,
-        )
+        # 公开站点只展示域名，路径、查询串和凭据都不进入输出。
+        self.assertIn("数据来源：example.test", text)
+        self.assertIn("- 数据来源：example.test", markdown)
+        self.assertNotIn("proxy/v2", text)
+        self.assertNotIn("proxy/v2", markdown)
         self.assertNotIn("user", text)
         self.assertNotIn("secret", text)
         self.assertNotIn("secret", markdown)
@@ -209,7 +209,7 @@ class ProfileRenderTest(unittest.TestCase):
         self.assertNotIn("10.0.0.5", text)
         self.assertNotIn("10.0.0.5", markdown)
 
-    def test_long_source_url_is_not_truncated(self) -> None:
+    def test_long_source_url_keeps_domain_without_path(self) -> None:
         url = "https://example.test/" + "very-long-path-segment/" * 30 + "v2/60s"
         payload = {
             "profile_name": "组合",
@@ -233,8 +233,11 @@ class ProfileRenderTest(unittest.TestCase):
         }
         text = render_profile_text(payload)
         markdown = render_profile_markdown(payload)
-        self.assertIn(url, text)
-        self.assertIn(f"<{url}>", markdown)
+        # 超长路径不会让可展示的域名丢失，也不会把路径写进输出。
+        self.assertIn("数据来源：example.test", text)
+        self.assertIn("- 数据来源：example.test", markdown)
+        self.assertNotIn("very-long-path-segment", text)
+        self.assertNotIn("very-long-path-segment", markdown)
 
     def test_unknown_or_stale_daily_warning_is_rendered(self) -> None:
         payload = {

@@ -14,7 +14,7 @@ from .douyin import (
     parse_douyin_hot,
 )
 from .sites import SiteService
-from .source_url import sanitize_source_url
+from .source_url import snapshot_source_url
 
 
 class DouyinHotService:
@@ -65,7 +65,7 @@ class DouyinHotService:
             site_id=site.id,
             site_name=site.name,
             fetched_at=self._clock(),
-            source_url=sanitize_source_url(url),
+            source_url=snapshot_source_url(url),
             source_kind=site.source_kind,
         )
 

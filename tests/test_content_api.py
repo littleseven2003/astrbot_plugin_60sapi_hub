@@ -664,7 +664,8 @@ class SnapshotSourceUrlTest(unittest.TestCase):
                 )
                 self.assertEqual(data["source_url"], urls[content_type])
                 self.assertEqual(data["source_kind"], "public")
-                self.assertEqual(data["source_display"], urls[content_type])
+                # 快照保留管理员可见的完整安全地址，对外展示只给域名。
+                self.assertEqual(data["source_display"], "example.test")
                 self.assertEqual(data["endpoint"], "/v2/" + {
                     "daily_news": "60s",
                     "bilibili_hot": "bili",

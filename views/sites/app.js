@@ -4773,6 +4773,10 @@ async function refreshAll() {
 }
 
 function bindEvents() {
+  // 管理员明确选择来源类型后，未知提示应立即消失，避免继续误导。
+  elements.sourceKind.addEventListener("change", () => {
+    setSourceKindHint(!isKnownSourceKind(elements.sourceKind.value));
+  });
   elements.createTaskButton.addEventListener("click", openCreateTask);
   elements.deliveryRefreshButton.addEventListener("click", () => loadDeliveries(true));
   elements.deliveryLoadMoreButton.addEventListener("click", () => loadDeliveries(false));

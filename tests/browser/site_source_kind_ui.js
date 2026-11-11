@@ -5,7 +5,13 @@
  * 换成记录型桩，用页面自己的表单和事件流验证：
  * 新建默认公开、已知类型往返、缺失/未知类型不被当成公开、也不会被写回。
  *
- * ASTRBOT_URL 不需要：本脚本在本机起静态服务，不连接任何真实上游或会话。
+ * 这是“桩 bridge 的页面逻辑验证”：宿主 bridge 由本脚本替换，因此它不验证
+ * 真实 AstrBot 后台、数据库往返（例如未知来源类型能否真的被后端保存），
+ * 也不连接任何真实上游或会话。真实宿主验收需在具备 WebUI 的环境单独完成。
+ *
+ * 浏览器可用 CHROME_PATH 指定；未指定时回退到 playwright-core 解析到的
+ * Chromium。Node 与 playwright-core 由 NODE_PATH / 安装位置决定，不含任何
+ * 开发者本机绝对路径。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -13,9 +19,23 @@ const http = require("node:http");
 const path = require("node:path");
 const { chromium } = require("playwright-core");
 
-const CHROME = process.env.CHROME_PATH;
-if (!CHROME) {
-  console.error("CHROME_PATH is required");
+function resolveChrome() {
+  const configured = process.env.CHROME_PATH;
+  if (configured) {
+    return configured;
+  }
+  try {
+    return chromium.executablePath();
+  } catch {
+    return "";
+  }
+}
+
+const CHROME = resolveChrome();
+if (!CHROME || !fs.existsSync(CHROME)) {
+  console.error(
+    "找不到可用的 Chromium：请设置 CHROME_PATH，或安装 playwright 的浏览器。",
+  );
   process.exit(2);
 }
 const VIEWS_DIR = path.resolve(__dirname, "..", "..", "views", "sites");
@@ -77,7 +97,9 @@ async function openPage(browser, port) {
     window.AstrBotPluginView = {
       ready: async () => ({ pageTitle: "60sAPI Hub" }),
       apiGet: async (endpoint) => {
-        window.__calls.push({ method: "GET", endpoint });
+        window.__calls.push({
+          seq: window.__calls.length + 1, method: "GET", endpoint,
+        });
         if (endpoint === "sites") {
           return { sites: window.__siteFixtures };
         }
@@ -96,7 +118,9 @@ async function openPage(browser, port) {
         return {};
       },
       apiPost: async (endpoint, payload) => {
-        window.__calls.push({ method: "POST", endpoint, payload });
+        window.__calls.push({
+          seq: window.__calls.length + 1, method: "POST", endpoint, payload,
+        });
         return {};
       },
     };
@@ -120,20 +144,33 @@ async function openEditFor(page, name) {
   );
 }
 
+// 同一 endpoint 可能被多次提交（例如未知类型先不选择、随后显式选择）。
+// 这里以点击前的最大序号为基准，只接受本次操作之后产生的新 POST。
 async function submitAndCapture(page, endpoint) {
-  await page.click("#save-button");
-  await page.waitForFunction(
-    (target) => window.__calls.some(
-      (call) => call.method === "POST" && call.endpoint === target,
-    ),
-    endpoint, { timeout: 10000 },
-  );
-  return page.evaluate((target) => {
+  const baseline = await page.evaluate((target) => {
     const posts = window.__calls.filter(
       (call) => call.method === "POST" && call.endpoint === target,
     );
-    return posts[posts.length - 1].payload;
+    return posts.length ? posts[posts.length - 1].seq : 0;
   }, endpoint);
+  await page.click("#save-button");
+  await page.waitForFunction(
+    ({ target, after }) => window.__calls.some(
+      (call) => call.method === "POST"
+        && call.endpoint === target
+        && call.seq > after,
+    ),
+    { target: endpoint, after: baseline },
+    { timeout: 10000 },
+  );
+  return page.evaluate(({ target, after }) => {
+    const posts = window.__calls.filter(
+      (call) => call.method === "POST"
+        && call.endpoint === target
+        && call.seq > after,
+    );
+    return posts[0].payload;
+  }, { target: endpoint, after: baseline });
 }
 
 (async () => {
@@ -227,9 +264,14 @@ async function submitAndCapture(page, endpoint) {
       "未知类型只改名称时不发送来源类型",
     );
 
-    // 管理员明确选择后按选择保存。
+    // 管理员明确选择后按选择保存，且未知提示随即消失。
     await openEditFor(page, "未知类型站点");
+    check(
+      !(await page.isHidden("#source-kind-hint")),
+      "未知类型编辑时提示可见",
+    );
     await page.selectOption("#source-kind", "self_built");
+    check(await page.isHidden("#source-kind-hint"), "明确选择后提示消失");
     await page.fill("#name", "未知类型站点显式选择");
     const explicitPayload = await submitAndCapture(
       page, "sites/site-unknown/update",

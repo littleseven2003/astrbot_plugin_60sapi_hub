@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+from core.sites import MAX_BASE_URL_LENGTH
 from core.source_url import (
+    MAX_SNAPSHOT_URL_LENGTH,
     MAX_SOURCE_URL_LENGTH,
     SOURCE_SELF_BUILT_TEXT,
     SOURCE_UNAVAILABLE_TEXT,
@@ -152,18 +154,24 @@ class SourceDomainTest(unittest.TestCase):
             source_display_text(url, "public"), "api.example.com",
         )
 
-    def test_long_base_url_still_yields_domain(self) -> None:
-        # 合法基础地址接近上限，拼接 endpoint 后超过上限。
-        base = (
-            "https://api.example.com/"
-            + "p" * (MAX_SOURCE_URL_LENGTH + 20)
-        )
+    def test_long_base_url_keeps_port_path_and_endpoint(self) -> None:
+        # 合法基础地址接近上限，拼接 endpoint 后超过 MAX_SOURCE_URL_LENGTH。
+        prefix = "https://api.example.com:8443/reverse-proxy/"
+        base = prefix + "p" * (MAX_BASE_URL_LENGTH - len(prefix))
+        self.assertEqual(len(base), MAX_BASE_URL_LENGTH)
         url = base + "/v2/zhihu"
         self.assertGreater(len(url), MAX_SOURCE_URL_LENGTH)
         self.assertIsNone(sanitize_source_url(url))
+        # 快照必须完整表达本次请求：端口、反代前缀和 endpoint 都不能丢。
+        snapshot = snapshot_source_url(url)
+        self.assertEqual(snapshot, url)
+        self.assertIn(":8443", snapshot)
+        self.assertIn("/reverse-proxy/", snapshot)
+        self.assertTrue(snapshot.endswith("/v2/zhihu"))
+        self.assertGreater(len(snapshot), MAX_SOURCE_URL_LENGTH)
+        self.assertLessEqual(len(snapshot), MAX_SNAPSHOT_URL_LENGTH)
+        # 对外展示仍然只有域名。
         self.assertEqual(source_display_text(url, "public"), "api.example.com")
-        # 写入快照时退化为只含协议与主机，域名不会丢失。
-        self.assertEqual(snapshot_source_url(url), "https://api.example.com")
 
     def test_special_path_characters_do_not_hide_domain(self) -> None:
         for url in (

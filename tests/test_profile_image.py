@@ -836,6 +836,91 @@ class ProfileImageRendererTest(unittest.TestCase):
                 font.getlength(part.text), content_width // 2,
             )
 
+    def test_long_domain_footer_wraps_without_overlap_or_clipping(self) -> None:
+        # 长域名仍要符合现有主机名校验规则：单段 ≤63、总长 ≤253。
+        domain = ".".join(
+            ["a" * 40, "b" * 40, "c" * 40, "example", "test"],
+        )
+        self.assertLessEqual(len(domain), 253)
+        for label in domain.split("."):
+            self.assertLessEqual(len(label), 63)
+        target = section(
+            "daily_news", "每日新闻", [item("新闻一")],
+            source_url=f"https://{domain}:8443/proxy/v2/60s",
+            source_kind="public",
+        )
+        width = self.renderer.limits.width
+        content_width = self.renderer._content_width(width)
+        left_width = min(300, content_width // 2)
+        right_width = content_width - left_width - 40
+        lines = self.renderer._footer_lines(target, "", width)
+        right_parts = [
+            part for line in lines for part in line.parts if part.right is not None
+        ]
+        # 右栏换行后仍能拼回完整域名，没有被截断。
+        joined = "".join(part.text for part in right_parts)
+        self.assertIn(f"数据来源：{domain}", joined)
+        self.assertGreater(len(right_parts), 2)
+        font = self.renderer._font(15)
+        for part in right_parts:
+            # 每一行都不越出右栏，也不越过内容区。
+            self.assertLessEqual(font.getlength(part.text), right_width)
+            self.assertLessEqual(part.right, content_width)
+        # 左右两栏不重叠。
+        for line in lines:
+            if len(line.parts) != 2:
+                continue
+            left, right = line.parts
+            self.assertIsNone(left.right)
+            self.assertIsNotNone(right.right)
+            left_end = font.getlength(left.text)
+            right_start = right.right - font.getlength(right.text)
+            self.assertGreaterEqual(right_start - left_end, 0)
+
+        # 实际出图成功，且长域名换行会让页脚变高（这是换行而不是裁切）。
+        short = self.renderer.render(
+            profile([section("daily_news", "每日新闻", [item("新闻一")])]),
+        )[0]
+        long_domain = self.renderer.render(profile([target]))[0]
+        self.assertEqual(long_domain.status, "success")
+        self.assertEqual(png_size(long_domain.png), (width, long_domain.height))
+        self.assertGreater(long_domain.height, short.height)
+
+    def test_long_path_never_reaches_image_footer(self) -> None:
+        domain = "long-domain.example.test"
+        secret = "simulated-secret-abc123"
+        long_path = "/" + "/".join(["very-long-path-segment"] * 40) + "/" + secret
+        long_target = section(
+            "daily_news", "每日新闻", [item("新闻一")],
+            source_url=f"https://{domain}{long_path}/v2/60s",
+            source_kind="public",
+        )
+        plain_target = section(
+            "daily_news", "每日新闻", [item("新闻一")],
+            source_url=f"https://{domain}/v2/60s",
+            source_kind="public",
+        )
+        long_footer = text_of(
+            self.renderer._footer_lines(
+                long_target, "", self.renderer.limits.width,
+            ),
+        )
+        plain_footer = text_of(
+            self.renderer._footer_lines(
+                plain_target, "", self.renderer.limits.width,
+            ),
+        )
+        self.assertIn(f"数据来源：{domain}", long_footer)
+        self.assertNotIn(secret, long_footer)
+        self.assertNotIn("very-long-path-segment", long_footer)
+        self.assertEqual(long_footer, plain_footer)
+
+        long_image = self.renderer.render(profile([long_target]))[0]
+        plain_image = self.renderer.render(profile([plain_target]))[0]
+        self.assertEqual(long_image.status, "success")
+        # 长路径不会进入图片，也不会把图片撑高。
+        self.assertEqual(long_image.height, plain_image.height)
+
     def test_hot_value_text_uses_secondary_color(self) -> None:
         data = section(
             "douyin_hot", "抖音热搜",

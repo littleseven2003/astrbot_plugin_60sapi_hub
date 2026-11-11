@@ -61,7 +61,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 - `core/astrbot_sender.py`：AstrBot v4.29.1 aiocqhttp/OneBot v11 适配。按 UMO 平台实例 ID 精确查找实例，用真实 `Context.send_message`/`MessageSession`/`MessageChain` 路由；仅接受 aiocqhttp，其他适配器前置拒绝；图片用内存 PNG bytes，Markdown 以 Plain 源码发送。
 - `core/image_service.py`：受限线程池（最多 2 执行、4 排队，准入 6）、20 秒总超时、取消事件和关闭等待；后台任务结束前持续占用准入名额，避免超时后无界积压。
 - `core/site_store.py`：同一 SQLite 连接管理站点、组合、栏目、推送任务、任务 UMO 和投递执行/目标/页；站点表含来源类型（公开 / 自建，schema v13 新增，无来源类型的旧站点迁移为公开，已有类型保持原值）；schema v8 事务迁移（v6 重建 enabled 约束并保留配置/UMO/历史）、外键 `ON DELETE RESTRICT`、组合引用删除拒绝、任务 revision 控制和投递状态恢复。
-- 组合预览：`core/profile_api.py` 读取一份组合版本和站点，按栏目配置顺序调用 `ContentService.preview_cached`；只请求选中类型，复用缓存和并发预算，逐栏截取返回条数，不修改完整快照。
+- 组合预览：`core/profile_api.py` 读取一份组合版本和站点，按栏目配置顺序调用 `ContentService.preview_cached`；只请求选中类型，复用缓存和并发预算，逐栏截取返回条数，不修改完整快照。每轮栏目收齐后复核组合/站点 revision，变化则丢弃整轮并按最终配置重做一次，仍不一致返回 409 `preview_revision_changed`；文字、Markdown 和图片快照共用同一组已验证版本。
 - 组合文字输出：预览成功或部分成功后，`core/profile_render.py` 基于同一份响应生成 `outputs.text` 和 `outputs.markdown`；后台只切换/复制/下载已接受响应，不再次获取。全部失败不生成输出。
 - 组合图片：预览成功后，`core/profile_api.py` 将同一次响应的结构化栏目保存到 `ImageSnapshotStore` 并返回不透明 ID。生成时根据 ID 取回快照，校验用户、组合/站点 revision 和启用状态，再由 `ProfileImageService` 在线程池中调用 `ProfileImageRenderer`；不重新请求上游、不读取后续缓存。图片以认证 JSON 的 PNG base64 返回（每个栏目一条 `images` 记录，`status` 为 `success` / `empty` / `failed`，失败栏目只带安全 `error`），后台用 data URL 逐张展示并按栏目下载，不使用静态文件路径。
 - `views/sites/`：在站点管理页内提供“内容预览”，选择站点和内容类型后主动获取；结果用安全 DOM 文本渲染，不写入站点配置，也不进入站点写操作的未确认流程。
@@ -97,7 +97,7 @@ AstrBot 4.29.1 的视图 bridge 只有 `apiGet` 和 `apiPost`，因此更新和�
 
 `source_url` 在获取成功时由服务层写入快照：使用 httpx 的 URL 规范化，保留非默认端口、路径前缀和 endpoint，去掉用户信息、查询串和 fragment；路径点段和默认端口遵循客户端规则。编码后快照预算为 25088 字符，按站点基础地址上限 2048 字符乘以 UTF-8 最坏百分号编码膨胀 12 倍并加余量计算；无法安全表达时返回空来源。同一快照记录站点当时的 `source_kind`。展示规则统一由 `source_display_text` 决定：`public` 只显示域名（不显示协议、端口、路径、查询串或凭据），`self_built` 只显示“自建服务”，未知类型有地址时按自建隐藏、没有地址时写“来源不可用”。文字、Markdown、图片页脚、聊天和后台栏目投影都调用这一个函数，因此五类接口与各出口使用同一条规则；后台受鉴权接口返回快照中的 `source_url`，管理员可在站点管理中核对完整基础地址。后续站点改名、改地址或改来源类型只影响新获取，已生成快照、文字、Markdown 和图片快照继续使用获取时的值，不按站点名称或 endpoint 补造。
 
-组合预览按配置顺序返回栏目，逐栏按 `limit` 截取响应，不修改缓存中的完整快照；合法空列表算成功。部分栏目失败保留成功栏目并返回安全错误，全部失败返回 502 且不显示为空内容成功。文字/Markdown 只从已截取结果生成，不单独访问上游；Markdown 对不可信文本/链接做转义，不输出 HTML、图片或远程资源。同次输出共享不可变快照；图片快照额外保存组合/站点 revision、归属和过期时间，容量/TTL/关闭清理在内存中完成，不创建图片文件。
+组合预览按配置顺序返回栏目，逐栏按 `limit` 截取响应，不修改缓存中的完整快照；合法空列表算成功。每次预览最多两轮：栏目收齐后复核 `profile_revision`、`site_id` 和 `site_revision`，发现变化则丢弃整轮结果并按最终配置重做；仍不一致返回 409 `preview_revision_changed` 且不带栏目，避免不同版本的来源被拼进一次 200 响应。部分栏目失败保留成功栏目并返回安全错误，全部失败返回 502 且不显示为空内容成功。文字/Markdown 只从已截取结果生成，不单独访问上游；Markdown 对不可信文本/链接做转义，不输出 HTML、图片或远程资源。同次输出共享不可变快照；图片快照额外保存组合/站点 revision、归属和过期时间，容量/TTL/关闭清理在内存中完成，不创建图片文件。
 
 ## 错误与恢复
 

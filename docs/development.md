@@ -268,6 +268,7 @@ ASTRBOT_URL=http://127.0.0.1:16194 ASTRBOT_PASSWORD='<isolated password>' CHROME
 - `tests/test_content_cache_integration.py`：五种内容缓存、daily 跨中国日期、名称/地址/凭据 revision、禁用/删除、在途配置变化、API 缓存元信息、严格 force_refresh、刷新失败保留旧缓存。
 - `tests/test_profiles.py`：模型/类型/重复/顺序/limit/params 校验、CRUD/revision、重开持久化、v1→v2 迁移、站点引用删除拒绝、并发删除/创建无悬空引用。
 - `tests/test_profile_api.py`：组合 CRUD/冲突、五类预览顺序、逐栏截取不污染完整缓存、缓存命中/刷新、station revision、部分失败/全部失败/空列表、错误脱敏、禁用站点和严格 force_refresh，以及成功/部分成功响应包含同源 outputs。
+- `tests/test_profile_preview_revision.py`：组合预览中途修改站点来源类型/地址时不返回混合 revision 的栏目；有界重试一次后仍变化返回 409 `preview_revision_changed`；单栏上游失败仍为 200 部分成功。
 - `tests/test_profile_render.py`：纯函数同源、不修改输入；文字字段/顺序/限制/日期提示/空栏目/零值热度/失败栏目；Markdown 转义标题、换行、HTML、围栏、链接括号/空格、非法链接降级和生成结构。
 - `tests/test_image_snapshots.py`：TTL、LRU/数量、总字节、单快照大小、关闭后拒绝访问。
 - `tests/test_profile_image.py`：真实 PNG、长内容长图、同快照确定性、空列表/热度 0/部分失败、单图高度与字节上限（`section_too_tall` / `section_too_large`）、栏目数上限、字体/取消限制。

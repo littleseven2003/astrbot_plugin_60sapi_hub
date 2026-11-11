@@ -154,6 +154,8 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
             result.body["data"]["code"], "preview_revision_changed",
         )
         self.assertNotIn("sections", result.body.get("data") or {})
+        # 失败响应不带旧栏目，也不登记图片快照。
+        self.assertEqual(self.snapshots.size, 0)
 
     async def test_single_section_upstream_failure_is_not_a_conflict(self) -> None:
         profile = await self._profile()

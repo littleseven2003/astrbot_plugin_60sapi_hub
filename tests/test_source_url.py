@@ -4,8 +4,10 @@ import unittest
 
 from core.source_url import (
     MAX_SOURCE_URL_LENGTH,
+    SOURCE_SELF_BUILT_TEXT,
     SOURCE_UNAVAILABLE_TEXT,
     sanitize_source_url,
+    source_display_text,
     source_url_text,
 )
 
@@ -62,6 +64,40 @@ class SanitizeSourceUrlTest(unittest.TestCase):
         self.assertEqual(
             source_url_text("http://example.test/p/v2/bili"),
             "http://example.test/p/v2/bili",
+        )
+
+
+class SourceDisplayTest(unittest.TestCase):
+    def test_public_shows_url_and_self_built_shows_label(self) -> None:
+        url = "https://api.example.test/proxy/v2/60s"
+        self.assertEqual(source_display_text(url, "public"), url)
+        self.assertEqual(
+            source_display_text(url, "self_built"),
+            SOURCE_SELF_BUILT_TEXT,
+        )
+        # 自建站点即使没有地址也只写标签，不写“来源不可用”之外的猜测。
+        self.assertEqual(
+            source_display_text(None, "self_built"),
+            SOURCE_SELF_BUILT_TEXT,
+        )
+        self.assertEqual(
+            source_display_text(None, "public"),
+            SOURCE_UNAVAILABLE_TEXT,
+        )
+
+    def test_unknown_kind_never_leaks_address(self) -> None:
+        # 旧快照没有类型字段：有地址时按自建隐藏，没有地址时写不可用。
+        self.assertEqual(
+            source_display_text("http://10.0.0.5/proxy/v2/60s", None),
+            SOURCE_SELF_BUILT_TEXT,
+        )
+        self.assertEqual(
+            source_display_text(None, None),
+            SOURCE_UNAVAILABLE_TEXT,
+        )
+        self.assertEqual(
+            source_display_text("https://api.example.test/v2/60s", "unknown"),
+            SOURCE_SELF_BUILT_TEXT,
         )
 
 

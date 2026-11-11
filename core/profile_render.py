@@ -10,7 +10,14 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from .source_url import SOURCE_UNAVAILABLE_TEXT, sanitize_source_url
+from .source_url import (
+    SOURCE_KIND_PUBLIC,
+    SOURCE_KIND_SELF_BUILT,
+    SOURCE_SELF_BUILT_TEXT,
+    SOURCE_UNAVAILABLE_TEXT,
+    sanitize_source_url,
+    source_display_text,
+)
 
 _STATUS_TEXT = {
     "complete": "完整成功",
@@ -163,16 +170,24 @@ def _markdown_section(section: dict[str, Any]) -> list[str]:
 
 
 def _source_text(section: dict[str, Any]) -> str:
-    """本栏目实际请求地址；没有可展示来源时明确写不可用。"""
-    return sanitize_source_url(section.get("source_url")) or SOURCE_UNAVAILABLE_TEXT
+    """公开实例写实际地址，自建站点只写“自建服务”。"""
+    return source_display_text(
+        section.get("source_url"),
+        section.get("source_kind"),
+    )
 
 
 def _markdown_source(section: dict[str, Any]) -> str:
+    kind = section.get("source_kind")
     url = sanitize_source_url(section.get("source_url"))
-    if url is None:
-        return SOURCE_UNAVAILABLE_TEXT
-    # 已校验为纯 http(s) 地址且不含控制字符与尖括号，可作为自动链接展示。
-    return f"<{url}>"
+    if kind == SOURCE_KIND_PUBLIC:
+        if url is None:
+            return SOURCE_UNAVAILABLE_TEXT
+        # 已校验为纯 http(s) 地址且不含控制字符与尖括号，可作为自动链接展示。
+        return f"<{url}>"
+    if kind == SOURCE_KIND_SELF_BUILT or url is not None:
+        return SOURCE_SELF_BUILT_TEXT
+    return SOURCE_UNAVAILABLE_TEXT
 
 
 def _items(section: dict[str, Any]) -> list[dict[str, Any]]:

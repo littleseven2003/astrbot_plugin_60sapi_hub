@@ -21,6 +21,7 @@ from .news import (
     NewsTransportError,
 )
 from .news_api import snapshot_dict
+from .source_url import source_display_text
 from .sites import (
     SiteConflictError,
     SiteTestBusyError,
@@ -251,6 +252,10 @@ def _bili_snapshot_dict(snapshot: BiliHotSnapshot) -> dict[str, Any]:
         "site_name": snapshot.site_name,
         "endpoint": snapshot.endpoint,
         "source_url": snapshot.source_url,
+        "source_kind": snapshot.source_kind,
+        "source_display": source_display_text(
+            snapshot.source_url, snapshot.source_kind,
+        ),
         "fetched_at": snapshot.fetched_at,
         "item_count": len(snapshot.items),
         "items": [
@@ -267,6 +272,10 @@ def _zhihu_snapshot_dict(snapshot: ZhihuHotSnapshot) -> dict[str, Any]:
         "site_name": snapshot.site_name,
         "endpoint": snapshot.endpoint,
         "source_url": snapshot.source_url,
+        "source_kind": snapshot.source_kind,
+        "source_display": source_display_text(
+            snapshot.source_url, snapshot.source_kind,
+        ),
         "fetched_at": snapshot.fetched_at,
         "item_count": len(snapshot.items),
         "items": [
@@ -288,6 +297,10 @@ def _douyin_snapshot_dict(snapshot: DouyinHotSnapshot) -> dict[str, Any]:
         "site_name": snapshot.site_name,
         "endpoint": snapshot.endpoint,
         "source_url": snapshot.source_url,
+        "source_kind": snapshot.source_kind,
+        "source_display": source_display_text(
+            snapshot.source_url, snapshot.source_kind,
+        ),
         "fetched_at": snapshot.fetched_at,
         "item_count": len(snapshot.items),
         "items": [
@@ -308,6 +321,10 @@ def _toutiao_snapshot_dict(snapshot: ToutiaoHotSnapshot) -> dict[str, Any]:
         "site_name": snapshot.site_name,
         "endpoint": snapshot.endpoint,
         "source_url": snapshot.source_url,
+        "source_kind": snapshot.source_kind,
+        "source_display": source_display_text(
+            snapshot.source_url, snapshot.source_kind,
+        ),
         "fetched_at": snapshot.fetched_at,
         "item_count": len(snapshot.items),
         "items": [

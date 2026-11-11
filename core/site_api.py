@@ -72,6 +72,7 @@ class SiteApi:
                         "timeout_seconds",
                         DEFAULT_TIMEOUT_SECONDS,
                     ),
+                    source_kind=data.get("source_kind"),
                     bearer_token=data.get("bearer_token"),
                 ),
             )
@@ -96,6 +97,7 @@ class SiteApi:
                     enabled=data.get("enabled"),
                     timeout_seconds=data.get("timeout_seconds"),
                     expected_revision=data.get("expected_revision"),
+                    source_kind=data.get("source_kind"),
                     credential_action=data.get("credential_action", "keep"),
                     bearer_token=data.get("bearer_token"),
                 ),
@@ -147,6 +149,7 @@ def _site_dict(site: SiteConfig) -> dict[str, Any]:
         "base_url": site.base_url,
         "enabled": site.enabled,
         "timeout_seconds": site.timeout_seconds,
+        "source_kind": site.source_kind,
         "has_bearer_token": site.has_bearer_token,
         "revision": site.revision,
         "created_at": site.created_at,

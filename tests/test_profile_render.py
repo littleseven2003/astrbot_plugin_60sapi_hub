@@ -163,6 +163,7 @@ class ProfileRenderTest(unittest.TestCase):
                         "https://user:pass@example.test/proxy/v2/60s"
                         "?token=secret#frag"
                     ),
+                    "source_kind": "public",
                     "displayed_count": 0,
                     "total_item_count": 0,
                     "items": [],
@@ -172,6 +173,17 @@ class ProfileRenderTest(unittest.TestCase):
                     "label": "知乎热榜",
                     "status": "ok",
                     "fetched_at": "2026-10-26T02:01:00+00:00",
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+                {
+                    "content_type": "douyin_hot",
+                    "label": "抖音热搜",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:02:00+00:00",
+                    "source_url": "http://10.0.0.5:8080/proxy/v2/douyin",
+                    "source_kind": "self_built",
                     "displayed_count": 0,
                     "total_item_count": 0,
                     "items": [],
@@ -191,6 +203,11 @@ class ProfileRenderTest(unittest.TestCase):
         # 旧快照缺少来源字段时明确写不可用，不用站点名称冒充。
         self.assertIn("数据来源：来源不可用", text)
         self.assertIn("- 数据来源：来源不可用", markdown)
+        # 自建站点只写“自建服务”，不把内网地址写进输出。
+        self.assertIn("数据来源：自建服务", text)
+        self.assertIn("- 数据来源：自建服务", markdown)
+        self.assertNotIn("10.0.0.5", text)
+        self.assertNotIn("10.0.0.5", markdown)
 
     def test_long_source_url_is_not_truncated(self) -> None:
         url = "https://example.test/" + "very-long-path-segment/" * 30 + "v2/60s"
@@ -207,6 +224,7 @@ class ProfileRenderTest(unittest.TestCase):
                     "status": "ok",
                     "fetched_at": "2026-10-26T02:00:00+00:00",
                     "source_url": url,
+                    "source_kind": "public",
                     "displayed_count": 0,
                     "total_item_count": 0,
                     "items": [],

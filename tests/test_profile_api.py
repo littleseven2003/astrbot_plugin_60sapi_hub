@@ -34,6 +34,16 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
                 bearer_token="profile-secret",
             ),
         )
+        self.public_site = await self.sites.create_site(
+            SiteCreate(
+                name="公开实例站点",
+                base_url="http://example.test/proxy",
+                enabled=True,
+                timeout_seconds=5,
+                source_kind="public",
+                bearer_token="public-token",
+            ),
+        )
         self.calls: list[str] = []
         self.mode = "normal"
         self.seen_auth: list[str] = []
@@ -71,11 +81,11 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self.tmp.cleanup()
 
-    async def _create(self, items=None, name="组合"):
+    async def _create(self, items=None, name="组合", site_id=None):
         result = await self.api.create_profile(
             {
                 "name": name,
-                "site_id": self.site.id,
+                "site_id": site_id or self.site.id,
                 "items": items
                 or [
                     profile_item("daily_news", 2),
@@ -216,7 +226,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(full.hit)
 
     async def test_sections_and_outputs_show_each_section_source_url(self) -> None:
-        created = await self._create()
+        created = await self._create(site_id=self.public_site.id)
         result = await self.api.preview_profile({"profile_id": created["id"]})
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -233,6 +243,13 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
             sections["douyin_hot"]["source_url"],
             "http://example.test/proxy/v2/douyin",
         )
+        self.assertEqual(
+            sections["daily_news"]["source_kind"], "public",
+        )
+        self.assertEqual(
+            sections["daily_news"]["source_display"],
+            "http://example.test/proxy/v2/60s",
+        )
         text = data["outputs"]["text"]
         markdown = data["outputs"]["markdown"]
         self.assertIn("数据来源：http://example.test/proxy/v2/60s", text)
@@ -240,9 +257,27 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<http://example.test/proxy/v2/douyin>", markdown)
         # 凭据只用于请求头，不出现在来源地址或任何输出里。
         self.assertNotIn("profile-secret", json.dumps(data, ensure_ascii=False))
+        self.assertNotIn("public-token", json.dumps(data, ensure_ascii=False))
+
+    async def test_self_built_sections_hide_address_in_outputs(self) -> None:
+        created = await self._create()
+        result = await self.api.preview_profile({"profile_id": created["id"]})
+        self.assertEqual(result.status_code, 200, result.body)
+        data = result.body["data"]
+        self.assertEqual(data["sections"][0]["source_kind"], "self_built")
+        self.assertEqual(data["sections"][0]["source_display"], "自建服务")
+        text = data["outputs"]["text"]
+        markdown = data["outputs"]["markdown"]
+        self.assertIn("数据来源：自建服务", text)
+        self.assertIn("- 数据来源：自建服务", markdown)
+        self.assertNotIn("example.test/proxy", text)
+        self.assertNotIn("example.test/proxy", markdown)
 
     async def test_existing_outputs_keep_old_source_after_site_change(self) -> None:
-        created = await self._create(items=[profile_item("daily_news")])
+        created = await self._create(
+            items=[profile_item("daily_news")],
+            site_id=self.public_site.id,
+        )
         first = await self.api.preview_profile({"profile_id": created["id"]})
         self.assertEqual(first.status_code, 200, first.body)
         data = first.body["data"]
@@ -254,16 +289,17 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         markdown_before = data["outputs"]["markdown"]
 
         updated = await self.sites.update_site(
-            self.site.id,
+            self.public_site.id,
             SiteUpdate(
                 name="改名后的站点",
                 base_url="http://new.example.test/other-prefix",
                 enabled=True,
                 timeout_seconds=5,
-                expected_revision=self.site.revision,
+                expected_revision=self.public_site.revision,
             ),
         )
-        self.assertEqual(updated.revision, self.site.revision + 1)
+        self.assertEqual(updated.revision, self.public_site.revision + 1)
+        self.assertEqual(updated.source_kind, "public")
 
         # 已生成的内容快照和文字/Markdown 保持原地址，不被新配置覆盖。
         self.assertEqual(section["source_url"], "http://example.test/proxy/v2/60s")
@@ -274,7 +310,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
 
         # 新配置下的新获取才使用新地址。
         refreshed = await self.content.preview_cached(
-            "daily_news", self.site.id, force_refresh=True,
+            "daily_news", self.public_site.id, force_refresh=True,
         )
         self.assertEqual(
             refreshed.snapshot.source_url,

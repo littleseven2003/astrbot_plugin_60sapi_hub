@@ -623,6 +623,50 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertIsNotNone(table)
 
+    async def test_v12_site_gains_self_built_source_kind(self) -> None:
+        legacy_path = self._root / "legacy.sqlite3"
+        with closing(sqlite3.connect(legacy_path)) as connection, connection:
+            connection.execute(
+                """
+                CREATE TABLE sites (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                    timeout_seconds REAL NOT NULL
+                        CHECK (timeout_seconds >= 1 AND timeout_seconds <= 120),
+                    bearer_token TEXT,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """,
+            )
+            connection.execute(
+                "INSERT INTO sites VALUES "
+                "('a' || substr(hex(randomblob(16)), 1, 31), '旧站点', "
+                "'https://old.example.test', 1, 10, NULL, 1, "
+                "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+            )
+            connection.execute("PRAGMA user_version = 12")
+        service = SiteService(legacy_path)
+        await service.open()
+        try:
+            sites = await service.list_sites()
+            self.assertEqual(len(sites), 1)
+            # 旧库没有来源类型；迁移后按自建处理，不推测为公开实例。
+            self.assertEqual(sites[0].source_kind, "self_built")
+            self.assertEqual(sites[0].base_url, "https://old.example.test")
+        finally:
+            await service.close()
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            columns = [
+                row[1] for row in connection.execute("PRAGMA table_info(sites)")
+            ]
+        self.assertEqual(version, SCHEMA_VERSION)
+        self.assertIn("source_kind", columns)
+
     async def test_open_creates_nested_directory(self) -> None:
         nested = self._root / "nested" / "data" / "sites.sqlite3"
         service = SiteService(nested)

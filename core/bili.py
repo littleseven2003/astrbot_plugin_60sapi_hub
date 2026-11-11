@@ -54,6 +54,7 @@ class BiliHotSnapshot:
     fetched_at: str
     items: tuple[BiliHotItem, ...]
     source_url: str | None = None
+    source_kind: str | None = None
 
 
 def build_bili_hot_url(base_url: str) -> str:
@@ -68,6 +69,7 @@ def parse_bili_hot(
     site_name: str,
     fetched_at: datetime,
     source_url: str | None = None,
+    source_kind: str | None = None,
 ) -> BiliHotSnapshot:
     """解析官方/兼容实例的 Bilibili 热搜 JSON 响应。
 
@@ -99,6 +101,7 @@ def parse_bili_hot(
         fetched_at=_as_utc(fetched_at).isoformat(timespec="seconds"),
         items=items,
         source_url=source_url,
+        source_kind=source_kind,
     )
 
 

@@ -64,6 +64,7 @@ class NewsService:
             site_name=site.name,
             fetched_at=self._clock(),
             source_url=sanitize_source_url(url),
+            source_kind=site.source_kind,
         )
 
 

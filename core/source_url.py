@@ -11,6 +11,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 MAX_SOURCE_URL_LENGTH = 2048
 SOURCE_UNAVAILABLE_TEXT = "来源不可用"
+SOURCE_SELF_BUILT_TEXT = "自建服务"
+SOURCE_KIND_PUBLIC = "public"
+SOURCE_KIND_SELF_BUILT = "self_built"
+SOURCE_KINDS = frozenset({SOURCE_KIND_PUBLIC, SOURCE_KIND_SELF_BUILT})
 
 _UNSAFE_CHARS = frozenset('<>"`')
 
@@ -63,9 +67,30 @@ def source_url_text(value: object) -> str:
     return sanitize_source_url(value) or SOURCE_UNAVAILABLE_TEXT
 
 
+def source_display_text(source_url: object, source_kind: object) -> str:
+    """按站点来源类型给出可展示文本。
+
+    公开实例显示本次实际请求地址；自建站点只写“自建服务”，不暴露地址。
+    未知类型有地址时按自建隐藏，避免旧快照意外泄露内网地址；完全没有
+    来源信息时写“来源不可用”，不做任何推测。
+    """
+    if source_kind == SOURCE_KIND_PUBLIC:
+        return sanitize_source_url(source_url) or SOURCE_UNAVAILABLE_TEXT
+    if source_kind == SOURCE_KIND_SELF_BUILT:
+        return SOURCE_SELF_BUILT_TEXT
+    if sanitize_source_url(source_url) is None:
+        return SOURCE_UNAVAILABLE_TEXT
+    return SOURCE_SELF_BUILT_TEXT
+
+
 __all__ = [
     "MAX_SOURCE_URL_LENGTH",
+    "SOURCE_KIND_PUBLIC",
+    "SOURCE_KIND_SELF_BUILT",
+    "SOURCE_KINDS",
+    "SOURCE_SELF_BUILT_TEXT",
     "SOURCE_UNAVAILABLE_TEXT",
     "sanitize_source_url",
+    "source_display_text",
     "source_url_text",
 ]

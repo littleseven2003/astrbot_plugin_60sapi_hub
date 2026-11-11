@@ -141,7 +141,7 @@ class BiliParserTest(unittest.TestCase):
             snapshot_fields,
             {
                 "site_id", "site_name", "endpoint", "fetched_at",
-                "items", "source_url",
+                "items", "source_url", "source_kind",
             },
         )
         serialized = repr(snapshot).lower()

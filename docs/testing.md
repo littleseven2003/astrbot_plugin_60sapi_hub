@@ -441,8 +441,9 @@ node tests/browser/site_connection_ui.js
 
 2026-11-11 本轮改动，分支 `feat/source-url`。范围为：五种内容快照记录本次实际请求地址，文字、Markdown、栏目长图和后台预览按栏目展示，并处理脱敏与旧快照兼容；不包含公开实例、测速、多站点切换或界面重排。
 
-- 自动化：Python 3.12.15 下 `python -m unittest discover -s tests -q` 共 514 项，492 项通过、22 项跳过（跳过项需要 AstrBot 宿主、平台或浏览器环境）。新增 `tests/test_source_url.py` 4 项，并扩充 `test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
+- 自动化：Python 3.12.15 下 `python -m unittest discover -s tests -q` 共 521 项，499 项通过、22 项跳过（跳过项需要 AstrBot 宿主、平台或浏览器环境）。新增 `tests/test_source_url.py` 6 项，并扩充 `test_sites`、`test_site_api`、`test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
 - 覆盖范围：带路径前缀的五类 endpoint 各记录自己的 URL；多栏目各自 URL 不同；获取后修改站点地址，已有快照和文字/Markdown 输出仍为原地址，新获取才用新地址；旧快照/旧缓存缺少字段时 API 为 `null`、展示为“来源不可用”，不用站点名称或 endpoint 补造；用户信息、查询串、fragment、控制字符和不可展示字符被拒绝；Bearer 凭据不出现在来源地址或任何输出；文字、Markdown、图片页脚、后台栏目投影使用同一份快照值；长地址在图片页脚按字符换行、图片高度随之增加，不越界。
+- 来源类型：schema v12 → v13 迁移为旧站点补 `source_kind='self_built'` 且保留原字段；站点 API 支持创建/编辑往返、非法值 400、编辑省略字段保持原值；公开站点在文字、Markdown、图片页脚和 API 投影中显示完整地址，自建站点只显示“自建服务”且输出中不出现内网地址；未知类型有地址时按自建隐藏、无地址时显示“来源不可用”。
 - 实际渲染：Python 3.12 + Pillow + 宿主 Noto CJK 实际生成 900px 宽 PNG。查看 8 段路径的长来源地址：页脚换行后右对齐、无横向越界、与左栏不重叠；无来源栏目显示“数据来源：来源不可用”；空栏目仍正常出图。
 - 静态检查：`node --check views/sites/app.js`、`git diff --check` 通过。
 - 未验证：真实 AstrBot v4.29.1 Dashboard iframe 内的桌面 1400px 与 390px 浏览器回归（本环境没有宿主和 Chromium），以及真实平台图片显示、真实公开实例响应。后台长地址换行依赖 `overflow-wrap: anywhere` / `word-break: break-all`，尚未在真实浏览器中实测。

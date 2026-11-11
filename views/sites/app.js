@@ -20,6 +20,7 @@ const elements = {
   previewContentTypeLabel: document.getElementById("preview-content-type-label"),
   previewEndpoint: document.getElementById("preview-endpoint"),
   previewSourceUrl: document.getElementById("preview-source-url"),
+  sourceKind: document.getElementById("source-kind"),
   previewDateItem: document.getElementById("preview-date-item"),
   previewContentDate: document.getElementById("preview-content-date"),
   previewItemCount: document.getElementById("preview-item-count"),
@@ -477,6 +478,7 @@ function normalizeSite(raw) {
     timeout_seconds: Number.isFinite(Number(raw.timeout_seconds))
       ? Number(raw.timeout_seconds)
       : 10,
+    source_kind: raw.source_kind === "public" ? "public" : "self_built",
     has_bearer_token: raw.has_bearer_token === true,
     revision: Number.isInteger(Number(raw.revision))
       ? Number(raw.revision)
@@ -672,6 +674,7 @@ function renderSite(site) {
   const meta = document.createElement("p");
   meta.className = "site-meta";
   addMeta(meta, "超时", `${formatTimeout(site.timeout_seconds)} 秒`);
+  addMeta(meta, "来源", site.source_kind === "public" ? "公开服务" : "自建服务");
   addMeta(meta, "凭据", site.has_bearer_token ? "已设置" : "未设置");
   const updated = formatUpdatedAt(site.updated_at);
   if (updated) {
@@ -906,13 +909,13 @@ function renderPreview(snapshot) {
             : isToutiao
               ? "/v2/toutiao"
               : "/v2/60s";
-  const sourceUrl =
-    typeof snapshot.source_url === "string" && snapshot.source_url
-      ? snapshot.source_url
-      : "";
-  elements.previewSourceUrl.textContent = sourceUrl || "来源不可用";
-  if (sourceUrl) {
-    elements.previewSourceUrl.title = sourceUrl;
+  const sourceDisplay =
+    typeof snapshot.source_display === "string" && snapshot.source_display
+      ? snapshot.source_display
+      : "来源不可用";
+  elements.previewSourceUrl.textContent = sourceDisplay;
+  if (snapshot.source_kind === "public" && sourceDisplay !== "来源不可用") {
+    elements.previewSourceUrl.title = sourceDisplay;
   } else {
     elements.previewSourceUrl.removeAttribute("title");
   }
@@ -2497,18 +2500,18 @@ function renderProfileSection(section) {
   if (fetched) {
     addMeta(meta, "获取时间", fetched);
   }
-  const sourceUrl =
-    typeof section.source_url === "string" && section.source_url
-      ? section.source_url
-      : "";
+  const sourceDisplay =
+    typeof section.source_display === "string" && section.source_display
+      ? section.source_display
+      : "来源不可用";
   const sourceItem = document.createElement("span");
   sourceItem.className = "meta-source";
   const sourceLabel = document.createElement("strong");
   sourceLabel.textContent = "数据来源 ";
   const sourceValue = document.createElement("span");
-  sourceValue.textContent = sourceUrl || "来源不可用";
-  if (sourceUrl) {
-    sourceValue.title = sourceUrl;
+  sourceValue.textContent = sourceDisplay;
+  if (section.source_kind === "public" && sourceDisplay !== "来源不可用") {
+    sourceValue.title = sourceDisplay;
   }
   sourceItem.append(sourceLabel, sourceValue);
   meta.append(sourceItem);
@@ -2724,6 +2727,7 @@ function openCreate() {
   elements.baseUrl.value = "";
   elements.timeout.value = "10";
   elements.enabled.checked = false;
+  elements.sourceKind.value = "self_built";
   clearFormError();
   resetCredentialForm();
   syncCredentialFields(false, "keep");
@@ -2747,6 +2751,8 @@ function openEdit(site) {
   elements.baseUrl.value = site.base_url;
   elements.timeout.value = String(site.timeout_seconds);
   elements.enabled.checked = site.enabled;
+  elements.sourceKind.value =
+    site.source_kind === "public" ? "public" : "self_built";
   clearFormError();
   resetCredentialForm();
   const keep = elements.siteForm.querySelector(
@@ -2768,6 +2774,7 @@ function formPayload() {
     base_url: elements.baseUrl.value,
     enabled: elements.enabled.checked,
     timeout_seconds: Number(elements.timeout.value),
+    source_kind: elements.sourceKind.value,
   };
 }
 

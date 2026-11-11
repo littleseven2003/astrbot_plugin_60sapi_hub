@@ -159,6 +159,40 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(content.news._client, content.douyin._client)
         self.assertIs(content.news._client, content.toutiao._client)
 
+    async def test_snapshot_records_site_source_kind(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"code": 200, "data": {"news": ["新闻"]}},
+            )
+
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        content = ContentService(self.sites, client=client, clock=self.clock)
+        public_site = await self.sites.create_site(SiteCreate(
+            name="公开实例", base_url="https://public.example.test/60s",
+            enabled=True, timeout_seconds=5, source_kind="public",
+        ))
+        self_hosted = await self.sites.create_site(SiteCreate(
+            name="自建服务", base_url="http://10.0.0.5:8080/proxy",
+            enabled=True, timeout_seconds=5,
+        ))
+        await content.open()
+        try:
+            public_snapshot = await content.preview_daily(public_site.id)
+            self_hosted_snapshot = await content.preview_daily(self_hosted.id)
+        finally:
+            await content.close()
+        self.assertEqual(public_snapshot.source_kind, "public")
+        self.assertEqual(
+            public_snapshot.source_url,
+            "https://public.example.test/60s/v2/60s",
+        )
+        self.assertEqual(self_hosted_snapshot.source_kind, "self_built")
+        self.assertEqual(
+            self_hosted_snapshot.source_url,
+            "http://10.0.0.5:8080/proxy/v2/60s",
+        )
+
     async def test_five_content_types_use_their_own_site_credentials(self) -> None:
         daily_site = await self._site("每日新闻站点", "daily-token")
         bili_site = await self._site("B 站站点", "bili-token")

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS sites (
     base_url TEXT NOT NULL,
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
     timeout_seconds REAL NOT NULL CHECK (timeout_seconds >= 1 AND timeout_seconds <= 120),
+    source_kind TEXT NOT NULL DEFAULT 'self_built'
+        CHECK (source_kind IN ('public', 'self_built')),
     bearer_token TEXT,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
@@ -319,6 +321,7 @@ class StoredSite:
     base_url: str
     enabled: bool
     timeout_seconds: float
+    source_kind: str = "self_built"
     bearer_token: str | None = field(default=None, repr=False)
     revision: int = 1
     created_at: str = ""
@@ -614,6 +617,17 @@ class SiteStore:
                     "ALTER TABLE delivery_pages "
                     "ADD COLUMN image_generated INTEGER",
                 )
+            # v13：站点来源类型（公开实例 / 自建），旧站点按自建处理。
+            async with connection.execute(
+                "PRAGMA table_info(sites)",
+            ) as cursor:
+                site_columns = {row[1] for row in await cursor.fetchall()}
+            if "source_kind" not in site_columns:
+                await connection.execute(
+                    "ALTER TABLE sites ADD COLUMN source_kind TEXT NOT NULL "
+                    "DEFAULT 'self_built' "
+                    "CHECK (source_kind IN ('public', 'self_built'))",
+                )
             # Older push_tasks tables may lack schedule columns. Inspect the
             # actual table so partially migrated/test fixtures are safe too.
             async with connection.execute(
@@ -664,6 +678,7 @@ class SiteStore:
         base_url: str,
         enabled: bool,
         timeout_seconds: float,
+        source_kind: str,
         bearer_token: str | None,
     ) -> StoredSite:
         async with self._lock:
@@ -675,8 +690,9 @@ class SiteStore:
                     """
                     INSERT INTO sites (
                         id, name, base_url, enabled, timeout_seconds,
-                        bearer_token, revision, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        source_kind, bearer_token, revision, created_at,
+                        updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
                         site_id,
@@ -684,6 +700,7 @@ class SiteStore:
                         base_url,
                         int(enabled),
                         timeout_seconds,
+                        source_kind,
                         bearer_token,
                         now,
                         now,
@@ -701,6 +718,7 @@ class SiteStore:
                 base_url=base_url,
                 enabled=enabled,
                 timeout_seconds=timeout_seconds,
+                source_kind=source_kind,
                 bearer_token=bearer_token,
                 revision=1,
                 created_at=now,
@@ -714,7 +732,8 @@ class SiteStore:
                 async with connection.execute(
                     """
                     SELECT id, name, base_url, enabled, timeout_seconds,
-                           bearer_token, revision, created_at, updated_at
+                           source_kind, bearer_token, revision, created_at,
+                           updated_at
                     FROM sites
                     ORDER BY created_at, id
                     """,
@@ -732,7 +751,8 @@ class SiteStore:
                 row = await self._fetchone_unlocked(
                     """
                     SELECT id, name, base_url, enabled, timeout_seconds,
-                           bearer_token, revision, created_at, updated_at
+                           source_kind, bearer_token, revision, created_at,
+                           updated_at
                     FROM sites
                     WHERE id = ?
                     """,
@@ -754,6 +774,7 @@ class SiteStore:
         base_url: str,
         enabled: bool,
         timeout_seconds: float,
+        source_kind: str,
         bearer_token: str | None,
         expected_revision: int,
     ) -> StoredSite:
@@ -766,7 +787,8 @@ class SiteStore:
                     """
                     UPDATE sites
                     SET name = ?, base_url = ?, enabled = ?, timeout_seconds = ?,
-                        bearer_token = ?, revision = revision + 1, updated_at = ?
+                        source_kind = ?, bearer_token = ?, revision = revision + 1,
+                        updated_at = ?
                     WHERE id = ? AND revision = ?
                     """,
                     (
@@ -774,6 +796,7 @@ class SiteStore:
                         base_url,
                         int(enabled),
                         timeout_seconds,
+                        source_kind,
                         bearer_token,
                         now,
                         site_id,
@@ -799,7 +822,8 @@ class SiteStore:
                 row = await self._fetchone_unlocked(
                     """
                     SELECT id, name, base_url, enabled, timeout_seconds,
-                           bearer_token, revision, created_at, updated_at
+                           source_kind, bearer_token, revision, created_at,
+                           updated_at
                     FROM sites
                     WHERE id = ?
                     """,
@@ -2435,6 +2459,7 @@ def _row_to_site(row: aiosqlite.Row) -> StoredSite:
         base_url=row["base_url"],
         enabled=bool(row["enabled"]),
         timeout_seconds=float(row["timeout_seconds"]),
+        source_kind=str(row["source_kind"] or "self_built"),
         bearer_token=row["bearer_token"],
         revision=int(row["revision"]),
         created_at=row["created_at"],

@@ -679,7 +679,8 @@ class ProfileImageRendererTest(unittest.TestCase):
     def test_footer_shows_source_url_and_marks_missing_source(self) -> None:
         url = "http://example.test/proxy/v2/60s"
         with_source = section(
-            "daily_news", "每日新闻", [item("新闻一")], source_url=url,
+            "daily_news", "每日新闻", [item("新闻一")],
+            source_url=url, source_kind="public",
         )
         footer = text_of(
             self.renderer._footer_lines(
@@ -699,6 +700,20 @@ class ProfileImageRendererTest(unittest.TestCase):
         # 旧快照仍带 site_name，但不能拿它冒充来源地址。
         self.assertNotIn("数据来源：本地模拟站点", missing_footer)
 
+        self_hosted = section(
+            "daily_news", "每日新闻", [item("新闻一")],
+            source_url="http://10.0.0.5:8080/proxy/v2/60s",
+            source_kind="self_built",
+        )
+        self_hosted_footer = text_of(
+            self.renderer._footer_lines(
+                self_hosted, "", self.renderer.limits.width,
+            ),
+        )
+        # 自建站点只显示“自建服务”，不把内网地址写进图片。
+        self.assertIn("数据来源：自建服务", self_hosted_footer)
+        self.assertNotIn("10.0.0.5", self_hosted_footer)
+
     def test_long_source_url_wraps_within_content_width_and_grows_image(self) -> None:
         url = (
             "https://example.test/" + "very-long-path-segment/" * 24 + "v2/60s"
@@ -706,7 +721,8 @@ class ProfileImageRendererTest(unittest.TestCase):
         width = self.renderer.limits.width
         content_width = self.renderer._content_width(width)
         with_url = section(
-            "daily_news", "每日新闻", [item("新闻一")], source_url=url,
+            "daily_news", "每日新闻", [item("新闻一")],
+            source_url=url, source_kind="public",
         )
         lines = self.renderer._footer_lines(with_url, "", width)
         right_parts = [
@@ -768,6 +784,7 @@ class ProfileImageRendererTest(unittest.TestCase):
                 "http://example.test/very/long/proxy/prefix/that/keeps/going/"
                 "and/keeps/going/even/more/v2/60s"
             ),
+            source_kind="public",
         )
         width = self.renderer.limits.width
         content_width = self.renderer._content_width(width)

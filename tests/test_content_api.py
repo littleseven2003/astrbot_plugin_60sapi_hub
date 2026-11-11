@@ -656,9 +656,15 @@ class SnapshotSourceUrlTest(unittest.TestCase):
             with self.subTest(content_type=content_type):
                 data = content_snapshot_dict(
                     content_type,
-                    dataclasses.replace(snapshot, source_url=urls[content_type]),
+                    dataclasses.replace(
+                        snapshot,
+                        source_url=urls[content_type],
+                        source_kind="public",
+                    ),
                 )
                 self.assertEqual(data["source_url"], urls[content_type])
+                self.assertEqual(data["source_kind"], "public")
+                self.assertEqual(data["source_display"], urls[content_type])
                 self.assertEqual(data["endpoint"], "/v2/" + {
                     "daily_news": "60s",
                     "bilibili_hot": "bili",
@@ -681,6 +687,22 @@ class SnapshotSourceUrlTest(unittest.TestCase):
             with self.subTest(content_type=content_type):
                 data = content_snapshot_dict(content_type, snapshot)
                 self.assertIsNone(data["source_url"])
+                self.assertIsNone(data["source_kind"])
+                self.assertEqual(data["source_display"], "来源不可用")
+
+    def test_self_built_snapshot_hides_address_in_display(self) -> None:
+        data = content_snapshot_dict(
+            "daily_news",
+            dataclasses.replace(
+                DAILY,
+                source_url="http://10.0.0.5:8080/proxy/v2/60s",
+                source_kind="self_built",
+            ),
+        )
+        self.assertEqual(
+            data["source_url"], "http://10.0.0.5:8080/proxy/v2/60s",
+        )
+        self.assertEqual(data["source_display"], "自建服务")
 
 
 if __name__ == "__main__":

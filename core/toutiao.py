@@ -55,6 +55,7 @@ class ToutiaoHotSnapshot:
     fetched_at: str
     items: tuple[ToutiaoHotItem, ...]
     source_url: str | None = None
+    source_kind: str | None = None
 
 
 def build_toutiao_hot_url(base_url: str) -> str:
@@ -69,6 +70,7 @@ def parse_toutiao_hot(
     site_name: str,
     fetched_at: datetime,
     source_url: str | None = None,
+    source_kind: str | None = None,
 ) -> ToutiaoHotSnapshot:
     """解析官方/兼容实例的今日头条热搜 JSON 响应。
 
@@ -101,6 +103,7 @@ def parse_toutiao_hot(
         fetched_at=_as_utc(fetched_at).isoformat(timespec="seconds"),
         items=items,
         source_url=source_url,
+        source_kind=source_kind,
     )
 
 

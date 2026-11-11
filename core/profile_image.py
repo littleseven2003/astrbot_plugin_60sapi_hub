@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .source_url import SOURCE_UNAVAILABLE_TEXT, sanitize_source_url
+from .source_url import source_display_text
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -433,10 +433,12 @@ class ProfileImageRenderer:
         created_at: str,
         width: int,
     ) -> list[_Line]:
-        # 页脚展示本次实际请求地址；旧快照没有该字段时明确写“来源不可用”，
-        # 不用站点名称冒充来源。
-        source = sanitize_source_url(section.get("source_url"))
-        source_text = source or SOURCE_UNAVAILABLE_TEXT
+        # 公开实例显示本次实际请求地址；自建站点只写“自建服务”，不暴露地址。
+        # 旧快照没有来源类型时按自建处理，避免意外泄露内网地址。
+        source_text = source_display_text(
+            section.get("source_url"),
+            section.get("source_kind"),
+        )
         fetched = (
             _display_text(section.get("fetched_at"))
             or _display_text(created_at)

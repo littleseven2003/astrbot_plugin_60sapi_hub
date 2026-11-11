@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
+from .source_url import (
+    SOURCE_KIND_PUBLIC,
+    SOURCE_KIND_SELF_BUILT,
+    SOURCE_KINDS,
+)
 from .site_store import (
     SCHEMA_VERSION,
     SiteRecordNotFoundError,
@@ -127,6 +132,7 @@ class SiteConfig:
     base_url: str
     enabled: bool
     timeout_seconds: float
+    source_kind: str
     has_bearer_token: bool
     revision: int
     created_at: str
@@ -142,6 +148,7 @@ class SiteFetchConfig:
     base_url: str
     timeout_seconds: float
     revision: int
+    source_kind: str = SOURCE_KIND_SELF_BUILT
     bearer_token: str | None = field(default=None, repr=False)
 
 
@@ -153,6 +160,7 @@ class SiteCreate:
     base_url: str
     enabled: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    source_kind: str = SOURCE_KIND_SELF_BUILT
     bearer_token: str | None = field(default=None, repr=False)
 
 
@@ -165,6 +173,7 @@ class SiteUpdate:
     enabled: bool
     timeout_seconds: float
     expected_revision: int
+    source_kind: str | None = None
     credential_action: CredentialAction = CredentialAction.KEEP
     bearer_token: str | None = field(default=None, repr=False)
 
@@ -205,6 +214,10 @@ class SiteService:
         base_url = normalize_base_url(data.base_url)
         enabled = normalize_enabled(data.enabled)
         timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
+        source_kind = normalize_source_kind(
+            data.source_kind,
+            default=SOURCE_KIND_SELF_BUILT,
+        )
         bearer_token = normalize_bearer_token(data.bearer_token)
 
         try:
@@ -214,6 +227,7 @@ class SiteService:
                 base_url=base_url,
                 enabled=enabled,
                 timeout_seconds=timeout_seconds,
+                source_kind=source_kind,
                 bearer_token=bearer_token,
             )
         except SiteStoreClosedError as exc:
@@ -250,6 +264,7 @@ class SiteService:
             base_url=stored.base_url,
             timeout_seconds=stored.timeout_seconds,
             revision=stored.revision,
+            source_kind=stored.source_kind,
             bearer_token=stored.bearer_token,
         )
 
@@ -266,6 +281,7 @@ class SiteService:
         return SiteFetchConfig(
             id=stored.id, name=stored.name, base_url=stored.base_url,
             timeout_seconds=stored.timeout_seconds, revision=stored.revision,
+            source_kind=stored.source_kind,
             bearer_token=stored.bearer_token,
         )
 
@@ -289,6 +305,10 @@ class SiteService:
             base_url = normalize_base_url(data.base_url)
             enabled = normalize_enabled(data.enabled)
             timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
+            source_kind = normalize_source_kind(
+                data.source_kind,
+                default=None,
+            ) or current.source_kind
             action = normalize_credential_action(data.credential_action)
             bearer_token = resolve_credential_update(
                 action,
@@ -302,6 +322,7 @@ class SiteService:
                 base_url=base_url,
                 enabled=enabled,
                 timeout_seconds=timeout_seconds,
+                source_kind=source_kind,
                 bearer_token=bearer_token,
                 expected_revision=expected_revision,
             )
@@ -390,6 +411,24 @@ def normalize_enabled(value: object) -> bool:
     if not isinstance(value, bool):
         raise SiteValidationError("enabled", "必须是布尔值")
     return value
+
+
+def normalize_source_kind(
+    value: object,
+    *,
+    default: str | None = None,
+) -> str | None:
+    """站点来源类型：public（公开实例）或 self_built（自建）。
+
+    ``None`` 表示调用方没有提交该字段：新增时用默认值，编辑时沿用原值。
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in SOURCE_KINDS:
+            return normalized
+    raise SiteValidationError("source_kind", "必须为 public 或 self_built")
 
 
 def normalize_timeout_seconds(value: object) -> float:
@@ -583,6 +622,7 @@ def _to_public(stored: StoredSite) -> SiteConfig:
         base_url=stored.base_url,
         enabled=stored.enabled,
         timeout_seconds=stored.timeout_seconds,
+        source_kind=stored.source_kind,
         has_bearer_token=stored.bearer_token is not None,
         revision=stored.revision,
         created_at=stored.created_at,
@@ -618,6 +658,9 @@ __all__ = [
     "normalize_revision",
     "normalize_site_id",
     "normalize_site_name",
+    "normalize_source_kind",
     "normalize_timeout_seconds",
+    "SOURCE_KIND_PUBLIC",
+    "SOURCE_KIND_SELF_BUILT",
     "resolve_credential_update",
 ]

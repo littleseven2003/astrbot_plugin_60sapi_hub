@@ -78,6 +78,7 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
                 "base_url",
                 "enabled",
                 "timeout_seconds",
+                "source_kind",
                 "has_bearer_token",
                 "revision",
                 "created_at",
@@ -95,6 +96,42 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(site["enabled"])
         self.assertEqual(site["timeout_seconds"], 10.0)
         self.assertEqual(site["revision"], 1)
+        # 未提交来源类型时按自建处理，避免内容输出意外暴露地址。
+        self.assertEqual(site["source_kind"], "self_built")
+
+    async def test_source_kind_round_trip_and_validation(self) -> None:
+        site = await self._create(source_kind="public")
+        self.assertEqual(site["source_kind"], "public")
+        updated = await self.api.update_site(
+            site["id"],
+            self._update_payload(site, source_kind="self_built"),
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.body["data"]["source_kind"], "self_built")
+
+        bad = await self.api.create_site(
+            {
+                "name": "站点",
+                "base_url": "https://example.test/api",
+                "source_kind": "community",
+            },
+        )
+        self.assert_error(bad, 400, "validation_error")
+        self.assertEqual(bad.body["data"]["field"], "source_kind")
+
+        # 编辑时省略字段保持原值，不会把它重置为默认。
+        kept = await self.api.update_site(
+            site["id"],
+            {
+                "name": "保留类型",
+                "base_url": site["base_url"],
+                "enabled": False,
+                "timeout_seconds": 10,
+                "expected_revision": updated.body["data"]["revision"],
+            },
+        )
+        self.assertEqual(kept.status_code, 200)
+        self.assertEqual(kept.body["data"]["source_kind"], "self_built")
 
     async def test_invalid_input_and_body(self) -> None:
         bad = await self.api.create_site(

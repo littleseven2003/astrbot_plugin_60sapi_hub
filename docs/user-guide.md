@@ -54,8 +54,8 @@
 ### 数据目录与备份
 
 - 数据库位置：`<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`。目录由宿主 `StarTools.get_data_dir()` 获取，位于插件目录之外，因此替换或删除插件目录不会删除数据。
-- schema 版本 10，共 11 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets`、`delivery_pages`。
-- 旧库迁移：受支持的 v1～v9 旧库在同一事务内迁移到当前结构，失败回滚并保留旧数据（站点、凭据、组合、任务、白名单和历史都不会被删除或覆盖）。不要手工修改数据库。
+- schema 版本 13，共 11 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets`、`delivery_pages`。
+- 旧库迁移：受支持的 v1～v12 旧库在同一事务内迁移到当前结构，失败回滚并保留旧数据（站点、凭据、组合、任务、白名单和历史都不会被删除或覆盖）。无来源类型的旧站点迁移为公开；已有来源类型保持原值。不要手工修改数据库。
 - 备份：先在后台停用插件以关闭数据库连接，再复制 `sites.sqlite3` 到插件目录之外的安全位置；恢复时停用插件、替换该文件、再启用。不要在插件运行中直接复制活跃数据库当作备份。
 - 数据库包含站点凭据原件，备份文件同样按敏感文件保管，不要提交到仓库或贴进 Issue。
 
@@ -156,8 +156,9 @@
 站点有一个“来源类型”设置，决定内容输出里怎么显示来源：
 
 - **公开服务**：只显示域名（例如站点填 `https://api.example.com/secret-path` 时显示 `api.example.com`），不显示协议、端口、路径、查询串、用户信息或凭据。
-- **自建服务**：只显示“自建服务”，不显示地址，适合内网、Docker 主机名或不想公开的自建站点。默认新建站点按自建处理。
+- **自建服务**：只显示“自建服务”，不显示地址，适合内网、Docker 主机名或不想公开的自建站点。新建站点默认公开，使用自建站点且不想公开其主机名时应手动选择“自建服务”。
 - 显示值不包含 Bearer 凭据、URL 用户信息、路径、查询串和 fragment；凭据仍只随请求头发送。管理员在后台站点管理和受鉴权接口中仍可看到完整配置地址。
+- 旧版已迁移为自建的站点会保留自建类型；若希望显示域名，请在站点管理中编辑并选择公开服务。无法区分旧版默认值和用户明确选择，因此不会自动改写。
 - 站点之后改名、改地址或改来源类型，不会改写已经获取的快照；旧缓存或旧快照没有来源信息时显示“来源不可用”，有地址但没有类型时按自建隐藏，不会用站点名称或接口路径补造。
 
 **缓存与刷新**

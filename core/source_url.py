@@ -9,19 +9,22 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote, urlsplit, urlunsplit
+import httpx
+from urllib.parse import urlsplit, urlunsplit
 
 MAX_SOURCE_URL_LENGTH = 2048
-# 站点基础地址上限是 2048，拼接 endpoint 后必然可能超过它，所以快照另给
-# 一个更宽的预算：合法的长地址也要完整表达端口、路径和 endpoint。
-MAX_SNAPSHOT_URL_LENGTH = 4096
-# 与 httpx 发送请求行时的编码保持一致：路径里 HTTP 客户端会编码的字符
-# （空格、尖括号、引号、花括号、非 ASCII 等）percent-encode 后写入快照，
-# 其余字符原样保留，保证快照地址就是本次实际请求的地址。
-_PATH_SAFE = "/:@!$&'()*+,;=~-._%|[]^"
-# 只提取域名时不需要整串地址都合规：拼接 endpoint 后的长地址、路径里的
-# 特殊字符都不应让可展示的域名丢失。这里仍给解析一个上界，避免异常输入。
-MAX_SOURCE_SCAN_LENGTH = 8192
+# 站点基础地址上限（与 core/sites.py 的 MAX_BASE_URL_LENGTH 一致，这里不
+# import 它以避免循环依赖）。拼接 endpoint 后的原始请求地址比它略长。
+MAX_BASE_URL_CHARS = 2048
+# UTF-8 最坏情况是一个字符 4 字节，每字节百分号编码成 %XX 共 3 个字符，
+# 因此路径编码后最多膨胀 12 倍。快照预算按「基础地址上限 × 12 + 余量」给，
+# 覆盖全中文或全 emoji 的合法长路径，不靠截断或只留主机来掩盖。
+MAX_PERCENT_GROWTH = 12
+MAX_SNAPSHOT_URL_LENGTH = MAX_BASE_URL_CHARS * MAX_PERCENT_GROWTH + 512
+# 写入快照前的原始地址：基础地址上限加上拼接 endpoint 的余量。
+MAX_SOURCE_INPUT_LENGTH = MAX_BASE_URL_CHARS + 64
+# 从快照地址里提取域名时必须能吃下编码后的最长形态。
+MAX_SOURCE_SCAN_LENGTH = MAX_SNAPSHOT_URL_LENGTH + 512
 SOURCE_UNAVAILABLE_TEXT = "来源不可用"
 SOURCE_SELF_BUILT_TEXT = "自建服务"
 SOURCE_KIND_PUBLIC = "public"
@@ -110,17 +113,18 @@ def source_domain_text(value: object) -> str | None:
 
 
 def snapshot_source_url(value: object) -> str | None:
-    """写入快照的来源地址：完整表达本次请求使用的端口、路径与 endpoint。
+    """写入快照的来源地址：与 HTTP 客户端本次实际请求的地址一致。
 
-    路径按 HTTP 客户端的同一规则 percent-encode，因此快照地址与实际上游
-    请求地址一致，不会丢失端口、反向代理前缀或 endpoint。仍然只保留
-    http(s)、主机与路径，去掉用户信息、查询串和 fragment；无法安全表达
-    时返回 None，由展示层写“来源不可用”，不做静默缩短。
+    这里直接使用 httpx 的 URL 解析与规范化，不自行假定百分号编码或路径规则：
+    点段（例如 /a/../b 收成 /b）、默认端口省略、主机大小写和 UTF-8 编码都与
+    真实请求走同一个实现，因此快照地址就是本次请求使用的地址。仍然只保留
+    http(s)、主机与路径，去掉用户信息、查询串和 fragment；无法安全表达时
+    返回 None（展示层写“来源不可用”），不做静默缩短。
     """
     if not isinstance(value, str):
         return None
     text = value.strip()
-    if not text or len(text) > MAX_SNAPSHOT_URL_LENGTH:
+    if not text or len(text) > MAX_SOURCE_INPUT_LENGTH:
         return None
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
         return None
@@ -128,27 +132,17 @@ def snapshot_source_url(value: object) -> str | None:
     if "\\" in text:
         return None
     try:
-        parsed = urlsplit(text)
-    except (UnicodeError, ValueError):
+        url = httpx.URL(text)
+    except (httpx.InvalidURL, UnicodeError, ValueError):
         return None
-    scheme = parsed.scheme.lower()
-    if scheme not in {"http", "https"}:
+    if url.scheme not in {"http", "https"}:
+        return None
+    if not url.host:
         return None
     try:
-        host = parsed.hostname
-        port = parsed.port
-    except ValueError:
+        result = str(url.copy_with(userinfo=b"", query=None, fragment=None))
+    except (httpx.InvalidURL, TypeError, ValueError):
         return None
-    if not host:
-        return None
-    host = host.lower()
-    if any(char in _UNSAFE_CHARS or char.isspace() for char in host):
-        return None
-    netloc = f"[{host}]" if ":" in host else host
-    if port is not None:
-        netloc = f"{netloc}:{port}"
-    path = quote(parsed.path, safe=_PATH_SAFE)
-    result = urlunsplit((scheme, netloc, path, "", ""))
     if not result or len(result) > MAX_SNAPSHOT_URL_LENGTH:
         return None
     return result

@@ -628,9 +628,13 @@
               <select id="source-kind" name="source_kind">
                 <option value="public" selected>公开服务：内容输出只显示域名</option>
                 <option value="self_built">自建服务：内容输出只显示“自建服务”</option>
+                <option value="" hidden>来源类型未知（保存时保持原值）</option>
               </select>
               <small>
                 影响文字、Markdown、栏目长图和聊天中的来源展示；不会改变请求地址或凭据。
+              </small>
+              <small id="source-kind-hint" role="status" hidden>
+                当前站点的来源类型无法识别，不会显示成公开或自建。保持原值不会改动它；如需修正，请明确选择“公开服务”或“自建服务”。
               </small>
             </label>
           </div>

@@ -1,0 +1,257 @@
+/*
+ * 站点来源类型的真实页面逻辑回归。
+ *
+ * 用真实 Chromium 加载 views/sites/index.html + app.js，只把宿主 bridge
+ * 换成记录型桩，用页面自己的表单和事件流验证：
+ * 新建默认公开、已知类型往返、缺失/未知类型不被当成公开、也不会被写回。
+ *
+ * ASTRBOT_URL 不需要：本脚本在本机起静态服务，不连接任何真实上游或会话。
+ */
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const { chromium } = require("playwright-core");
+
+const CHROME = process.env.CHROME_PATH;
+if (!CHROME) {
+  console.error("CHROME_PATH is required");
+  process.exit(2);
+}
+const VIEWS_DIR = path.resolve(__dirname, "..", "..", "views", "sites");
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+};
+
+const SITES = [
+  {
+    id: "site-public", name: "公开站点", base_url: "https://a.example.test/n",
+    enabled: true, timeout_seconds: 10, source_kind: "public",
+    has_bearer_token: false, revision: 1, updated_at: "",
+  },
+  {
+    id: "site-built", name: "自建站点", base_url: "http://10.0.0.5:8080/p",
+    enabled: true, timeout_seconds: 10, source_kind: "self_built",
+    has_bearer_token: false, revision: 1, updated_at: "",
+  },
+  {
+    id: "site-missing", name: "缺字段站点", base_url: "https://b.example.test/n",
+    enabled: true, timeout_seconds: 10,
+    has_bearer_token: false, revision: 1, updated_at: "",
+  },
+  {
+    id: "site-unknown", name: "未知类型站点", base_url: "https://c.example.test/n",
+    enabled: true, timeout_seconds: 10, source_kind: "community",
+    has_bearer_token: false, revision: 1, updated_at: "",
+  },
+];
+
+const server = http.createServer((request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1");
+  const relative = url.pathname === "/" ? "/index.html" : url.pathname;
+  const target = path.join(VIEWS_DIR, relative);
+  if (!target.startsWith(VIEWS_DIR) || !fs.existsSync(target)) {
+    response.writeHead(404).end("not found");
+    return;
+  }
+  response.writeHead(200, {
+    "Content-Type": MIME[path.extname(target)] || "application/octet-stream",
+  });
+  response.end(fs.readFileSync(target));
+});
+
+let assertions = 0;
+function check(condition, message) {
+  assertions += 1;
+  assert.ok(condition, message);
+}
+
+async function openPage(browser, port) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.addInitScript((sites) => {
+    window.__siteFixtures = sites;
+    window.__calls = [];
+    window.AstrBotPluginView = {
+      ready: async () => ({ pageTitle: "60sAPI Hub" }),
+      apiGet: async (endpoint) => {
+        window.__calls.push({ method: "GET", endpoint });
+        if (endpoint === "sites") {
+          return { sites: window.__siteFixtures };
+        }
+        if (endpoint === "profiles") {
+          return { profiles: [] };
+        }
+        if (endpoint === "tasks") {
+          return { tasks: [] };
+        }
+        if (endpoint === "schedule-runs") {
+          return { claims: [], skips: [] };
+        }
+        if (endpoint === "executions") {
+          return { executions: [], total: 0 };
+        }
+        return {};
+      },
+      apiPost: async (endpoint, payload) => {
+        window.__calls.push({ method: "POST", endpoint, payload });
+        return {};
+      },
+    };
+  }, SITES);
+  await page.goto("http://127.0.0.1:" + port + "/index.html", {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForFunction(
+    () => document.getElementById("sites-list")?.getAttribute("aria-busy") === "false"
+      && document.querySelectorAll("#sites-list li").length === 4,
+    null, { timeout: 30000 },
+  );
+  return page;
+}
+
+async function openEditFor(page, name) {
+  await page.getByRole("button", { name: "编辑站点 " + name }).click();
+  await page.waitForFunction(
+    () => document.getElementById("site-dialog")?.open === true,
+    null, { timeout: 10000 },
+  );
+}
+
+async function submitAndCapture(page, endpoint) {
+  await page.click("#save-button");
+  await page.waitForFunction(
+    (target) => window.__calls.some(
+      (call) => call.method === "POST" && call.endpoint === target,
+    ),
+    endpoint, { timeout: 10000 },
+  );
+  return page.evaluate((target) => {
+    const posts = window.__calls.filter(
+      (call) => call.method === "POST" && call.endpoint === target,
+    );
+    return posts[posts.length - 1].payload;
+  }, endpoint);
+}
+
+(async () => {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const browser = await chromium.launch({
+    headless: true, executablePath: CHROME, args: ["--no-sandbox"],
+  });
+  try {
+    const page = await openPage(browser, port);
+
+    // 列表展示：缺失/未知类型不能被显示成“公开服务”。
+    const metas = await page.$$eval("#sites-list li .site-meta", (nodes) =>
+      nodes.map((node) => node.textContent));
+    check(metas[0].includes("公开服务"), "公开站点显示公开服务");
+    check(metas[1].includes("自建服务"), "自建站点显示自建服务");
+    check(metas[2].includes("来源类型未知"), "缺失类型显示未知");
+    check(!metas[2].includes("公开服务"), "缺失类型不得显示公开服务");
+    check(!metas[2].includes("自建服务"), "缺失类型不得显示自建服务");
+    check(metas[3].includes("来源类型未知"), "未知类型显示未知");
+    check(!metas[3].includes("公开服务"), "未知类型不得显示公开服务");
+
+    // 新建默认公开。
+    await page.click("#create-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-dialog")?.open === true,
+      null, { timeout: 10000 },
+    );
+    check(
+      await page.inputValue("#source-kind") === "public",
+      "新建表单默认公开",
+    );
+    check(
+      await page.isHidden("#source-kind-hint"),
+      "新建时不显示未知提示",
+    );
+    await page.fill("#name", "新建站点");
+    await page.fill("#base-url", "https://new.example.test/news");
+    const created = await submitAndCapture(page, "sites");
+    check(created.source_kind === "public", "新建保存发送公开类型");
+
+    // 已有公开站点：往返保持。
+    await openEditFor(page, "公开站点");
+    check(await page.inputValue("#source-kind") === "public", "编辑公开站点回填公开");
+    check(await page.isHidden("#source-kind-hint"), "公开站点不显示未知提示");
+    await page.fill("#name", "公开站点改名");
+    const publicPayload = await submitAndCapture(
+      page, "sites/site-public/update",
+    );
+    check(publicPayload.source_kind === "public", "公开站点保存仍为公开");
+
+    // 已有自建站点：往返保持。
+    await openEditFor(page, "自建站点");
+    check(
+      await page.inputValue("#source-kind") === "self_built",
+      "编辑自建站点回填自建",
+    );
+    await page.fill("#name", "自建站点改名");
+    const builtPayload = await submitAndCapture(
+      page, "sites/site-built/update",
+    );
+    check(builtPayload.source_kind === "self_built", "自建站点保存仍为自建");
+
+    // 缺失类型：不能默认公开，也不能写回 public。
+    await openEditFor(page, "缺字段站点");
+    check(
+      await page.inputValue("#source-kind") === "",
+      "缺失类型不预选公开",
+    );
+    check(!(await page.isHidden("#source-kind-hint")), "缺失类型显示未知提示");
+    await page.fill("#name", "缺字段站点改名");
+    const missingPayload = await submitAndCapture(
+      page, "sites/site-missing/update",
+    );
+    check(
+      !Object.prototype.hasOwnProperty.call(missingPayload, "source_kind"),
+      "缺失类型只改名称时不发送来源类型",
+    );
+    check(missingPayload.source_kind !== "public", "缺失类型不写回公开");
+
+    // 未知类型：同样保守。
+    await openEditFor(page, "未知类型站点");
+    check(await page.inputValue("#source-kind") === "", "未知类型不预选公开");
+    check(!(await page.isHidden("#source-kind-hint")), "未知类型显示未知提示");
+    await page.fill("#name", "未知类型站点改名");
+    const unknownPayload = await submitAndCapture(
+      page, "sites/site-unknown/update",
+    );
+    check(
+      !Object.prototype.hasOwnProperty.call(unknownPayload, "source_kind"),
+      "未知类型只改名称时不发送来源类型",
+    );
+
+    // 管理员明确选择后按选择保存。
+    await openEditFor(page, "未知类型站点");
+    await page.selectOption("#source-kind", "self_built");
+    await page.fill("#name", "未知类型站点显式选择");
+    const explicitPayload = await submitAndCapture(
+      page, "sites/site-unknown/update",
+    );
+    check(
+      explicitPayload.source_kind === "self_built",
+      "显式选择自建后保存发送自建",
+    );
+
+    // 编辑既有站点时不应重复新建。
+    const createdCount = await page.evaluate(() =>
+      window.__calls.filter(
+        (call) => call.method === "POST" && call.endpoint === "sites",
+      ).length);
+    check(createdCount === 1, "编辑流程没有额外新建站点");
+
+    console.log("SITE SOURCE KIND UI PASS", { assertions });
+  } finally {
+    await browser.close();
+    server.close();
+  }
+})().catch((error) => {
+  console.error("FAILED:", error.message);
+  process.exit(1);
+});

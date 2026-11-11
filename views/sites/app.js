@@ -1,5 +1,25 @@
 const bridge = window.AstrBotPluginView;
 
+// 站点来源类型：只接受明确取值。未知时用空字符串表示，界面必须显式提示，
+// 既不能当成“公开服务”展示，也不能在保存时写回推断值。
+const SOURCE_KIND_PUBLIC = "public";
+const SOURCE_KIND_SELF_BUILT = "self_built";
+const SOURCE_KIND_UNKNOWN = "";
+
+function isKnownSourceKind(value) {
+  return value === SOURCE_KIND_PUBLIC || value === SOURCE_KIND_SELF_BUILT;
+}
+
+function sourceKindLabel(value) {
+  if (value === SOURCE_KIND_PUBLIC) {
+    return "公开服务";
+  }
+  if (value === SOURCE_KIND_SELF_BUILT) {
+    return "自建服务";
+  }
+  return "来源类型未知";
+}
+
 const elements = {
   status: document.getElementById("status"),
   siteCount: document.getElementById("site-count"),
@@ -21,6 +41,7 @@ const elements = {
   previewEndpoint: document.getElementById("preview-endpoint"),
   previewSourceUrl: document.getElementById("preview-source-url"),
   sourceKind: document.getElementById("source-kind"),
+  sourceKindHint: document.getElementById("source-kind-hint"),
   previewDateItem: document.getElementById("preview-date-item"),
   previewContentDate: document.getElementById("preview-content-date"),
   previewItemCount: document.getElementById("preview-item-count"),
@@ -462,6 +483,18 @@ function closeDialog(dialog) {
   }
 }
 
+function setSourceKindHint(visible) {
+  const hint = elements.sourceKindHint;
+  if (!hint) {
+    return;
+  }
+  hint.hidden = !visible;
+  elements.sourceKind.setAttribute(
+    "aria-describedby",
+    visible ? "source-kind-hint" : "",
+  );
+}
+
 function normalizeSite(raw) {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -478,7 +511,12 @@ function normalizeSite(raw) {
     timeout_seconds: Number.isFinite(Number(raw.timeout_seconds))
       ? Number(raw.timeout_seconds)
       : 10,
-    source_kind: raw.source_kind === "self_built" ? "self_built" : "public",
+    // 只接受明确取值；缺失或未知保持 null，交给界面显式提示，
+    // 不把无法确认的来源类型默认成“公开服务”。
+    source_kind:
+      raw.source_kind === "public" || raw.source_kind === "self_built"
+        ? raw.source_kind
+        : null,
     has_bearer_token: raw.has_bearer_token === true,
     revision: Number.isInteger(Number(raw.revision))
       ? Number(raw.revision)
@@ -674,7 +712,7 @@ function renderSite(site) {
   const meta = document.createElement("p");
   meta.className = "site-meta";
   addMeta(meta, "超时", `${formatTimeout(site.timeout_seconds)} 秒`);
-  addMeta(meta, "来源", site.source_kind === "public" ? "公开服务" : "自建服务");
+  addMeta(meta, "来源", sourceKindLabel(site.source_kind));
   addMeta(meta, "凭据", site.has_bearer_token ? "已设置" : "未设置");
   const updated = formatUpdatedAt(site.updated_at);
   if (updated) {
@@ -2727,7 +2765,8 @@ function openCreate() {
   elements.baseUrl.value = "";
   elements.timeout.value = "10";
   elements.enabled.checked = false;
-  elements.sourceKind.value = "public";
+  elements.sourceKind.value = SOURCE_KIND_PUBLIC;
+  setSourceKindHint(false);
   clearFormError();
   resetCredentialForm();
   syncCredentialFields(false, "keep");
@@ -2751,8 +2790,11 @@ function openEdit(site) {
   elements.baseUrl.value = site.base_url;
   elements.timeout.value = String(site.timeout_seconds);
   elements.enabled.checked = site.enabled;
-  elements.sourceKind.value =
-    site.source_kind === "self_built" ? "self_built" : "public";
+  const known = isKnownSourceKind(site.source_kind);
+  elements.sourceKind.value = known
+    ? site.source_kind
+    : SOURCE_KIND_UNKNOWN;
+  setSourceKindHint(!known);
   clearFormError();
   resetCredentialForm();
   const keep = elements.siteForm.querySelector(
@@ -2769,13 +2811,22 @@ function openEdit(site) {
 }
 
 function formPayload() {
-  return {
+  const payload = {
     name: elements.name.value,
     base_url: elements.baseUrl.value,
     enabled: elements.enabled.checked,
     timeout_seconds: Number(elements.timeout.value),
-    source_kind: elements.sourceKind.value,
   };
+  const kind = elements.sourceKind.value;
+  if (isKnownSourceKind(kind)) {
+    payload.source_kind = kind;
+  } else if (state.mode === "create") {
+    // 新建站点默认公开；未知选项只在编辑既有站点时出现。
+    payload.source_kind = SOURCE_KIND_PUBLIC;
+  }
+  // 编辑且来源类型未知时省略该字段：后端按“省略即保持原值”处理，
+  // 不会把推断出的公开写回用户的数据。
+  return payload;
 }
 
 async function handleSave(event) {

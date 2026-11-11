@@ -441,12 +441,12 @@ node tests/browser/site_connection_ui.js
 
 2026-11-11 本轮改动，分支 `feat/source-url`。范围为：五种内容快照记录来源信息，文字、Markdown、栏目长图和后台预览按栏目展示，并处理旧快照兼容；不包含公开实例、测速、多站点切换或界面重排。
 
-- 自动化：`python -m unittest discover -s tests -q` 共 549 项，527 项通过、22 项跳过（跳过项需要 AstrBot 宿主、平台或浏览器环境）。`tests/test_source_url.py` 共 13 项，其中新增 `SourceDomainTest` 7 项覆盖公开只显示域名、自建隐藏、模拟秘密路径、超长基础地址、特殊路径和旧快照；并扩充 `test_sites`、`test_site_api`、`test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
+- 自动化：`python -m unittest discover -s tests -q` 共 547 项，525 项通过、22 项跳过（跳过项需要 AstrBot 宿主、平台或浏览器环境）。`tests/test_source_url.py` 共 13 项，其中新增 `SourceDomainTest` 7 项覆盖公开只显示域名、自建隐藏、模拟秘密路径、超长基础地址、特殊路径和旧快照；并扩充 `test_sites`、`test_site_api`、`test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
 - 覆盖范围：带路径前缀的五类 endpoint 各记录自己的 URL；多栏目各自 URL 不同；获取后修改站点地址，已有快照和文字/Markdown 输出仍为原域名，新获取才用新地址；旧快照/旧缓存缺少字段时 API 为 `null`、展示为“来源不可用”，不用站点名称或 endpoint 补造；来源展示不包含用户信息、查询串、fragment、路径或 Bearer 凭据；后台快照地址可能保留路径，路径本身也可能包含秘密；文字、Markdown、图片页脚、聊天和后台栏目投影使用同一份快照值。对外展示只保留域名：路径中的模拟秘密、超长基础地址（拼接 endpoint 后超过 2048 字符）和特殊路径都只能看到域名，图片页脚不因路径很长而增高；IPv6 保留方括号、端口不展示。
 - 来源类型：schema v12 → v13 迁移为无类型旧站点补 `source_kind='public'` 且保留原字段；已有来源类型的站点重开后保留原值；站点 API 支持创建/编辑往返、非法值 400、编辑省略字段保持原值；公开站点在文字、Markdown、图片页脚、聊天和后台栏目投影中只显示域名，自建站点只显示“自建服务”且输出中不出现内网地址；未知类型有地址时按自建隐藏、无地址时显示“来源不可用”。后台受鉴权接口返回快照中的 `source_url`，与对外展示分开；来源地址按 HTTP 客户端规则规范化，无法安全表达时来源不可用。
 - 实际渲染：Python + Pillow + 宿主中文字体实际生成 900px 宽 PNG。公开站点的超长路径来源在页脚只显示域名 `api.example.com`，路径与模拟秘密均不出现；自建站点显示“数据来源：自建服务”且不出现内网地址；无来源栏目显示“数据来源：来源不可用”；空栏目仍正常出图。
 - 快照与长域名：`test_source_snapshot.py` 使用模拟上游核对五种接口的长地址快照和后台投影，另覆盖端口、IPv6、路径编码及来源展示；图片测试检查长域名换行、左右栏间距和路径不进入页脚。聊天来源测试经 `ChatCommandService.handle` 使用模拟上游和真实图片渲染器验证文字、图片；图片来源使用捕获的页脚文本断言，未做 OCR 或真实平台发送。
-- 站点默认值：服务与临时数据库测试覆盖新建默认公开、v12 站点迁移和已保存类型的重开保留；后台表单默认值目前只有 `test_site_form_defaults.py` 静态检查，尚未完成真实页面交互验证。
+- 站点默认值：服务与临时数据库测试覆盖新建默认公开、v12 站点迁移和已保存类型的重开保留；使用 Chromium 加载真实页面和模拟 bridge 的 `tests/browser/site_source_kind_ui.js` 检查新建、编辑及未知类型载荷；Python 包装器 `test_site_source_kind_page.py` 在本机执行通过。真实宿主页面交互尚未验证。当前浏览器依赖探测及重复请求等待仍有可靠性问题，不能视作跨环境验证。
 - 静态检查：`node --check views/sites/app.js`、`git diff --check` 通过。
 - 未验证：真实 AstrBot v4.29.1 Dashboard iframe 内的桌面 1400px 与 390px 浏览器回归（隔离宿主缺少 WebUI 构建产物），以及真实平台图片显示、真实公开实例响应。后台长地址换行依赖 `overflow-wrap: anywhere` / `word-break: break-all`，尚未在真实浏览器中实测。
 

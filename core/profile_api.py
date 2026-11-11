@@ -61,6 +61,8 @@ from .sites import (
 
 _SECTION_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})
 _SAFE_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+# 一次组合预览最多做两轮：首轮 + 一次按最终一致 revision 重试。
+_MAX_PREVIEW_ATTEMPTS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,55 +255,47 @@ class ProfileApi:
 
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        for item in profile.items:
-            try:
-                cached = await self._content.preview_cached(
-                    item.content_type,
-                    profile.site_id,
-                    force_refresh=force_refresh,
-                )
-            except Exception as exc:
-                section = _section_error(item.content_type, item.label, exc)
-                sections.append(section)
-                failures.append(section)
-                continue
-
-            try:
-                snapshot = content_snapshot_dict(
-                    item.content_type,
-                    cached.snapshot,
-                )
-            except Exception:
-                section = _section_error(
-                    item.content_type,
-                    item.label,
-                    ValueError("serialize failed"),
-                )
-                sections.append(section)
-                failures.append(section)
-                continue
-
-            all_items = snapshot.get("items")
-            total = len(all_items) if isinstance(all_items, list) else 0
-            if item.limit is not None and isinstance(all_items, list):
-                snapshot["items"] = all_items[: item.limit]
-            shown = (
-                len(snapshot["items"])
-                if isinstance(snapshot.get("items"), list)
-                else 0
+        # 一次预览的每个栏目都各自重新读取站点，若中途改过站点或组合配置，
+        # 收上来的栏目会来自不同 revision。这里在每一轮结束后复核版本：
+        # 只要变过就丢弃整轮结果，按最终一致版本重做；超过上限明确失败，
+        # 绝不把不同版本的栏目拼进同一个 200 响应。
+        for attempt in range(_MAX_PREVIEW_ATTEMPTS):
+            sections, failures = await self._collect_sections(
+                profile, force_refresh,
             )
-            snapshot["item_count"] = shown
-            snapshot["total_item_count"] = total
-            snapshot["displayed_count"] = shown
-            snapshot["limit"] = item.limit
-            snapshot["label"] = item.label
-            snapshot["status"] = "ok"
-            snapshot["cache"] = {
-                "hit": cached.hit,
-                "expires_at": cached.expires_at,
-                "ttl_seconds": self._content.cache_ttl_seconds,
-            }
-            sections.append(snapshot)
+            try:
+                latest_profile, latest_site = (
+                    await self._profiles.load_for_preview(profile_id)
+                )
+            except SiteDisabledError:
+                return _error(
+                    409,
+                    "组合引用的站点未启用，无法获取上游内容。",
+                    code="site_disabled",
+                )
+            except ProfileNotFoundError:
+                return _not_found_error()
+            except SiteNotFoundError:
+                return _site_not_found_error()
+            except ProfileValidationError as exc:
+                return _validation_error(exc)
+            except ProfileStorageError:
+                return _storage_error()
+            except Exception:
+                return _internal_error()
+            if (
+                latest_profile.revision == profile.revision
+                and latest_site.id == site.id
+                and latest_site.revision == site.revision
+            ):
+                break
+            if attempt + 1 >= _MAX_PREVIEW_ATTEMPTS:
+                return _error(
+                    409,
+                    "组合或站点配置在获取期间发生变化，本次预览已取消，请重试。",
+                    code="preview_revision_changed",
+                )
+            profile, site = latest_profile, latest_site
 
         success_count = len(sections) - len(failures)
         data = {
@@ -359,6 +353,66 @@ class ProfileApi:
                     "expires_at": snapshot.expires_at,
                 }
         return _ok(data)
+
+    async def _collect_sections(
+        self,
+        profile: Any,
+        force_refresh: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """按给定组合配置获取全部栏目；失败栏目单独记录，不中断其余栏目。"""
+        sections: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for item in profile.items:
+            try:
+                cached = await self._content.preview_cached(
+                    item.content_type,
+                    profile.site_id,
+                    force_refresh=force_refresh,
+                )
+            except Exception as exc:
+                section = _section_error(item.content_type, item.label, exc)
+                sections.append(section)
+                failures.append(section)
+                continue
+
+            try:
+                snapshot = content_snapshot_dict(
+                    item.content_type,
+                    cached.snapshot,
+                )
+            except Exception:
+                section = _section_error(
+                    item.content_type,
+                    item.label,
+                    ValueError("serialize failed"),
+                )
+                sections.append(section)
+                failures.append(section)
+                continue
+
+            all_items = snapshot.get("items")
+            total = len(all_items) if isinstance(all_items, list) else 0
+            if item.limit is not None and isinstance(all_items, list):
+                snapshot["items"] = all_items[: item.limit]
+            shown = (
+                len(snapshot["items"])
+                if isinstance(snapshot.get("items"), list)
+                else 0
+            )
+            snapshot["item_count"] = shown
+            snapshot["total_item_count"] = total
+            snapshot["displayed_count"] = shown
+            snapshot["limit"] = item.limit
+            snapshot["label"] = item.label
+            snapshot["status"] = "ok"
+            snapshot["cache"] = {
+                "hit": cached.hit,
+                "expires_at": cached.expires_at,
+                "ttl_seconds": self._content.cache_ttl_seconds,
+            }
+            sections.append(snapshot)
+
+        return sections, failures
 
     async def generate_image(
         self,

@@ -478,7 +478,7 @@ function normalizeSite(raw) {
     timeout_seconds: Number.isFinite(Number(raw.timeout_seconds))
       ? Number(raw.timeout_seconds)
       : 10,
-    source_kind: raw.source_kind === "public" ? "public" : "self_built",
+    source_kind: raw.source_kind === "self_built" ? "self_built" : "public",
     has_bearer_token: raw.has_bearer_token === true,
     revision: Number.isInteger(Number(raw.revision))
       ? Number(raw.revision)
@@ -2727,7 +2727,7 @@ function openCreate() {
   elements.baseUrl.value = "";
   elements.timeout.value = "10";
   elements.enabled.checked = false;
-  elements.sourceKind.value = "self_built";
+  elements.sourceKind.value = "public";
   clearFormError();
   resetCredentialForm();
   syncCredentialFields(false, "keep");
@@ -2752,7 +2752,7 @@ function openEdit(site) {
   elements.timeout.value = String(site.timeout_seconds);
   elements.enabled.checked = site.enabled;
   elements.sourceKind.value =
-    site.source_kind === "public" ? "public" : "self_built";
+    site.source_kind === "self_built" ? "self_built" : "public";
   clearFormError();
   resetCredentialForm();
   const keep = elements.siteForm.querySelector(

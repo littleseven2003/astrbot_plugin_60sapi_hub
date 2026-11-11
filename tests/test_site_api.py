@@ -96,8 +96,8 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(site["enabled"])
         self.assertEqual(site["timeout_seconds"], 10.0)
         self.assertEqual(site["revision"], 1)
-        # 未提交来源类型时按自建处理，避免内容输出意外暴露地址。
-        self.assertEqual(site["source_kind"], "self_built")
+        # 未提交来源类型时按公开处理（当前产品默认）。
+        self.assertEqual(site["source_kind"], "public")
 
     async def test_source_kind_round_trip_and_validation(self) -> None:
         site = await self._create(source_kind="public")

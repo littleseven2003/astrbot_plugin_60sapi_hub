@@ -174,7 +174,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         ))
         self_hosted = await self.sites.create_site(SiteCreate(
             name="自建服务", base_url="http://10.0.0.5:8080/proxy",
-            enabled=True, timeout_seconds=5,
+            enabled=True, timeout_seconds=5, source_kind="self_built",
         ))
         await content.open()
         try:

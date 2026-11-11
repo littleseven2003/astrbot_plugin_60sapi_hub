@@ -31,6 +31,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
                 base_url="http://example.test/proxy",
                 enabled=True,
                 timeout_seconds=5,
+                source_kind="self_built",
                 bearer_token="profile-secret",
             ),
         )

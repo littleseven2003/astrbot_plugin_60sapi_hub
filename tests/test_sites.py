@@ -623,7 +623,7 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertIsNotNone(table)
 
-    async def test_v12_site_gains_self_built_source_kind(self) -> None:
+    async def test_v12_site_gains_public_source_kind(self) -> None:
         legacy_path = self._root / "legacy.sqlite3"
         with closing(sqlite3.connect(legacy_path)) as connection, connection:
             connection.execute(
@@ -654,9 +654,12 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         try:
             sites = await service.list_sites()
             self.assertEqual(len(sites), 1)
-            # 旧库没有来源类型；迁移后按自建处理，不推测为公开实例。
-            self.assertEqual(sites[0].source_kind, "self_built")
+            # 旧库没有来源类型；按当前产品口径迁移为公开站点。
+            self.assertEqual(sites[0].source_kind, "public")
             self.assertEqual(sites[0].base_url, "https://old.example.test")
+            self.assertTrue(sites[0].enabled)
+            self.assertEqual(sites[0].revision, 1)
+            self.assertFalse(sites[0].has_bearer_token)
         finally:
             await service.close()
         with closing(sqlite3.connect(legacy_path)) as connection:
@@ -666,6 +669,107 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
             ]
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertIn("source_kind", columns)
+
+    async def test_v12_site_migration_preserves_credential_and_state(self) -> None:
+        legacy_path = self._root / "legacy-cred.sqlite3"
+        with closing(sqlite3.connect(legacy_path)) as connection, connection:
+            connection.execute(
+                """
+                CREATE TABLE sites (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                    timeout_seconds REAL NOT NULL
+                        CHECK (timeout_seconds >= 1 AND timeout_seconds <= 120),
+                    bearer_token TEXT,
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """,
+            )
+            connection.execute(
+                "INSERT INTO sites VALUES "
+                "('b' || substr(hex(randomblob(16)), 1, 31), '带凭据旧站点', "
+                "'http://10.0.0.9:8080/proxy', 1, 7.5, 'legacy-token', 4, "
+                "'2026-01-02T00:00:00+00:00', '2026-01-03T00:00:00+00:00')",
+            )
+            connection.execute(
+                "INSERT INTO sites VALUES "
+                "('c' || substr(hex(randomblob(16)), 1, 31), '停用旧站点', "
+                "'https://off.example.test/news', 0, 10, NULL, 2, "
+                "'2026-01-04T00:00:00+00:00', '2026-01-04T00:00:00+00:00')",
+            )
+            connection.execute("PRAGMA user_version = 12")
+        service = SiteService(legacy_path)
+        await service.open()
+        try:
+            sites = await service.list_sites()
+            self.assertEqual(len(sites), 2)
+            by_name = {item.name: item for item in sites}
+            enabled_site = by_name["带凭据旧站点"]
+            disabled_site = by_name["停用旧站点"]
+            # 旧站点默认公开，其余业务字段一律保留。
+            for site in sites:
+                self.assertEqual(site.source_kind, "public")
+            self.assertEqual(enabled_site.base_url, "http://10.0.0.9:8080/proxy")
+            self.assertTrue(enabled_site.enabled)
+            self.assertEqual(enabled_site.timeout_seconds, 7.5)
+            self.assertEqual(enabled_site.revision, 4)
+            self.assertTrue(enabled_site.has_bearer_token)
+            self.assertFalse(disabled_site.enabled)
+            self.assertEqual(disabled_site.revision, 2)
+            self.assertFalse(disabled_site.has_bearer_token)
+            # 凭据仍可用于获取，且未被迁移改写。
+            fetch = await service.get_fetch_config(enabled_site.id)
+            self.assertEqual(fetch.bearer_token, "legacy-token")
+        finally:
+            await service.close()
+
+    async def test_existing_source_kind_values_survive_reopen(self) -> None:
+        public_site = await self.service.create_site(
+            make_create(name="公开站点", source_kind="public"),
+        )
+        built_site = await self.service.create_site(
+            make_create(name="自建站点", source_kind="self_built"),
+        )
+        await self.service.close()
+        await self.service.open()
+        self.assertEqual(
+            (await self.service.get_site(public_site.id)).source_kind, "public",
+        )
+        # 用户明确选择的“自建”不会被批量改回公开。
+        self.assertEqual(
+            (await self.service.get_site(built_site.id)).source_kind,
+            "self_built",
+        )
+        await self.service.close()
+        await self.service.open()
+        self.assertEqual(
+            (await self.service.get_site(built_site.id)).source_kind,
+            "self_built",
+        )
+
+    async def test_new_site_defaults_to_public(self) -> None:
+        created = await self.service.create_site(make_create())
+        self.assertEqual(created.source_kind, "public")
+
+    async def test_edit_without_source_kind_keeps_explicit_value(self) -> None:
+        site = await self.service.create_site(
+            make_create(source_kind="self_built"),
+        )
+        updated = await self.service.update_site(
+            site.id,
+            SiteUpdate(
+                name="改名后",
+                base_url=site.base_url,
+                enabled=True,
+                timeout_seconds=5,
+                expected_revision=site.revision,
+            ),
+        )
+        self.assertEqual(updated.source_kind, "self_built")
 
     async def test_open_creates_nested_directory(self) -> None:
         nested = self._root / "nested" / "data" / "sites.sqlite3"

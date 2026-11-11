@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS sites (
     base_url TEXT NOT NULL,
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
     timeout_seconds REAL NOT NULL CHECK (timeout_seconds >= 1 AND timeout_seconds <= 120),
-    source_kind TEXT NOT NULL DEFAULT 'self_built'
+    source_kind TEXT NOT NULL DEFAULT 'public'
         CHECK (source_kind IN ('public', 'self_built')),
     bearer_token TEXT,
     revision INTEGER NOT NULL CHECK (revision >= 1),
@@ -321,7 +321,7 @@ class StoredSite:
     base_url: str
     enabled: bool
     timeout_seconds: float
-    source_kind: str = "self_built"
+    source_kind: str = "public"
     bearer_token: str | None = field(default=None, repr=False)
     revision: int = 1
     created_at: str = ""
@@ -617,7 +617,7 @@ class SiteStore:
                     "ALTER TABLE delivery_pages "
                     "ADD COLUMN image_generated INTEGER",
                 )
-            # v13：站点来源类型（公开实例 / 自建），旧站点按自建处理。
+            # v13：站点来源类型（公开实例 / 自建），旧站点按公开处理。
             async with connection.execute(
                 "PRAGMA table_info(sites)",
             ) as cursor:
@@ -625,7 +625,7 @@ class SiteStore:
             if "source_kind" not in site_columns:
                 await connection.execute(
                     "ALTER TABLE sites ADD COLUMN source_kind TEXT NOT NULL "
-                    "DEFAULT 'self_built' "
+                    "DEFAULT 'public' "
                     "CHECK (source_kind IN ('public', 'self_built'))",
                 )
             # Older push_tasks tables may lack schedule columns. Inspect the
@@ -2459,7 +2459,7 @@ def _row_to_site(row: aiosqlite.Row) -> StoredSite:
         base_url=row["base_url"],
         enabled=bool(row["enabled"]),
         timeout_seconds=float(row["timeout_seconds"]),
-        source_kind=str(row["source_kind"] or "self_built"),
+        source_kind=str(row["source_kind"] or "public"),
         bearer_token=row["bearer_token"],
         revision=int(row["revision"]),
         created_at=row["created_at"],

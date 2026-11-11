@@ -148,7 +148,7 @@ class SiteFetchConfig:
     base_url: str
     timeout_seconds: float
     revision: int
-    source_kind: str = SOURCE_KIND_SELF_BUILT
+    source_kind: str = SOURCE_KIND_PUBLIC
     bearer_token: str | None = field(default=None, repr=False)
 
 
@@ -160,7 +160,7 @@ class SiteCreate:
     base_url: str
     enabled: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    source_kind: str = SOURCE_KIND_SELF_BUILT
+    source_kind: str = SOURCE_KIND_PUBLIC
     bearer_token: str | None = field(default=None, repr=False)
 
 
@@ -216,7 +216,7 @@ class SiteService:
         timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
         source_kind = normalize_source_kind(
             data.source_kind,
-            default=SOURCE_KIND_SELF_BUILT,
+            default=SOURCE_KIND_PUBLIC,
         )
         bearer_token = normalize_bearer_token(data.bearer_token)
 

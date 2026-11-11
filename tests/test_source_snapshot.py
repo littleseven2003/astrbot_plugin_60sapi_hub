@@ -10,6 +10,7 @@ import httpx
 from core.content_api import content_snapshot_dict
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
+from core.profile_render import render_profile_markdown, render_profile_text
 from core.sites import MAX_BASE_URL_LENGTH, SiteCreate, SiteService
 from core.source_url import (
     MAX_SNAPSHOT_URL_LENGTH,
@@ -219,3 +220,48 @@ class UnicodeBudgetTest(_Harness):
         # 编码确实膨胀，且与客户端使用的地址逐字一致。
         self.assertGreater(len(encoded), len(worst))
         self.assertEqual(encoded, str(httpx.URL(worst)))
+
+
+class ProfileOutputSourceTest(unittest.TestCase):
+    """组合文字与 Markdown 输出：只显示域名，路径秘密不出现。"""
+
+    def _payload(self, source_kind: str) -> dict:
+        return {
+            "profile_name": "组合",
+            "site_name": "站点",
+            "status": "complete",
+            "success_count": 1,
+            "failure_count": 0,
+            "sections": [
+                {
+                    "content_type": "daily_news",
+                    "label": "每日新闻",
+                    "status": "ok",
+                    "fetched_at": "2026-11-11T02:00:00+00:00",
+                    "source_url": "https://api.example.test:8443/"
+                    + SECRET + "/v2/60s",
+                    "source_kind": source_kind,
+                    "items": [{"title": "新闻一"}],
+                },
+            ],
+        }
+
+    def test_text_and_markdown_show_domain_only(self) -> None:
+        payload = self._payload("public")
+        text = render_profile_text(payload)
+        markdown = render_profile_markdown(payload)
+        for output in (text, markdown):
+            self.assertIn("数据来源：api.example.test", output)
+            self.assertNotIn(SECRET, output)
+            self.assertNotIn(":8443", output)
+            self.assertNotIn("/v2/60s", output)
+
+    def test_text_and_markdown_hide_self_built_address(self) -> None:
+        payload = self._payload("self_built")
+        text = render_profile_text(payload)
+        markdown = render_profile_markdown(payload)
+        for output in (text, markdown):
+            self.assertIn("数据来源：自建服务", output)
+            self.assertNotIn(SECRET, output)
+            self.assertNotIn("api.example.test", output)
+

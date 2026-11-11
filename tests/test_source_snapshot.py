@@ -264,4 +264,3 @@ class ProfileOutputSourceTest(unittest.TestCase):
             self.assertIn("数据来源：自建服务", output)
             self.assertNotIn(SECRET, output)
             self.assertNotIn("api.example.test", output)
-

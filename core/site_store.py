@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -103,6 +103,21 @@ CREATE TABLE IF NOT EXISTS push_task_umos (
 _CREATE_TASK_PROFILE_INDEX = """
 CREATE INDEX IF NOT EXISTS push_tasks_profile_id
 ON push_tasks (profile_id)
+"""
+
+_CREATE_TASK_SITES_TABLE = """
+CREATE TABLE IF NOT EXISTS push_task_sites (
+    task_id TEXT NOT NULL REFERENCES push_tasks(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE RESTRICT,
+    PRIMARY KEY (task_id, position),
+    UNIQUE (task_id, site_id)
+)
+"""
+
+_CREATE_TASK_SITES_INDEX = """
+CREATE INDEX IF NOT EXISTS push_task_sites_site_id
+ON push_task_sites (site_id)
 """
 
 _CREATE_TASKS_TABLE_V7 = _CREATE_TASKS_TABLE.replace(
@@ -396,6 +411,7 @@ class StoredTask:
     schedule_start_at: str | None = None
     schedule_interval_minutes: int | str | None = None
     schedule_expression: str | None = None
+    sites: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,6 +611,18 @@ class SiteStore:
                 await connection.execute(_CREATE_TASKS_TABLE)
             await connection.execute(_CREATE_TASK_UMOS_TABLE)
             await connection.execute(_CREATE_TASK_PROFILE_INDEX)
+            await connection.execute(_CREATE_TASK_SITES_TABLE)
+            await connection.execute(_CREATE_TASK_SITES_INDEX)
+            # v14：为旧任务回填候选站点，顺序沿用原组合绑定的站点。
+            # 旧单站点任务因此保持原有执行顺序与可见行为。
+            await connection.execute(
+                """
+                INSERT OR IGNORE INTO push_task_sites (task_id, position, site_id)
+                SELECT t.id, 0, p.site_id
+                FROM push_tasks AS t
+                JOIN content_profiles AS p ON p.id = t.profile_id
+                """,
+            )
             await connection.execute(_CREATE_SCHEDULE_STATE_TABLE)
             await connection.execute(_CREATE_SCHEDULE_CLAIMS_TABLE)
             await connection.execute(_CREATE_SCHEDULE_SKIPS_TABLE)
@@ -863,6 +891,16 @@ class SiteStore:
                 names = tuple(row["name"] for row in await cursor.fetchall())
                 if names:
                     raise SiteReferencedError(names)
+                # 任务候选站点同样构成引用：删除会让任务失去候选。
+                cursor = await connection.execute(
+                    "SELECT t.name FROM push_task_sites AS s "
+                    "JOIN push_tasks AS t ON t.id = s.task_id "
+                    "WHERE s.site_id = ? ORDER BY t.created_at, t.id",
+                    (site_id,),
+                )
+                task_names = tuple(row["name"] for row in await cursor.fetchall())
+                if task_names:
+                    raise SiteReferencedError(task_names)
                 cursor = await connection.execute(
                     "DELETE FROM sites WHERE id = ? AND revision = ?",
                     (site_id, expected_revision),
@@ -1082,6 +1120,7 @@ class SiteStore:
         profile_id: str,
         output_format: str,
         umos: tuple[str, ...],
+        site_ids: tuple[str, ...] = (),
         schedule_kind: str | None = None,
         schedule_timezone: str | None = None,
         schedule_time: str | None = None,
@@ -1114,6 +1153,7 @@ class SiteStore:
                     ),
                 )
                 await self._insert_task_umos(connection, task_id, umos)
+                await self._insert_task_sites(connection, task_id, site_ids)
 
             await self._commit_write(
                 connection,
@@ -1126,6 +1166,7 @@ class SiteStore:
                 profile_id=profile_id,
                 output_format=output_format,
                 umos=umos,
+                sites=site_ids,
                 enabled=False,
                 revision=1,
                 created_at=now,
@@ -1153,15 +1194,19 @@ class SiteStore:
                     """,
                 ) as cursor:
                     rows = await cursor.fetchall()
-                umos = await self._load_task_umos(
-                    tuple(row["id"] for row in rows),
-                )
+                ids = tuple(row["id"] for row in rows)
+                umos = await self._load_task_umos(ids)
+                sites = await self._load_task_sites(ids)
             except SiteStoreError:
                 raise
             except Exception as exc:
                 raise SiteStoreError("读取推送任务列表失败") from exc
             return [
-                _row_to_task(row, umos.get(row["id"], ()))
+                _row_to_task(
+                    row,
+                    umos.get(row["id"], ()),
+                    sites.get(row["id"], ()),
+                )
                 for row in rows
             ]
 
@@ -1181,11 +1226,14 @@ class SiteStore:
                 if row is None:
                     raise TaskRecordNotFoundError(task_id)
                 umos = await self._load_task_umos((task_id,))
+                sites = await self._load_task_sites((task_id,))
             except SiteStoreError:
                 raise
             except Exception as exc:
                 raise SiteStoreError("读取推送任务失败") from exc
-            return _row_to_task(row, umos.get(task_id, ()))
+            return _row_to_task(
+                row, umos.get(task_id, ()), sites.get(task_id, ()),
+            )
 
     async def get_task_config_snapshot(
         self,
@@ -1211,7 +1259,10 @@ class SiteStore:
                 if row is None:
                     raise TaskRecordNotFoundError(task_id)
                 umos = await self._load_task_umos((task_id,))
-                task = _row_to_task(row, umos.get(task_id, ()))
+                sites = await self._load_task_sites((task_id,))
+                task = _row_to_task(
+                    row, umos.get(task_id, ()), sites.get(task_id, ()),
+                )
                 profile_row = await self._fetchone_unlocked(
                     """
                     SELECT id, site_id, revision
@@ -1263,6 +1314,7 @@ class SiteStore:
         output_format: str,
         umos: tuple[str, ...],
         expected_revision: int,
+        site_ids: tuple[str, ...] | None = None,
         schedule_unchanged: bool = False,
         schedule_kind: str | None = None,
         schedule_timezone: str | None = None,
@@ -1329,6 +1381,12 @@ class SiteStore:
                     (task_id,),
                 )
                 await self._insert_task_umos(connection, task_id, umos)
+                if site_ids is not None:
+                    await connection.execute(
+                        "DELETE FROM push_task_sites WHERE task_id = ?",
+                        (task_id,),
+                    )
+                    await self._insert_task_sites(connection, task_id, site_ids)
 
             await self._commit_write(
                 connection,
@@ -1346,7 +1404,10 @@ class SiteStore:
             )
             if row is None:
                 raise TaskRecordNotFoundError(task_id)
-            return _row_to_task(row, umos)
+            stored_sites = await self._load_task_sites((task_id,))
+            return _row_to_task(
+                row, umos, stored_sites.get(task_id, ()),
+            )
 
     async def delete_task(self, task_id: str, *, expected_revision: int) -> None:
         async with self._lock:
@@ -1444,7 +1505,10 @@ class SiteStore:
             if row is None:
                 raise TaskRecordNotFoundError(task_id)
             umos = await self._load_task_umos((task_id,))
-            return _row_to_task(row, umos.get(task_id, ()))
+            sites = await self._load_task_sites((task_id,))
+            return _row_to_task(
+                row, umos.get(task_id, ()), sites.get(task_id, ()),
+            )
 
     async def get_schedule_state(self, task_id: str) -> ScheduleState | None:
         async with self._lock:
@@ -2019,6 +2083,43 @@ class SiteStore:
             await self._rollback_quietly(connection)
             raise
 
+    async def _insert_task_sites(
+        self,
+        connection: aiosqlite.Connection,
+        task_id: str,
+        site_ids: tuple[str, ...],
+    ) -> None:
+        for position, site_id in enumerate(site_ids):
+            await connection.execute(
+                """
+                INSERT INTO push_task_sites (task_id, position, site_id)
+                VALUES (?, ?, ?)
+                """,
+                (task_id, position, site_id),
+            )
+
+    async def _load_task_sites(
+        self,
+        task_ids: tuple[str, ...],
+    ) -> dict[str, tuple[str, ...]]:
+        if not task_ids:
+            return {}
+        placeholders = ",".join("?" for _ in task_ids)
+        async with self._require_connection().execute(
+            f"""
+            SELECT task_id, site_id
+            FROM push_task_sites
+            WHERE task_id IN ({placeholders})
+            ORDER BY task_id, position
+            """,
+            task_ids,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        collected: dict[str, list[str]] = {}
+        for row in rows:
+            collected.setdefault(row["task_id"], []).append(row["site_id"])
+        return {key: tuple(value) for key, value in collected.items()}
+
     async def _insert_task_umos(
         self,
         connection: aiosqlite.Connection,
@@ -2435,6 +2536,7 @@ def _iso_time(value: str) -> datetime:
 def _row_to_task(
     row: aiosqlite.Row,
     umos: tuple[str, ...],
+    sites: tuple[str, ...] = (),
 ) -> StoredTask:
     return StoredTask(
         id=row["id"],
@@ -2442,6 +2544,7 @@ def _row_to_task(
         profile_id=row["profile_id"],
         output_format=row["output_format"],
         umos=umos,
+        sites=sites,
         enabled=bool(row["enabled"]),
         revision=int(row["revision"]),
         created_at=row["created_at"],

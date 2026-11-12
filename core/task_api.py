@@ -190,6 +190,7 @@ class TaskApi:
                     output_format=data.get("output_format"),
                     umos=data.get("umos"),
                     schedule=data.get("schedule"),
+                    sites=data.get("sites"),
                 ),
             )
             profile = await self._profiles.get_profile(task.profile_id)
@@ -234,6 +235,7 @@ class TaskApi:
                         if "schedule" in data
                         else SCHEDULE_UNSET
                     ),
+                    sites=data.get("sites"),
                 ),
             )
             profile = await self._profiles.get_profile(task.profile_id)
@@ -290,6 +292,15 @@ def _task_dict(
     next_run_at: str | None = None,
 ) -> dict[str, Any]:
     site = sites.get(profile.site_id) if profile is not None else None
+    candidates = []
+    for site_id in task.sites:
+        candidate = sites.get(site_id)
+        candidates.append({
+            "id": site_id,
+            "name": candidate.name if candidate is not None else None,
+            "enabled": bool(candidate.enabled) if candidate is not None else None,
+            "exists": candidate is not None,
+        })
     schedule = task.schedule
     preview = None
     evaluated_at = now.astimezone(timezone.utc).isoformat()
@@ -328,6 +339,7 @@ def _task_dict(
         "profile_name": profile.name if profile else "未知组合",
         "site_id": profile.site_id if profile else None,
         "site_enabled": site.enabled if site else False,
+        "sites": candidates,
         "output_format": task.output_format,
         "output_label": task.output_label,
         "umos": list(task.umos),

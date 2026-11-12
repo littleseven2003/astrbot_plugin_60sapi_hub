@@ -109,6 +109,7 @@ class PushTask:
     schedule: DailySchedule | WeeklySchedule | IntervalSchedule | CronSchedule | None = None
     schedule_raw: dict[str, object] | None = None
     schedule_error: str | None = None
+    sites: tuple[str, ...] = ()
 
     @property
     def output_label(self) -> str:
@@ -136,6 +137,7 @@ class TaskCreate:
     output_format: object
     umos: object
     schedule: object = None
+    sites: object = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +148,7 @@ class TaskUpdate:
     umos: object
     expected_revision: object
     schedule: object = SCHEDULE_UNSET
+    sites: object = None
 
 
 class PushTaskService:
@@ -200,6 +203,7 @@ class PushTaskService:
         umos = normalize_umos(data.umos)
         schedule = parse_schedule(data.schedule)
         await self._require_profile(profile_id)
+        site_ids = await self._resolve_site_ids(data.sites, profile_id)
         try:
             stored = await self._store.create_task(
                 task_id=uuid.uuid4().hex,
@@ -207,6 +211,7 @@ class PushTaskService:
                 profile_id=profile_id,
                 output_format=output_format,
                 umos=umos,
+                site_ids=site_ids,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
                 schedule_time=(
@@ -248,6 +253,7 @@ class PushTaskService:
         schedule_unchanged = data.schedule is SCHEDULE_UNSET
         schedule = None if schedule_unchanged else parse_schedule(data.schedule)
         await self._require_profile(profile_id)
+        site_ids = await self._resolve_site_ids(data.sites, profile_id)
         try:
             stored = await self._store.update_task(
                 normalized_id,
@@ -256,6 +262,7 @@ class PushTaskService:
                 output_format=output_format,
                 umos=umos,
                 expected_revision=expected_revision,
+                site_ids=site_ids,
                 schedule_unchanged=schedule_unchanged,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
@@ -314,6 +321,33 @@ class PushTaskService:
             ) from exc
         except Exception as exc:
             raise TaskStorageError("删除推送任务失败。") from exc
+
+    async def _resolve_site_ids(
+        self,
+        raw: object,
+        profile_id: str,
+    ) -> tuple[str, ...]:
+        """候选站点顺序即执行顺序；未指定时沿用组合绑定的站点。"""
+        if raw is None:
+            profile = await self._profiles.get_profile(profile_id)
+            return (profile.site_id,)
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
+            raise TaskValidationError("sites", "必须是站点 id 列表")
+        ordered: list[str] = []
+        for item in raw:
+            if not isinstance(item, str) or not item.strip():
+                raise TaskValidationError("sites", "站点 id 必须是非空字符串")
+            site_id = item.strip()
+            if site_id in ordered:
+                continue
+            try:
+                await self._store.get_site(site_id)
+            except Exception:
+                raise TaskNotFoundError(site_id) from None
+            ordered.append(site_id)
+        if not ordered:
+            raise TaskValidationError("sites", "至少需要一个候选站点")
+        return tuple(ordered)
 
     async def _require_profile(self, profile_id: str) -> None:
         try:
@@ -440,6 +474,7 @@ def _normalize_profile_id(value: object) -> str:
 
 
 def _to_task(stored: StoredTask) -> PushTask:
+    sites = tuple(stored.sites)
     schedule = None
     raw = None
     error = None
@@ -490,6 +525,7 @@ def _to_task(stored: StoredTask) -> PushTask:
         profile_id=stored.profile_id,
         output_format=stored.output_format,
         umos=tuple(stored.umos),
+        sites=sites,
         enabled=stored.enabled,
         revision=stored.revision,
         created_at=stored.created_at,

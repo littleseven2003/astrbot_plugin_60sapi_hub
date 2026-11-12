@@ -533,11 +533,25 @@ class SiteStore:
     ) -> None:
         """在同一事务中创建/升级 schema，失败保留旧版本数据。"""
         try:
-            if version in (3, 4, 5, 6):
-                # Existing push_tasks only allowed enabled=0. Rebuild it
-                # while foreign keys are off so child UMO rows survive.
-                await connection.execute("PRAGMA foreign_keys = OFF")
+            # 迁移期间统一关闭外键校验：重建 push_tasks 时不能触发子表约束，
+            # 其它版本只是加列/建表，不受影响；结束后统一恢复。
+            await connection.execute("PRAGMA foreign_keys = OFF")
+            # 先取得写锁，再读取版本。只读 PRAGMA 拿到的是锁外的快照，
+            # 另一个实例可能刚完成迁移；按旧版本重复执行 DDL 会 duplicate
+            # column（例如再次 ALTER TABLE ... ADD COLUMN owner_token）。
             await connection.execute("BEGIN IMMEDIATE")
+            async with connection.execute("PRAGMA user_version") as cursor:
+                row = await cursor.fetchone()
+            locked_version = int(row[0]) if row is not None else 0
+            if locked_version > SCHEMA_VERSION:
+                raise SiteStoreError(
+                    f"不支持的站点数据库 schema 版本：{locked_version}",
+                )
+            if locked_version >= SCHEMA_VERSION:
+                # 另一个实例已经迁到当前版本：本轮不需要任何 DDL。
+                await connection.commit()
+                return
+            version = locked_version
             if version == 0:
                 await connection.execute(_CREATE_SITES_TABLE)
             await connection.execute(_CREATE_PROFILES_TABLE)
@@ -656,11 +670,10 @@ class SiteStore:
             await self._rollback_quietly(connection)
             raise
         finally:
-            if version in (3, 4, 5, 6):
-                try:
-                    await connection.execute("PRAGMA foreign_keys = ON")
-                except Exception:
-                    pass
+            try:
+                await connection.execute("PRAGMA foreign_keys = ON")
+            except Exception:
+                pass
 
     async def close(self) -> None:
         """关闭连接；可重复调用。"""

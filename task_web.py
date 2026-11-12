@@ -42,6 +42,12 @@ class TaskWeb:
                 "删除推送任务",
             ),
             (
+                "tasks/<task_id>/test",
+                self.test_task,
+                ["POST"],
+                "测试候选站点是否满足任务配置",
+            ),
+            (
                 "schedule-runs",
                 self.list_schedule_runs,
                 ["GET"],
@@ -125,6 +131,12 @@ class TaskWeb:
             return guard
         payload = await request.json(default=None)
         return self._respond(await self._api.delete_task(task_id, payload))
+
+    async def test_task(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        return self._respond(await self._api.test_task(task_id))
 
     def _guard(self):
         if not request.username:

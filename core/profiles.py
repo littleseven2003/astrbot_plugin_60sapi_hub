@@ -224,10 +224,12 @@ class ContentProfileService:
     async def load_for_preview(
         self,
         profile_id: object,
+        site_id: object = None,
     ) -> tuple[ContentProfile, SiteConfig]:
         profile = await self.get_profile(profile_id)
+        target_site = profile.site_id if site_id is None else site_id
         try:
-            site = await self._sites.get_site(profile.site_id)
+            site = await self._sites.get_site(target_site)
         except SiteNotFoundError:
             raise ProfileStorageError("内容组合引用的站点不存在。") from None
         if not site.enabled:

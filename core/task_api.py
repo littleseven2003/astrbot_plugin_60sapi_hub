@@ -24,6 +24,8 @@ from .schedule import (
     next_scheduled_run,
     parse_schedule,
 )
+from .content_api import content_snapshot_dict
+from .site_requirements import evaluate_sections, requirements_from_items
 from .sites import SiteService, SiteStorageError
 from .tasks import (
     PushTask,
@@ -55,12 +57,14 @@ class TaskApi:
         *,
         clock=None,
         scheduler=None,
+        content=None,
     ) -> None:
         self._tasks = tasks
         self._profiles = profiles
         self._sites = sites
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._scheduler = scheduler
+        self._content = content
 
     async def list_tasks(self) -> TaskApiResult:
         now = self._clock()
@@ -117,6 +121,96 @@ class TaskApi:
         return _ok(_task_dict(
             task, profile, sites, now, runtime.get(task.id),
         ))
+
+    async def test_task(self, task_id: str) -> TaskApiResult:
+        """按任务配置的类别与条数，判断是否有单个站点能满足整份配置。"""
+        try:
+            task = await self._tasks.get_task(task_id)
+            profile = await self._profiles.get_profile(task.profile_id)
+            sites = {site.id: site for site in await self._sites.list_sites()}
+        except TaskNotFoundError:
+            return _not_found_error()
+        except ProfileNotFoundError:
+            return _profile_not_found_error()
+        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if self._content is None:
+            return _error(503, "内容获取不可用。", code="content_unavailable")
+
+        requirements = requirements_from_items(profile.items)
+        checked: list[dict[str, Any]] = []
+        winner: dict[str, Any] | None = None
+        for site_id in task.sites:
+            site = sites.get(site_id)
+            entry: dict[str, Any] = {
+                "site_id": site_id,
+                "site_name": site.name if site is not None else None,
+                "satisfied": False,
+                "reason": None,
+                "missing": [],
+            }
+            if site is None:
+                entry["reason"] = "site_missing"
+                checked.append(entry)
+                continue
+            if not site.enabled:
+                entry["reason"] = "site_disabled"
+                checked.append(entry)
+                continue
+            sections: list[dict[str, Any]] = []
+            for item in profile.items:
+                try:
+                    cached = await self._content.preview_cached(
+                        item.content_type, site_id,
+                    )
+                    snapshot = content_snapshot_dict(
+                        item.content_type, cached.snapshot,
+                    )
+                    items = snapshot.get("items")
+                    sections.append({
+                        "content_type": item.content_type,
+                        "status": "ok",
+                        "items": items if isinstance(items, list) else [],
+                    })
+                except Exception:
+                    sections.append({
+                        "content_type": item.content_type,
+                        "status": "error",
+                        "items": [],
+                    })
+            satisfied, shortfalls = evaluate_sections(sections, requirements)
+            entry["satisfied"] = satisfied
+            entry["reason"] = None if satisfied else "requirements_not_met"
+            entry["missing"] = [
+                {
+                    "content_type": item.content_type,
+                    "required": item.required,
+                    "available": item.available,
+                    "reason": item.reason,
+                }
+                for item in shortfalls
+            ]
+            checked.append(entry)
+            if satisfied:
+                winner = entry
+                break
+
+        if winner is not None:
+            message = f"站点「{winner['site_name'] or winner['site_id']}」可以满足全部配置。"
+        elif not checked:
+            message = "任务没有配置候选站点。"
+        else:
+            message = "所选站点均无法满足全部类别与条数要求。"
+        return _ok({
+            "task_id": task.id,
+            "satisfied": winner is not None,
+            "site_id": winner["site_id"] if winner is not None else None,
+            "site_name": winner["site_name"] if winner is not None else None,
+            "message": message,
+            "checked": checked,
+        })
 
     async def list_schedule_runs(self, *, limit: int = 20, offset: int = 0) -> TaskApiResult:
         if self._scheduler is None:

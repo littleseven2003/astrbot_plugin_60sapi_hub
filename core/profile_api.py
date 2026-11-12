@@ -222,6 +222,7 @@ class ProfileApi:
         payload: object,
         *,
         owner: str | None = None,
+        site_id: object = None,
     ) -> ProfileApiResult:
         data = _payload_dict(payload)
         if data is None:
@@ -235,7 +236,9 @@ class ProfileApi:
             )
         profile_id = data.get("profile_id")
         try:
-            profile, site = await self._profiles.load_for_preview(profile_id)
+            profile, site = await self._profiles.load_for_preview(
+                profile_id, site_id,
+            )
         except ProfileValidationError as exc:
             return _validation_error(exc)
         except ProfileNotFoundError:
@@ -265,7 +268,7 @@ class ProfileApi:
             )
             try:
                 latest_profile, latest_site = (
-                    await self._profiles.load_for_preview(profile_id)
+                    await self._profiles.load_for_preview(profile_id, site_id)
                 )
             except SiteDisabledError:
                 return _error(

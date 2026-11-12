@@ -140,6 +140,7 @@ class SixtySAPIHub(Star):
             TaskApi(
                 self.tasks, self.profiles, self.sites,
                 scheduler=self.scheduler,
+                content=self.content,
             ),
             plugin_name=self._plugin_name,
             is_active=self._runtime_active_guard(),

@@ -264,7 +264,7 @@ class ProfileApi:
         # 绝不把不同版本的栏目拼进同一个 200 响应。
         for attempt in range(_MAX_PREVIEW_ATTEMPTS):
             sections, failures = await self._collect_sections(
-                profile, force_refresh,
+                profile, force_refresh, site.id,
             )
             try:
                 latest_profile, latest_site = (
@@ -361,15 +361,17 @@ class ProfileApi:
         self,
         profile: Any,
         force_refresh: bool,
+        site_id: str,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """按给定组合配置获取全部栏目；失败栏目单独记录，不中断其余栏目。"""
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for item in profile.items:
             try:
+                # 必须使用本次实际选中的站点，否则会出现“标记 B、内容来自 A”。
                 cached = await self._content.preview_cached(
                     item.content_type,
-                    profile.site_id,
+                    site_id,
                     force_refresh=force_refresh,
                 )
             except Exception as exc:
@@ -474,13 +476,12 @@ class ProfileApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        if (
-            profile.revision != snapshot.profile_revision
-            or profile.site_id != snapshot.site_id
-        ):
+        # 组合 revision 必须一致；站点则校验快照记录的那一个，
+        # 这样故障切换选中的备用站点快照不会被误判为过期。
+        if profile.revision != snapshot.profile_revision:
             return _stale_snapshot_error()
         try:
-            site = await self._sites.get_site(profile.site_id)
+            site = await self._sites.get_site(snapshot.site_id)
         except SiteNotFoundError:
             return _stale_snapshot_error()
         except SiteStorageError:

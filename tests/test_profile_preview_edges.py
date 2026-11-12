@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,8 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self.snapshots = ImageSnapshotStore()
         self.images = ProfileImageService()
         self.calls: list[str] = []
+        self.responses: list[dict[str, object]] = []
+        self.host_seq: dict[str, int] = {}
         self.generation = 0
         self.site = await self.sites.create_site(
             SiteCreate(
@@ -41,10 +44,20 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         async def handler(request: httpx.Request) -> httpx.Response:
+            # 数据版本只由本次请求实际访问的 host 决定，且在任何等待之前确定：
+            # 请求已经发往旧 host 时，即使等待期间站点被改，返回的仍是旧数据。
+            host = request.url.host
+            tag = self._host_tag(host)
+            seq = self.host_seq.get(host, 0) + 1
+            self.host_seq[host] = seq
             self.calls.append(request.url.path)
+            self.responses.append(
+                {"host": host, "tag": tag, "seq": seq, "path": request.url.path},
+            )
             await self._maybe_barrier_in_flight()
             return httpx.Response(
-                200, content=json.dumps(self._body(request.url.path)).encode(),
+                200,
+                content=json.dumps(self._body(tag, seq, request.url.path)).encode(),
             )
 
         self.content = ContentService(
@@ -66,21 +79,30 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self._tmp.cleanup()
 
-    def _body(self, path: str) -> dict:
-        tag = f"G{self.generation}"
+    @staticmethod
+    def _host_tag(host: str) -> str:
+        """gen0 是初始 host，其余（gen1、gen2…）都是切换后的新 host。"""
+        return "OLD" if host.startswith("gen0.") else "NEW"
+
+    def _body(self, tag: str, seq: int, path: str) -> dict:
+        prefix = f"{tag}#{seq}"
         if path.endswith("/v2/60s"):
             return {
                 "code": 200, "message": "ok",
                 "data": {
                     "date": "2026-11-13",
-                    "news": [f"{tag}-新闻一", f"{tag}-新闻二", f"{tag}-新闻三"],
+                    "news": [
+                        f"{prefix}-新闻一",
+                        f"{prefix}-新闻二",
+                        f"{prefix}-新闻三",
+                    ],
                 },
             }
         return {
             "code": 200, "message": "ok",
             "data": [
-                {"title": f"{tag}-热榜一", "hot_value": 10},
-                {"title": f"{tag}-热榜二", "hot_value": 20},
+                {"title": f"{prefix}-热榜一", "hot_value": 10},
+                {"title": f"{prefix}-热榜二", "hot_value": 20},
             ],
         }
 
@@ -214,7 +236,6 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
 
         async def update_profile() -> None:
             current = await self.profiles.get_profile(profile.id)
-            self.generation += 1
             await self.profiles.update_profile(
                 profile.id,
                 ProfileUpdate(
@@ -246,17 +267,47 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [section["displayed_count"] for section in data["sections"]], [1, 1],
         )
-        # 只有更新后的数据，没有被丢弃那一轮的内容。
+        # 只有最终那一轮的上游响应，被丢弃那一轮的内容不得残留。
+        final_round = self.responses[-2:]
+        self.assertEqual(len(final_round), 2, self.responses)
+        expected = {f"{item['tag']}#{item['seq']}" for item in final_round}
+        self.assertEqual(len(expected), 2, final_round)
+        hot_tag = next(
+            f"{item['tag']}#{item['seq']}" for item in final_round
+            if str(item["path"]).endswith("/v2/douyin")
+        )
+        news_tag = next(
+            f"{item['tag']}#{item['seq']}" for item in final_round
+            if str(item["path"]).endswith("/v2/60s")
+        )
         text = data["outputs"]["text"]
         markdown = data["outputs"]["markdown"]
-        self.assertIn("G1-热榜一", text)
-        self.assertIn("G1-新闻一", text)
-        self.assertNotIn("G0-", text)
-        self.assertNotIn("G0-", markdown)
-        self.assertLess(text.index("G1-热榜一"), text.index("G1-新闻一"))
+        self.assertEqual(set(re.findall(r"[A-Z]+#\d+", text)), expected)
+        # Markdown 会转义 # 等字符，去掉转义后再比对标签。
+        self.assertEqual(
+            set(re.findall(r"[A-Z]+#\d+", markdown.replace("\\", ""))),
+            expected,
+        )
+        self.assertLess(text.index(hot_tag), text.index(news_tag))
+        for section in data["sections"]:
+            titles = " ".join(
+                str(entry.get("title")) for entry in section["items"]
+            )
+            self.assertIn(section["content_type"] == "douyin_hot" and hot_tag
+                          or news_tag, titles)
         snapshot = self.snapshots.get(data["image_snapshot"]["id"])
         self.assertIsNotNone(snapshot)
         self.assertEqual(snapshot.profile_revision, final.revision)
+        snap_tags = {
+            str(entry.get("title"))
+            for section in snapshot.data["sections"]
+            for entry in section["items"]
+        }
+        self.assertTrue(snap_tags)
+        for title in snap_tags:
+            self.assertTrue(
+                any(title.startswith(tag + "-") for tag in expected), title,
+            )
 
     # ---- 4. force_refresh 两种取值 + 预热缓存 ----
 
@@ -266,17 +317,38 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
             await self.content.preview_cached(item.content_type, self.site.id)
         self.calls.clear()
 
-    async def _assert_no_mixed_sources(self, data) -> None:
-        kinds = {section["source_kind"] for section in data["sections"]}
-        self.assertEqual(len(kinds), 1, kinds)
-        hosts = {
-            section["source_display"] for section in data["sections"]
-        }
-        self.assertEqual(len(hosts), 1, hosts)
+    async def _assert_only_tag(self, data, tag: str) -> None:
+        """成功结果的每一处内容都必须来自同一个数据版本。"""
+        for section in data["sections"]:
+            for entry in section["items"]:
+                title = str(entry.get("title"))
+                self.assertTrue(
+                    title.startswith(f"{tag}#"), (section["content_type"], title),
+                )
         text = data["outputs"]["text"]
-        for host in hosts:
-            self.assertIn(host, text)
-        return kinds.pop()
+        markdown = data["outputs"]["markdown"].replace("\\", "")
+        text_tags = set(re.findall(r"[A-Z]+#\d+", text))
+        markdown_tags = set(re.findall(r"[A-Z]+#\d+", markdown))
+        self.assertTrue(text_tags, text)
+        self.assertEqual(text_tags, markdown_tags, (text_tags, markdown_tags))
+        for found in text_tags:
+            self.assertTrue(found.startswith(f"{tag}#"), found)
+        snapshot = self.snapshots.get(data["image_snapshot"]["id"])
+        self.assertIsNotNone(snapshot)
+        snap_tags = {
+            str(entry.get("title")).split("-")[0]
+            for section in snapshot.data["sections"]
+            for entry in section["items"]
+        }
+        self.assertTrue(snap_tags)
+        self.assertEqual(snap_tags, text_tags)
+
+    async def _final_source(self, data) -> dict:
+        kinds = {section["source_kind"] for section in data["sections"]}
+        hosts = {section["source_display"] for section in data["sections"]}
+        self.assertEqual(len(kinds), 1, kinds)
+        self.assertEqual(len(hosts), 1, hosts)
+        return {"kind": kinds.pop(), "host": hosts.pop()}
 
     async def test_force_refresh_true_does_not_mix_in_flight_site_change(
         self,
@@ -289,14 +361,20 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
-        kind = await self._assert_no_mixed_sources(data)
         final_site = await self.sites.get_site(self.site.id)
-        self.assertEqual(kind, final_site.source_kind)
+        source = await self._final_source(data)
+        self.assertEqual(source["kind"], final_site.source_kind)
+        self.assertEqual(source["host"], "gen1.example.test")
+        # 每个成功栏目的内容、文字、Markdown 与图片快照都只对应新 host。
+        await self._assert_only_tag(data, "NEW")
         snapshot = self.snapshots.get(data["image_snapshot"]["id"])
-        self.assertIsNotNone(snapshot)
         self.assertEqual(snapshot.site_revision, final_site.revision)
-        # 两轮各自重新请求全部栏目，上界 2 × 栏目数。
-        self.assertLessEqual(len(self.calls), 2 * len(profile.items))
+        # 夹具确实同时产生过两种响应，否则“只有新数据”没有区分力。
+        tags = {str(item["tag"]) for item in self.responses}
+        self.assertEqual(tags, {"OLD", "NEW"}, tags)
+        # force_refresh 绕过缓存：两轮各请求全部栏目，上界 2 × 栏目数。
+        self.assertLessEqual(len(self.calls), 2 * len(profile.items), self.calls)
+        self.assertGreaterEqual(len(self.calls), len(profile.items), self.calls)
 
     async def test_force_refresh_false_does_not_mix_with_warm_cache(
         self,
@@ -310,15 +388,40 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
-        kind = await self._assert_no_mixed_sources(data)
         final_site = await self.sites.get_site(self.site.id)
-        self.assertEqual(kind, final_site.source_kind)
+        source = await self._final_source(data)
+        self.assertEqual(source["kind"], final_site.source_kind)
+        await self._assert_only_tag(data, "NEW")
         snapshot = self.snapshots.get(data["image_snapshot"]["id"])
-        self.assertIsNotNone(snapshot)
         self.assertEqual(snapshot.site_revision, final_site.revision)
-        # 首轮可命中旧 revision 缓存，最终 revision 需要重新请求；
-        # 上界仍是两轮的全部栏目。
-        self.assertLessEqual(len(self.calls), 2 * len(profile.items))
+        # 首轮前段命中旧 revision 缓存，切换后各栏目各请求一次；
+        # 夹具固定为 3 个栏目、切换发生在第 2 个栏目之前，上界 3。
+        self.assertLessEqual(len(self.calls), len(profile.items), self.calls)
+
+    async def test_force_refresh_false_in_flight_request_keeps_old_body(
+        self,
+    ) -> None:
+        """请求已发出但未返回时切换站点：该响应必须是旧 host 的数据。"""
+        profile = await self._profile()
+        # 不预热缓存，确保第一个栏目真的发出上游请求。
+        self.barrier = self._switch_site
+        result = await self.api.preview_profile(
+            {"profile_id": profile.id, "force_refresh": False},
+        )
+        self.assertEqual(result.status_code, 200, result.body)
+        data = result.body["data"]
+        final_site = await self.sites.get_site(self.site.id)
+        source = await self._final_source(data)
+        self.assertEqual(source["kind"], final_site.source_kind)
+        await self._assert_only_tag(data, "NEW")
+        snapshot = self.snapshots.get(data["image_snapshot"]["id"])
+        self.assertEqual(snapshot.site_revision, final_site.revision)
+        # 在途请求确实落在旧 host，并且返回的是旧数据而不是新数据。
+        first = self.responses[0]
+        self.assertEqual(first["host"], "gen0.example.test")
+        self.assertEqual(first["tag"], "OLD")
+        # 两轮：首轮 3 次（1 旧 + 2 新），次轮补新 revision 的 1 次未命中。
+        self.assertLessEqual(len(self.calls), len(profile.items) + 1, self.calls)
 
 
 if __name__ == "__main__":

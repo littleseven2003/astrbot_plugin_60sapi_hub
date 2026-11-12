@@ -1,0 +1,204 @@
+/*
+ * 任务候选站点与站点五类测试的页面逻辑回归。
+ *
+ * 真实 Chromium 加载 views/sites/index.html + app.js，只替换宿主 bridge。
+ * 验证：候选站点添加/排序/移除进入保存载荷、能力测试打到独立路由、
+ * 站点“测试全部五类”逐一请求五类接口。
+ *
+ * 这是桩 bridge 的页面逻辑验证，不代表真实 AstrBot 后台/数据库往返，
+ * 也不连接真实上游或会话。
+ */
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const { chromium } = require("playwright-core");
+
+function resolveChrome() {
+  const configured = process.env.CHROME_PATH;
+  if (configured) return configured;
+  try {
+    return chromium.executablePath();
+  } catch {
+    return "";
+  }
+}
+
+const CHROME = resolveChrome();
+if (!CHROME || !fs.existsSync(CHROME)) {
+  console.error("找不到可用的 Chromium：请设置 CHROME_PATH。");
+  process.exit(2);
+}
+
+const VIEWS_DIR = path.resolve(__dirname, "..", "..", "views", "sites");
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+};
+
+const SITES = [
+  { id: "site-a", name: "站点A", base_url: "https://a.example.test/n",
+    enabled: true, timeout_seconds: 10, source_kind: "public",
+    has_bearer_token: false, revision: 3, updated_at: "" },
+  { id: "site-b", name: "站点B", base_url: "https://b.example.test/n",
+    enabled: true, timeout_seconds: 10, source_kind: "public",
+    has_bearer_token: false, revision: 4, updated_at: "" },
+  { id: "site-c", name: "站点C", base_url: "https://c.example.test/n",
+    enabled: false, timeout_seconds: 10, source_kind: "self_built",
+    has_bearer_token: true, revision: 1, updated_at: "" },
+];
+
+const PROFILES = [{
+  id: "profile-1", name: "组合一", site_id: "site-a", site_enabled: true,
+  revision: 1, items: [{ content_type: "daily_news", params: {}, limit: 2 }],
+  created_at: "", updated_at: "",
+}];
+
+const TASKS = [{
+  id: "task-1", name: "任务一", profile_id: "profile-1", profile_name: "组合一",
+  site_id: "site-a", site_enabled: true, output_format: "text",
+  output_label: "纯文字", umos: ["aiocqhttp:GroupMessage:g:1"],
+  enabled: false, revision: 2, created_at: "", updated_at: "",
+  schedule: null, sites: [{ id: "site-a", name: "站点A", enabled: true }],
+}];
+
+const server = http.createServer((request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1");
+  const relative = url.pathname === "/" ? "/index.html" : url.pathname;
+  const target = path.join(VIEWS_DIR, relative);
+  if (!target.startsWith(VIEWS_DIR) || !fs.existsSync(target)) {
+    response.writeHead(404).end("not found");
+    return;
+  }
+  response.writeHead(200, {
+    "Content-Type": MIME[path.extname(target)] || "application/octet-stream",
+  });
+  response.end(fs.readFileSync(target));
+});
+
+let assertions = 0;
+function check(condition, message) {
+  assertions += 1;
+  assert.ok(condition, message);
+}
+
+async function openPage(browser, port) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.addInitScript((fixtures) => {
+    window.__calls = [];
+    window.AstrBotPluginView = {
+      ready: async () => ({ pageTitle: "60sAPI Hub" }),
+      apiGet: async (endpoint) => {
+        if (endpoint === "sites") return { sites: fixtures.sites };
+        if (endpoint === "profiles") return { profiles: fixtures.profiles };
+        if (endpoint === "tasks") return { tasks: fixtures.tasks };
+        if (endpoint === "schedule-runs") return { claims: [], skips: [] };
+        if (endpoint === "executions") return { executions: [], total: 0 };
+        return {};
+      },
+      apiPost: async (endpoint, payload) => {
+        window.__calls.push({ endpoint, payload });
+        if (endpoint.endsWith("/capability-test")) {
+          return { data: {
+            satisfied: true, site_id: "site-b", site_name: "站点B",
+            message: "站点「站点B」可以满足全部配置。",
+          } };
+        }
+        if (endpoint.includes("/test")) {
+          return { data: { ok: true, item_count: 3 } };
+        }
+        return {};
+      },
+    };
+  }, { sites: SITES, profiles: PROFILES, tasks: TASKS });
+  await page.goto("http://127.0.0.1:" + port + "/index.html", {
+    waitUntil: "domcontentloaded",
+  });
+  return page;
+}
+
+(async () => {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  try {
+    const page = await openPage(browser, port);
+    await page.click('.nav-item[data-view="tasks"]');
+    await page.waitForSelector("#tasks-list li", { timeout: 10000 });
+
+    // 打开任务编辑，候选站点按已保存顺序渲染。
+    await page.getByRole("button", { name: "编辑" }).first().click();
+    await page.waitForSelector("#task-site-list .task-site-row");
+    let rows = await page.$$eval("#task-site-list .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent));
+    check(rows.length === 1 && rows[0] === "站点A", "已保存候选应渲染：" + rows);
+
+    // 添加站点B，然后上移，形成 B、A 的顺序。
+    await page.selectOption("#task-site-picker", "site-b");
+    await page.click("#task-site-add-button");
+    await page.waitForFunction(
+      () => document.querySelectorAll("#task-site-list .task-site-row").length === 2,
+    );
+    await page.getByRole("button", { name: "上移" }).nth(1).click();
+    rows = await page.$$eval("#task-site-list .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent));
+    check(rows[0] === "站点B" && rows[1] === "站点A", "上移后顺序：" + rows);
+
+    // 保存：载荷带上有序 sites。
+    await page.click("#task-save-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/update")));
+    const update = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/update")).pop());
+    check(
+      JSON.stringify(update.payload.sites) === JSON.stringify(["site-b", "site-a"]),
+      "保存载荷应带有序候选：" + JSON.stringify(update.payload.sites),
+    );
+
+    // 能力测试走独立路由，并展示结论。
+    await page.waitForSelector("#tasks-list li");
+    await page.getByRole("button", { name: "编辑" }).first().click();
+    await page.waitForSelector("#task-capability-test-button:not([disabled])");
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/capability-test")));
+    const capability = await page.evaluate(() =>
+      window.__calls.find((call) => call.endpoint.endsWith("/capability-test")));
+    check(capability.endpoint.endsWith("/capability-test"), "能力测试路由");
+    const message = await page.textContent("#task-capability-result");
+    check(message.includes("可以满足"), "能力测试结论：" + message);
+
+    // 站点一键测试五类：逐一请求五个接口并渲染五行。
+    await page.click("#task-close-dialog-button");
+    await page.click('.nav-item[data-view="sites"]');
+    await page.waitForFunction(
+      () => document.querySelectorAll("#sites-list li").length === 3,
+    );
+    await page.locator("#sites-list button", { hasText: "测试连接" }).first().click();
+    await page.waitForSelector("#site-test-all-button");
+    await page.click("#site-test-all-button");
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#site-test-all-results li").length === 5,
+    );
+    const tests = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.includes("/test")).map(
+        (call) => call.payload.content_type));
+    check(
+      ["daily_news", "bilibili_hot", "zhihu_hot", "douyin_hot", "toutiao_hot"]
+        .every((type) => tests.includes(type)),
+      "五类测试请求：" + JSON.stringify(tests),
+    );
+    const labels = await page.$$eval("#site-test-all-results li",
+      (nodes) => nodes.map((node) => node.textContent));
+    check(labels.length === 5, "五类结果行：" + labels.length);
+
+    console.log("TASK SITES UI PASS", { assertions });
+  } finally {
+    await browser.close();
+    server.close();
+  }
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

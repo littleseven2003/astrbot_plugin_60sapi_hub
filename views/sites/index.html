@@ -427,6 +427,23 @@
               <small>必须引用已保存组合；可以引用站点已停用的组合，保存不会发送。</small>
             </label>
 
+            <div class="field">
+              <span>候选站点（按顺序尝试）</span>
+              <div class="task-site-picker-row">
+                <select id="task-site-picker" aria-label="可添加的站点"></select>
+                <button id="task-site-add-button" class="button button-secondary" type="button">添加</button>
+              </div>
+              <ul id="task-site-list" class="task-site-list"></ul>
+              <small>同一个站点必须同时满足全部栏目与条数才会被使用；按此顺序尝试，不足时自动切换下一个。</small>
+            </div>
+
+            <div class="field">
+              <span>能力测试</span>
+              <button id="task-capability-test-button" class="button button-secondary" type="button">测试候选站点</button>
+              <p id="task-capability-result" class="site-test-result" role="status" hidden></p>
+              <small>只检查是否有单个站点满足当前类别与条数，不发送消息。</small>
+            </div>
+
             <label class="field">
               <span>输出方式</span>
               <select id="task-output-format">
@@ -739,8 +756,10 @@
           </label>
           <p class="help">会主动请求上游，只验证所选接口本次连接和数据格式；不修改配置、不启用站点、不发送消息。</p>
           <div id="site-test-result" class="site-test-result" role="status" hidden></div>
+          <ul id="site-test-all-results" class="site-test-all" hidden></ul>
           <footer class="dialog-actions">
             <button id="site-test-close-button" class="button button-secondary" type="button">关闭</button>
+            <button id="site-test-all-button" class="button button-secondary" type="button">测试全部五类</button>
             <button id="site-test-run-button" class="button button-primary" type="button">开始测试</button>
           </footer>
         </div>

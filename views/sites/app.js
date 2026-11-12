@@ -153,6 +153,13 @@ const elements = {
   taskDialogTitle: document.getElementById("task-dialog-title"),
   taskName: document.getElementById("task-name"),
   taskProfile: document.getElementById("task-profile"),
+  taskSitePicker: document.getElementById("task-site-picker"),
+  taskSiteAddButton: document.getElementById("task-site-add-button"),
+  taskSiteList: document.getElementById("task-site-list"),
+  taskCapabilityTestButton: document.getElementById("task-capability-test-button"),
+  taskCapabilityResult: document.getElementById("task-capability-result"),
+  siteTestAllButton: document.getElementById("site-test-all-button"),
+  siteTestAllResults: document.getElementById("site-test-all-results"),
   taskOutputFormat: document.getElementById("task-output-format"),
   taskUmos: document.getElementById("task-umos"),
   taskScheduleNone: document.getElementById("task-schedule-none"),
@@ -273,6 +280,7 @@ const state = {
   profileImageLoading: false,
   tasks: [],
   taskMode: "create",
+  taskSites: [],
   editingTaskId: null,
   editingTaskRevision: null,
   taskDeleteTarget: null,
@@ -617,6 +625,8 @@ function openSiteTest(site) {
   document.getElementById("site-test-site").textContent =
     `站点：${site.name}（revision ${site.revision}）`;
   document.getElementById("site-test-content-type").value = "daily_news";
+  elements.siteTestAllResults.hidden = true;
+  elements.siteTestAllResults.replaceChildren();
   const run = document.getElementById("site-test-run-button");
   siteTestRunning(site, run);
   setSiteTestResult(siteTestPending.has(site.id) ? "正在请求所选接口…" : "",
@@ -3369,6 +3379,181 @@ function setTaskFormDisabled(disabled) {
   elements.taskForm.setAttribute("aria-busy", String(disabled));
 }
 
+const TASK_SITE_MAX = 5;
+
+function siteNameById(siteId) {
+  const site = state.sites.find((item) => item.id === siteId);
+  return site ? site.name : "已删除的站点";
+}
+
+function taskSiteOptions() {
+  elements.taskSitePicker.replaceChildren();
+  const available = state.sites.filter(
+    (site) => !state.taskSites.includes(site.id),
+  );
+  if (available.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = state.sites.length === 0 ? "没有已保存站点" : "已全部添加";
+    elements.taskSitePicker.append(option);
+    elements.taskSitePicker.disabled = true;
+    elements.taskSiteAddButton.disabled = true;
+    return;
+  }
+  elements.taskSitePicker.disabled = false;
+  elements.taskSiteAddButton.disabled = state.taskSites.length >= TASK_SITE_MAX;
+  for (const site of available) {
+    const option = document.createElement("option");
+    option.value = site.id;
+    option.textContent = site.enabled ? site.name : `${site.name}（已停用）`;
+    elements.taskSitePicker.append(option);
+  }
+}
+
+function renderTaskSites() {
+  elements.taskSiteList.replaceChildren();
+  if (state.taskSites.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "task-site-empty";
+    empty.textContent = "未指定时使用内容组合绑定的站点。";
+    elements.taskSiteList.append(empty);
+  }
+  state.taskSites.forEach((siteId, index) => {
+    const row = document.createElement("li");
+    row.className = "task-site-row";
+    const order = document.createElement("span");
+    order.className = "task-site-order";
+    order.textContent = String(index + 1);
+    const name = document.createElement("span");
+    name.className = "task-site-name";
+    name.textContent = siteNameById(siteId);
+    const actions = document.createElement("span");
+    actions.className = "task-site-actions";
+    actions.append(
+      makeButton("上移", "button button-secondary", () => moveTaskSite(index, -1),
+        "上移候选站点"),
+      makeButton("下移", "button button-secondary", () => moveTaskSite(index, 1),
+        "下移候选站点"),
+      makeButton("移除", "button button-danger", () => removeTaskSite(index),
+        "移除候选站点"),
+    );
+    row.append(order, name, actions);
+    elements.taskSiteList.append(row);
+  });
+  taskSiteOptions();
+}
+
+function addTaskSite() {
+  const siteId = elements.taskSitePicker.value;
+  if (!siteId || state.taskSites.includes(siteId)) return;
+  if (state.taskSites.length >= TASK_SITE_MAX) return;
+  state.taskSites.push(siteId);
+  renderTaskSites();
+}
+
+function moveTaskSite(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= state.taskSites.length) return;
+  const [item] = state.taskSites.splice(index, 1);
+  state.taskSites.splice(target, 0, item);
+  renderTaskSites();
+}
+
+function removeTaskSite(index) {
+  state.taskSites.splice(index, 1);
+  renderTaskSites();
+}
+
+function setTaskCapabilityResult(text, tone) {
+  const node = elements.taskCapabilityResult;
+  if (!text) {
+    node.hidden = true;
+    node.textContent = "";
+    node.className = "site-test-result";
+    return;
+  }
+  node.hidden = false;
+  node.textContent = text;
+  node.className = `site-test-result site-test-${tone || "info"}`;
+}
+
+async function runTaskCapabilityTest() {
+  if (state.taskMode !== "edit" || !state.editingTaskId) {
+    setTaskCapabilityResult("请先保存任务后再测试。", "error");
+    return;
+  }
+  elements.taskCapabilityTestButton.disabled = true;
+  setTaskCapabilityResult("正在检查候选站点…", "info");
+  try {
+    const data = await bridge.apiPost(
+      `tasks/${encodeURIComponent(state.editingTaskId)}/capability-test`, {},
+    );
+    const payload = (data && data.data) || {};
+    setTaskCapabilityResult(payload.message || "测试完成。",
+      payload.satisfied ? "success" : "error");
+  } catch (error) {
+    setTaskCapabilityResult(friendlyErrorMessage(error), "error");
+  } finally {
+    elements.taskCapabilityTestButton.disabled = false;
+  }
+}
+
+const SITE_TEST_TYPES = [
+  ["daily_news", "每日新闻"],
+  ["bilibili_hot", "Bilibili 热搜"],
+  ["zhihu_hot", "知乎热榜"],
+  ["douyin_hot", "抖音热搜"],
+  ["toutiao_hot", "今日头条热搜"],
+];
+
+function renderSiteTestAll(rows) {
+  const list = elements.siteTestAllResults;
+  list.replaceChildren();
+  list.hidden = false;
+  for (const row of rows) {
+    const item = document.createElement("li");
+    item.className = `site-test-all-row site-test-${row.ok ? "success" : "error"}`;
+    const label = document.createElement("span");
+    label.textContent = row.label;
+    const stateText = document.createElement("span");
+    stateText.textContent = row.text;
+    item.append(label, stateText);
+    list.append(item);
+  }
+}
+
+async function runSiteTestAll() {
+  const site = siteTestSite;
+  if (!site) return;
+  elements.siteTestAllButton.disabled = true;
+  const rows = [];
+  renderSiteTestAll(SITE_TEST_TYPES.map(([value, label]) => ({
+    label, ok: false, text: "等待测试…",
+  })));
+  for (const [contentType, label] of SITE_TEST_TYPES) {
+    const index = rows.length;
+    rows.push({ label, ok: false, text: "测试中…" });
+    renderSiteTestAll(rows);
+    try {
+      const data = await bridge.apiPost(
+        `sites/${encodeURIComponent(site.id)}/test`,
+        { content_type: contentType, expected_revision: site.revision },
+      );
+      const payload = (data && data.data) || {};
+      rows[index] = {
+        label,
+        ok: Boolean(payload.ok),
+        text: payload.ok
+          ? `可用（${payload.item_count || 0} 条）`
+          : `不可用（${payload.message || "请求失败"}）`,
+      };
+    } catch (error) {
+      rows[index] = { label, ok: false, text: `不可用（${friendlyErrorMessage(error)}）` };
+    }
+    renderSiteTestAll(rows);
+  }
+  elements.siteTestAllButton.disabled = false;
+}
 function openCreateTask() {
   if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
     return;
@@ -3380,8 +3565,11 @@ function openCreateTask() {
   state.taskMode = "create";
   state.editingTaskId = null;
   state.editingTaskRevision = null;
+  state.taskSites = [];
   elements.taskForm.reset();
   resetTaskScheduleEditor();
+  renderTaskSites();
+  setTaskCapabilityResult("", null);
   elements.taskDialogTitle.textContent = "新增推送任务";
   taskProfileOptions(null);
   clearTaskFormError();
@@ -3411,6 +3599,11 @@ function openTaskEditor(task) {
   taskProfileOptions(task.profile_id);
   elements.taskOutputFormat.value = task.output_format;
   elements.taskUmos.value = Array.isArray(task.umos) ? task.umos.join("\n") : "";
+  state.taskSites = Array.isArray(task.sites)
+    ? task.sites.map((item) => (typeof item === "string" ? item : item.id))
+    : [];
+  renderTaskSites();
+  setTaskCapabilityResult("", null);
   fillTaskScheduleEditor(task);
   clearTaskFormError();
   setTaskFormDisabled(false);
@@ -3457,6 +3650,9 @@ async function handleTaskSave(event) {
     output_format: elements.taskOutputFormat.value,
     umos: collectTaskUmos(),
   };
+  if (state.taskSites.length > 0) {
+    payload.sites = state.taskSites.slice();
+  }
   if (schedule !== undefined) {
     payload.schedule = schedule;
   }
@@ -4773,6 +4969,11 @@ async function refreshAll() {
 }
 
 function bindEvents() {
+  elements.taskSiteAddButton.addEventListener("click", addTaskSite);
+  elements.taskCapabilityTestButton.addEventListener(
+    "click", runTaskCapabilityTest,
+  );
+  elements.siteTestAllButton.addEventListener("click", runSiteTestAll);
   // 管理员明确选择来源类型后，未知提示应立即消失，避免继续误导。
   elements.sourceKind.addEventListener("change", () => {
     setSourceKindHint(!isKnownSourceKind(elements.sourceKind.value));

@@ -408,7 +408,12 @@ class SchedulerService:
         task = snapshot.task
         if snapshot.profile_id is None:
             raise SchedulerValidationError("profile", "内容组合不存在")
-        if snapshot.site_id is None or not snapshot.site_enabled:
+        candidates = tuple(getattr(snapshot, "candidate_enabled", ()) or ())
+        if candidates:
+            # 候选里只要还有一个启用，就进入正常的选择流程。
+            if not any(candidates):
+                raise SchedulerValidationError("site", "站点不存在或已停用")
+        elif snapshot.site_id is None or not snapshot.site_enabled:
             raise SchedulerValidationError("site", "站点不存在或已停用")
         if not task.umos:
             raise SchedulerValidationError("umos", "白名单不能为空")

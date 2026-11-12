@@ -486,7 +486,20 @@ class DeliveryService:
         except Exception as exc:
             raise DeliveryStorageError("无法保存投递计划。") from exc
 
-        return await self._send_targets(execution_id, task, profile, site, prepared)
+        # 实际选中的站点优先；提示内容没有站点，退回组合绑定站点。
+        used_site = prepared.site if prepared.site is not None else site
+        if used_site is not site and used_site.id != site.id:
+            try:
+                await self._store.update_delivery_site(
+                    execution_id,
+                    site_id=used_site.id,
+                    site_revision=used_site.revision,
+                )
+            except Exception as exc:
+                raise DeliveryStorageError("无法记录投递站点。") from exc
+        return await self._send_targets(
+            execution_id, task, profile, used_site, prepared,
+        )
 
     async def _candidate_sites(
         self,
@@ -520,6 +533,7 @@ class DeliveryService:
             content_hash=digest.hexdigest(),
             content_status="failed",
             failed_sections=[],
+            site=None,
         )
 
     async def _prepare(
@@ -548,7 +562,9 @@ class DeliveryService:
         data = preview.body.get("data")
         if not isinstance(data, dict):
             raise DeliveryNoContentError("preview_invalid")
-        return await self._build_prepared(execution_id, task, data)
+        return await self._build_prepared(
+            execution_id, task, data, candidates[0] if candidates else None,
+        )
 
     async def _prepare_with_failover(
         self,
@@ -575,7 +591,9 @@ class DeliveryService:
             )
             if not satisfied:
                 continue
-            return await self._build_prepared(execution_id, task, data)
+            return await self._build_prepared(
+                execution_id, task, data, candidate,
+            )
         return None
 
     async def _build_prepared(
@@ -583,6 +601,7 @@ class DeliveryService:
         execution_id: str,
         task: PushTask,
         data: dict,
+        site: object = None,
     ) -> "_Prepared":
         """把一次预览结果转换为待发送内容。"""
         outputs = data.get("outputs")
@@ -648,6 +667,7 @@ class DeliveryService:
             content_hash=digest.hexdigest(),
             content_status=content_status,
             failed_sections=failed,
+            site=site,
         )
 
     async def _send_targets(
@@ -1030,6 +1050,7 @@ class _Prepared:
     content_hash: str
     content_status: str
     failed_sections: list[object]
+    site: object = None
 
 
 ALLOWED_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})

@@ -97,11 +97,20 @@ class DeliveryApi:
                 "valid": valid,
                 "reason": info.get("reason"),
             })
-        can_deliver = bool(targets) and site.enabled and all_valid
+        # 候选站点里只要还有一个启用，就可以进入正常的选择流程。
+        candidate_ids = tuple(task.sites) or (profile.site_id,)
+        candidates: list[object] = []
+        for candidate_id in candidate_ids:
+            try:
+                candidates.append(await self._sites.get_site(candidate_id))
+            except Exception:
+                continue
+        usable = [item for item in candidates if getattr(item, "enabled", False)]
+        can_deliver = bool(targets) and bool(usable) and all_valid
         reason = None
         if not targets:
             reason = "empty_targets"
-        elif not site.enabled:
+        elif not usable:
             reason = "site_disabled"
         elif not all_valid:
             reason = "invalid_targets"
@@ -116,6 +125,14 @@ class DeliveryApi:
             "site_name": site.name,
             "site_revision": site.revision,
             "site_enabled": site.enabled,
+            "candidate_sites": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "enabled": bool(item.enabled),
+                }
+                for item in candidates
+            ],
             "output_format": task.output_format,
             "output_label": task.output_label,
             "targets": targets,

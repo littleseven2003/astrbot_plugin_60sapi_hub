@@ -422,6 +422,7 @@ class StoredTaskConfigSnapshot:
     site_id: str | None
     site_revision: int | None
     site_enabled: bool | None
+    candidate_enabled: tuple[bool, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1284,10 +1285,24 @@ class SiteStore:
                     """,
                     (profile_row["site_id"],),
                 )
+                async with self._require_connection().execute(
+                    """
+                    SELECT s.enabled AS enabled
+                    FROM push_task_sites AS ps
+                    JOIN sites AS s ON s.id = ps.site_id
+                    WHERE ps.task_id = ?
+                    ORDER BY ps.position
+                    """,
+                    (task_id,),
+                ) as cursor:
+                    candidate_rows = await cursor.fetchall()
                 return StoredTaskConfigSnapshot(
                     task=task,
                     profile_id=str(profile_row["id"]),
                     profile_revision=int(profile_row["revision"]),
+                    candidate_enabled=tuple(
+                        bool(row["enabled"]) for row in candidate_rows
+                    ),
                     site_id=(
                         str(site_row["id"]) if site_row is not None else None
                     ),
@@ -1907,6 +1922,34 @@ class SiteStore:
             async with self._require_connection().execute(sql, params) as cursor:
                 rows = await cursor.fetchall()
             return tuple(row["id"] for row in rows)
+
+    async def update_delivery_site(
+        self,
+        execution_id: str,
+        *,
+        site_id: str,
+        site_revision: int,
+    ) -> None:
+        """把执行记录改成本次实际使用的候选站点。"""
+        async with self._lock:
+            connection = self._require_connection()
+            now = _utc_now()
+
+            async def perform() -> None:
+                await connection.execute(
+                    """
+                    UPDATE delivery_executions
+                    SET site_id = ?, site_revision = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (site_id, site_revision, now, execution_id),
+                )
+
+            await self._commit_write(
+                connection,
+                perform,
+                failure_message="记录投递站点失败",
+            )
 
     async def set_delivery_content(
         self,

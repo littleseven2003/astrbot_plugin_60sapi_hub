@@ -129,6 +129,7 @@ class TaskConfigSnapshot:
     site_id: str | None
     site_revision: int | None
     site_enabled: bool | None
+    candidate_enabled: tuple[bool, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +196,7 @@ class PushTaskService:
             site_id=stored.site_id,
             site_revision=stored.site_revision,
             site_enabled=stored.site_enabled,
+            candidate_enabled=tuple(stored.candidate_enabled),
         )
 
     async def create_task(self, data: TaskCreate) -> PushTask:

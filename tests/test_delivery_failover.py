@@ -88,7 +88,8 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared.slots[0][1], "B 文本")
-        self.assertEqual(api.calls, ["site-a", "site-b"])
+        # 与组合绑定站点相同的候选不传覆盖参数（等价调用）。
+        self.assertEqual(api.calls, [None, "site-b"])
 
     async def test_no_content_from_other_sites_is_mixed(self) -> None:
         api = _FakeApi({
@@ -119,7 +120,6 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
             "exec-3", self._task(("site-a", "site-b")),
             self._profile(3),
             [sites.sites["site-a"], sites.sites["site-b"]],
-            True,
         )
         text = prepared.slots[0][1]
         self.assertTrue(text.startswith("60sAPI推送服务异常："), text)

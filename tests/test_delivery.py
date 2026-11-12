@@ -383,18 +383,22 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
         self.api.preview_status = 502
         result = await self.service.execute(task.id, "preview-fail-1")
+        # 全部候选都取不到内容：发送一条安全文字提示，记录仍标记采集失败。
         self.assertEqual(result.status, "failed")
-        self.assertEqual(result.error_code, "all_sections_failed")
+        self.assertEqual(result.error_code, "content_unavailable")
         self.assertEqual(self.api.preview_calls, 1)
-        self.assertEqual(len(self.sender.calls), 0)
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertIn("60sAPI推送服务异常", self.sender.calls[0].text or "")
 
         self.api.preview_status = 200
         self.api.image_status = 422
+        before = len(self.sender.calls)
         image_task = await self._task(["aiocqhttp:GroupMessage:g2"], output="image")
         image_result = await self.service.execute(image_task.id, "image-fail-1")
         self.assertEqual(image_result.status, "failed")
         self.assertEqual(image_result.error_code, "image_render_failed")
-        self.assertEqual(len(self.sender.calls), 0)
+        # 内容已取到但出图失败：不发送、不降级、不伪造成功。
+        self.assertEqual(len(self.sender.calls), before)
 
     async def test_second_section_image_failure_is_partial(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")

@@ -135,6 +135,8 @@ SAFE_ERROR_CODES = frozenset({
     "execution_timeout", "image_failed", "image_invalid",
     "image_render_failed", "image_snapshot_unavailable",
     "image_unavailable", "interrupted", "internal_error",
+    # 全部候选都取不到所需内容：提示已发送，但内容采集失败。
+    "content_unavailable",
     "preview_failed", "preview_invalid", "profile_not_found",
     "record_after_send_failed", "render_failed",
     "section_image_failed", "send_failed",
@@ -437,22 +439,14 @@ class DeliveryService:
         if len(task.umos) > self._limits.max_targets:
             await self._finish(execution_id, "failed", "too_many_targets")
             return await self._read(execution_id)
-        site_ids = tuple(task.sites)
-        failover = len(site_ids) > 1
-        if failover:
-            candidates = await self._candidate_sites(task, profile)
-            if not candidates:
-                await self._finish(execution_id, "failed", "site_disabled")
-                return await self._read(execution_id)
-        else:
-            if not site.enabled:
-                await self._finish(execution_id, "failed", "site_disabled")
-                return await self._read(execution_id)
-            candidates = [site]
+        candidates = await self._candidate_sites(task, profile)
+        if not candidates:
+            await self._finish(execution_id, "failed", "site_disabled")
+            return await self._read(execution_id)
 
         try:
             prepared = await self._prepare(
-                execution_id, task, profile, candidates, failover,
+                execution_id, task, profile, candidates,
             )
         except DeliveryNoContentError as exc:
             await self._finish(execution_id, "failed", str(exc))
@@ -497,9 +491,16 @@ class DeliveryService:
                 )
             except Exception as exc:
                 raise DeliveryStorageError("无法记录投递站点。") from exc
-        return await self._send_targets(
+        record = await self._send_targets(
             execution_id, task, profile, used_site, prepared,
         )
+        if prepared.site is None:
+            # 提示已送达，但内容采集失败：记录必须能区分这两件事。
+            await self._finish(
+                execution_id, "failed", "content_unavailable",
+            )
+            return await self._read(execution_id)
+        return record
 
     async def _candidate_sites(
         self,
@@ -542,29 +543,15 @@ class DeliveryService:
         task: PushTask,
         profile: object,
         candidates: list[object],
-        failover: bool,
     ) -> "_Prepared":
-        if failover:
-            prepared = await self._prepare_with_failover(
-                execution_id, task, profile, candidates,
-            )
-            if prepared is not None:
-                return prepared
-            # 全部候选都不满足：发送一条安全提示，不拼凑多站点内容。
-            return self._alert_prepared()
-        preview = await self._api.preview_profile(
-            {"profile_id": task.profile_id},
-            owner=execution_id,
+        """按顺序寻找同一个站点同时满足全部类别与条数。"""
+        prepared = await self._prepare_with_failover(
+            execution_id, task, profile, candidates,
         )
-        if preview.status_code != 200:
-            code = preview.body.get("data", {}).get("code", "preview_failed")
-            raise DeliveryNoContentError(code)
-        data = preview.body.get("data")
-        if not isinstance(data, dict):
-            raise DeliveryNoContentError("preview_invalid")
-        return await self._build_prepared(
-            execution_id, task, data, candidates[0] if candidates else None,
-        )
+        if prepared is not None:
+            return prepared
+        # 全部候选都不满足：发送一条安全提示，不拼凑多站点内容。
+        return self._alert_prepared()
 
     async def _prepare_with_failover(
         self,
@@ -576,21 +563,22 @@ class DeliveryService:
         """按任务保存的顺序，寻找同一个站点满足全部类别与条数。"""
         requirements = requirements_from_items(profile.items)
         for candidate in candidates:
+            kwargs = {"owner": execution_id}
+            if candidate.id != getattr(profile, "site_id", None):
+                kwargs["site_id"] = candidate.id
             preview = await self._api.preview_profile(
-                {"profile_id": task.profile_id},
-                owner=execution_id,
-                site_id=candidate.id,
+                {"profile_id": task.profile_id}, **kwargs,
             )
             if preview.status_code != 200:
                 continue
             data = preview.body.get("data")
             if not isinstance(data, dict):
                 continue
-            satisfied, _ = evaluate_sections(
-                data.get("sections") or [], requirements,
-            )
-            if not satisfied:
-                continue
+            sections = data.get("sections")
+            if isinstance(sections, list):
+                satisfied, _ = evaluate_sections(sections, requirements)
+                if not satisfied:
+                    continue
             return await self._build_prepared(
                 execution_id, task, data, candidate,
             )
@@ -909,8 +897,9 @@ class DeliveryService:
             and current.profile_id == task.profile_id
             and current.output_format == task.output_format
             and umo in current.umos
+            # 组合只校验 revision；选中站点单独校验自身 revision 与启用状态，
+            # 否则“组合绑定 A、任务选中 B”会被误判为 config_changed。
             and current_profile.revision == profile.revision
-            and current_profile.site_id == site.id
             and current_site.revision == site.revision
             and current_site.enabled
         )

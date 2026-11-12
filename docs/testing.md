@@ -441,7 +441,7 @@ node tests/browser/site_connection_ui.js
 
 2026-11-11 本轮改动，分支 `feat/source-url`。范围为：五种内容快照记录来源信息，文字、Markdown、栏目长图和后台预览按栏目展示，并处理旧快照兼容；不包含公开实例、测速、多站点切换或界面重排。
 
-- 自动化：`PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -v` 共 570 项，当前环境 547 项通过、23 项跳过；二者可用时来源类型页面测试实际执行，跳过项为 22（其余跳过仍需 AstrBot 宿主、平台或真实上游环境）。`tests/test_source_url.py` 共 13 项，其中新增 `SourceDomainTest` 7 项覆盖公开只显示域名、自建隐藏、模拟秘密路径、超长基础地址、特殊路径和旧快照；并扩充 `test_sites`、`test_site_api`、`test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
+- 自动化：`PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -v` 共 583 项，当前环境 560 项通过、23 项跳过；二者可用时来源类型页面测试实际执行，跳过项为 22（其余跳过仍需 AstrBot 宿主、平台或真实上游环境）。`tests/test_source_url.py` 共 13 项，其中新增 `SourceDomainTest` 7 项覆盖公开只显示域名、自建隐藏、模拟秘密路径、超长基础地址、特殊路径和旧快照；并扩充 `test_sites`、`test_site_api`、`test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
 - 覆盖范围：带路径前缀的五类 endpoint 各记录自己的 URL；多栏目各自 URL 不同；获取后修改站点地址，已有快照和文字/Markdown 输出仍为原域名，新获取才用新地址；旧快照/旧缓存缺少字段时 API 为 `null`、展示为“来源不可用”，不用站点名称或 endpoint 补造；来源展示不包含用户信息、查询串、fragment、路径或 Bearer 凭据；后台快照地址可能保留路径，路径本身也可能包含秘密；文字、Markdown、图片页脚、聊天和后台栏目投影使用同一份快照值。对外展示只保留域名：路径中的模拟秘密、超长基础地址（拼接 endpoint 后超过 2048 字符）和特殊路径都只能看到域名，图片页脚不因路径很长而增高；IPv6 保留方括号、端口不展示。
 - 来源类型：schema v12 → v13 迁移为无类型旧站点补 `source_kind='public'` 且保留原字段；已有来源类型的站点重开后保留原值；站点 API 支持创建/编辑往返、非法值 400、编辑省略字段保持原值；公开站点在文字、Markdown、图片页脚、聊天和后台栏目投影中只显示域名，自建站点只显示“自建服务”且输出中不出现内网地址；未知类型有地址时按自建隐藏、无地址时显示“来源不可用”。后台受鉴权接口返回快照中的 `source_url`，与对外展示分开；来源地址按 HTTP 客户端规则规范化，无法安全表达时来源不可用。
 - 实际渲染：Python + Pillow + 宿主中文字体实际生成 900px 宽 PNG。公开站点的超长路径来源在页脚只显示域名 `api.example.com`，路径与模拟秘密均不出现；自建站点显示“数据来源：自建服务”且不出现内网地址；无来源栏目显示“数据来源：来源不可用”；空栏目仍正常出图。
@@ -459,7 +459,7 @@ node tests/browser/site_connection_ui.js
 ### 操作前提
 
 - 插件已在目标 AstrBot v4.29.1 中加载，安装目录为 `<ASTRBOT_ROOT>/data/plugins/astrbot_plugin_60sapi_hub`（占位符，替换为实际路径）。推荐使用真实目录副本；若用符号链接，宿主校验的是解析后路径是否仍在 `data/plugins` 边界内，指向边界之外的链接会导致后台视图不出现。
-- 数据目录为 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`，在插件目录之外，由宿主 `StarTools.get_data_dir()` 提供；当前 schema 版本 13、11 张业务表，受支持的 v1～v12 旧库在同一事务内迁移，失败回滚并保留旧数据。测试前先停用插件并备份该文件。
+- 数据目录为 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`，在插件目录之外，由宿主 `StarTools.get_data_dir()` 提供；当前 schema 版本 14、12 张业务表，受支持的 v1～v13 旧库在同一事务内迁移，失败回滚并保留旧数据。测试前先停用插件并备份该文件。
 - 测试目标必须已有明确授权：由测试群群主或账号所有者同意本轮测试，使用专用测试账号与专用测试群；不与生产群、日常群或他人账号混用。
 - 管理员明确知道“测试投递”会真的把消息发到任务白名单内的目标，发出后无法撤回；测试期间同一账号只跑测试任务，避免定时任务与测试投递混在一起。
 - 记录测试环境：宿主版本、插件 `metadata.yaml` 的 `version`、Python 版本、平台适配器与实例 ID（脱敏）、测试时间与时区。依赖由 `requirements.txt` 声明（aiosqlite、httpx、Pillow、croniter），AstrBot 本体由宿主提供，不在插件内安装。

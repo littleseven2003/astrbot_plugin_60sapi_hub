@@ -24,6 +24,7 @@ from .profiles import (
     normalize_profile_id,
 )
 from .site_store import (
+    SiteRecordNotFoundError,
     SiteStore,
     StoredTask,
     TaskRecordNotFoundError,
@@ -253,7 +254,9 @@ class PushTaskService:
         schedule_unchanged = data.schedule is SCHEDULE_UNSET
         schedule = None if schedule_unchanged else parse_schedule(data.schedule)
         await self._require_profile(profile_id)
-        site_ids = await self._resolve_site_ids(data.sites, profile_id)
+        site_ids = await self._resolve_updated_site_ids(
+            normalized_id, data.sites, profile_id,
+        )
         try:
             stored = await self._store.update_task(
                 normalized_id,
@@ -322,6 +325,21 @@ class PushTaskService:
         except Exception as exc:
             raise TaskStorageError("删除推送任务失败。") from exc
 
+    async def _resolve_updated_site_ids(
+        self,
+        task_id: str,
+        raw: object,
+        profile_id: str,
+    ) -> tuple[str, ...] | None:
+        """省略 sites 时保持原有候选与顺序；显式传入才替换。"""
+        if raw is not None:
+            return await self._resolve_site_ids(raw, profile_id)
+        current = await self.get_task(task_id)
+        if current.sites:
+            return None
+        # 旧数据没有候选行时才回落到组合绑定站点。
+        return await self._resolve_site_ids(None, profile_id)
+
     async def _resolve_site_ids(
         self,
         raw: object,
@@ -342,8 +360,11 @@ class PushTaskService:
                 continue
             try:
                 await self._store.get_site(site_id)
-            except Exception:
+            except SiteRecordNotFoundError:
                 raise TaskNotFoundError(site_id) from None
+            except Exception as exc:
+                # 存储故障不能被伪装成“站点不存在”。
+                raise TaskStorageError("读取候选站点失败。") from exc
             ordered.append(site_id)
         if not ordered:
             raise TaskValidationError("sites", "至少需要一个候选站点")

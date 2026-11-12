@@ -42,10 +42,12 @@ class TaskWeb:
                 "删除推送任务",
             ),
             (
-                "tasks/<task_id>/test",
+                # 与 DeliveryWeb 的手动测试投递（tasks/<id>/test）区分：
+                # 这里只判断候选站点能力，不产生任何投递。
+                "tasks/<task_id>/capability-test",
                 self.test_task,
                 ["POST"],
-                "测试候选站点是否满足任务配置",
+                "测试候选站点是否满足任务配置（不投递）",
             ),
             (
                 "schedule-runs",

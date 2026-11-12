@@ -26,6 +26,7 @@ from .site_store import (
     SiteStore,
     StoredDeliveryExecution,
 )
+from .site_requirements import evaluate_sections, requirements_from_items
 from .sites import SiteService, SiteNotFoundError
 from .tasks import (
     PushTask,
@@ -436,12 +437,23 @@ class DeliveryService:
         if len(task.umos) > self._limits.max_targets:
             await self._finish(execution_id, "failed", "too_many_targets")
             return await self._read(execution_id)
-        if not site.enabled:
-            await self._finish(execution_id, "failed", "site_disabled")
-            return await self._read(execution_id)
+        site_ids = tuple(task.sites)
+        failover = len(site_ids) > 1
+        if failover:
+            candidates = await self._candidate_sites(task, profile)
+            if not candidates:
+                await self._finish(execution_id, "failed", "site_disabled")
+                return await self._read(execution_id)
+        else:
+            if not site.enabled:
+                await self._finish(execution_id, "failed", "site_disabled")
+                return await self._read(execution_id)
+            candidates = [site]
 
         try:
-            prepared = await self._prepare(execution_id, task)
+            prepared = await self._prepare(
+                execution_id, task, profile, candidates, failover,
+            )
         except DeliveryNoContentError as exc:
             await self._finish(execution_id, "failed", str(exc))
             return await self._read(execution_id)
@@ -476,7 +488,56 @@ class DeliveryService:
 
         return await self._send_targets(execution_id, task, profile, site, prepared)
 
-    async def _prepare(self, execution_id: str, task: PushTask) -> "_Prepared":
+    async def _candidate_sites(
+        self,
+        task: PushTask,
+        profile: object,
+    ) -> list[object]:
+        """按任务保存的顺序返回存在且启用的候选站点。"""
+        site_ids = tuple(task.sites) or (profile.site_id,)
+        resolved: list[object] = []
+        for site_id in site_ids:
+            try:
+                candidate = await self._sites.get_site(site_id)
+            except Exception:
+                continue
+            if not getattr(candidate, "enabled", False):
+                continue
+            resolved.append(candidate)
+        return resolved
+
+    def _alert_prepared(self) -> "_Prepared":
+        # 安全、可理解，且不含凭据、路径或原始上游错误。
+        text = (
+            "60sAPI推送服务异常：候选站点均无法提供本次任务所需的内容，"
+            "请稍后重试或检查站点配置。"
+        )
+        digest = hashlib.sha256()
+        digest.update(b"alert")
+        digest.update(text.encode("utf-8"))
+        return _Prepared(
+            slots=((1, text),),
+            content_hash=digest.hexdigest(),
+            content_status="failed",
+            failed_sections=[],
+        )
+
+    async def _prepare(
+        self,
+        execution_id: str,
+        task: PushTask,
+        profile: object,
+        candidates: list[object],
+        failover: bool,
+    ) -> "_Prepared":
+        if failover:
+            prepared = await self._prepare_with_failover(
+                execution_id, task, profile, candidates,
+            )
+            if prepared is not None:
+                return prepared
+            # 全部候选都不满足：发送一条安全提示，不拼凑多站点内容。
+            return self._alert_prepared()
         preview = await self._api.preview_profile(
             {"profile_id": task.profile_id},
             owner=execution_id,
@@ -487,6 +548,43 @@ class DeliveryService:
         data = preview.body.get("data")
         if not isinstance(data, dict):
             raise DeliveryNoContentError("preview_invalid")
+        return await self._build_prepared(execution_id, task, data)
+
+    async def _prepare_with_failover(
+        self,
+        execution_id: str,
+        task: PushTask,
+        profile: object,
+        candidates: list[object],
+    ) -> "_Prepared | None":
+        """按任务保存的顺序，寻找同一个站点满足全部类别与条数。"""
+        requirements = requirements_from_items(profile.items)
+        for candidate in candidates:
+            preview = await self._api.preview_profile(
+                {"profile_id": task.profile_id},
+                owner=execution_id,
+                site_id=candidate.id,
+            )
+            if preview.status_code != 200:
+                continue
+            data = preview.body.get("data")
+            if not isinstance(data, dict):
+                continue
+            satisfied, _ = evaluate_sections(
+                data.get("sections") or [], requirements,
+            )
+            if not satisfied:
+                continue
+            return await self._build_prepared(execution_id, task, data)
+        return None
+
+    async def _build_prepared(
+        self,
+        execution_id: str,
+        task: PushTask,
+        data: dict,
+    ) -> "_Prepared":
+        """把一次预览结果转换为待发送内容。"""
         outputs = data.get("outputs")
         raw_failed = data.get("failed_sections") or []
         if not isinstance(raw_failed, list):

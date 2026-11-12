@@ -180,5 +180,45 @@ class TaskSiteTestApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["site_id"], second.id)
 
 
+    async def test_result_reports_freshness_and_cache(self) -> None:
+        site = await self._site("a.example.test")
+        task = await self._task([site.id])
+        result = await self.api.test_task(task.id)
+        data = result.body["data"]
+        self.assertIn("checked_at", data)
+        self.assertEqual(data["cache"]["used"], True)
+        self.assertIn("ttl_seconds", data["cache"])
+        self.assertFalse(data["truncated"])
+
+    async def test_config_change_during_test_is_reported(self) -> None:
+        first = await self._site("a.example.test")
+        second = await self._site("b.example.test")
+        task = await self._task([first.id, second.id])
+        original = self.content.preview_cached
+        state = {"done": False}
+
+        async def flaky(content_type, site_id, **kwargs):
+            result = await original(content_type, site_id, **kwargs)
+            if not state["done"]:
+                state["done"] = True
+                current = await self.tasks.get_task(task.id)
+                await self.tasks.update_task(
+                    task.id,
+                    __import__("core.tasks", fromlist=["TaskUpdate"]).TaskUpdate(
+                        name="改名",
+                        profile_id=current.profile_id,
+                        output_format=current.output_format,
+                        umos=list(current.umos),
+                        expected_revision=current.revision,
+                    ),
+                )
+            return result
+
+        self.content.preview_cached = flaky  # type: ignore[assignment]
+        result = await self.api.test_task(task.id)
+        self.assertEqual(result.status_code, 409, result.body)
+        self.assertEqual(result.body["data"]["code"], "config_changed")
+
+
 if __name__ == "__main__":
     unittest.main()

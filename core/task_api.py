@@ -27,6 +27,9 @@ from .schedule import (
 from .content_api import content_snapshot_dict
 from .site_requirements import evaluate_sections, requirements_from_items
 from .sites import SiteService, SiteStorageError
+
+# 一次能力测试最多检查的候选站点数，避免请求被候选数量拖长。
+MAX_TEST_CANDIDATES = 5
 from .tasks import (
     PushTask,
     PushTaskService,
@@ -140,9 +143,15 @@ class TaskApi:
             return _error(503, "内容获取不可用。", code="content_unavailable")
 
         requirements = requirements_from_items(profile.items)
+        baseline = (
+            task.revision, profile.revision, profile.site_id,
+            tuple(task.sites),
+        )
         checked: list[dict[str, Any]] = []
         winner: dict[str, Any] | None = None
-        for site_id in task.sites:
+        candidates = tuple(task.sites)[:MAX_TEST_CANDIDATES]
+        truncated = len(tuple(task.sites)) > len(candidates)
+        for site_id in candidates:
             site = sites.get(site_id)
             entry: dict[str, Any] = {
                 "site_id": site_id,
@@ -197,12 +206,29 @@ class TaskApi:
                 winner = entry
                 break
 
+        # 测试期间配置发生变化时，不能把旧结果报告为当前配置可用。
+        try:
+            latest_task = await self._tasks.get_task(task.id)
+            latest_profile = await self._profiles.get_profile(task.profile_id)
+        except Exception:
+            return _storage_error()
+        if (
+            latest_task.revision, latest_profile.revision,
+            latest_profile.site_id, tuple(latest_task.sites),
+        ) != baseline:
+            return _error(
+                409,
+                "任务或组合在测试期间发生变化，请重新测试。",
+                code="config_changed",
+            )
+
         if winner is not None:
             message = f"站点「{winner['site_name'] or winner['site_id']}」可以满足全部配置。"
         elif not checked:
             message = "任务没有配置候选站点。"
         else:
             message = "所选站点均无法满足全部类别与条数要求。"
+        ttl = getattr(self._content, "cache_ttl_seconds", None)
         return _ok({
             "task_id": task.id,
             "satisfied": winner is not None,
@@ -210,6 +236,12 @@ class TaskApi:
             "site_name": winner["site_name"] if winner is not None else None,
             "message": message,
             "checked": checked,
+            "checked_at": self._clock().isoformat(),
+            # 能力测试复用执行期缓存：结果是缓存时效内的判断，
+            # 不是刚完成的实时连通性测试。
+            "cache": {"used": True, "ttl_seconds": ttl},
+            "truncated": truncated,
+            "checked_count": len(checked),
         })
 
     async def list_schedule_runs(self, *, limit: int = 20, offset: int = 0) -> TaskApiResult:

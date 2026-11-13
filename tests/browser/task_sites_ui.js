@@ -53,6 +53,10 @@ const PROFILES = [{
   id: "profile-1", name: "组合一", site_id: "site-a", site_enabled: true,
   revision: 1, items: [{ content_type: "daily_news", params: {}, limit: 2 }],
   created_at: "", updated_at: "",
+}, {
+  id: "profile-2", name: "组合二", site_id: "site-b", site_enabled: true,
+  revision: 1, items: [{ content_type: "daily_news", params: {}, limit: 2 }],
+  created_at: "", updated_at: "",
 }];
 
 const TASKS = [{
@@ -85,7 +89,7 @@ function check(condition, message) {
   assert.ok(condition, message);
 }
 
-async function openPage(browser, port) {
+async function openPage(browser, port, overrides = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.addInitScript((fixtures) => {
     window.__calls = [];
@@ -140,6 +144,9 @@ async function openPage(browser, port) {
             content_policy: "fresh",
           };
         }
+        if (endpoint.endsWith("/capability-test") && window.__capabilityGate) {
+          await window.__capabilityGate;
+        }
         if (endpoint.endsWith("/capability-test")) {
           // 宿主 bridge 成功时直接返回业务 data（不再套一层 data）。
           return {
@@ -169,7 +176,7 @@ async function openPage(browser, port) {
         return {};
       },
     };
-  }, { sites: SITES, profiles: PROFILES, tasks: TASKS });
+  }, { sites: SITES, profiles: PROFILES, tasks: overrides.tasks || TASKS });
   await page.goto("http://127.0.0.1:" + port + "/index.html", {
     waitUntil: "domcontentloaded",
   });
@@ -296,6 +303,19 @@ async function openPage(browser, port) {
       "合法空列表应显示为空内容：" + JSON.stringify(labels));
     check(labels.some((text) => text.includes("不可用")),
       "失败项应显示不可用：" + JSON.stringify(labels));
+
+    // 关闭后重新打开：按钮可用、旧结果清空、可再次测试。
+    await page.click("#site-test-close-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-test-dialog").open === false);
+    await page.locator("#sites-list button", { hasText: "测试连接" }).first().click();
+    await page.waitForSelector("#site-test-all-button:not([disabled])");
+    const reopenedRows = await page.locator("#site-test-all-results li").count();
+    check(reopenedRows === 0, "重开弹窗应清空旧结果");
+    await page.click("#site-test-all-button");
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#site-test-all-results li").length === 5);
+    check(true, "关闭后重开仍可再次测试五类");
 
     console.log("TASK SITES UI PASS", { assertions });
   } finally {

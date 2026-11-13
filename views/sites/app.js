@@ -626,6 +626,7 @@ function openSiteTest(site) {
     `站点：${site.name}（revision ${site.revision}）`;
   document.getElementById("site-test-content-type").value = "daily_news";
   elements.siteTestAllResults.hidden = true;
+  elements.siteTestAllButton.disabled = false;
   elements.siteTestAllResults.replaceChildren();
   const run = document.getElementById("site-test-run-button");
   siteTestRunning(site, run);
@@ -3518,6 +3519,7 @@ async function runTaskCapabilityTest() {
   const taskId = state.editingTaskId;
   const revision = state.editingTaskRevision;
   const sitesSnapshot = state.taskSites.slice().join(",");
+  const profileSnapshot = elements.taskProfile.value;
   elements.taskCapabilityTestButton.disabled = true;
   setTaskCapabilityResult("正在检查候选站点…", "info");
   try {
@@ -3527,7 +3529,8 @@ async function runTaskCapabilityTest() {
     // 切换任务、关闭弹窗或改了候选/组合后，旧结论必须失效。
     if (state.taskMode !== "edit" || state.editingTaskId !== taskId
         || state.editingTaskRevision !== revision
-        || state.taskSites.slice().join(",") !== sitesSnapshot) return;
+        || state.taskSites.slice().join(",") !== sitesSnapshot
+        || elements.taskProfile.value !== profileSnapshot) return;
     const payload = data && data.data ? data.data : (data || {});
     const notes = [];
     if (payload.truncated) {
@@ -3814,9 +3817,8 @@ function taskPowerPreflight(task, mode) {
   if (!Array.isArray(task.umos) || task.umos.length === 0) {
     return "任务 UMO 白名单为空，不能启用。";
   }
-  if (!task.site_id || !task.site_enabled) {
-    return "任务引用的站点不存在或已停用，不能启用。";
-  }
+  // 站点可用性不在这里拦截：候选站点全停用时执行会发送安全异常提示，
+  // 与后端规则保持一致；组合原站点停用也不再阻止启用。
   return null;
 }
 

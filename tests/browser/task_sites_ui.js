@@ -99,6 +99,27 @@ async function openPage(browser, port) {
       },
       apiPost: async (endpoint, payload) => {
         window.__calls.push({ endpoint, payload });
+        if (endpoint.endsWith("/test-preview")) {
+          // 全站停用时的手动确认：明确这次只发异常提示。
+          return {
+            task_id: "task-1", task_name: "任务一", task_revision: 2,
+            profile_id: "profile-1", profile_name: "组合一",
+            profile_revision: 1, site_id: "site-a", site_name: "站点A",
+            site_revision: 3, site_enabled: false, output_format: "text",
+            output_label: "纯文字", can_deliver: true, alert_only: true,
+            reason: "content_unavailable",
+            targets: [{
+              umo: "aiocqhttp:GroupMessage:g:1", platform_id: "aiocqhttp",
+              message_type: "GroupMessage", target: "g:1", isolated: true,
+              valid: true, reason: null,
+            }],
+            candidate_sites: [
+              { id: "site-a", name: "站点A", enabled: false },
+              { id: "site-b", name: "站点B", enabled: false },
+            ],
+            content_policy: "fresh",
+          };
+        }
         if (endpoint.endsWith("/capability-test")) {
           // 宿主 bridge 成功时直接返回业务 data（不再套一层 data）。
           return {
@@ -143,6 +164,21 @@ async function openPage(browser, port) {
     const page = await openPage(browser, port);
     await page.click('.nav-item[data-view="tasks"]');
     await page.waitForSelector("#tasks-list li", { timeout: 10000 });
+    // 手动确认：展示候选顺序，并说明本次只会发送异常提示。
+    await page.waitForSelector("#tasks-list li");
+    await page.locator("#tasks-list button", { hasText: "测试投递" }).first().click();
+    await page.waitForSelector("#delivery-confirm-button");
+    const confirmText = await page.textContent("#delivery-confirm-info");
+    check(confirmText.includes("候选站点（按尝试顺序）"),
+      "确认页应展示候选顺序：" + confirmText.slice(0, 80));
+    check(confirmText.includes("1. 站点A") && confirmText.includes("2. 站点B"),
+      "确认页候选顺序应正确：" + confirmText.slice(0, 120));
+    check(confirmText.includes("不会发送内容"),
+      "全站停用应说明只发异常提示：" + confirmText.slice(0, 120));
+    const confirmLabel = await page.textContent("#delivery-confirm-button");
+    check(confirmLabel.includes("异常提示"), "按钮应写明发送异常提示：" + confirmLabel);
+    await page.click("#delivery-cancel-button");
+
 
     // 打开任务编辑，候选站点按已保存顺序渲染。
     await page.getByRole("button", { name: "编辑" }).first().click();

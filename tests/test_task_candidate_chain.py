@@ -124,5 +124,21 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_enable_task_when_only_backup_candidate_is_enabled(self) -> None:
+        from core.scheduler import SchedulerService
+
+        await self._disable(self.a)
+        scheduler = SchedulerService(
+            tasks=self.tasks, store=self.sites.store, delivery=_DeliveryStub(),
+        )
+        try:
+            # A 停用、B 可用：后台启用不应被拒绝。
+            await scheduler.enable_task(self.task.id, self.task.revision)
+            updated = await self.tasks.get_task(self.task.id)
+            self.assertTrue(updated.enabled)
+        finally:
+            await scheduler.close()
+
+
 if __name__ == "__main__":
     unittest.main()

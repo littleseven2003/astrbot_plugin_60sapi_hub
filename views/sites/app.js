@@ -4524,13 +4524,29 @@ function renderDeliveryPreview(data, token) {
   elements.deliveryConfirmInfo.replaceChildren();
   for (const [label, value] of [
     ["任务", data.task_name], ["组合", data.profile_name],
-    ["来源站点", data.site_name], ["输出方式", data.output_label],
+    ["组合绑定站点", data.site_name], ["输出方式", data.output_label],
     ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision} · 站点 ${data.site_revision}`],
+    ["内容来源", "按候选顺序选择第一个同时满足全部栏目与条数的站点；不会混用多个站点"],
     ["内容策略", "重新准备内容，不复用页面旧预览；可能命中内容缓存（默认 300 秒），不保证重新请求上游"],
   ]) {
     const p = document.createElement("p");
     p.textContent = `${label}：${value}`;
     elements.deliveryConfirmInfo.append(p);
+  }
+  const candidates = Array.isArray(data.candidate_sites) ? data.candidate_sites : [];
+  if (candidates.length > 0) {
+    const order = document.createElement("p");
+    order.textContent = `候选站点（按尝试顺序）：${candidates
+      .map((item, index) => `${index + 1}. ${item.name || item.id}${item.enabled ? "" : "（已停用）"}`)
+      .join(" → ")}`;
+    elements.deliveryConfirmInfo.append(order);
+  }
+  if (data.alert_only) {
+    const warning = document.createElement("p");
+    warning.className = "form-error";
+    warning.textContent =
+      "本次不会发送内容：所有候选站点当前都不可用，将改为向下面的白名单发送一条文字异常提示。";
+    elements.deliveryConfirmInfo.append(warning);
   }
   elements.deliveryTargets.replaceChildren();
   for (const target of data.targets || []) {
@@ -4551,7 +4567,9 @@ function renderDeliveryPreview(data, token) {
   }
   elements.deliveryConfirmButton.hidden = false;
   elements.deliveryConfirmButton.disabled = !data.can_deliver;
-  elements.deliveryConfirmButton.textContent = data.can_deliver ? "确认并投递" : "不可投递";
+  elements.deliveryConfirmButton.textContent = !data.can_deliver
+    ? "不可投递"
+    : (data.alert_only ? "确认并发送异常提示" : "确认并投递");
 }
 
 function openDeliveryDialog() {

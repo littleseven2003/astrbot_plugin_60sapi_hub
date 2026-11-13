@@ -152,7 +152,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.scheduler.check_once(), 1)
         self.assertEqual(len(self.sender.calls), 1)
 
-    async def test_disabled_and_site_disabled_do_not_send(self):
+    async def test_disabled_site_still_sends_safe_alert(self):
+        """站点停用不再静默跳过：到期后仍要发一条安全异常提示。"""
         task = await self.task()
         await self.scheduler.enable_task(task.id, 1)
         from core.sites import SiteUpdate
@@ -161,8 +162,10 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
             enabled=False, timeout_seconds=5, expected_revision=1,
         ))
         self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
-        self.assertEqual(await self.scheduler.check_once(), 0)
-        self.assertEqual(self.sender.calls, [])
+        self.assertEqual(await self.scheduler.check_once(), 1)
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].kind, "text")
+        self.assertIn("60sAPI推送服务异常", self.sender.calls[0].text or "")
 
     async def test_second_same_time_task_rechecks_late_window(self):
         first = await self.task()

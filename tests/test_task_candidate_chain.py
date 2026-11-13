@@ -84,8 +84,8 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
         scheduler._validate_snapshot(snapshot)
         await self._disable(self.b)
         snapshot = await self.tasks.get_config_snapshot(self.task.id)
-        with self.assertRaises(SchedulerValidationError):
-            scheduler._validate_snapshot(snapshot)
+        # 全部停用同样不拦截：交给投递层发安全异常提示，而不是静默跳过。
+        scheduler._validate_snapshot(snapshot)
 
     async def test_manual_preview_lists_candidates_and_allows_delivery(
         self,

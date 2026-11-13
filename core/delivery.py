@@ -458,9 +458,16 @@ class DeliveryService:
         if len(task.umos) > self._limits.max_targets:
             await self._finish(execution_id, "failed", "too_many_targets")
             return await self._read(execution_id)
+        # 先按完整候选顺序取回全部站点（含停用的），用于与确认快照比对；
+        # 只有真正选择内容时才跳过停用站点。
+        resolved = await self._candidate_sites(task, profile)
+        try:
+            self._assert_confirmation(resolved, expected_candidates)
+        except DeliveryConfirmationStaleError:
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise
         # 没有可用候选时同样走告警路径：向任务白名单发送一条文字提示。
-        candidates = await self._candidate_sites(task, profile)
-        self._assert_confirmation(candidates, expected_candidates)
+        candidates = [item for item in resolved if item.enabled]
 
         try:
             prepared = await self._prepare(
@@ -570,8 +577,6 @@ class DeliveryService:
             try:
                 candidate = await self._sites.get_site(site_id)
             except Exception:
-                continue
-            if not getattr(candidate, "enabled", False):
                 continue
             resolved.append(candidate)
         return resolved

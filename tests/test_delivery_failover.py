@@ -140,7 +140,10 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
             self._task(("site-a", "site-b", "missing", "site-c")),
             self._profile(1),
         )
-        self.assertEqual([item.id for item in resolved], ["site-b", "site-c"])
+        # 完整候选按顺序返回（含停用），由调用方在“选择内容”时跳过停用项。
+        self.assertEqual(
+            [item.id for item in resolved], ["site-a", "site-b", "site-c"],
+        )
 
 
 if __name__ == "__main__":

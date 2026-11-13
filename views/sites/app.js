@@ -3488,9 +3488,9 @@ function taskFormMatchesSaved() {
   if (state.taskMode !== "edit" || !state.editingTask) return false;
   if (elements.taskProfile.value !== state.editingTask.profile_id) return false;
   const saved = savedTaskSites(state.editingTask);
-  const current = state.taskSites.length > 0
-    ? state.taskSites
-    : savedTaskSites(state.editingTask);
+  // 清空候选等价于回落到组合绑定站点：只有这才算“没有变化”。
+  const fallback = state.editingTask.site_id ? [state.editingTask.site_id] : [];
+  const current = state.taskSites.length > 0 ? state.taskSites : fallback;
   return saved.join(",") === current.join(",");
 }
 
@@ -4774,6 +4774,8 @@ async function submitDelivery(event) {
       state.deliveryMode = "conflict";
       state.deliveryPreview = null;
       state.deliveryAttempt = null;
+      // 明确未发送：清除待确认标记，避免页面锁定到不存在的执行。
+      confirmDeliveryPending(executionId);
       elements.deliveryConfirmButton.hidden = false;
       elements.deliveryConfirmButton.disabled = true;
       elements.deliveryConfirmButton.textContent = "请重新审阅";

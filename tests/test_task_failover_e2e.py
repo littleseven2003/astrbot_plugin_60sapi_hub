@@ -252,6 +252,79 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         )
 
 
+
+    async def test_confirmed_alert_only_is_delivered(self) -> None:
+        """A/B 均停用、配置未变化：确认过的文字提示必须发出。"""
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        await self._set_enabled(self.a, False)
+        await self._set_enabled(self.b, False)
+        data = (await api.preview(task.id)).body["data"]
+        self.assertTrue(data["alert_only"])
+        result = await api.execute(task.id, {
+            "execution_id": "ok-alert",
+            "expected_task_revision": data["task_revision"],
+            "expected_profile_revision": data["profile_revision"],
+            "expected_site_revision": data["site_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": True,
+        })
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertEqual(len(self.sender.messages), 1)
+        self.assertEqual(self.sender.messages[0].kind, "text")
+        self.assertTrue(
+            (self.sender.messages[0].text or "").startswith("60sAPI推送服务异常："),
+        )
+        record = result.body["data"]
+        self.assertEqual(record["content_status"], "failed")
+
+    async def test_confirmed_content_from_backup_is_delivered(self) -> None:
+        """A 停用、B 可用、配置未变化：确认过的 B 内容必须发出。"""
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        await self._set_enabled(self.a, False)
+        data = (await api.preview(task.id)).body["data"]
+        self.assertFalse(data["alert_only"])
+        result = await api.execute(task.id, {
+            "execution_id": "ok-content",
+            "expected_task_revision": data["task_revision"],
+            "expected_profile_revision": data["profile_revision"],
+            "expected_site_revision": data["site_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": False,
+        })
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertEqual(len(self.sender.messages), 1)
+        self.assertIn("B新闻", self.sender.messages[0].text or "")
+        self.assertEqual(result.body["data"]["site_id"], self.b.id)
+
+    async def test_stale_confirmation_leaves_terminal_record(self) -> None:
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        await self._set_enabled(self.a, False)
+        await self._set_enabled(self.b, False)
+        data = (await api.preview(task.id)).body["data"]
+        await self._set_enabled(self.b, True)
+        result = await api.execute(task.id, {
+            "execution_id": "stale-terminal",
+            "expected_task_revision": data["task_revision"],
+            "expected_profile_revision": data["profile_revision"],
+            "expected_site_revision": data["site_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": True,
+        })
+        self.assertEqual(result.status_code, 409, result.body)
+        # 校验阶段就拒绝：不创建执行记录，页面不会锁定到不存在的执行。
+        from core.site_store import DeliveryRecordNotFoundError
+
+        with self.assertRaises(DeliveryRecordNotFoundError):
+            await self.sites.store.get_delivery_execution("stale-terminal")
+        self.assertEqual(self.sender.messages, [])
+
+
     async def test_state_change_after_api_check_is_blocked(self) -> None:
         """API 校验通过后、投递读取候选前变化，也不得发送。"""
         from unittest import mock
@@ -289,6 +362,10 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         self.assertEqual(result.status_code, 409, result.body)
         self.assertEqual(result.body["data"]["code"], "confirmation_stale")
         self.assertEqual(self.sender.messages, [])
+        # 记录已创建但必须收敛到终态，不能遗留 preparing。
+        record = await self.sites.store.get_delivery_execution("race-1")
+        self.assertEqual(record.status, "failed")
+        self.assertEqual(record.error_code, "confirmation_stale")
 
     async def test_same_execution_id_returns_original_record(self) -> None:
         profile = await self._profile(self.a.id, limit=2)

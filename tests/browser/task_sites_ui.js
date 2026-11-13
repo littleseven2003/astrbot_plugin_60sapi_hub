@@ -255,6 +255,8 @@ async function openPage(browser, port) {
     );
     check(true, "撤销改动后能力测试恢复可用");
 
+
+
     // 站点一键测试五类：逐一请求五个接口并渲染五行。
     await page.click("#task-close-dialog-button");
     await page.click('.nav-item[data-view="sites"]');

@@ -11,6 +11,7 @@ from .delivery import (
     IMAGE_MODEL_SECTIONS,
     DeliveryCapacityError,
     DeliveryClosedError,
+    DeliveryConfirmationStaleError,
     DeliveryNoContentError,
     DeliveryRevisionConflictError,
     DeliveryService,
@@ -207,6 +208,17 @@ class DeliveryApi:
             if type(value) is not int or value < 1:
                 return _error(400, f"{field} 必须是正整数。", code="validation_error", data={"field": field})
             revisions[field] = value
+        # 幂等优先：同一 execution_id 已完成时直接取回原记录，
+        # 不因后来候选变化而误导用户重新发送。
+        try:
+            existing = await self._store.get_delivery_execution(
+                execution_id.strip(),
+            )
+        except Exception:
+            existing = None
+        if existing is not None and existing.task_id == task_id:
+            return _ok(_execution_dict(existing))
+
         expected_candidates = data.get("expected_candidates")
         expected_alert_only = data.get("expected_alert_only")
         if expected_candidates is not None:
@@ -226,6 +238,18 @@ class DeliveryApi:
                 expected_task_revision=revisions["expected_task_revision"],
                 expected_profile_revision=revisions["expected_profile_revision"],
                 expected_site_revision=revisions["expected_site_revision"],
+                expected_candidates=expected_candidates,
+                expected_alert_only=(
+                    expected_alert_only
+                    if isinstance(expected_alert_only, bool) else None
+                ),
+            )
+        except DeliveryConfirmationStaleError:
+            return _error(
+                409,
+                "确认后配置或候选站点状态已变化，请重新审阅后再确认。",
+                code="confirmation_stale",
+                data={"reason": "changed_after_confirmation", "sent": False},
             )
         except DeliveryRevisionConflictError as exc:
             return _error(

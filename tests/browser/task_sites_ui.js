@@ -60,7 +60,9 @@ const TASKS = [{
   site_id: "site-a", site_enabled: true, output_format: "text",
   output_label: "纯文字", umos: ["aiocqhttp:GroupMessage:g:1"],
   enabled: false, revision: 2, created_at: "", updated_at: "",
-  schedule: null, sites: [{ id: "site-a", name: "站点A", enabled: true }],
+  schedule: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
+  schedule_raw: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
+  sites: [{ id: "site-a", name: "站点A", enabled: true }],
 }];
 
 const server = http.createServer((request, response) => {
@@ -99,6 +101,9 @@ async function openPage(browser, port) {
       },
       apiPost: async (endpoint, payload) => {
         window.__calls.push({ endpoint, payload });
+        if (endpoint.endsWith("/enable") || endpoint.endsWith("/disable")) {
+          return { task_id: "task-1", enabled: true, revision: 3 };
+        }
         if (endpoint.endsWith("/enable") || endpoint.endsWith("/disable")) {
           return { task_id: "task-1", enabled: true, revision: 3 };
         }
@@ -169,6 +174,14 @@ async function openPage(browser, port) {
     await page.waitForSelector("#tasks-list li", { timeout: 10000 });
     // 手动确认：展示候选顺序，并说明本次只会发送异常提示。
     await page.waitForSelector("#tasks-list li");
+    // 页面启用：确认弹窗通过预检后发出启用请求。
+    await page.locator("#tasks-list button", { hasText: "启用定时调度" }).first().click();
+    await page.waitForSelector("#task-power-confirm-button:not([disabled])");
+    await page.click("#task-power-confirm-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/enable")));
+    check(true, "页面启用应发出启用请求");
+
     await page.locator("#tasks-list button", { hasText: "测试投递" }).first().click();
     await page.waitForSelector("#delivery-confirm-button");
     const confirmText = await page.textContent("#delivery-confirm-info");

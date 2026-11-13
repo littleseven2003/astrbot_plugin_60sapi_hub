@@ -64,6 +64,10 @@ class DeliveryCapacityError(DeliveryError):
     """排队/执行容量已满。"""
 
 
+class DeliveryConfirmationStaleError(DeliveryError):
+    """确认后候选站点状态已变化，必须重新审阅，不得发送。"""
+
+
 class DeliveryRevisionConflictError(DeliveryError):
     """确认的配置版本已变化。"""
 
@@ -136,7 +140,7 @@ SAFE_ERROR_CODES = frozenset({
     "image_render_failed", "image_snapshot_unavailable",
     "image_unavailable", "interrupted", "internal_error",
     # 全部候选都取不到所需内容：提示已发送，但内容采集失败。
-    "content_unavailable",
+    "content_unavailable", "confirmation_stale",
     "preview_failed", "preview_invalid", "profile_not_found",
     "record_after_send_failed", "render_failed",
     "section_image_failed", "send_failed",
@@ -205,6 +209,8 @@ class DeliveryService:
         expected_task_revision: int | None = None,
         expected_profile_revision: int | None = None,
         expected_site_revision: int | None = None,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
         if self._closed:
             raise DeliveryClosedError("投递服务已关闭。")
@@ -218,6 +224,8 @@ class DeliveryService:
                 expected_task_revision,
                 expected_profile_revision,
                 expected_site_revision,
+                expected_candidates,
+                expected_alert_only,
             ),
             name=f"delivery-{execution_key}",
         )
@@ -267,6 +275,8 @@ class DeliveryService:
         expected_task_revision: int | None = None,
         expected_profile_revision: int | None = None,
         expected_site_revision: int | None = None,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
         await start_gate.wait()
         if self._closed:
@@ -282,6 +292,8 @@ class DeliveryService:
                     expected_task_revision,
                     expected_profile_revision,
                     expected_site_revision,
+                    expected_candidates,
+                    expected_alert_only,
                 ),
                 timeout=remaining,
             )
@@ -304,6 +316,8 @@ class DeliveryService:
         expected_task_revision: int | None = None,
         expected_profile_revision: int | None = None,
         expected_site_revision: int | None = None,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
         async with self._admission():
             existing = await self._existing_for_task(execution_key, task_key)
@@ -344,7 +358,10 @@ class DeliveryService:
                 return await self._existing_for_task(execution_key, task_key)
             except Exception as exc:
                 raise DeliveryStorageError("无法创建投递记录。") from exc
-            return await self._run(execution_key, task, profile, site)
+            return await self._run(
+                execution_key, task, profile, site,
+                expected_candidates, expected_alert_only,
+            )
 
     @asynccontextmanager
     async def _admission(self):
@@ -432,6 +449,8 @@ class DeliveryService:
         task: PushTask,
         profile: object,
         site: object,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
         if task.target_count == 0:
             await self._finish(execution_id, "no_targets", None)
@@ -441,14 +460,25 @@ class DeliveryService:
             return await self._read(execution_id)
         # 没有可用候选时同样走告警路径：向任务白名单发送一条文字提示。
         candidates = await self._candidate_sites(task, profile)
+        self._assert_confirmation(candidates, expected_candidates)
 
         try:
             prepared = await self._prepare(
                 execution_id, task, profile, candidates,
             )
+        except DeliveryConfirmationStaleError:
+            # 确认后候选状态变了：不发送，记录为明确失败并附安全错误码。
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise
         except DeliveryNoContentError as exc:
             await self._finish(execution_id, "failed", str(exc))
             return await self._read(execution_id)
+        if (
+            expected_alert_only is not None
+            and (prepared.site is None) != expected_alert_only
+        ):
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise DeliveryConfirmationStaleError()
         if len(prepared.slots) > self._limits.max_images:
             await self._finish(execution_id, "failed", "too_many_images")
             return await self._read(execution_id)
@@ -502,6 +532,32 @@ class DeliveryService:
             return record
         return record
 
+    @staticmethod
+    def _candidate_shape(candidates: list[object]) -> list[dict]:
+        return [
+            {
+                "id": item.id,
+                "revision": item.revision,
+                "enabled": bool(item.enabled),
+            }
+            for item in candidates
+        ]
+
+    def _assert_confirmation(self, candidates, expected) -> None:
+        """候选状态必须与管理员确认时完全一致，否则不发送。"""
+        if not isinstance(expected, list):
+            return
+        confirmed: list[dict] = []
+        for item in expected:
+            if not isinstance(item, dict):
+                raise DeliveryConfirmationStaleError()
+            confirmed.append({
+                "id": item.get("id"),
+                "revision": item.get("revision"),
+                "enabled": bool(item.get("enabled")),
+            })
+        if self._candidate_shape(candidates) != confirmed:
+            raise DeliveryConfirmationStaleError()
     async def _candidate_sites(
         self,
         task: PushTask,

@@ -251,6 +251,64 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             sites=self.sites, store=self.sites.store, inspector=_Inspector(),
         )
 
+
+    async def test_state_change_after_api_check_is_blocked(self) -> None:
+        """API 校验通过后、投递读取候选前变化，也不得发送。"""
+        from unittest import mock
+
+        from core.delivery import DeliveryService
+
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        await self._set_enabled(self.a, False)
+        await self._set_enabled(self.b, False)
+        preview = await api.preview(task.id)
+        data = preview.body["data"]
+        self.assertTrue(data["alert_only"])
+
+        original = DeliveryService._candidate_sites
+        fired = {"done": False}
+
+        async def racing(service, task_arg, profile_arg):
+            if not fired["done"]:
+                fired["done"] = True
+                await self._set_enabled(self.b, True)
+            return await original(service, task_arg, profile_arg)
+
+        with mock.patch.object(DeliveryService, "_candidate_sites", racing):
+            result = await api.execute(task.id, {
+                "execution_id": "race-1",
+                "expected_task_revision": data["task_revision"],
+                "expected_profile_revision": data["profile_revision"],
+                "expected_site_revision": data["site_revision"],
+                "expected_candidates": data["candidate_snapshot"],
+                "expected_alert_only": True,
+            })
+        self.assertTrue(fired["done"])
+        self.assertEqual(result.status_code, 409, result.body)
+        self.assertEqual(result.body["data"]["code"], "confirmation_stale")
+        self.assertEqual(self.sender.messages, [])
+
+    async def test_same_execution_id_returns_original_record(self) -> None:
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        first = await self.delivery.execute(task.id, "idem-1")
+        sent = len(self.sender.messages)
+        self.assertGreaterEqual(sent, 1)
+        # 完成后再改候选，重复查询同一 execution_id 仍应取回原记录。
+        await self._set_enabled(self.b, False)
+        api = self._api()
+        again = await api.execute(task.id, {
+            "execution_id": "idem-1",
+            "expected_task_revision": task.revision,
+            "expected_profile_revision": task.revision,
+            "expected_site_revision": first.site_revision,
+        })
+        self.assertEqual(again.status_code, 200, again.body)
+        self.assertEqual(again.body["data"]["id"], "idem-1")
+        self.assertEqual(len(self.sender.messages), sent)
+
     async def test_alert_only_confirmation_cannot_become_content(self) -> None:
         profile = await self._profile(self.a.id, limit=2)
         task = await self._task(profile.id, [self.a.id, self.b.id])

@@ -4766,6 +4766,23 @@ async function submitDelivery(event) {
       return;
     }
     const message = friendlyErrorMessage(error);
+    const staleConfirm = typeof message === "string"
+      && message.includes("重新审阅");
+    if (staleConfirm) {
+      // 服务端在发送前拒绝了本次确认：没有任何消息发出，
+      // 也不能锁定到并未创建的执行记录。
+      state.deliveryMode = "conflict";
+      state.deliveryPreview = null;
+      state.deliveryAttempt = null;
+      elements.deliveryConfirmButton.hidden = false;
+      elements.deliveryConfirmButton.disabled = true;
+      elements.deliveryConfirmButton.textContent = "请重新审阅";
+      elements.deliveryError.textContent =
+        "候选站点或配置在确认后发生变化，本次未发送任何消息；请关闭后重新打开确认。";
+      elements.deliveryError.hidden = false;
+      syncDeliveryPendingPanel();
+      return;
+    }
     if (isExplicitWriteRejection(message)) {
       // Explicit rejection happened before sending. A revision conflict
       // invalidates the confirmation; a new review is required.

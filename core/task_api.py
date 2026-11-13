@@ -148,6 +148,7 @@ class TaskApi:
             tuple(task.sites),
         )
         checked: list[dict[str, Any]] = []
+        site_revisions: dict[str, int] = {}
         winner: dict[str, Any] | None = None
         candidates = tuple(task.sites)[:MAX_TEST_CANDIDATES]
         truncated = len(tuple(task.sites)) > len(candidates)
@@ -168,6 +169,7 @@ class TaskApi:
                 entry["reason"] = "site_disabled"
                 checked.append(entry)
                 continue
+            site_revisions[site_id] = site.revision
             sections: list[dict[str, Any]] = []
             for item in profile.items:
                 try:
@@ -221,6 +223,18 @@ class TaskApi:
                 "任务或组合在测试期间发生变化，请重新测试。",
                 code="config_changed",
             )
+        # 被检查的站点也必须保持同一 revision，否则结论不代表当前配置。
+        for site_id, revision in site_revisions.items():
+            try:
+                latest_site = await self._sites.get_site(site_id)
+            except Exception:
+                return _storage_error()
+            if latest_site.revision != revision:
+                return _error(
+                    409,
+                    "站点配置在测试期间发生变化，请重新测试。",
+                    code="config_changed",
+                )
 
         if winner is not None:
             message = f"站点「{winner['site_name'] or winner['site_id']}」可以满足全部配置。"

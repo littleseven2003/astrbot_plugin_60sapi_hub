@@ -148,7 +148,7 @@ class TaskApi:
             tuple(task.sites),
         )
         checked: list[dict[str, Any]] = []
-        site_revisions: dict[str, int] = {}
+        site_snapshot: dict[str, tuple[int, bool]] = {}
         winner: dict[str, Any] | None = None
         candidates = tuple(task.sites)[:MAX_TEST_CANDIDATES]
         truncated = len(tuple(task.sites)) > len(candidates)
@@ -165,11 +165,13 @@ class TaskApi:
                 entry["reason"] = "site_missing"
                 checked.append(entry)
                 continue
+            # 记录所有候选（含停用的）当时的 revision 与启用状态，
+            # 结束后复核，避免期间被启用/修改的站点让结论失真。
+            site_snapshot[site_id] = (site.revision, bool(site.enabled))
             if not site.enabled:
                 entry["reason"] = "site_disabled"
                 checked.append(entry)
                 continue
-            site_revisions[site_id] = site.revision
             sections: list[dict[str, Any]] = []
             for item in profile.items:
                 try:
@@ -223,13 +225,14 @@ class TaskApi:
                 "任务或组合在测试期间发生变化，请重新测试。",
                 code="config_changed",
             )
-        # 被检查的站点也必须保持同一 revision，否则结论不代表当前配置。
-        for site_id, revision in site_revisions.items():
+        # 所有候选的 revision 与启用状态都必须与测试开始时一致，
+        # 包括开始时停用、期间被启用的候选。
+        for site_id, (revision, enabled) in site_snapshot.items():
             try:
                 latest_site = await self._sites.get_site(site_id)
             except Exception:
                 return _storage_error()
-            if latest_site.revision != revision:
+            if latest_site.revision != revision or bool(latest_site.enabled) != enabled:
                 return _error(
                     409,
                     "站点配置在测试期间发生变化，请重新测试。",

@@ -3477,6 +3477,37 @@ function setTaskCapabilityResult(text, tone) {
   node.className = `site-test-result site-test-${tone || "info"}`;
 }
 
+function savedTaskSites(task) {
+  if (!task || !Array.isArray(task.sites)) return [];
+  return task.sites.map((item) => (typeof item === "string" ? item : item.id));
+}
+
+function taskFormMatchesSaved() {
+  if (state.taskMode !== "edit" || !state.editingTask) return false;
+  if (elements.taskProfile.value !== state.editingTask.profile_id) return false;
+  const saved = savedTaskSites(state.editingTask);
+  const current = state.taskSites.length > 0
+    ? state.taskSites
+    : savedTaskSites(state.editingTask);
+  return saved.join(",") === current.join(",");
+}
+
+function updateTaskCapabilityGate() {
+  const button = elements.taskCapabilityTestButton;
+  if (state.taskMode !== "edit" || !state.editingTask) {
+    button.disabled = true;
+    return;
+  }
+  const matches = taskFormMatchesSaved();
+  button.disabled = !matches;
+  if (!matches) {
+    setTaskCapabilityResult(
+      "当前修改尚未保存；能力测试针对已保存配置，请先保存再测试。",
+      "warning",
+    );
+  }
+}
+
 async function runTaskCapabilityTest() {
   if (state.taskMode !== "edit" || !state.editingTaskId) {
     setTaskCapabilityResult("请先保存任务后再测试。", "error");
@@ -3599,6 +3630,7 @@ function openCreateTask() {
   }
   clearTaskPendingPanels();
   state.taskMode = "create";
+  state.editingTask = null;
   state.editingTaskId = null;
   state.editingTaskRevision = null;
   state.taskSites = [];
@@ -3606,6 +3638,7 @@ function openCreateTask() {
   resetTaskScheduleEditor();
   renderTaskSites();
   setTaskCapabilityResult("", null);
+  updateTaskCapabilityGate();
   elements.taskDialogTitle.textContent = "新增推送任务";
   taskProfileOptions(null);
   clearTaskFormError();
@@ -3635,11 +3668,13 @@ function openTaskEditor(task) {
   taskProfileOptions(task.profile_id);
   elements.taskOutputFormat.value = task.output_format;
   elements.taskUmos.value = Array.isArray(task.umos) ? task.umos.join("\n") : "";
+  state.editingTask = task;
   state.taskSites = Array.isArray(task.sites)
     ? task.sites.map((item) => (typeof item === "string" ? item : item.id))
     : [];
   renderTaskSites();
   setTaskCapabilityResult("", null);
+  updateTaskCapabilityGate();
   fillTaskScheduleEditor(task);
   clearTaskFormError();
   setTaskFormDisabled(false);
@@ -5014,6 +5049,7 @@ async function refreshAll() {
 
 function bindEvents() {
   elements.taskSiteAddButton.addEventListener("click", addTaskSite);
+  elements.taskProfile.addEventListener("change", updateTaskCapabilityGate);
   elements.taskCapabilityTestButton.addEventListener(
     "click", runTaskCapabilityTest,
   );

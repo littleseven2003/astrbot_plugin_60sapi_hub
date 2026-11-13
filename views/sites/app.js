@@ -3482,16 +3482,34 @@ async function runTaskCapabilityTest() {
     setTaskCapabilityResult("请先保存任务后再测试。", "error");
     return;
   }
+  const taskId = state.editingTaskId;
+  const revision = state.editingTaskRevision;
+  const sitesSnapshot = state.taskSites.slice().join(",");
   elements.taskCapabilityTestButton.disabled = true;
   setTaskCapabilityResult("正在检查候选站点…", "info");
   try {
     const data = await bridge.apiPost(
-      `tasks/${encodeURIComponent(state.editingTaskId)}/capability-test`, {},
+      `tasks/${encodeURIComponent(taskId)}/capability-test`, {},
     );
+    // 切换任务、关闭弹窗或改了候选/组合后，旧结论必须失效。
+    if (state.taskMode !== "edit" || state.editingTaskId !== taskId
+        || state.editingTaskRevision !== revision
+        || state.taskSites.slice().join(",") !== sitesSnapshot) return;
     const payload = (data && data.data) || {};
-    setTaskCapabilityResult(payload.message || "测试完成。",
+    const notes = [];
+    if (payload.truncated) {
+      notes.push(`仅检查前 ${payload.checked_count} 个候选`);
+    }
+    const ttl = payload.cache && payload.cache.ttl_seconds;
+    if (ttl) {
+      notes.push(`结果来自 ${Math.round(ttl)} 秒内容缓存，非实时连通性测试`);
+    }
+    const suffix = notes.length > 0 ? `（${notes.join("；")}）` : "";
+    setTaskCapabilityResult((payload.message || "测试完成。") + suffix,
       payload.satisfied ? "success" : "error");
   } catch (error) {
+    if (state.taskMode !== "edit" || state.editingTaskId !== taskId
+        || state.editingTaskRevision !== revision) return;
     setTaskCapabilityResult(friendlyErrorMessage(error), "error");
   } finally {
     elements.taskCapabilityTestButton.disabled = false;
@@ -3525,35 +3543,53 @@ function renderSiteTestAll(rows) {
 async function runSiteTestAll() {
   const site = siteTestSite;
   if (!site) return;
+  const displayToken = ++siteTestDisplayToken;
+  const alive = () => (
+    siteTestDisplayToken === displayToken
+    && siteTestSite === site
+    && document.getElementById("site-test-dialog").open === true
+  );
   elements.siteTestAllButton.disabled = true;
-  const rows = [];
-  renderSiteTestAll(SITE_TEST_TYPES.map(([value, label]) => ({
+  const rows = SITE_TEST_TYPES.map(([, label]) => ({
     label, ok: false, text: "等待测试…",
-  })));
-  for (const [contentType, label] of SITE_TEST_TYPES) {
-    const index = rows.length;
-    rows.push({ label, ok: false, text: "测试中…" });
+  }));
+  renderSiteTestAll(rows);
+  for (let index = 0; index < SITE_TEST_TYPES.length; index += 1) {
+    const [contentType, label] = SITE_TEST_TYPES[index];
+    rows[index] = { label, ok: false, text: "测试中…" };
     renderSiteTestAll(rows);
     try {
       const data = await bridge.apiPost(
         `sites/${encodeURIComponent(site.id)}/test`,
         { content_type: contentType, expected_revision: site.revision },
       );
-      const payload = (data && data.data) || {};
+      if (!alive()) return;
+      const value = data && data.data ? data.data : data;
+      const empty = value.result === "empty";
       rows[index] = {
         label,
-        ok: Boolean(payload.ok),
-        text: payload.ok
-          ? `可用（${payload.item_count || 0} 条）`
-          : `不可用（${payload.message || "请求失败"}）`,
+        ok: true,
+        text: empty
+          ? `可用（返回合法空内容）· ${value.elapsed_ms} ms`
+          : `可用 · ${value.elapsed_ms} ms`,
       };
     } catch (error) {
-      rows[index] = { label, ok: false, text: `不可用（${friendlyErrorMessage(error)}）` };
+      if (!alive()) return;
+      const message = error && typeof error.message === "string"
+        ? error.message.trim() : "";
+      const safe = SAFE_TEST_ERRORS.get(message);
+      rows[index] = {
+        label,
+        ok: false,
+        text: `不可用（${safe ? safe[0] : "测试失败，请手动重试"}）`,
+      };
     }
     renderSiteTestAll(rows);
   }
+  if (!alive()) return;
   elements.siteTestAllButton.disabled = false;
 }
+
 function openCreateTask() {
   if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
     return;
@@ -3650,8 +3686,16 @@ async function handleTaskSave(event) {
     output_format: elements.taskOutputFormat.value,
     umos: collectTaskUmos(),
   };
-  if (state.taskSites.length > 0) {
-    payload.sites = state.taskSites.slice();
+  const chosenSites = state.taskSites.slice();
+  if (chosenSites.length === 0) {
+    // 与页面提示一致：未指定候选时使用组合绑定的站点。
+    const profile = state.profiles.find(
+      (item) => item.id === elements.taskProfile.value,
+    );
+    if (profile && profile.site_id) chosenSites.push(profile.site_id);
+  }
+  if (chosenSites.length > 0) {
+    payload.sites = chosenSites;
   }
   if (schedule !== undefined) {
     payload.schedule = schedule;

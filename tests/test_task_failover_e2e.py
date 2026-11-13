@@ -189,5 +189,40 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.site_id, self.b.id)
 
 
+    async def test_alert_message_kind_is_text_for_image_tasks(self) -> None:
+        profile = await self._profile(self.a.id, limit=9)
+        task = await self._task(profile.id, [self.a.id], fmt="image")
+        record = await self.delivery.execute(task.id, "exec-kind")
+        self.assertEqual(len(self.sender.messages), 1)
+        message = self.sender.messages[0]
+        # 真实适配边界要求：文字提示必须是 text，不能伪装成 image。
+        self.assertEqual(message.kind, "text")
+        self.assertIsNone(message.image_png)
+        self.assertEqual(record.content_status, "failed")
+
+    async def test_unknown_send_result_is_preserved(self) -> None:
+        class UnknownSender(RecordingSender):
+            async def send(self, message):
+                self.messages.append(message)
+                return DeliverySendResult(status=SendStatus.UNKNOWN)
+
+        unknown = UnknownSender()
+        self.delivery = DeliveryService(
+            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
+            profile_api=self.api, store=self.sites.store, sender=unknown,
+            limits=DeliveryLimits(),
+        )
+        profile = await self._profile(self.a.id, limit=9)
+        task = await self._task(profile.id, [self.a.id])
+        record = await self.delivery.execute(task.id, "exec-unknown")
+        self.assertEqual(len(unknown.messages), 1)
+        # 采集失败与投递结果分别可见，unknown 不能被改写成明确失败。
+        self.assertEqual(record.status, "unknown")
+        self.assertEqual(record.content_status, "failed")
+        again = await self.delivery.execute(task.id, "exec-unknown")
+        self.assertEqual(len(unknown.messages), 1)
+        self.assertEqual(again.status, "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -439,10 +439,8 @@ class DeliveryService:
         if len(task.umos) > self._limits.max_targets:
             await self._finish(execution_id, "failed", "too_many_targets")
             return await self._read(execution_id)
+        # 没有可用候选时同样走告警路径：向任务白名单发送一条文字提示。
         candidates = await self._candidate_sites(task, profile)
-        if not candidates:
-            await self._finish(execution_id, "failed", "site_disabled")
-            return await self._read(execution_id)
 
         try:
             prepared = await self._prepare(
@@ -480,9 +478,13 @@ class DeliveryService:
         except Exception as exc:
             raise DeliveryStorageError("无法保存投递计划。") from exc
 
-        # 实际选中的站点优先；提示内容没有站点，退回组合绑定站点。
-        used_site = prepared.site if prepared.site is not None else site
-        if used_site is not site and used_site.id != site.id:
+        # 实际选中的站点优先；提示内容没有站点，此时不校验站点配置，
+        # 否则“原站点停用”会把本应发出的异常提示拦掉。
+        used_site = prepared.site
+        if (
+            used_site is not None
+            and (site is None or used_site.id != site.id)
+        ):
             try:
                 await self._store.update_delivery_site(
                     execution_id,
@@ -495,11 +497,9 @@ class DeliveryService:
             execution_id, task, profile, used_site, prepared,
         )
         if prepared.site is None:
-            # 提示已送达，但内容采集失败：记录必须能区分这两件事。
-            await self._finish(
-                execution_id, "failed", "content_unavailable",
-            )
-            return await self._read(execution_id)
+            # 采集失败已由 content_status=failed 记录；这里不改写投递结果，
+            # 否则会把 unknown/成功统一覆盖成会误导重试的明确失败。
+            return record
         return record
 
     async def _candidate_sites(
@@ -731,7 +731,9 @@ class DeliveryService:
                     raise DeliveryStorageError("无法保存发送计划。") from exc
                 message = DeliveryMessage(
                     umo=umo,
-                    kind=task.output_format,
+                    # 文字载荷（含异常提示）必须是 text；图片任务也一样，
+                    # 不能把提示当成 PNG 交给发送适配器。
+                    kind="text" if isinstance(payload, str) else "image",
                     page_index=index,
                     page_count=slot_total,
                     text=payload if isinstance(payload, str) else None,
@@ -888,20 +890,26 @@ class DeliveryService:
         try:
             current = await self._tasks.get_task(task.id)
             current_profile = await self._profiles.get_profile(task.profile_id)
-            current_site = await self._sites.get_site(site.id)
+            current_site = (
+                await self._sites.get_site(site.id) if site is not None else None
+            )
         except Exception:
             return False
+        # 组合只校验 revision；选中站点单独校验自身 revision 与启用状态，
+        # 否则“组合绑定 A、任务选中 B”会被误判为 config_changed。
+        site_ok = True if site is None else (
+            current_site is not None
+            and current_site.revision == site.revision
+            and current_site.enabled
+        )
         return (
             not self._closed
             and current.revision == task.revision
             and current.profile_id == task.profile_id
             and current.output_format == task.output_format
             and umo in current.umos
-            # 组合只校验 revision；选中站点单独校验自身 revision 与启用状态，
-            # 否则“组合绑定 A、任务选中 B”会被误判为 config_changed。
             and current_profile.revision == profile.revision
-            and current_site.revision == site.revision
-            and current_site.enabled
+            and site_ok
         )
 
     async def _load_task(self, task_id: str) -> PushTask:

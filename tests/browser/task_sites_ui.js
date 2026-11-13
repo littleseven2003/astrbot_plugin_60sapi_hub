@@ -106,7 +106,21 @@ async function openPage(browser, port) {
           } };
         }
         if (endpoint.includes("/test")) {
-          return { data: { ok: true, item_count: 3 } };
+          // 与真实 ContentApi 契约一致：result 为 success / empty，
+          // 失败走抛出错误（宿主 bridge 对非 2xx 抛错）。
+          if (payload && payload.content_type === "zhihu_hot") {
+            return { data: {
+              result: "empty", message: "连接成功，接口返回合法空内容。",
+              elapsed_ms: 8, content_type: "zhihu_hot",
+            } };
+          }
+          if (payload && payload.content_type === "douyin_hot") {
+            throw new Error("test_timeout");
+          }
+          return { data: {
+            result: "success", message: "连接成功，接口返回内容结构合法。",
+            elapsed_ms: 12, content_type: payload && payload.content_type,
+          } };
         }
         return {};
       },
@@ -192,6 +206,10 @@ async function openPage(browser, port) {
     const labels = await page.$$eval("#site-test-all-results li",
       (nodes) => nodes.map((node) => node.textContent));
     check(labels.length === 5, "五类结果行：" + labels.length);
+    check(labels.some((text) => text.includes("空内容")),
+      "合法空列表应显示为空内容：" + JSON.stringify(labels));
+    check(labels.some((text) => text.includes("不可用")),
+      "失败项应显示不可用：" + JSON.stringify(labels));
 
     console.log("TASK SITES UI PASS", { assertions });
   } finally {

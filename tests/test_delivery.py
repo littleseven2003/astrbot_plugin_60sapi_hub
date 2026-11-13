@@ -365,10 +365,12 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         )
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
         result = await self.service.execute(task.id, "disabled-1")
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(result.error_code, "site_disabled")
+        # 全部候选停用：向任务白名单发送一条安全文字提示。
         self.assertEqual(self.api.preview_calls, 0)
-        self.assertEqual(len(self.sender.calls), 0)
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].kind, "text")
+        self.assertIn("60sAPI推送服务异常", self.sender.calls[0].text or "")
+        self.assertEqual(result.content_status, "failed")
 
     async def test_partial_sections_recorded_but_delivered(self) -> None:
         self.api.partial = True
@@ -384,10 +386,12 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.api.preview_status = 502
         result = await self.service.execute(task.id, "preview-fail-1")
         # 全部候选都取不到内容：发送一条安全文字提示，记录仍标记采集失败。
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(result.error_code, "content_unavailable")
+        # 提示送达与内容采集失败分别可见：content_status 标记采集失败，
+        # 投递状态仍反映这次提示的实际发送结果。
+        self.assertEqual(result.content_status, "failed")
         self.assertEqual(self.api.preview_calls, 1)
         self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].kind, "text")
         self.assertIn("60sAPI推送服务异常", self.sender.calls[0].text or "")
 
         self.api.preview_status = 200

@@ -4739,6 +4739,10 @@ async function submitDelivery(event) {
         expected_task_revision: preview.task_revision,
         expected_profile_revision: preview.profile_revision,
         expected_site_revision: preview.site_revision,
+        // 锁定确认时看到的候选顺序与 alert_only 语义：提交前状态变化
+        // 必须重新审阅，不能改发未经确认的内容。
+        expected_candidates: preview.candidate_snapshot,
+        expected_alert_only: preview.alert_only === true,
       },
     );
     if (requestId !== state.deliveryRequestId ||

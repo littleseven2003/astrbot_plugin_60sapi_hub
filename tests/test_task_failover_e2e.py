@@ -110,6 +110,14 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self._tmp.cleanup()
 
+    async def _set_enabled(self, site, enabled: bool) -> None:
+        current = await self.sites.get_site(site.id)
+        await self.sites.update_site(site.id, SiteUpdate(
+            name=current.name, base_url=current.base_url, enabled=enabled,
+            timeout_seconds=5, source_kind=current.source_kind,
+            expected_revision=current.revision,
+        ))
+
     async def _profile(self, site_id: str, limit: int = 2):
         return await self.profiles.create_profile(ProfileCreate(
             name="组合", site_id=site_id,
@@ -222,6 +230,71 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         again = await self.delivery.execute(task.id, "exec-unknown")
         self.assertEqual(len(unknown.messages), 1)
         self.assertEqual(again.status, "unknown")
+
+
+class _Inspector:
+    def inspect_target(self, umo: str) -> dict:
+        return {
+            "umo": umo, "platform_id": "aiocqhttp", "message_type": "GroupMessage",
+            "target": "g:1", "isolated": True, "valid": True, "reason": None,
+        }
+
+
+class ConfirmIntentTest(TaskFailoverEndToEndTest):
+    """确认页锁定意图：候选状态在提交前变化时不得发送。"""
+
+    def _api(self):
+        from core.delivery_api import DeliveryApi
+
+        return DeliveryApi(
+            delivery=self.delivery, tasks=self.tasks, profiles=self.profiles,
+            sites=self.sites, store=self.sites.store, inspector=_Inspector(),
+        )
+
+    async def test_alert_only_confirmation_cannot_become_content(self) -> None:
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        await self._set_enabled(self.a, False)
+        await self._set_enabled(self.b, False)
+        preview = await api.preview(task.id)
+        data = preview.body["data"]
+        self.assertTrue(data["alert_only"])
+        # 提交前 B 被启用：确认的意图（只发提示）已失效。
+        await self._set_enabled(self.b, True)
+        result = await api.execute(task.id, {
+            "execution_id": "confirm-1",
+            "expected_task_revision": data["task_revision"],
+            "expected_profile_revision": data["profile_revision"],
+            "expected_site_revision": data["site_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": True,
+        })
+        self.assertEqual(result.status_code, 409, result.body)
+        self.assertEqual(result.body["data"]["code"], "confirmation_stale")
+        self.assertEqual(self.sender.messages, [])
+
+    async def test_content_confirmation_cannot_become_alert(self) -> None:
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        await self._set_enabled(self.a, False)
+        preview = await api.preview(task.id)
+        data = preview.body["data"]
+        self.assertFalse(data["alert_only"])
+        # 提交前 B 被停用：实际会变成提示，与确认不符。
+        await self._set_enabled(self.b, False)
+        result = await api.execute(task.id, {
+            "execution_id": "confirm-2",
+            "expected_task_revision": data["task_revision"],
+            "expected_profile_revision": data["profile_revision"],
+            "expected_site_revision": data["site_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": False,
+        })
+        self.assertEqual(result.status_code, 409, result.body)
+        self.assertEqual(self.sender.messages, [])
+
 
 
 if __name__ == "__main__":

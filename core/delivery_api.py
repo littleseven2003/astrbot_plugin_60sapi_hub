@@ -129,6 +129,14 @@ class DeliveryApi:
             "site_revision": site.revision,
             "site_enabled": site.enabled,
             "alert_only": alert_only,
+            "candidate_snapshot": [
+                {
+                    "id": item.id,
+                    "revision": item.revision,
+                    "enabled": bool(item.enabled),
+                }
+                for item in candidates
+            ],
             "candidate_sites": [
                 {
                     "id": item.id,
@@ -145,6 +153,43 @@ class DeliveryApi:
             "content_policy": "fresh",
         })
 
+    async def _confirmation_stale(self, task_id: str, expected, alert_only):
+        """确认页与实际候选状态是否已经不一致。"""
+        if not isinstance(expected, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("id"), str)
+            for item in expected
+        ):
+            return {"reason": "invalid_confirmation"}
+        try:
+            task = await self._tasks.get_task(task_id)
+            profile = await self._profiles.get_profile(task.profile_id)
+        except Exception:
+            return None
+        current: list[dict] = []
+        for site_id in tuple(task.sites) or (profile.site_id,):
+            try:
+                site = await self._sites.get_site(site_id)
+            except Exception:
+                continue
+            current.append({
+                "id": site.id,
+                "revision": site.revision,
+                "enabled": bool(site.enabled),
+            })
+        confirmed = [
+            {
+                "id": item.get("id"),
+                "revision": item.get("revision"),
+                "enabled": bool(item.get("enabled")),
+            }
+            for item in expected
+        ]
+        if current != confirmed:
+            return {"reason": "candidates_changed"}
+        now_alert_only = not any(item["enabled"] for item in current)
+        if isinstance(alert_only, bool) and alert_only != now_alert_only:
+            return {"reason": "intent_changed"}
+        return None
     async def execute(self, task_id: str, payload: object) -> DeliveryApiResult:
         data = payload if isinstance(payload, dict) else None
         if data is None:
@@ -162,6 +207,19 @@ class DeliveryApi:
             if type(value) is not int or value < 1:
                 return _error(400, f"{field} 必须是正整数。", code="validation_error", data={"field": field})
             revisions[field] = value
+        expected_candidates = data.get("expected_candidates")
+        expected_alert_only = data.get("expected_alert_only")
+        if expected_candidates is not None:
+            stale = await self._confirmation_stale(
+                task_id, expected_candidates, expected_alert_only,
+            )
+            if stale is not None:
+                return _error(
+                    409,
+                    "确认后配置或候选站点状态已变化，请重新审阅后再确认。",
+                    code="confirmation_stale",
+                    data=stale,
+                )
         try:
             execution = await self._delivery.execute(
                 task_id, execution_id.strip(),

@@ -99,6 +99,9 @@ async function openPage(browser, port) {
       },
       apiPost: async (endpoint, payload) => {
         window.__calls.push({ endpoint, payload });
+        if (endpoint.endsWith("/enable") || endpoint.endsWith("/disable")) {
+          return { task_id: "task-1", enabled: true, revision: 3 };
+        }
         if (endpoint.endsWith("/test-preview")) {
           // 全站停用时的手动确认：明确这次只发异常提示。
           return {

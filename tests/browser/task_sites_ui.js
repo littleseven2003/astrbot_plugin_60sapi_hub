@@ -90,17 +90,29 @@ async function openPage(browser, port) {
   await page.addInitScript((fixtures) => {
     window.__calls = [];
     window.AstrBotPluginView = {
-      ready: async () => ({ pageTitle: "60sAPI Hub" }),
+      ready: async () => {
+        window.__taskSites = ["site-a"];
+        return { pageTitle: "60sAPI Hub" };
+      },
       apiGet: async (endpoint) => {
         if (endpoint === "sites") return { sites: fixtures.sites };
         if (endpoint === "profiles") return { profiles: fixtures.profiles };
-        if (endpoint === "tasks") return { tasks: fixtures.tasks };
+        if (endpoint === "tasks") {
+          const task = { ...fixtures.tasks[0] };
+          task.sites = window.__taskSites.map((id) => ({
+            id, name: id, enabled: true,
+          }));
+          return { tasks: [task] };
+        }
         if (endpoint === "schedule-runs") return { claims: [], skips: [] };
         if (endpoint === "executions") return { executions: [], total: 0 };
         return {};
       },
       apiPost: async (endpoint, payload) => {
         window.__calls.push({ endpoint, payload });
+        if (endpoint.endsWith("/update") && Array.isArray(payload && payload.sites)) {
+          window.__taskSites = payload.sites.slice();
+        }
         if (endpoint.endsWith("/enable") || endpoint.endsWith("/disable")) {
           return { task_id: "task-1", enabled: true, revision: 3 };
         }
@@ -172,6 +184,7 @@ async function openPage(browser, port) {
     const page = await openPage(browser, port);
     await page.click('.nav-item[data-view="tasks"]');
     await page.waitForSelector("#tasks-list li", { timeout: 10000 });
+
     // 手动确认：展示候选顺序，并说明本次只会发送异常提示。
     await page.waitForSelector("#tasks-list li");
     // 页面启用：确认弹窗通过预检后发出启用请求。
@@ -255,10 +268,9 @@ async function openPage(browser, port) {
     );
     check(true, "撤销改动后能力测试恢复可用");
 
-
+    await page.click("#task-close-dialog-button");
 
     // 站点一键测试五类：逐一请求五个接口并渲染五行。
-    await page.click("#task-close-dialog-button");
     await page.click('.nav-item[data-view="sites"]');
     await page.waitForFunction(
       () => document.querySelectorAll("#sites-list li").length === 3,

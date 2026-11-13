@@ -4527,6 +4527,7 @@ function renderDeliveryPreview(data, token) {
     ["组合绑定站点", data.site_name], ["输出方式", data.output_label],
     ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision} · 站点 ${data.site_revision}`],
     ["内容来源", "按候选顺序选择第一个同时满足全部栏目与条数的站点；不会混用多个站点"],
+    ["失败处理", "若没有任何候选站点能满足配置（含上游失败或条数不足），将改为向下列白名单发送一条文字异常提示"],
     ["内容策略", "重新准备内容，不复用页面旧预览；可能命中内容缓存（默认 300 秒），不保证重新请求上游"],
   ]) {
     const p = document.createElement("p");

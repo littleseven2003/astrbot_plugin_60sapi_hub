@@ -325,6 +325,50 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         self.assertEqual(self.sender.messages, [])
 
 
+
+    async def test_content_failure_after_confirmation_sends_alert(self) -> None:
+        """A/B 均启用、配置未变，但条数不足：发送已说明的异常提示。"""
+        profile = await self._profile(self.a.id, limit=5)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        data = (await api.preview(task.id)).body["data"]
+        self.assertFalse(data["alert_only"])
+        result = await api.execute(task.id, {
+            "execution_id": "content-fail",
+            "expected_task_revision": data["task_revision"],
+            "expected_profile_revision": data["profile_revision"],
+            "expected_site_revision": data["site_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": False,
+        })
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertEqual(len(self.sender.messages), 1)
+        message = self.sender.messages[0]
+        self.assertEqual(message.kind, "text")
+        self.assertTrue((message.text or "").startswith("60sAPI推送服务异常："))
+        record = result.body["data"]
+        self.assertEqual(record["content_status"], "failed")
+
+    async def test_upstream_error_after_confirmation_sends_alert(self) -> None:
+        """上游全部失败同样按已说明规则发提示，而不是报配置变化。"""
+        profile = await self._profile(self.a.id, limit=9)
+        task = await self._task(profile.id, [self.a.id, self.b.id])
+        api = self._api()
+        data = (await api.preview(task.id)).body["data"]
+        # 让两个站点在确认后都无法提供足够内容。
+        await self.content.close()
+        result = await api.execute(task.id, {
+            "execution_id": "upstream-fail",
+            "expected_task_revision": data["task_revision"],
+            "expected_profile_revision": data["profile_revision"],
+            "expected_site_revision": data["site_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": False,
+        })
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertEqual(len(self.sender.messages), 1)
+        self.assertEqual(self.sender.messages[0].kind, "text")
+
     async def test_state_change_after_api_check_is_blocked(self) -> None:
         """API 校验通过后、投递读取候选前变化，也不得发送。"""
         from unittest import mock

@@ -481,8 +481,11 @@ class DeliveryService:
             await self._finish(execution_id, "failed", str(exc))
             return await self._read(execution_id)
         if (
-            expected_alert_only is not None
-            and (prepared.site is None) != expected_alert_only
+            # 只有“确认时为异常提示、现在却拿到了内容”才说明配置变了。
+            # 确认时为正常内容、运行时同站全部失败 → 这是内容采集失败，
+            # 按确认页已说明的规则发送异常提示，不能误报成配置变化。
+            expected_alert_only is True
+            and prepared.site is not None
         ):
             await self._finish(execution_id, "failed", "confirmation_stale")
             raise DeliveryConfirmationStaleError()

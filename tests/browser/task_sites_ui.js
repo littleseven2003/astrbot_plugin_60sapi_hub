@@ -100,27 +100,30 @@ async function openPage(browser, port) {
       apiPost: async (endpoint, payload) => {
         window.__calls.push({ endpoint, payload });
         if (endpoint.endsWith("/capability-test")) {
-          return { data: {
+          // 宿主 bridge 成功时直接返回业务 data（不再套一层 data）。
+          return {
             satisfied: true, site_id: "site-b", site_name: "站点B",
             message: "站点「站点B」可以满足全部配置。",
-          } };
+            truncated: false, checked_count: 2,
+            cache: { used: true, ttl_seconds: 300 },
+          };
         }
         if (endpoint.includes("/test")) {
           // 与真实 ContentApi 契约一致：result 为 success / empty，
           // 失败走抛出错误（宿主 bridge 对非 2xx 抛错）。
           if (payload && payload.content_type === "zhihu_hot") {
-            return { data: {
+            return {
               result: "empty", message: "连接成功，接口返回合法空内容。",
               elapsed_ms: 8, content_type: "zhihu_hot",
-            } };
+            };
           }
           if (payload && payload.content_type === "douyin_hot") {
             throw new Error("test_timeout");
           }
-          return { data: {
+          return {
             result: "success", message: "连接成功，接口返回内容结构合法。",
             elapsed_ms: 12, content_type: payload && payload.content_type,
-          } };
+          };
         }
         return {};
       },
@@ -182,6 +185,23 @@ async function openPage(browser, port) {
     check(capability.endpoint.endsWith("/capability-test"), "能力测试路由");
     const message = await page.textContent("#task-capability-result");
     check(message.includes("可以满足"), "能力测试结论：" + message);
+    check(message.includes("内容缓存"), "应说明缓存时效：" + message);
+
+    // 未保存的候选改动必须让旧结论失效并阻止再次测试。
+    await page.selectOption("#task-site-picker", "site-c");
+    await page.click("#task-site-add-button");
+    await page.waitForFunction(
+      () => document.querySelectorAll("#task-site-list .task-site-row").length >= 2,
+    );
+    const gated = await page.isDisabled("#task-capability-test-button");
+    check(gated, "有未保存候选改动时应禁用能力测试");
+    const gateText = await page.textContent("#task-capability-result");
+    check(gateText.includes("尚未保存"), "应提示先保存：" + gateText);
+    await page.locator("#task-site-list button", { hasText: "移除" }).last().click();
+    await page.waitForFunction(
+      () => !document.querySelector("#task-capability-test-button").disabled,
+    );
+    check(true, "撤销改动后能力测试恢复可用");
 
     // 站点一键测试五类：逐一请求五个接口并渲染五行。
     await page.click("#task-close-dialog-button");

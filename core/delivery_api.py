@@ -106,14 +106,17 @@ class DeliveryApi:
             except Exception:
                 continue
         usable = [item for item in candidates if getattr(item, "enabled", False)]
-        can_deliver = bool(targets) and bool(usable) and all_valid
+        # 全部候选不可用时仍允许管理员手动验证：这次投递会发送异常提示，
+        # 而不是内容；确认页需要把这个语义说清楚。
+        alert_only = bool(targets) and all_valid and not usable
+        can_deliver = bool(targets) and all_valid
         reason = None
         if not targets:
             reason = "empty_targets"
-        elif not usable:
-            reason = "site_disabled"
         elif not all_valid:
             reason = "invalid_targets"
+        elif not usable:
+            reason = "content_unavailable"
         return _ok({
             "task_id": task.id,
             "task_name": task.name,
@@ -125,6 +128,7 @@ class DeliveryApi:
             "site_name": site.name,
             "site_revision": site.revision,
             "site_enabled": site.enabled,
+            "alert_only": alert_only,
             "candidate_sites": [
                 {
                     "id": item.id,

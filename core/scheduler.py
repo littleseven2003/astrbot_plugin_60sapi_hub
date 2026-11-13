@@ -321,6 +321,10 @@ class SchedulerService:
                 else:
                     status = "failed"
                 error_code = result.error_code
+                if getattr(result, "content_status", None) == "failed":
+                    # 提示送达不等于内容推送成功：计划记录带上采集失败标记，
+                    # 但状态仍反映这次投递的真实结果（unknown 保持 unknown）。
+                    error_code = "content_unavailable"
             except asyncio.CancelledError:
                 await self._store.set_schedule_claim_status(
                     execution_id, status="unknown", error_code="cancelled",

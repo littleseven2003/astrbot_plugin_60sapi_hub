@@ -3377,6 +3377,7 @@ function setTaskFormDisabled(disabled) {
   }
   applyTaskScheduleEnabled();
   elements.taskForm.setAttribute("aria-busy", String(disabled));
+  if (!disabled) updateTaskCapabilityGate();
 }
 
 const TASK_SITE_MAX = 5;
@@ -3441,6 +3442,7 @@ function renderTaskSites() {
     elements.taskSiteList.append(row);
   });
   taskSiteOptions();
+  updateTaskCapabilityGate();
 }
 
 function addTaskSite() {
@@ -3526,7 +3528,7 @@ async function runTaskCapabilityTest() {
     if (state.taskMode !== "edit" || state.editingTaskId !== taskId
         || state.editingTaskRevision !== revision
         || state.taskSites.slice().join(",") !== sitesSnapshot) return;
-    const payload = (data && data.data) || {};
+    const payload = data && data.data ? data.data : (data || {});
     const notes = [];
     if (payload.truncated) {
       notes.push(`仅检查前 ${payload.checked_count} 个候选`);

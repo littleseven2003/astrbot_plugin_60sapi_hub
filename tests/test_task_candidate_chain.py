@@ -114,8 +114,14 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
         )
         result = await api.preview(self.task.id)
         data = result.body["data"]
-        self.assertFalse(data["can_deliver"])
-        self.assertEqual(data["reason"], "site_disabled")
+        # 全部候选停用：管理员仍可手动验证这次会发送的异常提示。
+        self.assertTrue(data["can_deliver"])
+        self.assertTrue(data["alert_only"])
+        self.assertEqual(data["reason"], "content_unavailable")
+        self.assertEqual(
+            [(item["id"], item["enabled"]) for item in data["candidate_sites"]],
+            [(self.a.id, False), (self.b.id, False)],
+        )
 
 
 if __name__ == "__main__":

@@ -181,5 +181,29 @@ class SchedulerAlertChainTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(message.image_png)
 
 
+    async def test_alert_claim_marks_content_failure(self) -> None:
+        task = await self._task([self.a.id])
+        await self._disable(self.a)
+        await self.scheduler.check_once()
+        claims = await self.sites.store.list_schedule_claims(limit=10, offset=0)
+        claim = next(item for item in claims if item.task_id == task.id)
+        # 提示送达，但内容采集失败：计划记录必须带上这个标记。
+        self.assertEqual(claim.status, "succeeded")
+        self.assertEqual(claim.error_code, "content_unavailable")
+
+    async def test_unknown_send_keeps_claim_unknown(self) -> None:
+        self.sender.status = SendStatus.UNKNOWN
+        task = await self._task([self.a.id], limit=9)
+        await self.scheduler.check_once()
+        claims = await self.sites.store.list_schedule_claims(limit=10, offset=0)
+        claim = next(item for item in claims if item.task_id == task.id)
+        self.assertEqual(claim.status, "unknown")
+        # 不自动重试：再次扫描不会重复发送。
+        sent = len(self.sender.messages)
+        self.now = self.now.replace(hour=1)
+        await self.scheduler.check_once()
+        self.assertEqual(len(self.sender.messages), sent)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -744,6 +744,8 @@ class SiteStore:
             now = _utc_now()
 
             async def perform() -> None:
+                if await self._name_taken(connection, name):
+                    raise SiteNameConflictError(name)
                 await connection.execute(
                     """
                     INSERT INTO sites (
@@ -841,6 +843,8 @@ class SiteStore:
             now = _utc_now()
 
             async def perform() -> None:
+                if await self._name_taken(connection, name, exclude_id=site_id):
+                    raise SiteNameConflictError(name)
                 cursor = await connection.execute(
                     """
                     UPDATE sites
@@ -2306,6 +2310,7 @@ class SiteStore:
             await self._cleanup_cancelled_write(connection, commit_task)
             raise
         except (
+            SiteNameConflictError,
             SiteRecordNotFoundError,
             SiteRevisionConflictError,
             SiteReferencedError,

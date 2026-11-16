@@ -236,6 +236,10 @@ class SiteService:
                 source_kind=source_kind,
                 bearer_token=bearer_token,
             )
+        except SiteNameConflictError:
+            raise SiteValidationError(
+                "name", "已存在同名站点，请换一个名称",
+            ) from None
         except SiteStoreClosedError as exc:
             raise SiteStorageError("站点存储尚未打开。") from exc
         except SiteStoreError as exc:
@@ -370,6 +374,10 @@ class SiteService:
                 expected_revision,
                 exc.actual_revision,
             ) from exc
+        except SiteNameConflictError:
+            raise SiteValidationError(
+                "name", "已存在同名站点，请换一个名称",
+            ) from None
         except SiteStoreClosedError as exc:
             raise SiteStorageError("站点存储尚未打开。") from exc
         except SiteStoreError as exc:

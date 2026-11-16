@@ -82,9 +82,10 @@ class _Harness(unittest.IsolatedAsyncioTestCase):
         return content
 
     async def _site(self, base_url: str, source_kind: str = "public"):
+        self._site_seq = getattr(self, "_site_seq", 0) + 1
         return await self.sites.create_site(
             SiteCreate(
-                name="来源站点",
+                name=f"来源站点 {self._site_seq}",
                 base_url=base_url,
                 source_kind=source_kind,
                 enabled=True,

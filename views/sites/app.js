@@ -536,6 +536,10 @@ function isInactiveMessage(message) {
   return message.includes("未启用") || message.includes("插件不可用");
 }
 
+function isDuplicateNameMessage(message) {
+  return message.includes("已存在同名站点");
+}
+
 function isExplicitWriteRejection(message) {
   return EXPLICIT_WRITE_REJECTIONS.some((pattern) =>
     pattern.test(message),
@@ -3232,6 +3236,10 @@ async function handleSave(event) {
           : "该站点已被删除，但列表刷新失败，请点击“刷新”重试。",
         "error",
       );
+    } else if (isDuplicateNameMessage(message)) {
+      showFormError(message);
+      elements.name.focus();
+      elements.name.select();
     } else if (isExplicitWriteRejection(message)) {
       showFormError(message);
     } else {

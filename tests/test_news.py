@@ -324,9 +324,10 @@ class NewsServiceTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     async def _create(self, *, enabled: bool = True, token: str | None = None):
+        self._site_seq = getattr(self, "_site_seq", 0) + 1
         return await self.sites.create_site(
             SiteCreate(
-                name="虚构内网站点",
+                name=f"虚构内网站点 {self._site_seq}",
                 base_url="http://[::1]:8080/proxy//",
                 enabled=enabled,
                 timeout_seconds=7,

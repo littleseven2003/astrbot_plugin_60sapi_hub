@@ -23,7 +23,56 @@ const MIME = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
 };
-const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAA4QAAAEsCAIAAAAU/OrGAAAFrklEQVR4nO3YMREAMAwDsbT8OScwfpEIeP3z290BAIDCT1YBAECMAgBQ8owCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAkBGjAABkxCgAABkxCgBARowCAJARowAAZMQoAAAZMQoAQEaMAgCQEaMAAGTEKAAAGTEKAEBGjAIAMJUDOk8FVW+xo8oAAAAASUVORK5CYII=";
+// 现场生成真实尺寸的 PNG，避免用占位小图冒充长图。
+const zlib = require("node:zlib");
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function chunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([length, body, crc]);
+}
+
+function makePng(width, height) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const offset = y * (width * 3 + 1);
+    raw[offset] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const pixel = offset + 1 + x * 3;
+      raw[pixel] = 255;
+      raw[pixel + 1] = 255;
+      raw[pixel + 2] = 255;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]).toString("base64");
+}
+
+const PNG_BASE64 = makePng(900, 300);
+const TALL_PNG_BASE64 = makePng(900, 4000);;
 
 const PROFILES = [{
   id: "profile-1", name: "每日速览", site_id: "site-a", site_enabled: true,
@@ -57,7 +106,7 @@ const IMAGES = {
     source_url: "https://a.example.test/secret", source_kind: "public",
   }, {
     index: 2, content_type: "zhihu_hot", label: "知乎热榜", status: "success",
-    width: 900, height: 300, png_base64: PNG_BASE64,
+    width: 900, height: 4000, png_base64: TALL_PNG_BASE64,
     source_url: "http://10.0.0.5:8080/x", source_kind: "self_built",
   }],
 };
@@ -213,6 +262,30 @@ async function openViewer(page) {
       () => document.getElementById("profile-image-viewer").open === true);
     const second = await page.textContent("#profile-image-viewer-title");
     check(second.includes("知乎热榜"), "第二个栏目标题正确：" + second);
+    await page.click("#profile-image-viewer-close");
+
+
+    // 真实长图：第二个栏目 900x4000，查看器需可纵向/横向浏览。
+    await page.locator("#profile-image-pages figure img").nth(1).click();
+    await page.waitForFunction(
+      () => document.getElementById("profile-image-viewer").open === true);
+    const tall = await page.evaluate(() => {
+      const img = document.getElementById("profile-image-viewer-img");
+      const body = document.getElementById("profile-image-viewer-body");
+      body.scrollTop = body.scrollHeight;
+      return {
+        height: img.height,
+        naturalHeight: img.naturalHeight,
+        bodyScrollHeight: body.scrollHeight,
+        bodyClientHeight: body.clientHeight,
+        scrolled: body.scrollTop,
+      };
+    });
+    check(tall.height === 4000 && tall.naturalHeight === 4000,
+      "长图按 900x4000 真实尺寸加载：" + JSON.stringify(tall));
+    check(tall.bodyScrollHeight > tall.bodyClientHeight,
+      "长图区域需要纵向滚动");
+    check(tall.scrolled > 0, "可以滚动到长图底部");
     await page.click("#profile-image-viewer-close");
 
     await page.close();

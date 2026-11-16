@@ -10,6 +10,56 @@ function isKnownSourceKind(value) {
   return value === SOURCE_KIND_PUBLIC || value === SOURCE_KIND_SELF_BUILT;
 }
 
+
+// 60s API 官方文档的公共实例列表（核对日期见 docs）：已剔除文档中带删除线的
+// 失效条目，保留完整基础地址与路径前缀；预设只在用户主动选择时填入，
+// 页面不会因为打开表单或切换预设而请求这些站点。
+const PRESET_INSTANCES = [
+  { value: "https://60s.viki.moe", label: "60s.viki.moe（官方主域名）" },
+  { value: "https://60s.crystelf.top", label: "60s.crystelf.top" },
+  { value: "https://api.elysiayanyu.top", label: "api.elysiayanyu.top" },
+  { value: "https://60s.7se.cn", label: "60s.7se.cn" },
+  { value: "https://60s.mizhoubaobei.top", label: "60s.mizhoubaobei.top" },
+  { value: "https://api.cczo.cc/60s", label: "api.cczo.cc/60s" },
+  { value: "https://60s.zellon.top", label: "60s.zellon.top" },
+  { value: "https://60s.superjeason.qzz.io", label: "60s.superjeason.qzz.io" },
+  { value: "https://60s.okbaike.com", label: "60s.okbaike.com" },
+];
+
+function presetUrlOf(value) {
+  return PRESET_INSTANCES.some((item) => item.value === value) ? value : "custom";
+}
+
+function syncInstanceTypeUI({ keepAddress = true } = {}) {
+  const kind = elements.sourceKind.value;
+  const isPublic = kind === SOURCE_KIND_PUBLIC;
+  const isSelf = kind === SOURCE_KIND_SELF_BUILT;
+  elements.instanceTypePublic.checked = isPublic;
+  elements.instanceTypeSelf.checked = isSelf;
+  elements.presetField.hidden = !isPublic;
+  const preset = isPublic ? elements.instancePreset.value : "custom";
+  const usePreset = isPublic && preset !== "custom";
+  elements.baseUrlField.hidden = usePreset;
+  if (usePreset) {
+    elements.baseUrl.value = preset;
+  } else if (!keepAddress && !isSelf) {
+    elements.baseUrl.value = "";
+  }
+  elements.instanceTypeHint.textContent = isSelf
+    ? "自建实例：内容输出只显示“自建服务”，不会暴露地址。"
+    : isPublic
+      ? "公开实例：内容输出只显示域名。"
+      : "当前站点的来源类型无法识别；选择实例类型后会按所选类型保存。";
+}
+
+function selectInstanceType(kind) {
+  elements.sourceKind.value = kind;
+  if (kind === SOURCE_KIND_SELF_BUILT) {
+    elements.instancePreset.value = "custom";
+  }
+  setSourceKindHint(false);
+  syncInstanceTypeUI({ keepAddress: true });
+}
 function sourceKindLabel(value) {
   if (value === SOURCE_KIND_PUBLIC) {
     return "公开服务";
@@ -42,6 +92,12 @@ const elements = {
   previewSourceUrl: document.getElementById("preview-source-url"),
   sourceKind: document.getElementById("source-kind"),
   sourceKindHint: document.getElementById("source-kind-hint"),
+  instanceTypePublic: document.getElementById("instance-type-public"),
+  instanceTypeSelf: document.getElementById("instance-type-self"),
+  instanceTypeHint: document.getElementById("instance-type-hint"),
+  presetField: document.getElementById("preset-field"),
+  instancePreset: document.getElementById("instance-preset"),
+  baseUrlField: document.getElementById("base-url-field"),
   previewDateItem: document.getElementById("preview-date-item"),
   previewContentDate: document.getElementById("preview-content-date"),
   previewItemCount: document.getElementById("preview-item-count"),
@@ -2777,7 +2833,9 @@ function openCreate() {
   elements.timeout.value = "10";
   elements.enabled.checked = false;
   elements.sourceKind.value = SOURCE_KIND_PUBLIC;
+  elements.instancePreset.value = "custom";
   setSourceKindHint(false);
+  syncInstanceTypeUI({ keepAddress: false });
   clearFormError();
   resetCredentialForm();
   syncCredentialFields(false, "keep");
@@ -2805,7 +2863,12 @@ function openEdit(site) {
   elements.sourceKind.value = known
     ? site.source_kind
     : SOURCE_KIND_UNKNOWN;
+  // 地址与预设完全一致才回显预设；否则按自定义显示，绝不用预设覆盖已有地址。
+  elements.instancePreset.value =
+    site.source_kind === SOURCE_KIND_PUBLIC ? presetUrlOf(site.base_url) : "custom";
   setSourceKindHint(!known);
+  syncInstanceTypeUI({ keepAddress: true });
+  elements.baseUrl.value = site.base_url;
   clearFormError();
   resetCredentialForm();
   const keep = elements.siteForm.querySelector(
@@ -5116,6 +5179,28 @@ function bindEvents() {
   // 管理员明确选择来源类型后，未知提示应立即消失，避免继续误导。
   elements.sourceKind.addEventListener("change", () => {
     setSourceKindHint(!isKnownSourceKind(elements.sourceKind.value));
+  });
+  for (const preset of PRESET_INSTANCES) {
+    const option = document.createElement("option");
+    option.value = preset.value;
+    option.textContent = preset.label;
+    elements.instancePreset.append(option);
+  }
+  elements.instanceTypePublic.addEventListener("change", () => {
+    if (elements.instanceTypePublic.checked) selectInstanceType(SOURCE_KIND_PUBLIC);
+  });
+  elements.instanceTypeSelf.addEventListener("change", () => {
+    if (elements.instanceTypeSelf.checked) selectInstanceType(SOURCE_KIND_SELF_BUILT);
+  });
+  elements.instancePreset.addEventListener("change", () => {
+    const next = elements.instancePreset.value;
+    // 只有“原本填的是预设地址、现在改成自定义”时才清空，避免把预设地址
+    // 当成自定义保存；已经在自定义里填过的地址不能被清掉。
+    const wasPreset = PRESET_INSTANCES.some(
+      (item) => item.value === elements.baseUrl.value,
+    );
+    if (next === "custom" && wasPreset) elements.baseUrl.value = "";
+    syncInstanceTypeUI({ keepAddress: next === "custom" });
   });
   elements.createTaskButton.addEventListener("click", openCreateTask);
   elements.deliveryRefreshButton.addEventListener("click", () => loadDeliveries(true));

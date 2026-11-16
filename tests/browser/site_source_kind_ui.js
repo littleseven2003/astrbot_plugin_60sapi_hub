@@ -203,6 +203,13 @@ async function submitAndCapture(page, endpoint) {
       await page.inputValue("#source-kind") === "public",
       "新建表单默认公开",
     );
+    check(await page.isChecked("#instance-type-public"), "新建默认选中公开实例");
+    check(
+      await page.inputValue("#instance-preset") === "custom",
+      "新建默认自定义地址",
+    );
+    check(!(await page.isHidden("#base-url-field")), "自定义时显示基础地址输入框");
+    check(await page.isHidden("#preset-field") === false, "公开实例显示预设列表");
     check(
       await page.isHidden("#source-kind-hint"),
       "新建时不显示未知提示",
@@ -270,7 +277,7 @@ async function submitAndCapture(page, endpoint) {
       !(await page.isHidden("#source-kind-hint")),
       "未知类型编辑时提示可见",
     );
-    await page.selectOption("#source-kind", "self_built");
+    await page.click("#instance-type-self");
     check(await page.isHidden("#source-kind-hint"), "明确选择后提示消失");
     await page.fill("#name", "未知类型站点显式选择");
     const explicitPayload = await submitAndCapture(
@@ -288,12 +295,76 @@ async function submitAndCapture(page, endpoint) {
       ).length);
     check(createdCount === 1, "编辑流程没有额外新建站点");
 
+
+    // 公开预设：保留完整基础地址与路径前缀，隐藏输入框。
+    await page.click("#create-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-dialog")?.open === true);
+    await page.fill("#name", "预设站点");
+    await page.selectOption("#instance-preset", "https://api.cczo.cc/60s");
+    check(await page.isHidden("#base-url-field"), "选预设后隐藏基础地址输入框");
+    check(
+      await page.inputValue("#base-url") === "https://api.cczo.cc/60s",
+      "预设地址保留路径前缀",
+    );
+    const presetPayload = await submitAndCapture(page, "sites");
+    await page.waitForFunction(() => document.getElementById("site-dialog")?.open !== true);
+    check(
+      presetPayload.base_url === "https://api.cczo.cc/60s",
+      "预设保存为完整基础地址：" + presetPayload.base_url,
+    );
+    check(presetPayload.source_kind === "public", "预设保存为公开实例");
+
+    // 自建实例：不显示预设列表，直接填地址。
+    await page.click("#create-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-dialog")?.open === true);
+    await page.fill("#name", "自建新站点");
+    await page.click("#instance-type-self");
+    check(await page.isHidden("#preset-field"), "自建实例不显示预设列表");
+    check(!(await page.isHidden("#base-url-field")), "自建实例显示地址输入框");
+    await page.fill("#base-url", "http://10.1.2.3:8080/60s");
+    const selfPayload = await submitAndCapture(page, "sites");
+    await page.waitForFunction(() => document.getElementById("site-dialog")?.open !== true);
+    check(selfPayload.source_kind === "self_built", "自建实例保存为 self_built");
+    check(selfPayload.base_url.includes(":8080"), "自建地址原样保存");
+
+    // 切回公开实例：预设列表恢复，地址不被静默改写。
+    await page.click("#create-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-dialog")?.open === true);
+    await page.click("#instance-type-self");
+    await page.fill("#base-url", "https://custom.example.test/60s");
+    await page.click("#instance-type-public");
+    check(!(await page.isHidden("#preset-field")), "切回公开后预设列表恢复");
+    check(
+      await page.inputValue("#base-url") === "https://custom.example.test/60s",
+      "切换类型不丢失已填地址",
+    );
+    await page.selectOption("#instance-preset", "custom");
+    await page.fill("#name", "自定义公开站点");
+    const customPayload = await submitAndCapture(page, "sites");
+    await page.waitForFunction(() => document.getElementById("site-dialog")?.open !== true);
+    check(customPayload.source_kind === "public", "自定义公共实例保存为 public");
+    check(
+      customPayload.base_url === "https://custom.example.test/60s",
+      "自定义地址原样保存",
+    );
+
+    // 编辑未知类型：两个选项都不预选。
+    await openEditFor(page, "未知类型站点");
+    check(
+      !(await page.isChecked("#instance-type-public"))
+        && !(await page.isChecked("#instance-type-self")),
+      "未知类型不预选任何实例类型",
+    );
+    await page.click("#close-dialog-button");
     console.log("SITE SOURCE KIND UI PASS", { assertions });
   } finally {
     await browser.close();
     server.close();
   }
 })().catch((error) => {
-  console.error("FAILED:", error.message);
+  console.error("FAILED:", error.stack || error.message);
   process.exit(1);
 });

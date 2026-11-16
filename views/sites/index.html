@@ -622,7 +622,38 @@
               />
             </label>
 
-            <label class="field field-wide">
+            <fieldset class="field field-wide instance-type">
+              <legend>实例类型</legend>
+              <div class="segmented" role="radiogroup" aria-label="实例类型">
+                <label class="segmented-option">
+                  <input type="radio" name="instance_type" id="instance-type-public"
+                         value="public" checked />
+                  <span>公开实例</span>
+                </label>
+                <label class="segmented-option">
+                  <input type="radio" name="instance_type" id="instance-type-self"
+                         value="self_built" />
+                  <span>自建实例</span>
+                </label>
+              </div>
+              <small id="instance-type-hint">
+                公开实例的内容输出只显示域名；自建实例只显示“自建服务”。
+              </small>
+            </fieldset>
+
+            <div class="field field-wide" id="preset-field">
+              <label class="field">
+                <span>预设实例</span>
+                <select id="instance-preset">
+                  <option value="custom">自定义地址</option>
+                </select>
+              </label>
+              <small>
+                预设由第三方提供，稳定性和接口版本可能不同；可点“测试连接”自查，页面不会自动请求它们。
+              </small>
+            </div>
+
+            <label class="field field-wide" id="base-url-field">
               <span>基础地址</span>
               <input
                 id="base-url"
@@ -640,20 +671,10 @@
               </small>
             </label>
 
-            <label class="field field-wide">
-              <span>来源类型</span>
-              <select id="source-kind" name="source_kind">
-                <option value="public" selected>公开服务：内容输出只显示域名</option>
-                <option value="self_built">自建服务：内容输出只显示“自建服务”</option>
-                <option value="" hidden>来源类型未知（保存时保持原值）</option>
-              </select>
-              <small>
-                影响文字、Markdown、栏目长图和聊天中的来源展示；不会改变请求地址或凭据。
-              </small>
-              <small id="source-kind-hint" role="status" hidden>
-                当前站点的来源类型无法识别，不会显示成公开或自建。保持原值不会改动它；如需修正，请明确选择“公开服务”或“自建服务”。
-              </small>
-            </label>
+            <input type="hidden" id="source-kind" name="source_kind" value="public" />
+            <p id="source-kind-hint" class="help field-wide" role="status" hidden>
+              当前站点的来源类型无法识别，不会显示成公开或自建；保持原值不会改动它，选择上面的实例类型后会按所选类型保存。
+            </p>
           </div>
 
           <label class="toggle">

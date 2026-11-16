@@ -148,6 +148,10 @@ async function openPage(browser, port, overrides = {}) {
           await window.__capabilityGate;
         }
         if (endpoint.endsWith("/capability-test")) {
+          window.__capabilityDoneCount = (window.__capabilityDoneCount || 0) + 1;
+          if (window.__capabilityFail) {
+            throw new Error("测试失败，请稍后重试");
+          }
           // 宿主 bridge 成功时直接返回业务 data（不再套一层 data）。
           return {
             satisfied: true, site_id: "site-b", site_name: "站点B",
@@ -275,7 +279,63 @@ async function openPage(browser, port, overrides = {}) {
     );
     check(true, "撤销改动后能力测试恢复可用");
 
+    // 在途更换组合（成功响应）：旧结论不得覆盖“先保存”，按钮保持禁用。
+    await page.evaluate(() => {
+      window.__capabilityGate = new Promise((resolve) => {
+        window.__releaseCapability = resolve;
+      });
+    });
+    let doneBefore = await page.evaluate(
+      () => window.__capabilityDoneCount || 0);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) === n, doneBefore);
+    await page.selectOption("#task-profile", "profile-2");
+    await page.evaluate(() => {
+      window.__releaseCapability();
+      window.__capabilityGate = null;
+    });
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) > n, doneBefore);
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("尚未保存"));
+    check(await page.isDisabled("#task-capability-test-button"),
+      "在途改组合（成功）后按钮应保持禁用");
+
+    // 恢复为已保存组合后可以再次测试；随后验证失败响应同样被丢弃。
+    await page.selectOption("#task-profile", "profile-1");
+    await page.waitForFunction(
+      () => !document.querySelector("#task-capability-test-button").disabled);
+    await page.evaluate(() => {
+      window.__capabilityFail = true;
+      window.__capabilityGate = new Promise((resolve) => {
+        window.__releaseCapability = resolve;
+      });
+    });
+    doneBefore = await page.evaluate(() => window.__capabilityDoneCount || 0);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) === n, doneBefore);
+    await page.selectOption("#task-profile", "profile-2");
+    await page.evaluate(() => {
+      window.__releaseCapability();
+      window.__capabilityGate = null;
+      window.__capabilityFail = false;
+    });
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) > n, doneBefore);
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("尚未保存"));
+    check(await page.isDisabled("#task-capability-test-button"),
+      "在途改组合（失败）后按钮应保持禁用且提示未被覆盖");
+
+    // 恢复为已保存组合，避免关闭弹窗时触发未保存确认。
+    await page.selectOption("#task-profile", "profile-1");
+    await page.waitForFunction(() =>
+      !document.querySelector("#task-capability-test-button").disabled);
+
     await page.click("#task-close-dialog-button");
+
 
     // 站点一键测试五类：逐一请求五个接口并渲染五行。
     await page.click('.nav-item[data-view="sites"]');
@@ -317,6 +377,42 @@ async function openPage(browser, port, overrides = {}) {
       document.querySelectorAll("#site-test-all-results li").length === 5);
     check(true, "关闭后重开仍可再次测试五类");
 
+
+    // 切换到另一个站点：新弹窗不显示上一个站点的结果，按钮可用。
+    await page.click("#site-test-close-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-test-dialog").open === false);
+    await page.locator("#sites-list button", { hasText: "测试连接" }).nth(1).click();
+    await page.waitForSelector("#site-test-all-button:not([disabled])");
+    const switchedRows = await page.locator("#site-test-all-results li").count();
+    check(switchedRows === 0, "切换站点后不应残留旧结果");
+    await page.click("#site-test-all-button");
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#site-test-all-results li").length === 5);
+    check(true, "切换站点后仍可再次测试五类");
+
+    // A 停用、B 可用：页面仍可确认启用任务。
+    const page2 = await openPage(browser, port, {
+      tasks: [{
+        ...TASKS[0],
+        site_enabled: false,
+        sites: [
+          { id: "site-a", name: "站点A", enabled: false },
+          { id: "site-b", name: "站点B", enabled: true },
+        ],
+      }],
+    });
+    await page2.click('.nav-item[data-view="tasks"]');
+    await page2.waitForSelector("#tasks-list li");
+    await page2.locator("#tasks-list button", { hasText: "启用定时调度" }).first().click();
+    await page2.waitForSelector("#task-power-confirm-button");
+    check(await page2.isEnabled("#task-power-confirm-button"),
+      "A 停用 B 可用时页面仍可确认启用");
+    await page2.click("#task-power-confirm-button");
+    await page2.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/enable")));
+    check(true, "A 停用 B 可用时页面实际发出启用请求");
+    await page2.close();
     console.log("TASK SITES UI PASS", { assertions });
   } finally {
     await browser.close();

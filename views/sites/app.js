@@ -3522,15 +3522,17 @@ async function runTaskCapabilityTest() {
   const profileSnapshot = elements.taskProfile.value;
   elements.taskCapabilityTestButton.disabled = true;
   setTaskCapabilityResult("正在检查候选站点…", "info");
+  // 切换任务、关闭弹窗或改了候选/组合后，旧请求（成功或失败）都作废。
+  const stillCurrent = () => state.taskMode === "edit"
+    && state.editingTaskId === taskId
+    && state.editingTaskRevision === revision
+    && state.taskSites.slice().join(",") === sitesSnapshot
+    && elements.taskProfile.value === profileSnapshot;
   try {
     const data = await bridge.apiPost(
       `tasks/${encodeURIComponent(taskId)}/capability-test`, {},
     );
-    // 切换任务、关闭弹窗或改了候选/组合后，旧结论必须失效。
-    if (state.taskMode !== "edit" || state.editingTaskId !== taskId
-        || state.editingTaskRevision !== revision
-        || state.taskSites.slice().join(",") !== sitesSnapshot
-        || elements.taskProfile.value !== profileSnapshot) return;
+    if (!stillCurrent()) return;
     const payload = data && data.data ? data.data : (data || {});
     const notes = [];
     if (payload.truncated) {
@@ -3544,11 +3546,12 @@ async function runTaskCapabilityTest() {
     setTaskCapabilityResult((payload.message || "测试完成。") + suffix,
       payload.satisfied ? "success" : "error");
   } catch (error) {
-    if (state.taskMode !== "edit" || state.editingTaskId !== taskId
-        || state.editingTaskRevision !== revision) return;
+    // 失败同样必须丢弃过期响应，不能覆盖“先保存”等当前提示。
+    if (!stillCurrent()) return;
     setTaskCapabilityResult(friendlyErrorMessage(error), "error");
   } finally {
-    elements.taskCapabilityTestButton.disabled = false;
+    // 按钮状态始终跟随当前表单，而不是无条件启用。
+    updateTaskCapabilityGate();
   }
 }
 

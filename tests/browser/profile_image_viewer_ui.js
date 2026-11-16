@@ -325,6 +325,52 @@ async function openViewer(page) {
     check(mobileViewer.fits, "390px 查看器不超出视口");
     check(mobileViewer.closeVisible && mobileViewer.downloadVisible,
       "390px 关闭与下载按钮在视口内");
+
+    // 默认适应宽度：390px 下一行能完整读到，不靠横向滑动。
+    const fit = await mobile.evaluate(() => {
+      const img = document.getElementById("profile-image-viewer-img");
+      const body = document.getElementById("profile-image-viewer-body");
+      return {
+        rendered: Math.round(img.getBoundingClientRect().width),
+        bodyScrollWidth: body.scrollWidth,
+        bodyClientWidth: body.clientWidth,
+        pressed: document.getElementById("profile-image-viewer-zoom")
+          .getAttribute("aria-pressed"),
+        label: document.getElementById("profile-image-viewer-zoom").textContent,
+      };
+    });
+    check(fit.rendered <= 390, "适应宽度：图片不超过视口：" + fit.rendered);
+    check(fit.bodyScrollWidth <= fit.bodyClientWidth + 1,
+      "适应宽度时无需横向滑动");
+    check(fit.pressed === "false" && fit.label.includes("原始尺寸"),
+      "默认按钮提示可放大：" + fit.label);
+
+    // 切换原始尺寸：按 900px 显示并可横向滑动。
+    await mobile.click("#profile-image-viewer-zoom");
+    const actual = await mobile.evaluate(() => {
+      const img = document.getElementById("profile-image-viewer-img");
+      const body = document.getElementById("profile-image-viewer-body");
+      return {
+        rendered: Math.round(img.getBoundingClientRect().width),
+        bodyScrollWidth: body.scrollWidth,
+        bodyClientWidth: body.clientWidth,
+        pressed: document.getElementById("profile-image-viewer-zoom")
+          .getAttribute("aria-pressed"),
+        label: document.getElementById("profile-image-viewer-zoom").textContent,
+      };
+    });
+    check(actual.rendered === 900, "原始尺寸按 900px 显示：" + actual.rendered);
+    check(actual.bodyScrollWidth > actual.bodyClientWidth,
+      "原始尺寸时可横向滑动");
+    check(actual.pressed === "true" && actual.label.includes("适应宽度"),
+      "按钮提示可还原：" + actual.label);
+
+    // 再切回适应宽度。
+    await mobile.click("#profile-image-viewer-zoom");
+    const backToFit = await mobile.evaluate(() => Math.round(document
+      .getElementById("profile-image-viewer-img")
+      .getBoundingClientRect().width));
+    check(backToFit <= 390, "可以切回适应宽度：" + backToFit);
     await mobile.click("#profile-image-viewer-close");
     await mobile.close();
 

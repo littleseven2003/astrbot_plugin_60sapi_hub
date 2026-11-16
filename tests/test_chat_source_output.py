@@ -100,6 +100,7 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
             TaskCreate(
                 name="聊天来源任务",
                 profile_id=profile.id,
+                sites=[site.id],
                 output_format=output_format,
                 umos=[UMO],
             ),

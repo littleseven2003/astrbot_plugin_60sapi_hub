@@ -34,12 +34,13 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.profile = await self.profiles.create_profile(
-            ProfileCreate(name="API组合", site_id=self.site.id, items=[item()]),
+            ProfileCreate(name="API组合", items=[item()]),
         )
         self.api = TaskApi(self.tasks, self.profiles, self.sites)
         self.payload = {
             "name": "API任务",
             "profile_id": self.profile.id,
+            "sites": [self.site.id],
             "output_format": "text",
             "umos": ["aiocqhttp:GroupMessage:g:1"],
         }

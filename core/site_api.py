@@ -14,7 +14,7 @@ from .sites import (
     SiteConflictError,
     SiteCreate,
     SiteNotFoundError,
-    SiteReferencedProfilesError,
+    SiteReferencedTasksError,
     SiteService,
     SiteStorageError,
     SiteUpdate,
@@ -129,7 +129,7 @@ class SiteApi:
             return _not_found_error()
         except SiteConflictError as exc:
             return _conflict_error(exc)
-        except SiteReferencedProfilesError as exc:
+        except SiteReferencedTasksError as exc:
             return _referenced_error(exc)
         except SiteStorageError:
             return _storage_error()
@@ -213,12 +213,16 @@ def _conflict_error(exc: SiteConflictError) -> SiteApiResult:
     )
 
 
-def _referenced_error(exc: SiteReferencedProfilesError) -> SiteApiResult:
+def _referenced_error(exc: SiteReferencedTasksError) -> SiteApiResult:
     return _error(
         409,
-        "站点仍被内容组合引用，请先删除或修改相关组合。",
+        "站点仍是任务的候选站点，请先修改相关任务。",
         code="site_referenced",
-        data={"profile_names": list(exc.profile_names)},
+        data={
+            "task_names": list(exc.task_names),
+            # 旧字段沿用，避免旧前端读到空引用列表。
+            "profile_names": list(exc.task_names),
+        },
     )
 
 

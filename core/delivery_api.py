@@ -29,7 +29,7 @@ from .site_store import (
     SiteStore,
     StoredDeliveryExecution,
 )
-from .sites import SiteNotFoundError, SiteService, SiteStorageError
+from .sites import SiteService, SiteStorageError
 from .tasks import (
     PushTaskService,
     TaskNotFoundError,
@@ -66,15 +66,12 @@ class DeliveryApi:
         try:
             task = await self._tasks.get_task(task_id)
             profile = await self._profiles.get_profile(task.profile_id)
-            site = await self._sites.get_site(profile.site_id)
         except TaskValidationError as exc:
             return _validation_error(exc)
         except TaskNotFoundError:
             return _not_found_error("推送任务不存在。")
         except ProfileNotFoundError:
             return _not_found_error("任务引用的内容组合不存在。")
-        except SiteNotFoundError:
-            return _not_found_error("组合引用的站点不存在。")
         except (TaskStorageError, ProfileStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
@@ -99,7 +96,7 @@ class DeliveryApi:
                 "reason": info.get("reason"),
             })
         # 候选站点里只要还有一个启用，就可以进入正常的选择流程。
-        candidate_ids = tuple(task.sites) or (profile.site_id,)
+        candidate_ids = tuple(task.sites)
         candidates: list[object] = []
         for candidate_id in candidate_ids:
             try:
@@ -125,10 +122,12 @@ class DeliveryApi:
             "profile_id": profile.id,
             "profile_name": profile.name,
             "profile_revision": profile.revision,
-            "site_id": site.id,
-            "site_name": site.name,
-            "site_revision": site.revision,
-            "site_enabled": site.enabled,
+            # 组合不再绑定站点：站点字段仅为旧前端保留，一律为空，
+            # 真实来源由 candidate_sites 按尝试顺序给出。
+            "site_id": None,
+            "site_name": None,
+            "site_revision": None,
+            "site_enabled": None,
             "alert_only": alert_only,
             "candidate_snapshot": [
                 {
@@ -163,11 +162,11 @@ class DeliveryApi:
             return {"reason": "invalid_confirmation"}
         try:
             task = await self._tasks.get_task(task_id)
-            profile = await self._profiles.get_profile(task.profile_id)
+            await self._profiles.get_profile(task.profile_id)
         except Exception:
             return None
         current: list[dict] = []
-        for site_id in tuple(task.sites) or (profile.site_id,):
+        for site_id in tuple(task.sites):
             try:
                 site = await self._sites.get_site(site_id)
             except Exception:
@@ -199,15 +198,17 @@ class DeliveryApi:
         if not isinstance(execution_id, str) or not execution_id.strip():
             return _error(400, "execution_id 必须是非空字符串。", code="validation_error", data={"field": "execution_id"})
         revisions = {}
-        for field in (
-            "expected_task_revision",
-            "expected_profile_revision",
-            "expected_site_revision",
-        ):
+        for field in ("expected_task_revision", "expected_profile_revision"):
             value = data.get(field)
             if type(value) is not int or value < 1:
                 return _error(400, f"{field} 必须是正整数。", code="validation_error", data={"field": field})
             revisions[field] = value
+        # 组合不再绑定站点，站点版本不再是必填；旧客户端仍传时只校验格式。
+        site_revision = data.get("expected_site_revision")
+        if site_revision is not None and (
+            type(site_revision) is not int or site_revision < 1
+        ):
+            return _error(400, "expected_site_revision 必须是正整数。", code="validation_error", data={"field": "expected_site_revision"})
         # 幂等优先：同一 execution_id 已完成时直接取回原记录，
         # 不因后来候选变化而误导用户重新发送。
         try:
@@ -237,7 +238,8 @@ class DeliveryApi:
                 task_id, execution_id.strip(),
                 expected_task_revision=revisions["expected_task_revision"],
                 expected_profile_revision=revisions["expected_profile_revision"],
-                expected_site_revision=revisions["expected_site_revision"],
+                # expected_site_revision 仍被接受以兼容旧客户端，但站点不再
+                # 归属组合：候选集合由 expected_candidates 整体校验。
                 expected_candidates=expected_candidates,
                 expected_alert_only=(
                     expected_alert_only

@@ -167,7 +167,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def _snapshot_for(self, api, profile):
         preview = await api.preview_profile(
-            {"profile_id": profile["id"]},
+            {"site_id": self.site.id, "profile_id": profile["id"]},
             owner="alice",
         )
         self.assertEqual(preview.status_code, 200, preview.body)
@@ -185,7 +185,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_preview_snapshot_and_image_same_content_without_fetch(self) -> None:
         profile = await self._profile()
         preview = await self.api.preview_profile(
-            {"profile_id": profile["id"]},
+            {"site_id": self.site.id, "profile_id": profile["id"]},
             owner="alice",
         )
         self.assertEqual(preview.status_code, 200, preview.body)
@@ -237,7 +237,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_owner_expiry_and_configuration_invalidation(self) -> None:
         profile = await self._profile()
         preview = await self.api.preview_profile(
-            {"profile_id": profile["id"]},
+            {"site_id": self.site.id, "profile_id": profile["id"]},
             owner="alice",
         )
         snapshot_id = preview.body["data"]["image_snapshot"]["id"]
@@ -271,7 +271,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
 
         # New snapshot, then disable the site.
         preview2 = await self.api.preview_profile(
-            {"profile_id": profile["id"]},
+            {"site_id": self.site.id, "profile_id": profile["id"]},
             owner="alice",
         )
         snapshot2 = preview2.body["data"]["image_snapshot"]["id"]
@@ -305,7 +305,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         profile = await self._profile()
         self.fail_all = True
         failed = await self.api.preview_profile(
-            {"profile_id": profile["id"]},
+            {"site_id": self.site.id, "profile_id": profile["id"]},
             owner="alice",
         )
         self.assertEqual(failed.status_code, 502)
@@ -326,7 +326,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_deleted_profile_snapshot_is_stale(self) -> None:
         profile = await self._profile()
         preview = await self.api.preview_profile(
-            {"profile_id": profile["id"]},
+            {"site_id": self.site.id, "profile_id": profile["id"]},
             owner="alice",
         )
         snapshot_id = preview.body["data"]["image_snapshot"]["id"]

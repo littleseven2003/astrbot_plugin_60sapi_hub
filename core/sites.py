@@ -105,16 +105,20 @@ class SiteDisabledError(SiteError):
         super().__init__(f"站点 {site_id} 未启用。")
 
 
-class SiteReferencedProfilesError(SiteError):
-    """站点仍被内容组合引用，不能删除。"""
+class SiteReferencedTasksError(SiteError):
+    """站点仍是任务候选，不能删除。"""
 
-    def __init__(self, site_id: str, profile_names: tuple[str, ...]) -> None:
+    def __init__(self, site_id: str, task_names: tuple[str, ...]) -> None:
         self.site_id = site_id
-        self.profile_names = profile_names
-        names = "、".join(profile_names)
+        self.task_names = task_names
+        names = "、".join(task_names)
         super().__init__(
-            f"站点 {site_id} 仍被内容组合引用，不能删除：{names}。",
+            f"站点 {site_id} 仍是任务的候选站点，不能删除：{names}。",
         )
+
+
+# 旧名别名：组合曾经绑定站点，保留导入兼容。
+SiteReferencedProfilesError = SiteReferencedTasksError
 
 
 class CredentialAction(str, Enum):
@@ -362,9 +366,9 @@ class SiteService:
         except SiteRecordNotFoundError as exc:
             raise SiteNotFoundError(exc.site_id) from exc
         except SiteReferencedError as exc:
-            raise SiteReferencedProfilesError(
+            raise SiteReferencedTasksError(
                 site_id,
-                exc.profile_names,
+                exc.task_names,
             ) from exc
         except SiteRevisionConflictError as exc:
             if expected_revision is None:

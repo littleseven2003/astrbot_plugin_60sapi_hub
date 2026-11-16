@@ -122,14 +122,20 @@ class PushTask:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskCandidateSite:
+    """任务的一个候选站点；顺序即尝试顺序。"""
+
+    id: str
+    revision: int | None
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class TaskConfigSnapshot:
     task: PushTask
     profile_id: str | None
     profile_revision: int | None
-    site_id: str | None
-    site_revision: int | None
-    site_enabled: bool | None
-    candidate_enabled: tuple[bool, ...] = ()
+    candidates: tuple[TaskCandidateSite, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,10 +199,14 @@ class PushTaskService:
             task=_to_task(stored.task),
             profile_id=stored.profile_id,
             profile_revision=stored.profile_revision,
-            site_id=stored.site_id,
-            site_revision=stored.site_revision,
-            site_enabled=stored.site_enabled,
-            candidate_enabled=tuple(stored.candidate_enabled),
+            candidates=tuple(
+                TaskCandidateSite(
+                    id=candidate.id,
+                    revision=candidate.revision,
+                    enabled=candidate.enabled,
+                )
+                for candidate in stored.candidates
+            ),
         )
 
     async def create_task(self, data: TaskCreate) -> PushTask:
@@ -206,7 +216,7 @@ class PushTaskService:
         umos = normalize_umos(data.umos)
         schedule = parse_schedule(data.schedule)
         await self._require_profile(profile_id)
-        site_ids = await self._resolve_site_ids(data.sites, profile_id)
+        site_ids = await self._resolve_site_ids(data.sites)
         try:
             stored = await self._store.create_task(
                 task_id=uuid.uuid4().hex,
@@ -257,7 +267,7 @@ class PushTaskService:
         schedule = None if schedule_unchanged else parse_schedule(data.schedule)
         await self._require_profile(profile_id)
         site_ids = await self._resolve_updated_site_ids(
-            normalized_id, data.sites, profile_id,
+            normalized_id, data.sites,
         )
         try:
             stored = await self._store.update_task(
@@ -331,26 +341,23 @@ class PushTaskService:
         self,
         task_id: str,
         raw: object,
-        profile_id: str,
     ) -> tuple[str, ...] | None:
         """省略 sites 时保持原有候选与顺序；显式传入才替换。"""
         if raw is not None:
-            return await self._resolve_site_ids(raw, profile_id)
+            return await self._resolve_site_ids(raw)
         current = await self.get_task(task_id)
         if current.sites:
             return None
-        # 旧数据没有候选行时才回落到组合绑定站点。
-        return await self._resolve_site_ids(None, profile_id)
+        # 组合不再绑定站点：没有候选就无从执行，要求管理员明确选择。
+        raise TaskValidationError("sites", "请至少选择一个候选站点")
 
     async def _resolve_site_ids(
         self,
         raw: object,
-        profile_id: str,
     ) -> tuple[str, ...]:
-        """候选站点顺序即执行顺序；未指定时沿用组合绑定的站点。"""
+        """候选站点顺序即执行顺序；组合不再提供默认站点。"""
         if raw is None:
-            profile = await self._profiles.get_profile(profile_id)
-            return (profile.site_id,)
+            raise TaskValidationError("sites", "请至少选择一个候选站点")
         if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
             raise TaskValidationError("sites", "必须是站点 id 列表")
         ordered: list[str] = []

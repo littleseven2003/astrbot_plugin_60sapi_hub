@@ -273,6 +273,7 @@ class AstrBotAiocqhttpSenderTest(unittest.IsolatedAsyncioTestCase):
                 ))
                 task = await tasks.create_task(TaskCreate(
                     name="发送任务", profile_id=profile.id,
+                    sites=[site.id],
                     output_format="text",
                     umos=["demo_qq_01:GroupMessage:123"],
                 ))

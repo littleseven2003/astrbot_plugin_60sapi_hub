@@ -387,11 +387,11 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         original = DeliveryService._candidate_sites
         fired = {"done": False}
 
-        async def racing(service, task_arg, profile_arg):
+        async def racing(service, task_arg):
             if not fired["done"]:
                 fired["done"] = True
                 await self._set_enabled(self.b, True)
-            return await original(service, task_arg, profile_arg)
+            return await original(service, task_arg)
 
         with mock.patch.object(DeliveryService, "_candidate_sites", racing):
             result = await api.execute(task.id, {

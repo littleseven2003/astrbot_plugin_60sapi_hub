@@ -89,7 +89,7 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared.slots[0][1], "B 文本")
         # 与组合绑定站点相同的候选不传覆盖参数（等价调用）。
-        self.assertEqual(api.calls, [None, "site-b"])
+        self.assertEqual(api.calls, ["site-a", "site-b"])
 
     async def test_no_content_from_other_sites_is_mixed(self) -> None:
         api = _FakeApi({
@@ -138,7 +138,6 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         service = self._service(api, sites)
         resolved = await service._candidate_sites(
             self._task(("site-a", "site-b", "missing", "site-c")),
-            self._profile(1),
         )
         # 完整候选按顺序返回（含停用），由调用方在“选择内容”时跳过停用项。
         self.assertEqual(

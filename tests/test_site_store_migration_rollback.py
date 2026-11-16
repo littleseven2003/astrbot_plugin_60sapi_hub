@@ -77,7 +77,6 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
             profile = await profiles.create_profile(
                 ProfileCreate(
                     name="关联旧组合",
-                    site_id=site.id,
                     items=[
                         {"content_type": "daily_news", "params": {}, "limit": 3},
                         {"content_type": "zhihu_hot", "params": {}, "limit": 2},
@@ -89,6 +88,7 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
                 TaskCreate(
                     name="关联旧任务",
                     profile_id=profile.id,
+                    sites=[site.id],
                     output_format="text",
                     umos=list(UMOS),
                 ),
@@ -216,7 +216,11 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
             profiles = ContentProfileService(sites)
             profile = await profiles.get_profile(ids["profile"])
             self.assertEqual(profile.name, "关联旧组合")
-            self.assertEqual(profile.site_id, ids["site"])
+            async with sites.store._require_connection().execute(
+                "PRAGMA table_info(content_profiles)",
+            ) as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            self.assertNotIn("site_id", columns)
             self.assertEqual(
                 [item.content_type for item in profile.items],
                 ["daily_news", "zhihu_hot"],

@@ -113,7 +113,7 @@ class ProfileSiteOverrideTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(image.status_code, 200, image.body)
 
     async def test_default_site_still_used_without_override(self) -> None:
-        result = await self.api.preview_profile({"profile_id": self.profile.id})
+        result = await self.api.preview_profile({"site_id": self.a.id, "profile_id": self.profile.id})
         data = result.body["data"]
         self.assertEqual(data["site_id"], self.a.id)
         self.assertIn("A新闻", data["outputs"]["text"])

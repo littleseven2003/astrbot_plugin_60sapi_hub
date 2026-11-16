@@ -59,49 +59,64 @@ class ChatImageQuery:
         except _Unavailable:
             return CONFIG_TEXT
         owner = _owner()
-        try:
-            preview = await self._previews.preview_profile(
-                {
-                    "profile_id": authorized.profile_id,
-                    "force_refresh": False,
-                },
-                owner=owner,
-            )
-        except Exception:
+        rendered = await self._first_render(authorized, owner)
+        if rendered is None:
             return IMAGE_FAILED_TEXT
-        if preview.status_code != 200:
-            return IMAGE_FAILED_TEXT
-        data = preview.body.get("data") if isinstance(preview.body, dict) else None
-        snapshot = data.get("image_snapshot") if isinstance(data, dict) else None
-        snapshot_id = snapshot.get("id") if isinstance(snapshot, dict) else None
-        if not isinstance(snapshot_id, str) or not snapshot_id:
-            return IMAGE_FAILED_TEXT
-        try:
-            rendered = await self._previews.generate_image(
-                authorized.profile_id,
-                {"snapshot_id": snapshot_id},
-                owner=owner,
-            )
-        except Exception:
-            return IMAGE_FAILED_TEXT
-        if rendered.status_code != 200:
-            return IMAGE_FAILED_TEXT
-        rendered_data = (
-            rendered.body.get("data") if isinstance(rendered.body, dict) else None
-        )
-        decoded = _decode_section_images(rendered_data)
-        if decoded is None:
-            return IMAGE_FAILED_TEXT
-        images, failed_labels = decoded
-        if not images:
-            # 全部栏目都没生成出图：不伪造图片，也不拆分重试。
-            return IMAGE_FAILED_TEXT
+        images, failed_labels = rendered
         if await config_changed(self._tasks, umo, authorized):
             return IMAGE_CHANGED_TEXT
         return ChatImageReply(
             images=images,
             text=_reply_text(len(images), failed_labels, normalized_id),
         )
+
+    async def _first_render(
+        self,
+        authorized,
+        owner: str,
+    ) -> tuple[tuple[bytes, ...], tuple[str, ...]] | None:
+        """按任务候选顺序取第一份能出图的内容；全部失败返回 None。"""
+        for site_id, _revision in authorized.candidates:
+            try:
+                preview = await self._previews.preview_profile(
+                    {
+                        "profile_id": authorized.profile_id,
+                        "force_refresh": False,
+                        "site_id": site_id,
+                    },
+                    owner=owner,
+                )
+            except Exception:
+                continue
+            if preview.status_code != 200:
+                continue
+            data = (
+                preview.body.get("data")
+                if isinstance(preview.body, dict) else None
+            )
+            snapshot = data.get("image_snapshot") if isinstance(data, dict) else None
+            snapshot_id = snapshot.get("id") if isinstance(snapshot, dict) else None
+            if not isinstance(snapshot_id, str) or not snapshot_id:
+                continue
+            try:
+                image = await self._previews.generate_image(
+                    authorized.profile_id,
+                    {"snapshot_id": snapshot_id},
+                    owner=owner,
+                )
+            except Exception:
+                continue
+            if image.status_code != 200:
+                continue
+            rendered_data = (
+                image.body.get("data") if isinstance(image.body, dict) else None
+            )
+            decoded = _decode_section_images(rendered_data)
+            # 该站点全部栏目都没出图：换下一个候选，绝不伪造图片。
+            if decoded is None or not decoded[0]:
+                continue
+            return decoded
+        return None
 
 
 def _reply_text(

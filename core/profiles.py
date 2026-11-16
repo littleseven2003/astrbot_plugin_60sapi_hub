@@ -99,11 +99,10 @@ class ProfileItem:
 
 @dataclass(frozen=True, slots=True)
 class ContentProfile:
-    """持久化的内容组合。"""
+    """持久化的内容组合：只定义栏目、顺序和数量。"""
 
     id: str
     name: str
-    site_id: str
     items: tuple[ProfileItem, ...]
     revision: int
     created_at: str
@@ -113,16 +112,18 @@ class ContentProfile:
 @dataclass(frozen=True, slots=True)
 class ProfileCreate:
     name: object
-    site_id: object
     items: object
+    # 旧客户端仍会提交 site_id：接受但忽略，组合不再绑定站点。
+    site_id: object = None
 
 
 @dataclass(frozen=True, slots=True)
 class ProfileUpdate:
     name: object
-    site_id: object
     items: object
     expected_revision: object
+    # 旧客户端仍会提交 site_id：接受但忽略，组合不再绑定站点。
+    site_id: object = None
 
 
 class ContentProfileService:
@@ -151,14 +152,11 @@ class ContentProfileService:
 
     async def create_profile(self, data: ProfileCreate) -> ContentProfile:
         name = _normalize_name(data.name)
-        site_id = normalize_site_id(data.site_id)
         items = normalize_profile_items(data.items)
-        await self._require_site(site_id)
         try:
             stored = await self._store.create_profile(
                 profile_id=uuid.uuid4().hex,
                 name=name,
-                site_id=site_id,
                 items=_to_stored_items(items),
             )
         except Exception as exc:
@@ -173,14 +171,11 @@ class ContentProfileService:
         normalized_id = normalize_profile_id(profile_id)
         expected_revision = normalize_revision(data.expected_revision)
         name = _normalize_name(data.name)
-        site_id = normalize_site_id(data.site_id)
         items = normalize_profile_items(data.items)
-        await self._require_site(site_id)
         try:
             stored = await self._store.update_profile(
                 normalized_id,
                 name=name,
-                site_id=site_id,
                 items=_to_stored_items(items),
                 expected_revision=expected_revision,
             )
@@ -224,25 +219,19 @@ class ContentProfileService:
     async def load_for_preview(
         self,
         profile_id: object,
-        site_id: object = None,
+        site_id: object,
     ) -> tuple[ContentProfile, SiteConfig]:
+        """预览必须显式给出站点；组合本身不再保存站点。"""
         profile = await self.get_profile(profile_id)
-        target_site = profile.site_id if site_id is None else site_id
+        if site_id is None or (isinstance(site_id, str) and not site_id.strip()):
+            raise ProfileValidationError("site_id", "请先选择用于预览的站点")
         try:
-            site = await self._sites.get_site(target_site)
+            site = await self._sites.get_site(normalize_site_id(site_id))
         except SiteNotFoundError:
-            raise ProfileStorageError("内容组合引用的站点不存在。") from None
+            raise
         if not site.enabled:
             raise SiteDisabledError(site.id)
         return profile, site
-
-    async def _require_site(self, site_id: str) -> None:
-        try:
-            await self._sites.get_site(site_id)
-        except SiteNotFoundError:
-            raise
-        except SiteStorageError:
-            raise
 
 
 def normalize_profile_id(value: object) -> str:
@@ -339,7 +328,6 @@ def _to_profile(stored: StoredProfile) -> ContentProfile:
     return ContentProfile(
         id=stored.id,
         name=stored.name,
-        site_id=stored.site_id,
         items=tuple(
             ProfileItem(
                 content_type=item.content_type,

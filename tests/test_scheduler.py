@@ -50,7 +50,7 @@ class FakeSender:
 
 
 class StubApi:
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_profile(self, payload, *, owner=None, site_id=None):
         from core.profile_api import ProfileApiResult
         return ProfileApiResult(200, {"status": "ok", "data": {
             "outputs": {"text": "内容", "markdown": "# 内容"},
@@ -94,6 +94,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def task(self, umos=None, time="08:30", timezone_name="Asia/Shanghai"):
         return await self.tasks.create_task(TaskCreate(
             name="每日任务", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=umos if umos is not None else ["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": timezone_name, "time": time},
         ))
@@ -375,6 +376,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_interval_due_once_and_late_restart(self):
         task = await self.tasks.create_task(TaskCreate(
             name="间隔调度", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
                       "start_at": "2026-01-01T00:00", "interval_minutes": 60},
@@ -390,6 +392,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_weekly_selected_day_only(self):
         task = await self.tasks.create_task(TaskCreate(
             name="每周任务", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "Asia/Shanghai",
                       "time": "08:30", "weekdays": [3]},
@@ -489,6 +492,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_cron_no_candidate_rejects_enable_without_state(self):
         task = await self.tasks.create_task(TaskCreate(
             name="Cron无候选", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "UTC",
                       "expression": "0 0 31 2 *"},
@@ -513,6 +517,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_cron_late_boundary_restart_rollback_and_config_edit(self):
         task = await self.tasks.create_task(TaskCreate(
             name="Cron恢复边界", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "UTC",
                       "expression": "0 1 * * *"},
@@ -542,6 +547,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_cron_due_once_and_repeat_scan(self):
         task = await self.tasks.create_task(TaskCreate(
             name="Cron调度", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "UTC",
                       "expression": "0 1 * * *"},
@@ -555,6 +561,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_interval_late_restart_and_config_change(self):
         task = await self.tasks.create_task(TaskCreate(
             name="间隔边界", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
                       "start_at": "2026-01-01T00:00", "interval_minutes": 60},

@@ -74,6 +74,7 @@ class ChatContentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         ))
         task = await self.tasks.create_task(TaskCreate(
             name=f"任务-{prefix}", profile_id=profile.id,
+            sites=[site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         return site, profile, task

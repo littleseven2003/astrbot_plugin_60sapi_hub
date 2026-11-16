@@ -51,7 +51,6 @@ from .profiles import (
     ProfileValidationError,
 )
 from .sites import (
-    SiteConfig,
     SiteDisabledError,
     SiteNotFoundError,
     SiteService,
@@ -92,7 +91,6 @@ class ProfileApi:
     async def list_profiles(self) -> ProfileApiResult:
         try:
             profiles = await self._profiles.list_profiles()
-            sites = {site.id: site for site in await self._sites.list_sites()}
         except SiteStorageError:
             return _storage_error()
         except ProfileStorageError:
@@ -101,17 +99,13 @@ class ProfileApi:
             return _internal_error()
         return _ok(
             {
-                "profiles": [
-                    _profile_dict(profile, sites.get(profile.site_id))
-                    for profile in profiles
-                ],
+                "profiles": [_profile_dict(profile) for profile in profiles],
             },
         )
 
     async def get_profile(self, profile_id: str) -> ProfileApiResult:
         try:
             profile = await self._profiles.get_profile(profile_id)
-            site = await self._sites.get_site(profile.site_id)
         except ProfileValidationError as exc:
             return _validation_error(exc)
         except ProfileNotFoundError:
@@ -122,7 +116,7 @@ class ProfileApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(_profile_dict(profile, site))
+        return _ok(_profile_dict(profile))
 
     async def create_profile(self, payload: object) -> ProfileApiResult:
         data = _payload_dict(payload)
@@ -144,10 +138,7 @@ class ProfileApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(
-            _profile_dict(profile, await _safe_site(self._sites, profile.site_id)),
-            status_code=201,
-        )
+        return _ok(_profile_dict(profile), status_code=201)
 
     async def update_profile(
         self,
@@ -179,9 +170,7 @@ class ProfileApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(
-            _profile_dict(profile, await _safe_site(self._sites, profile.site_id)),
-        )
+        return _ok(_profile_dict(profile))
 
     async def delete_profile(
         self,
@@ -235,6 +224,14 @@ class ProfileApi:
                 code="invalid_force_refresh",
             )
         profile_id = data.get("profile_id")
+        if site_id is None:
+            site_id = data.get("site_id")
+        if site_id is None or site_id == "":
+            return _error(
+                400,
+                "请先选择用于预览的站点。",
+                code="site_required",
+            )
         try:
             profile, site = await self._profiles.load_for_preview(
                 profile_id, site_id,
@@ -620,16 +617,6 @@ def _classify_error(exc: Exception) -> tuple[str, str]:
     return "internal_error", "栏目获取失败。"
 
 
-async def _safe_site(
-    sites: SiteService,
-    site_id: str,
-) -> SiteConfig | None:
-    try:
-        return await sites.get_site(site_id)
-    except Exception:
-        return None
-
-
 def _section_image_payload(section_image: Any, position: int) -> dict[str, Any]:
     """把一个栏目长图整理成冻结的响应结构，不回显渲染器内部异常。"""
     raw_index = getattr(section_image, "index", position)
@@ -702,16 +689,15 @@ def _stale_snapshot_error() -> ProfileApiResult:
     )
 
 
-def _profile_dict(
-    profile: ContentProfile,
-    site: SiteConfig | None,
-) -> dict[str, Any]:
+def _profile_dict(profile: ContentProfile) -> dict[str, Any]:
     return {
         "id": profile.id,
         "name": profile.name,
-        "site_id": profile.site_id,
-        "site_name": site.name if site else "未知站点",
-        "site_enabled": site.enabled if site else False,
+        # 组合不再绑定站点，站点由任务候选与预览选择决定。旧字段保留为
+        # null，避免旧前端读到过期站点后误以为组合仍在使用它。
+        "site_id": None,
+        "site_name": None,
+        "site_enabled": None,
         "items": [
             {
                 "content_type": item.content_type,

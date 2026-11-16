@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -36,7 +36,6 @@ _CREATE_PROFILES_TABLE = """
 CREATE TABLE IF NOT EXISTS content_profiles (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
-    site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE RESTRICT,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -61,11 +60,6 @@ CREATE TABLE IF NOT EXISTS content_profile_items (
     PRIMARY KEY (profile_id, position),
     UNIQUE (profile_id, content_type)
 )
-"""
-
-_CREATE_PROFILE_SITE_INDEX = """
-CREATE INDEX IF NOT EXISTS content_profiles_site_id
-ON content_profiles (site_id)
 """
 
 _CREATE_TASKS_TABLE = """
@@ -264,11 +258,12 @@ class SiteRevisionConflictError(SiteStoreError):
 
 
 class SiteReferencedError(SiteStoreError):
-    """站点仍被内容组合引用，不能删除。"""
+    """站点仍是任务候选，不能删除。"""
 
-    def __init__(self, profile_names: tuple[str, ...]) -> None:
-        self.profile_names = profile_names
-        super().__init__("站点仍被内容组合引用")
+    def __init__(self, task_names: tuple[str, ...]) -> None:
+        self.task_names = task_names
+        self.profile_names = task_names
+        super().__init__("站点仍是任务的候选站点，不能删除")
 
 
 class ProfileRecordNotFoundError(SiteStoreError):
@@ -419,14 +414,18 @@ class StoredTask:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredTaskCandidateSite:
+    id: str
+    revision: int | None
+    enabled: bool | None
+
+
+@dataclass(frozen=True, slots=True)
 class StoredTaskConfigSnapshot:
     task: StoredTask
     profile_id: str | None
     profile_revision: int | None
-    site_id: str | None
-    site_revision: int | None
-    site_enabled: bool | None
-    candidate_enabled: tuple[bool, ...] = ()
+    candidates: tuple[StoredTaskCandidateSite, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,7 +461,6 @@ class ScheduleSkip:
 class StoredProfile:
     id: str
     name: str
-    site_id: str
     items: tuple[StoredProfileItem, ...]
     revision: int
     created_at: str
@@ -577,7 +575,6 @@ class SiteStore:
                 await connection.execute(_CREATE_SITES_TABLE)
             await connection.execute(_CREATE_PROFILES_TABLE)
             await connection.execute(_CREATE_PROFILE_ITEMS_TABLE)
-            await connection.execute(_CREATE_PROFILE_SITE_INDEX)
             if version in (3, 4, 5, 6):
                 async with connection.execute(
                     "PRAGMA table_info(push_tasks)",
@@ -618,16 +615,62 @@ class SiteStore:
             await connection.execute(_CREATE_TASK_PROFILE_INDEX)
             await connection.execute(_CREATE_TASK_SITES_TABLE)
             await connection.execute(_CREATE_TASK_SITES_INDEX)
+            # v15：组合只定义栏目、顺序和数量，不再绑定站点。重建组合表去掉
+            # site_id 与旧索引；旧绑定关系暂存一份，用于回填旧任务的候选。
+            async with connection.execute(
+                "PRAGMA table_info(content_profiles)",
+            ) as cursor:
+                profile_columns = {row[1] for row in await cursor.fetchall()}
+            legacy_profile_sites = "site_id" in profile_columns
+            if legacy_profile_sites:
+                await connection.execute(
+                    "DROP TABLE IF EXISTS _profile_site_backup",
+                )
+                await connection.execute(
+                    "CREATE TABLE _profile_site_backup AS "
+                    "SELECT id, site_id FROM content_profiles",
+                )
+                await connection.execute(
+                    "DROP TABLE IF EXISTS content_profiles_v15",
+                )
+                await connection.execute(
+                    """
+                    CREATE TABLE content_profiles_v15 (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK (revision >= 1),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO content_profiles_v15
+                        (id, name, revision, created_at, updated_at)
+                    SELECT id, name, revision, created_at, updated_at
+                    FROM content_profiles
+                    """,
+                )
+                await connection.execute("DROP TABLE content_profiles")
+                await connection.execute(
+                    "ALTER TABLE content_profiles_v15 "
+                    "RENAME TO content_profiles",
+                )
             # v14：为旧任务回填候选站点，顺序沿用原组合绑定的站点。
             # 旧单站点任务因此保持原有执行顺序与可见行为。
-            await connection.execute(
-                """
-                INSERT OR IGNORE INTO push_task_sites (task_id, position, site_id)
-                SELECT t.id, 0, p.site_id
-                FROM push_tasks AS t
-                JOIN content_profiles AS p ON p.id = t.profile_id
-                """,
-            )
+            if legacy_profile_sites:
+                await connection.execute(
+                    """
+                    INSERT OR IGNORE INTO push_task_sites
+                        (task_id, position, site_id)
+                    SELECT t.id, 0, b.site_id
+                    FROM push_tasks AS t
+                    JOIN _profile_site_backup AS b ON b.id = t.profile_id
+                    WHERE b.site_id IS NOT NULL
+                    """,
+                )
+                await connection.execute("DROP TABLE _profile_site_backup")
             await connection.execute(_CREATE_SCHEDULE_STATE_TABLE)
             await connection.execute(_CREATE_SCHEDULE_CLAIMS_TABLE)
             await connection.execute(_CREATE_SCHEDULE_SKIPS_TABLE)
@@ -916,15 +959,7 @@ class SiteStore:
             connection = self._require_connection()
 
             async def perform() -> None:
-                cursor = await connection.execute(
-                    "SELECT name FROM content_profiles WHERE site_id = ? "
-                    "ORDER BY created_at, id",
-                    (site_id,),
-                )
-                names = tuple(row["name"] for row in await cursor.fetchall())
-                if names:
-                    raise SiteReferencedError(names)
-                # 任务候选站点同样构成引用：删除会让任务失去候选。
+                # 组合不再绑定站点；只有任务候选构成引用，删除会让任务失去候选。
                 cursor = await connection.execute(
                     "SELECT t.name FROM push_task_sites AS s "
                     "JOIN push_tasks AS t ON t.id = s.task_id "
@@ -958,7 +993,6 @@ class SiteStore:
         *,
         profile_id: str,
         name: str,
-        site_id: str,
         items: tuple[StoredProfileItem, ...],
     ) -> StoredProfile:
         async with self._lock:
@@ -969,10 +1003,10 @@ class SiteStore:
                 await connection.execute(
                     """
                     INSERT INTO content_profiles (
-                        id, name, site_id, revision, created_at, updated_at
-                   ) VALUES (?, ?, ?, 1, ?, ?)
+                        id, name, revision, created_at, updated_at
+                    ) VALUES (?, ?, 1, ?, ?)
                     """,
-                    (profile_id, name, site_id, now, now),
+                    (profile_id, name, now, now),
                 )
                 await self._insert_profile_items(
                     connection,
@@ -988,7 +1022,6 @@ class SiteStore:
             return StoredProfile(
                 id=profile_id,
                 name=name,
-                site_id=site_id,
                 items=items,
                 revision=1,
                 created_at=now,
@@ -1001,7 +1034,7 @@ class SiteStore:
             try:
                 async with connection.execute(
                     """
-                    SELECT id, name, site_id, revision, created_at, updated_at
+                    SELECT id, name, revision, created_at, updated_at
                     FROM content_profiles
                     ORDER BY created_at, id
                     """,
@@ -1027,7 +1060,7 @@ class SiteStore:
             try:
                 row = await self._fetchone_unlocked(
                     """
-                    SELECT id, name, site_id, revision, created_at, updated_at
+                    SELECT id, name, revision, created_at, updated_at
                     FROM content_profiles
                     WHERE id = ?
                     """,
@@ -1047,7 +1080,6 @@ class SiteStore:
         profile_id: str,
         *,
         name: str,
-        site_id: str,
         items: tuple[StoredProfileItem, ...],
         expected_revision: int,
     ) -> StoredProfile:
@@ -1059,11 +1091,11 @@ class SiteStore:
                 cursor = await connection.execute(
                     """
                     UPDATE content_profiles
-                    SET name = ?, site_id = ?, revision = revision + 1,
+                    SET name = ?, revision = revision + 1,
                         updated_at = ?
                     WHERE id = ? AND revision = ?
                     """,
-                    (name, site_id, now, profile_id, expected_revision),
+                    (name, now, profile_id, expected_revision),
                 )
                 if cursor.rowcount != 1:
                     row = await self._fetchone_unlocked(
@@ -1091,7 +1123,7 @@ class SiteStore:
             try:
                 row = await self._fetchone_unlocked(
                     """
-                    SELECT id, name, site_id, revision, created_at, updated_at
+                    SELECT id, name, revision, created_at, updated_at
                     FROM content_profiles
                     WHERE id = ?
                     """,
@@ -1272,9 +1304,9 @@ class SiteStore:
         self,
         task_id: str,
     ) -> StoredTaskConfigSnapshot:
-        """在一个锁内读取任务、组合和站点的配置快照。
+        """在一个锁内读取任务、组合和候选站点的配置快照。
 
-        任务 UMO、任务引用的组合、组合引用的站点以及各自 revision 必须来自
+        任务 UMO、任务的候选站点、任务引用的组合以及各自 revision 必须来自
         同一次一致的存储读取，避免分多次 await 拼装旧状态。
         """
         async with self._lock:
@@ -1296,9 +1328,36 @@ class SiteStore:
                 task = _row_to_task(
                     row, umos.get(task_id, ()), sites.get(task_id, ()),
                 )
+                async with self._require_connection().execute(
+                    """
+                    SELECT ps.site_id AS site_id, s.revision AS revision,
+                           s.enabled AS enabled
+                    FROM push_task_sites AS ps
+                    LEFT JOIN sites AS s ON s.id = ps.site_id
+                    WHERE ps.task_id = ?
+                    ORDER BY ps.position
+                    """,
+                    (task_id,),
+                ) as cursor:
+                    candidate_rows = await cursor.fetchall()
+                # 候选顺序即尝试顺序；停用候选同样带出，供确认与告警判定。
+                candidates = tuple(
+                    StoredTaskCandidateSite(
+                        id=str(item["site_id"]),
+                        revision=(
+                            int(item["revision"])
+                            if item["revision"] is not None else None
+                        ),
+                        enabled=(
+                            bool(item["enabled"])
+                            if item["enabled"] is not None else None
+                        ),
+                    )
+                    for item in candidate_rows
+                )
                 profile_row = await self._fetchone_unlocked(
                     """
-                    SELECT id, site_id, revision
+                    SELECT id, revision
                     FROM content_profiles
                     WHERE id = ?
                     """,
@@ -1307,43 +1366,13 @@ class SiteStore:
                 if profile_row is None:
                     return StoredTaskConfigSnapshot(
                         task=task, profile_id=None, profile_revision=None,
-                        site_id=None, site_revision=None, site_enabled=None,
+                        candidates=candidates,
                     )
-                site_row = await self._fetchone_unlocked(
-                    """
-                    SELECT id, enabled, revision
-                    FROM sites
-                    WHERE id = ?
-                    """,
-                    (profile_row["site_id"],),
-                )
-                async with self._require_connection().execute(
-                    """
-                    SELECT s.enabled AS enabled
-                    FROM push_task_sites AS ps
-                    JOIN sites AS s ON s.id = ps.site_id
-                    WHERE ps.task_id = ?
-                    ORDER BY ps.position
-                    """,
-                    (task_id,),
-                ) as cursor:
-                    candidate_rows = await cursor.fetchall()
                 return StoredTaskConfigSnapshot(
                     task=task,
                     profile_id=str(profile_row["id"]),
                     profile_revision=int(profile_row["revision"]),
-                    candidate_enabled=tuple(
-                        bool(row["enabled"]) for row in candidate_rows
-                    ),
-                    site_id=(
-                        str(site_row["id"]) if site_row is not None else None
-                    ),
-                    site_revision=(
-                        int(site_row["revision"]) if site_row is not None else None
-                    ),
-                    site_enabled=(
-                        bool(site_row["enabled"]) if site_row is not None else None
-                    ),
+                    candidates=candidates,
                 )
             except TaskRecordNotFoundError:
                 raise
@@ -2431,7 +2460,6 @@ def _row_to_profile(
     return StoredProfile(
         id=row["id"],
         name=row["name"],
-        site_id=row["site_id"],
         items=items,
         revision=int(row["revision"]),
         created_at=row["created_at"],

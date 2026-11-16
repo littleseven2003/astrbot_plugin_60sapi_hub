@@ -112,7 +112,7 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
         profile = await self._profile()
         # 第一次上游请求返回前切换站点来源类型，制造“中途变化”。
         self.mutate_on_call = 1
-        result = await self.api.preview_profile({"profile_id": profile.id})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
         # 整次结果必须来自同一个 revision：要么全旧，要么全新，且与新状态一致。
@@ -148,7 +148,7 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
         profile = await self._profile()
         # 每次请求前都改配置：无法收敛时必须明确失败，而不是拼接结果。
         self.always_mutate = True
-        result = await self.api.preview_profile({"profile_id": profile.id})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
         self.assertEqual(result.status_code, 409, result.body)
         self.assertEqual(
             result.body["data"]["code"], "preview_revision_changed",
@@ -169,7 +169,7 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
             return await original(content_type, site_id, **kwargs)
 
         self.content.preview_cached = flaky  # type: ignore[assignment]
-        result = await self.api.preview_profile({"profile_id": profile.id})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
         self.assertEqual(data["status"], "partial")

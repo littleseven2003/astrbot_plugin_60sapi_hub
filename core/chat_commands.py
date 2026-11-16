@@ -120,7 +120,7 @@ class ChatCommandService:
         profiles = await self._profiles.list_profiles()
         sites = await self._sites.list_sites()
         profile_by_id = {profile.id: profile for profile in profiles}
-        site_by_id = {site.id: site for site in sites}
+        enabled_site_ids = {site.id for site in sites if site.enabled}
         visible: list[VisibleTask] = []
         for task in tasks:
             # Exact UMO membership only. No prefix, bare ID, platform or
@@ -130,8 +130,8 @@ class ChatCommandService:
             profile = profile_by_id.get(task.profile_id)
             if profile is None:
                 continue
-            site = site_by_id.get(profile.site_id)
-            if site is None or not site.enabled:
+            # 引用组合即可见；候选里至少有一个启用站点才可能查询到内容。
+            if not any(site_id in enabled_site_ids for site_id in task.sites):
                 continue
             visible.append(VisibleTask(
                 id=task.id,

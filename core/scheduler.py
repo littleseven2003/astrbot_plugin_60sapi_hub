@@ -300,7 +300,11 @@ class SchedulerService:
                 execution_id=execution_id,
                 task_revision=task.revision,
                 profile_revision=snapshot.profile_revision or 0,
-                site_revision=snapshot.site_revision or 0,
+                # 站点不再随组合固定：记录首选候选当时的版本，仅供追溯。
+                site_revision=(
+                    snapshot.candidates[0].revision or 0
+                    if snapshot.candidates else 0
+                ),
                 next_run_at=next_run.isoformat(),
                 now=current.isoformat(),
             )
@@ -312,7 +316,6 @@ class SchedulerService:
                     execution_id,
                     expected_task_revision=task.revision,
                     expected_profile_revision=snapshot.profile_revision,
-                    expected_site_revision=snapshot.site_revision,
                 )
                 if any(target.status == "unknown" for target in result.targets):
                     status = "unknown"

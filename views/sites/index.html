@@ -227,12 +227,16 @@
               <span class="count">已保存组合</span>
             </div>
             <p class="preview-lede">
-              选择已保存组合后主动获取；按组合配置顺序展示栏目，普通获取使用缓存，刷新组合会跳过已完成缓存。
+              组合只定义栏目、顺序和条数，不绑定站点。选择组合与本次预览使用的站点后主动获取；普通获取使用缓存，刷新组合会跳过已完成缓存。
             </p>
             <div class="preview-controls">
               <label class="field preview-site-field">
                 <span>内容组合</span>
                 <select id="profile-preview-select" disabled></select>
+              </label>
+              <label class="field preview-site-field">
+                <span>预览站点</span>
+                <select id="profile-preview-site" disabled></select>
               </label>
               <button id="profile-preview-button" class="button button-primary" type="button" disabled>
                 获取组合
@@ -843,11 +847,6 @@
             <input id="profile-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览" />
           </label>
 
-          <label class="field">
-            <span>站点</span>
-            <select id="profile-site" required></select>
-            <small>可以使用已停用站点保存组合，但预览会明确拒绝。</small>
-          </label>
 
           <fieldset class="profile-items-fieldset">
             <legend>栏目、顺序与每栏条数</legend>

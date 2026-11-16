@@ -152,6 +152,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             TaskCreate(
                 name=name,
                 profile_id=self.profile.id,
+                sites=[self.site.id],
                 output_format="image",
                 umos=[
                     "aiocqhttp:GroupMessage:g:1",
@@ -227,6 +228,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
         task = await self.tasks.create_task(TaskCreate(
             name="计划任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={
                 "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
@@ -298,6 +300,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_v7_schema_real_migration_preserves_runtime_and_history(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="v7真实迁移", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
         ))
@@ -356,6 +359,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         import aiosqlite
         task = await self.tasks.create_task(TaskCreate(
             name="v7失败", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "UTC", "time": "08:30"},
         ))
@@ -393,6 +397,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_v7_schema_adds_weekdays_and_preserves_weekly(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="v7每周迁移", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "Asia/Shanghai",
                       "time": "08:30", "weekdays": [1, 3]},
@@ -418,6 +423,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_weekly_daily_null_switch_and_edit_disables(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="切换计划", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
                       "weekdays": [1, 3]},
@@ -446,6 +452,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_corrupt_weekdays_are_reported_and_omitted_update_preserves(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="异常星期", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
                       "weekdays": [1, 3]},
@@ -483,6 +490,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_v8_real_migration_adds_interval_columns(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="v8迁移", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
                       "weekdays": [1, 3]},
@@ -517,6 +525,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_v9_real_migration_adds_cron_column(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="v9迁移", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
                       "start_at": "2026-11-04T08:30", "interval_minutes": 60},
@@ -552,6 +561,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         import aiosqlite
         task = await self.tasks.create_task(TaskCreate(
             name="v9回滚", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
                       "weekdays": [1]},
@@ -593,6 +603,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_cron_schedule_persists_and_restarts(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="Cron任务", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "Asia/Shanghai",
                       "expression": "30 8 * * 1-5"},
@@ -613,6 +624,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_corrupt_interval_is_reported_and_preserved(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="损坏间隔", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
                       "start_at": "2026-11-04T08:30", "interval_minutes": 60},
@@ -641,6 +653,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_interval_schedule_persists_and_switches(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="间隔任务", profile_id=self.profile.id, output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "Asia/Shanghai",
                       "start_at": "2026-11-04T08:30", "interval_minutes": 60},
@@ -663,6 +676,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_weekly_schedule_persists_and_restarts(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="每周任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={
                 "kind": "weekly", "timezone": "Asia/Shanghai",
@@ -687,6 +701,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_daily_schedule_survives_restart(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
             name="重启计划", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "UTC", "time": "10:00"},
         ))
@@ -821,6 +836,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import patch
         await self.tasks.create_task(TaskCreate(
             name="异常计划任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=[],
             schedule={"kind": "daily", "timezone": "UTC", "time": "08:00"},
         ))
@@ -832,6 +848,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         from core.site_store import SCHEMA_VERSION
         task = await self.tasks.create_task(TaskCreate(
             name="v6启用迁移", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
         ))
@@ -897,6 +914,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
         task = await self.tasks.create_task(TaskCreate(
             name="v6迁移失败", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
         ))
@@ -978,6 +996,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                     TaskCreate(
                         name="取消任务",
                         profile_id=self.profile.id,
+                        sites=[self.site.id],
                         output_format="text",
                         umos=[],
                     ),
@@ -1055,6 +1074,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                 TaskCreate(
                     name="坏格式",
                     profile_id=self.profile.id,
+                    sites=[self.site.id],
                     output_format="pdf",
                     umos=[],
                 ),
@@ -1161,6 +1181,7 @@ class TaskConcurrencyTest(unittest.IsolatedAsyncioTestCase):
                         TaskCreate(
                             name="并发任务",
                             profile_id=profile.id,
+                            sites=[site.id],
                             output_format="text",
                             umos=[],
                         ),

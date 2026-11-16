@@ -182,7 +182,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         profile = await self._profile()
         self.barrier = self._disable_site
         self._wrap_preview_cached()
-        result = await self.api.preview_profile({"profile_id": profile.id})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
         self.assertEqual(result.status_code, 409, result.body)
         data = result.body.get("data") or {}
         self.assertEqual(data.get("code"), "site_disabled")
@@ -195,7 +195,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
     async def test_site_disabled_before_preview_returns_409(self) -> None:
         profile = await self._profile()
         await self._disable_site()
-        result = await self.api.preview_profile({"profile_id": profile.id})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
         self.assertEqual(result.status_code, 409, result.body)
         data = result.body.get("data") or {}
         self.assertEqual(data.get("code"), "site_disabled")
@@ -216,7 +216,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
 
         self.barrier = delete_profile
         self._wrap_preview_cached()
-        result = await self.api.preview_profile({"profile_id": profile.id})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
         self.assertEqual(result.status_code, 404, result.body)
         data = result.body.get("data") or {}
         self.assertNotIn("sections", data)
@@ -240,7 +240,6 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
                 profile.id,
                 ProfileUpdate(
                     name=current.name,
-                    site_id=current.site_id,
                     items=updated_items,
                     expected_revision=current.revision,
                 ),
@@ -249,7 +248,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self.barrier = update_profile
         self._wrap_preview_cached()
         result = await self.api.preview_profile(
-            {"profile_id": profile.id, "force_refresh": True},
+            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": True},
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -357,7 +356,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         await self._warm_cache(profile)
         self.barrier = self._switch_site
         result = await self.api.preview_profile(
-            {"profile_id": profile.id, "force_refresh": True},
+            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": True},
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -384,7 +383,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self.barrier = self._switch_site
         self._wrap_preview_cached()
         result = await self.api.preview_profile(
-            {"profile_id": profile.id, "force_refresh": False},
+            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": False},
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -406,7 +405,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         # 不预热缓存，确保第一个栏目真的发出上游请求。
         self.barrier = self._switch_site
         result = await self.api.preview_profile(
-            {"profile_id": profile.id, "force_refresh": False},
+            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": False},
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]

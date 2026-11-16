@@ -183,7 +183,7 @@ const elements = {
   profileForm: document.getElementById("profile-form"),
   profileDialogTitle: document.getElementById("profile-dialog-title"),
   profileName: document.getElementById("profile-name"),
-  profileSite: document.getElementById("profile-site"),
+  profilePreviewSite: document.getElementById("profile-preview-site"),
   profileItemEditor: document.getElementById("profile-item-editor"),
   profileFormError: document.getElementById("profile-form-error"),
   profileWriteUncertain: document.getElementById("profile-write-uncertain"),
@@ -365,6 +365,7 @@ const state = {
   profilePreviewId: null,
   profilePreviewRequestId: 0,
   profilePreviewBaseline: null,
+  profilePreviewSiteId: null,
   profilePreviewOutputs: null,
   profilePreviewFormat: "text",
   profileOutputEpoch: 0,
@@ -454,9 +455,7 @@ const EXPLICIT_WRITE_REJECTIONS = [
   /站点不存在或已被删除/,
   /已被其他操作修改/,
   /站点存储暂不可用/,
-  /仍被内容组合引用/,
-  /仍被推送任务引用/,
-  /引用的站点不存在/,
+  /仍是任务的候选站点/,
   /内容组合不存在/,
   /内容组合存储暂不可用/,
   /时区数据不可用/,
@@ -903,6 +902,7 @@ async function loadSites() {
     renderSites();
     renderBatchTestSites();
     syncPreviewSites();
+    profilePreviewSiteOptions();
     succeeded = true;
     if (elements.status.dataset.tone === "error") {
       clearStatus();
@@ -1497,9 +1497,6 @@ function normalizeProfile(raw) {
   return {
     id: raw.id,
     name: typeof raw.name === "string" ? raw.name : "未命名组合",
-    site_id: typeof raw.site_id === "string" ? raw.site_id : "",
-    site_name: typeof raw.site_name === "string" ? raw.site_name : "未知站点",
-    site_enabled: raw.site_enabled === true,
     items,
     revision: Number.isInteger(raw.revision) ? raw.revision : 1,
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : "",
@@ -1527,14 +1524,7 @@ function renderProfile(profile) {
   const name = document.createElement("h3");
   name.className = "site-name";
   name.textContent = profile.name;
-  const siteBadge = document.createElement("span");
-  siteBadge.className = "badge";
-  siteBadge.textContent = profile.site_name;
-  const enabledBadge = document.createElement("span");
-  enabledBadge.className = "badge";
-  enabledBadge.dataset.enabled = String(profile.site_enabled);
-  enabledBadge.textContent = profile.site_enabled ? "站点已启用" : "站点已停用";
-  titleLine.append(name, siteBadge, enabledBadge);
+  titleLine.append(name);
 
   const summary = document.createElement("p");
   summary.className = "site-meta profile-summary";
@@ -1603,9 +1593,6 @@ function profileSignature(profile) {
     id: profile.id,
     revision: profile.revision,
     name: profile.name,
-    site_id: profile.site_id,
-    site_name: profile.site_name,
-    site_enabled: profile.site_enabled,
     items: profile.items.map((item) => [
       item.content_type,
       item.limit,
@@ -1690,7 +1677,9 @@ function syncProfilePreview() {
 function setProfilePreviewBusy(busy) {
   state.profilePreviewLoading = busy;
   const hasProfile = Boolean(elements.profilePreviewSelect.value);
+  const hasSite = Boolean(elements.profilePreviewSite.value);
   elements.profilePreviewSelect.disabled = busy || !hasProfile;
+  elements.profilePreviewSite.disabled = busy || !hasSite;
   elements.profilePreviewButton.disabled = busy || !hasProfile;
   elements.profilePreviewRefreshButton.disabled = busy || !hasProfile;
   elements.profilePreviewButton.textContent = busy ? "正在获取…" : "获取组合";
@@ -2255,27 +2244,31 @@ function invalidateIfPreviewing(profileId) {
   }
 }
 
-function profileSiteOptions(selectedId) {
-  elements.profileSite.replaceChildren();
+function profilePreviewSiteOptions() {
+  const select = elements.profilePreviewSite;
+  select.replaceChildren();
   if (state.sites.length === 0) {
     const option = document.createElement("option");
     option.value = "";
     option.textContent = "没有站点";
-    elements.profileSite.append(option);
-    elements.profileSite.disabled = true;
+    select.append(option);
+    select.disabled = true;
+    state.profilePreviewSiteId = null;
     return;
   }
   for (const site of state.sites) {
     const option = document.createElement("option");
     option.value = site.id;
     option.textContent = site.enabled ? site.name : `${site.name}（已停用）`;
-    elements.profileSite.append(option);
+    select.append(option);
   }
-  const target = state.sites.some((site) => site.id === selectedId)
-    ? selectedId
-    : (state.sites.find((site) => site.enabled) || state.sites[0]).id;
-  elements.profileSite.value = target;
-  elements.profileSite.disabled = false;
+  if (!state.sites.some((site) => site.id === state.profilePreviewSiteId)) {
+    // 预览只接受启用站点，但允许显式选中停用站点看后端拒绝原因。
+    const preferred = state.sites.find((site) => site.enabled) || state.sites[0];
+    state.profilePreviewSiteId = preferred.id;
+  }
+  select.value = state.profilePreviewSiteId;
+  select.disabled = state.profilePreviewLoading;
 }
 
 function renderProfileEditor() {
@@ -2429,15 +2422,9 @@ function openCreateProfile() {
   elements.profileForm.reset();
   elements.profileDialogTitle.textContent = "新增组合";
   elements.profileName.value = "";
-  profileSiteOptions(null);
   clearProfileFormError();
   setProfileFormDisabled(false);
-  if (state.sites.length === 0) {
-    showProfileFormError("请先创建至少一个站点。");
-    elements.profileSaveButton.disabled = true;
-  } else {
-    elements.profileSaveButton.textContent = "保存组合";
-  }
+  elements.profileSaveButton.textContent = "保存组合";
   renderProfileEditor();
   openDialog(elements.profileDialog);
   elements.profileName.focus();
@@ -2457,7 +2444,6 @@ function openEditProfile(profile) {
   }));
   elements.profileDialogTitle.textContent = "编辑组合";
   elements.profileName.value = profile.name;
-  profileSiteOptions(profile.site_id);
   clearProfileFormError();
   setProfileFormDisabled(false);
   elements.profileSaveButton.textContent = "保存更改";
@@ -2483,10 +2469,6 @@ async function handleProfileSave(event) {
     showProfileFormError(friendlyErrorMessage(error));
     return;
   }
-  if (!elements.profileSite.value) {
-    showProfileFormError("请选择站点。");
-    return;
-  }
   state.profileSaving = true;
   const idleLabel = state.profileMode === "create" ? "保存组合" : "保存更改";
   elements.profileSaveButton.textContent = "保存中…";
@@ -2494,7 +2476,6 @@ async function handleProfileSave(event) {
   try {
     const payload = {
       name: elements.profileName.value,
-      site_id: elements.profileSite.value,
       items,
     };
     if (state.profileMode === "create") {
@@ -2525,8 +2506,6 @@ async function handleProfileSave(event) {
           : "该组合已被其他操作修改，但列表刷新失败。",
         "error",
       );
-    } else if (message.includes("引用的站点不存在")) {
-      showProfileFormError(message);
     } else if (isMissingMessage(message)) {
       invalidateIfPreviewing(state.editingProfileId);
       closeDialog(elements.profileDialog);
@@ -2975,6 +2954,11 @@ async function previewProfile(forceRefresh = false) {
     showProfilePreviewStatus("请先选择一个已保存组合。", "error");
     return;
   }
+  const siteId = elements.profilePreviewSite.value;
+  if (!siteId) {
+    showProfilePreviewStatus("请先选择本次预览使用的站点。", "error");
+    return;
+  }
   state.profilePreviewId = profileId;
   const profile = state.profiles.find((item) => item.id === profileId);
   if (!profile) {
@@ -2995,7 +2979,7 @@ async function previewProfile(forceRefresh = false) {
   try {
     const data = await bridge.apiPost(
       `profiles/${encodeURIComponent(profileId)}/preview`,
-      { force_refresh: Boolean(forceRefresh) },
+      { force_refresh: Boolean(forceRefresh), site_id: siteId },
     );
     const currentProfile = state.profiles.find(
       (item) => item.id === profileId,
@@ -3012,6 +2996,7 @@ async function previewProfile(forceRefresh = false) {
     if (
       requestId !== state.profilePreviewRequestId ||
       elements.profilePreviewSelect.value !== profileId ||
+      elements.profilePreviewSite.value !== siteId ||
       !currentProfile ||
       currentSignature !== requestSignature ||
       !revisionMatches
@@ -3341,8 +3326,7 @@ function taskProfileOptions(selectedId) {
   for (const profile of state.profiles) {
     const option = document.createElement("option");
     option.value = profile.id;
-    const stateText = profile.site_enabled ? "" : "（站点已停用）";
-    option.textContent = `${profile.name}${stateText}`;
+    option.textContent = profile.name;
     if (profile.id === selectedId) {
       option.selected = true;
     }
@@ -3947,10 +3931,8 @@ function taskFormMatchesSaved() {
   if (state.taskMode !== "edit" || !state.editingTask) return false;
   if (elements.taskProfile.value !== state.editingTask.profile_id) return false;
   const saved = savedTaskSites(state.editingTask);
-  // 清空候选等价于回落到组合绑定站点：只有这才算“没有变化”。
-  const fallback = state.editingTask.site_id ? [state.editingTask.site_id] : [];
-  const current = state.taskSites.length > 0 ? state.taskSites : fallback;
-  return saved.join(",") === current.join(",");
+  // 组合不再提供默认站点：候选完全由任务自己决定，空候选不算“没有变化”。
+  return saved.join(",") === state.taskSites.join(",");
 }
 
 function updateTaskCapabilityGate() {
@@ -4198,17 +4180,7 @@ async function handleTaskSave(event) {
     output_format: elements.taskOutputFormat.value,
     umos: collectTaskUmos(),
   };
-  const chosenSites = state.taskSites.slice();
-  if (chosenSites.length === 0) {
-    // 与页面提示一致：未指定候选时使用组合绑定的站点。
-    const profile = state.profiles.find(
-      (item) => item.id === elements.taskProfile.value,
-    );
-    if (profile && profile.site_id) chosenSites.push(profile.site_id);
-  }
-  if (chosenSites.length > 0) {
-    payload.sites = chosenSites;
-  }
+  payload.sites = state.taskSites.slice();
   if (schedule !== undefined) {
     payload.schedule = schedule;
   }
@@ -4998,8 +4970,8 @@ function renderDeliveryPreview(data, token) {
   elements.deliveryConfirmInfo.replaceChildren();
   for (const [label, value] of [
     ["任务", data.task_name], ["组合", data.profile_name],
-    ["组合绑定站点", data.site_name], ["输出方式", data.output_label],
-    ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision} · 站点 ${data.site_revision}`],
+    ["输出方式", data.output_label],
+    ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision}`],
     ["内容来源", "按候选顺序选择第一个同时满足全部栏目与条数的站点；不会混用多个站点"],
     ["失败处理", "若没有任何候选站点能满足配置（含上游失败或条数不足），将改为向下列白名单发送一条文字异常提示"],
     ["内容策略", "重新准备内容，不复用页面旧预览；可能命中内容缓存（默认 300 秒），不保证重新请求上游"],
@@ -5213,7 +5185,6 @@ async function submitDelivery(event) {
         execution_id: executionId,
         expected_task_revision: preview.task_revision,
         expected_profile_revision: preview.profile_revision,
-        expected_site_revision: preview.site_revision,
         // 锁定确认时看到的候选顺序与 alert_only 语义：提交前状态变化
         // 必须重新审阅，不能改发未经确认的内容。
         expected_candidates: preview.candidate_snapshot,
@@ -5783,6 +5754,13 @@ function bindEvents() {
   elements.profilePreviewSelect.addEventListener("change", () => {
     state.profilePreviewId = elements.profilePreviewSelect.value;
     resetProfilePreview();
+    setProfilePreviewBusy(false);
+  });
+  elements.profilePreviewSite.addEventListener("change", () => {
+    state.profilePreviewSiteId = elements.profilePreviewSite.value;
+    // 结果绑定到具体站点：换站点后旧结果和长图都不能继续使用。
+    resetProfilePreview();
+    resetProfileImages();
     setProfilePreviewBusy(false);
   });
   elements.profileForm.addEventListener("submit", handleProfileSave);

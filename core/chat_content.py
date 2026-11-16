@@ -28,8 +28,8 @@ class _Authorized:
     task_revision: int
     profile_id: str
     profile_revision: int
-    site_id: str
-    site_revision: int
+    # 启用候选按尝试顺序排列：(site_id, revision)。顺序变化也算配置变化。
+    candidates: tuple[tuple[str, int], ...]
 
 
 class ChatContentQuery:
@@ -54,19 +54,8 @@ class ChatContentQuery:
             return AUTH_TEXT
         except _Unavailable:
             return CONFIG_TEXT
-        try:
-            result = await self._previews.preview_profile({
-                "profile_id": authorized.profile_id,
-                "force_refresh": False,
-            })
-        except Exception:
-            return FAILED_TEXT
-        if result.status_code != 200:
-            return FAILED_TEXT
-        data = result.body.get("data") if isinstance(result.body, dict) else None
-        outputs = data.get("outputs") if isinstance(data, dict) else None
-        text = outputs.get("text") if isinstance(outputs, dict) else None
-        if not isinstance(text, str) or not text.strip():
+        text = await _first_available(self._previews, authorized)
+        if text is None:
             return FAILED_TEXT
         if await config_changed(self._tasks, umo, authorized):
             return CHANGED_TEXT
@@ -86,19 +75,25 @@ async def authorize_task(
     task = snapshot.task
     if umo not in task.umos:
         raise _Unauthorized
+    candidates = tuple(
+        (item.id, item.revision)
+        for item in snapshot.candidates
+        if item.enabled is True and item.revision is not None
+    )
     if (snapshot.profile_id is None
             or snapshot.profile_revision is None
-            or snapshot.site_id is None
-            or snapshot.site_revision is None
-            or snapshot.site_enabled is not True):
+            or not candidates):
         raise _Unavailable
+    # revision 为 None 的候选已被删除，无法复核版本，不能用于查询。
+    resolved = tuple(
+        (site_id, int(revision)) for site_id, revision in candidates
+    )
     return _Authorized(
         task_id=task.id,
         task_revision=task.revision,
         profile_id=snapshot.profile_id,
         profile_revision=snapshot.profile_revision,
-        site_id=snapshot.site_id,
-        site_revision=snapshot.site_revision,
+        candidates=resolved,
     )
 
 
@@ -111,15 +106,43 @@ async def config_changed(
         snapshot = await tasks.get_config_snapshot(before.task_id)
     except Exception:
         return True
+    current = tuple(
+        (item.id, item.revision)
+        for item in snapshot.candidates
+        if item.enabled is True and item.revision is not None
+    )
     return (
         umo not in snapshot.task.umos
         or snapshot.task.revision != before.task_revision
         or snapshot.profile_id != before.profile_id
         or snapshot.profile_revision != before.profile_revision
-        or snapshot.site_id != before.site_id
-        or snapshot.site_revision != before.site_revision
-        or snapshot.site_enabled is not True
+        # 顺序、成员、启用状态或站点版本任一变化都要求重新查询。
+        or current != before.candidates
     )
+
+
+async def _first_available(
+    previews: ProfileApi,
+    authorized: _Authorized,
+) -> str | None:
+    """按任务候选顺序取第一份可用内容；全部失败返回 None。"""
+    for site_id, _revision in authorized.candidates:
+        try:
+            result = await previews.preview_profile({
+                "profile_id": authorized.profile_id,
+                "force_refresh": False,
+                "site_id": site_id,
+            })
+        except Exception:
+            continue
+        if result.status_code != 200:
+            continue
+        data = result.body.get("data") if isinstance(result.body, dict) else None
+        outputs = data.get("outputs") if isinstance(data, dict) else None
+        text = outputs.get("text") if isinstance(outputs, dict) else None
+        if isinstance(text, str) and text.strip():
+            return text
+    return None
 
 
 class _Unauthorized(Exception):

@@ -101,7 +101,10 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_crud_and_revision_conflict(self) -> None:
         created = await self._create()
         profile_id = created["id"]
-        self.assertEqual(created["site_name"], "组合 API 站点")
+        # 组合不再绑定站点：旧字段保留但值为空，真实来源由预览时的临时选站给出。
+        self.assertIsNone(created["site_id"])
+        self.assertIsNone(created["site_name"])
+        self.assertIsNone(created["site_enabled"])
         self.assertEqual(
             [item["content_type"] for item in created["items"]],
             ["daily_news", "zhihu_hot", "douyin_hot"],
@@ -159,19 +162,20 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
                 result = await self.api.create_profile(payload)
                 self.assertEqual(result.status_code, 400, result.body)
                 self.assertEqual(result.body["data"]["code"], "validation_error")
-        missing = await self.api.create_profile(
+        # 旧客户端仍会带 site_id：静默忽略，不报 404，也不再写入组合。
+        legacy = await self.api.create_profile(
             {
-                "name": "x",
+                "name": "兼容旧客户端",
                 "site_id": "missing",
                 "items": [profile_item("daily_news")],
             },
         )
-        self.assertEqual(missing.status_code, 404)
-        self.assertEqual(missing.body["data"]["code"], "site_not_found")
+        self.assertEqual(legacy.status_code, 201, legacy.body)
+        self.assertIsNone(legacy.body["data"]["site_id"])
 
     async def test_preview_order_limits_cache_and_force(self) -> None:
         created = await self._create()
-        result = await self.api.preview_profile({"profile_id": created["id"]})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
         self.assertEqual(data["status"], "complete")
@@ -203,7 +207,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls), 3)
         self.assertTrue(all(not section["cache"]["hit"] for section in data["sections"]))
 
-        cached = await self.api.preview_profile({"profile_id": created["id"]})
+        cached = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(len(self.calls), 3)
         self.assertTrue(
             all(section["cache"]["hit"] for section in cached.body["data"]["sections"]),
@@ -214,7 +218,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
         refreshed = await self.api.preview_profile(
-            {"profile_id": created["id"], "force_refresh": True},
+            {"site_id": self.site.id, "profile_id": created["id"], "force_refresh": True},
         )
         self.assertFalse(
             any(section["cache"]["hit"] for section in refreshed.body["data"]["sections"]),
@@ -228,7 +232,9 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sections_and_outputs_show_each_section_source_url(self) -> None:
         created = await self._create(site_id=self.public_site.id)
-        result = await self.api.preview_profile({"profile_id": created["id"]})
+        result = await self.api.preview_profile(
+            {"site_id": self.public_site.id, "profile_id": created["id"]},
+        )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
         sections = {item["content_type"]: item for item in data["sections"]}
@@ -263,7 +269,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_self_built_sections_hide_address_in_outputs(self) -> None:
         created = await self._create()
-        result = await self.api.preview_profile({"profile_id": created["id"]})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
         self.assertEqual(data["sections"][0]["source_kind"], "self_built")
@@ -280,7 +286,9 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
             items=[profile_item("daily_news")],
             site_id=self.public_site.id,
         )
-        first = await self.api.preview_profile({"profile_id": created["id"]})
+        first = await self.api.preview_profile(
+            {"site_id": self.public_site.id, "profile_id": created["id"]},
+        )
         self.assertEqual(first.status_code, 200, first.body)
         data = first.body["data"]
         section = data["sections"][0]
@@ -324,7 +332,9 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         created = await self._create(
             items=[profile_item("daily_news", 1), profile_item("zhihu_hot", 1)],
         )
-        first = await self.api.preview_profile({"profile_id": created["id"]})
+        first = await self.api.preview_profile(
+            {"site_id": self.site.id, "profile_id": created["id"]},
+        )
         self.assertEqual(len(self.calls), 2)
         updated = await self.api.update_profile(
             created["id"],
@@ -339,7 +349,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(updated.status_code, 200)
-        second = await self.api.preview_profile({"profile_id": created["id"]})
+        second = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(
             [section["content_type"] for section in second.body["data"]["sections"]],
             ["zhihu_hot", "daily_news"],
@@ -360,7 +370,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
                 expected_revision=self.site.revision,
             ),
         )
-        revised = await self.api.preview_profile({"profile_id": created["id"]})
+        revised = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(len(self.calls), 4)
         self.assertTrue(
             all(not section["cache"]["hit"] for section in revised.body["data"]["sections"]),
@@ -375,7 +385,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.mode = "zhihu_error"
-        partial = await self.api.preview_profile({"profile_id": created["id"]})
+        partial = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(partial.status_code, 200)
         data = partial.body["data"]
         self.assertEqual(data["status"], "partial")
@@ -396,7 +406,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.mode = "all_error"
         all_failed = await self.api.preview_profile(
-            {"profile_id": created["id"], "force_refresh": True},
+            {"site_id": self.site.id, "profile_id": created["id"], "force_refresh": True},
         )
         self.assertEqual(all_failed.status_code, 502)
         self.assertEqual(all_failed.body["data"]["status"], "failed")
@@ -420,7 +430,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
                 profile_item("toutiao_hot", 1),
             ],
         )
-        result = await self.api.preview_profile({"profile_id": created["id"]})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(result.status_code, 200, result.body)
         self.assertEqual(result.body["data"]["status"], "complete")
         self.assertEqual(
@@ -435,7 +445,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.mode = "empty"
         empty = await self.api.preview_profile(
-            {"profile_id": created["id"], "force_refresh": True},
+            {"site_id": self.site.id, "profile_id": created["id"], "force_refresh": True},
         )
         self.assertEqual(empty.status_code, 200)
         self.assertEqual(empty.body["data"]["status"], "complete")
@@ -456,7 +466,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
                 expected_revision=self.site.revision,
             ),
         )
-        result = await self.api.preview_profile({"profile_id": created["id"]})
+        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": created["id"]})
         self.assertEqual(result.status_code, 409)
         self.assertEqual(result.body["data"]["code"], "site_disabled")
         self.assertEqual(self.calls, [])
@@ -466,7 +476,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         for value in ("true", 1, 0, None, []):
             with self.subTest(value=value):
                 result = await self.api.preview_profile(
-                    {
+                    {"site_id": self.site.id, 
                         "profile_id": created["id"],
                         "force_refresh": value,
                     },

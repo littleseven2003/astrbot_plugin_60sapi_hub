@@ -91,12 +91,14 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
     async def _task(self, umos):
         return await self.tasks.create_task(TaskCreate(
             name="任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=umos,
         ))
 
     async def _image_task(self, umos):
         return await self.tasks.create_task(TaskCreate(
             name="图片任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="image", umos=umos,
         ))
 
@@ -504,6 +506,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
 
         markdown_task = await self.tasks.create_task(TaskCreate(
             name="Markdown 任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="markdown", umos=["demo_qq_01:GroupMessage:123"],
         ))
         await self.api.execute(markdown_task.id, {

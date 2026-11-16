@@ -54,7 +54,7 @@ class StubApi:
         self.partial = False
         self.preview_failed = [{"label": "失败栏目"}]
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_profile(self, payload, *, owner=None, site_id=None):
         self.preview_calls += 1
         if self.preview_status != 200:
             return ProfileApiResult(
@@ -70,7 +70,7 @@ class StubApi:
             "image_snapshot": {"id": "snap-1"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None):
+    async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
         self.image_calls += 1
         if self.image_status != 200:
             return ProfileApiResult(self.image_status, {
@@ -166,6 +166,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
     async def _task(self, umos, output="text"):
         return await self.tasks.create_task(TaskCreate(
             name="投递任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format=output, umos=umos,
         ))
 
@@ -1341,10 +1342,10 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         release = asyncio.Event()
         original = self.api.preview_profile
 
-        async def blocked(payload, *, owner=None):
+        async def blocked(payload, *, owner=None, site_id=None):
             entered.set()
             await release.wait()
-            return await original(payload, owner=owner)
+            return await original(payload, owner=owner, site_id=site_id)
 
         self.api.preview_profile = blocked
         running = asyncio.create_task(self.service.execute(task.id, "close-prepare-1"))

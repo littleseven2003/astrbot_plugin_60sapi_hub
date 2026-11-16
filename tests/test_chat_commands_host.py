@@ -290,8 +290,8 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(
                     task=task, profile_id=self.profile.id,
                     profile_revision=self.profile.revision,
-                    site_id=self.site.id, site_revision=self.site.revision,
-                    site_enabled=self.site.enabled,
+                    candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision, enabled=self.site.enabled),),
+                    
                 )
 
             async def get_profile(self, profile_id):
@@ -300,7 +300,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             async def get_site(self, site_id):
                 return self.site
 
-            async def preview_profile(self, payload):
+            async def preview_profile(self, payload, *, site_id=None):
                 return SimpleNamespace(status_code=200, body={
                     "data": {"outputs": {"text": "组合：可见任务\n纯文字内容"}},
                 })
@@ -361,16 +361,16 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 )
                 return SimpleNamespace(
                     task=task, profile_id="p1", profile_revision=1,
-                    site_id="s1", site_revision=1, site_enabled=True,
+                    candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
                 )
 
-            async def preview_profile(self, payload, *, owner=None):
+            async def preview_profile(self, payload, *, owner=None, site_id=None):
                 return SimpleNamespace(
                     status_code=200,
                     body={"data": {"image_snapshot": {"id": "chat-snapshot"}}},
                 )
 
-            async def generate_image(self, profile_id, payload, *, owner=None):
+            async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
                 png = b"\x89PNG\r\n\x1a\npage"
                 encoded = base64.b64encode(png).decode()
                 return SimpleNamespace(status_code=200, body={"data": {"images": [
@@ -538,6 +538,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             ))
             task = await hub.tasks.create_task(TaskCreate(
                 name="调度任务", profile_id=profile.id, output_format="text",
+                sites=[site.id],
                 umos=["fake:GroupMessage:g"], schedule={
                     "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
                 },
@@ -570,13 +571,13 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 self.started = asyncio.Event()
                 self.release = asyncio.Event()
 
-            async def preview_profile(self, payload, *, owner=None):
+            async def preview_profile(self, payload, *, owner=None, site_id=None):
                 return SimpleNamespace(
                     status_code=200,
                     body={"data": {"image_snapshot": {"id": "snap"}}},
                 )
 
-            async def generate_image(self, profile_id, payload, *, owner=None):
+            async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
                 self.started.set()
                 await self.release.wait()
                 return SimpleNamespace(status_code=200, body={"data": {"images": [
@@ -594,7 +595,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                         umos=("bot1:GroupMessage:g1",), profile_id="p1",
                     ),
                     profile_id="p1", profile_revision=1,
-                    site_id="s1", site_revision=1, site_enabled=True,
+                    candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
                 )
 
         image_module = importlib.import_module(

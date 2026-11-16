@@ -99,11 +99,10 @@ class ProfileServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self.tmp.cleanup()
 
-    async def _create(self, name="组合", site_id=None, items=None):
+    async def _create(self, name="组合", items=None):
         return await self.profiles.create_profile(
             ProfileCreate(
                 name=name,
-                site_id=site_id or self.site.id,
                 items=items
                 if items is not None
                 else [
@@ -116,7 +115,6 @@ class ProfileServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_crud_revision_and_persistence(self) -> None:
         profile = await self._create()
         self.assertEqual(profile.name, "组合")
-        self.assertEqual(profile.site_id, self.site.id)
         self.assertEqual(
             [entry.content_type for entry in profile.items],
             ["daily_news", "zhihu_hot"],
@@ -129,20 +127,17 @@ class ProfileServiceTest(unittest.IsolatedAsyncioTestCase):
             profile.id,
             ProfileUpdate(
                 name="改名组合",
-                site_id=self.disabled.id,
                 items=[item("toutiao_hot", 3)],
                 expected_revision=profile.revision,
             ),
         )
         self.assertEqual(updated.name, "改名组合")
-        self.assertEqual(updated.site_id, self.disabled.id)
         self.assertEqual(updated.revision, profile.revision + 1)
         with self.assertRaises(ProfileConflictError):
             await self.profiles.update_profile(
                 profile.id,
                 ProfileUpdate(
                     name="冲突",
-                    site_id=self.site.id,
                     items=[item("daily_news")],
                     expected_revision=profile.revision,
                 ),
@@ -159,56 +154,59 @@ class ProfileServiceTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await reopened.close()
 
-    async def test_site_reference_blocks_delete_until_profile_removed(self) -> None:
+    async def test_site_delete_no_longer_depends_on_profiles(self) -> None:
+        """组合不再绑定站点，删站点不受组合影响，组合也不失去栏目定义。"""
         profile = await self._create()
-        with self.assertRaises(SiteReferencedProfilesError) as raised:
-            await self.sites.delete_site(self.site.id, self.site.revision)
-        self.assertIn(profile.name, raised.exception.profile_names)
+        await self.sites.delete_site(self.site.id, self.site.revision)
         self.assertEqual(
-            (await self.sites.get_site(self.site.id)).id,
-            self.site.id,
+            [entry.id for entry in await self.sites.list_sites()],
+            [self.disabled.id],
         )
+        self.assertEqual((await self.profiles.get_profile(profile.id)).name, "组合")
 
         await self.profiles.delete_profile(profile.id, profile.revision)
         with self.assertRaises(ProfileNotFoundError):
             await self.profiles.get_profile(profile.id)
-        await self.sites.delete_site(self.site.id, self.site.revision)
 
-    async def test_concurrent_site_delete_and_profile_create_leave_no_dangling_reference(self) -> None:
+    async def test_concurrent_site_delete_and_profile_create_are_independent(self) -> None:
         create_result, delete_result = await asyncio.gather(
             self.profiles.create_profile(
-                ProfileCreate(
-                    name="并发组合",
-                    site_id=self.site.id,
-                    items=[item("daily_news")],
-                ),
+                ProfileCreate(name="并发组合", items=[item("daily_news")]),
             ),
             self.sites.delete_site(self.site.id, self.site.revision),
             return_exceptions=True,
         )
-        site_exists = any(
-            site.id == self.site.id for site in await self.sites.list_sites()
+        self.assertNotIsInstance(create_result, Exception)
+        self.assertNotIsInstance(delete_result, Exception)
+        self.assertEqual(
+            [entry.id for entry in await self.profiles.list_profiles()],
+            [create_result.id],
         )
-        profiles = await self.profiles.list_profiles()
-        if site_exists:
-            self.assertIsInstance(delete_result, SiteReferencedProfilesError)
-            self.assertEqual(len(profiles), 1)
-        else:
-            self.assertIsInstance(create_result, Exception)
-            self.assertEqual(profiles, [])
+        self.assertEqual(
+            [entry.id for entry in await self.sites.list_sites()],
+            [self.disabled.id],
+        )
 
-    async def test_missing_site_and_validation_are_rejected(self) -> None:
-        with self.assertRaises(Exception):
-            await self._create(site_id="missing")
+    async def test_legacy_site_id_is_ignored_and_invalid_items_rejected(self) -> None:
+        """旧客户端仍会带 site_id：静默忽略，不报错也不落库。"""
+        profile = await self.profiles.create_profile(
+            ProfileCreate(
+                name="旧客户端组合",
+                site_id="missing",
+                items=[item("daily_news")],
+            ),
+        )
+        self.assertEqual(profile.name, "旧客户端组合")
+        self.assertFalse(hasattr(profile, "site_id"))
         with self.assertRaises(ProfileValidationError):
-            await self._create(items=[])
-        profile = await self._create()
+            await self.profiles.create_profile(
+                ProfileCreate(name="空组合", items=[]),
+            )
         with self.assertRaises(ProfileValidationError):
             await self.profiles.update_profile(
                 profile.id,
                 ProfileUpdate(
                     name="x",
-                    site_id=self.site.id,
                     items=[item("daily_news"), item("daily_news")],
                     expected_revision=profile.revision,
                 ),
@@ -218,7 +216,7 @@ class ProfileServiceTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ProfileMigrationTest(unittest.IsolatedAsyncioTestCase):
-    async def test_v1_database_migrates_without_losing_sites(self) -> None:
+    async def test_v1_database_migrates_and_keeps_site_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "v1.sqlite3"
             connection = sqlite3.connect(path)
@@ -260,7 +258,14 @@ class ProfileMigrationTest(unittest.IsolatedAsyncioTestCase):
                         items=[item("daily_news", 1)],
                     ),
                 )
-                self.assertEqual(profile.site_id, "site-v1")
+                # 组合不再绑定站点：旧字段被忽略，表里也不再有该列。
+                self.assertFalse(hasattr(profile, "site_id"))
+                async with sites.store._require_connection().execute(
+                    "PRAGMA table_info(content_profiles)",
+                ) as cursor:
+                    columns = {row[1] for row in await cursor.fetchall()}
+                self.assertNotIn("site_id", columns)
+                self.assertIn("name", columns)
                 async with sites.store._require_connection().execute(
                     "PRAGMA user_version",
                 ) as cursor:

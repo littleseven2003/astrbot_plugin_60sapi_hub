@@ -71,7 +71,10 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
     async def test_snapshot_carries_candidate_enablement(self) -> None:
         await self._disable(self.a)
         snapshot = await self.tasks.get_config_snapshot(self.task.id)
-        self.assertEqual(snapshot.candidate_enabled, (False, True))
+        # 快照按任务候选顺序给出启用状态：A 已停用、B 仍可用。
+        self.assertEqual(
+            [item.enabled for item in snapshot.candidates], [False, True],
+        )
 
     async def test_scheduler_accepts_task_when_any_candidate_is_enabled(
         self,

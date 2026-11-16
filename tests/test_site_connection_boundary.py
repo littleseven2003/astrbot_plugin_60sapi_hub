@@ -162,7 +162,7 @@ class FakeSender:
 class StubProfileApi:
     """固定返回合法正文的组合预览替身，避免测试请求上游。"""
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_profile(self, payload, *, owner=None, site_id=None):
         from core.profile_api import ProfileApiResult
 
         return ProfileApiResult(
@@ -298,6 +298,7 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
             TaskCreate(
                 name="已有任务",
                 profile_id=profile.id,
+                sites=[site.id],
                 output_format="text",
                 umos=[FAKE_UMO],
                 schedule={
@@ -323,7 +324,6 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
             "existing-run",
             expected_task_revision=task.revision,
             expected_profile_revision=profile.revision,
-            expected_site_revision=site.revision,
         )
         self.assertEqual(execution.status, "success")
         return profile, task, delivery, sender

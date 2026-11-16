@@ -152,7 +152,14 @@ async function openPage(browser, port, viewport) {
       ready: async () => ({ pageTitle: "60sAPI Hub" }),
       apiGet: async (endpoint) => {
         if (endpoint === "profiles") return { profiles: fixtures.profiles };
-        if (endpoint === "sites") return { sites: [] };
+        if (endpoint === "sites") {
+          // 组合不再绑定站点：预览必须显式选站，页面需要至少一个可选站点。
+          return { sites: [{
+            id: "site-a", name: "公开站点",
+            base_url: "https://a.example.test/60s", enabled: true,
+            timeout_seconds: 5, source_kind: "public", revision: 1,
+          }] };
+        }
         if (endpoint === "tasks") return { tasks: [] };
         return { executions: [], total: 0, items: [] };
       },

@@ -13,10 +13,15 @@ from core.chat_commands import (
 )
 
 
-def task(task_id, umos, profile_id="profile-1", output="text", created=0):
+def task(
+    task_id, umos, profile_id="profile-1", output="text", created=0,
+    sites=("site-1",),
+):
     return SimpleNamespace(
         id=task_id, name=f"任务-{task_id}", profile_id=profile_id,
-        output_format=output, umos=tuple(umos), created_at=f"2026-01-01T00:00:{created:02d}Z",
+        output_format=output, umos=tuple(umos),
+        sites=tuple(sites),
+        created_at=f"2026-01-01T00:00:{created:02d}Z",
     )
 
 
@@ -102,7 +107,10 @@ class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
             tasks=[
                 task("empty", []),
                 task("removed", ["bot1:FriendMessage:other"]),
-                task("disabled", ["bot1:FriendMessage:me"], profile_id="p-disabled"),
+                task(
+                    "disabled", ["bot1:FriendMessage:me"], profile_id="p-disabled",
+                    sites=("site-disabled",),
+                ),
                 task("missing-profile", ["bot1:FriendMessage:me"], profile_id="missing"),
             ],
             profiles=[profile(), profile("p-disabled", "site-disabled")],
@@ -225,10 +233,12 @@ class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="可见任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="markdown", umos=["bot:GroupMessage:g"],
         ))
         await self.tasks.create_task(TaskCreate(
             name="停用站点任务", profile_id=self.disabled_profile.id,
+            sites=[self.disabled_site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         self.service = ChatCommandService(self.tasks, self.profiles, self.sites)
@@ -252,6 +262,7 @@ class ContentFixture:
         self.task = SimpleNamespace(
             id="task-get", name="查询任务", profile_id="p1",
             output_format="image", umos=("bot:GroupMessage:g",),
+            sites=("s1",),
             revision=2, created_at="2026-01-01T00:00:00Z",
         )
         self.profile = SimpleNamespace(
@@ -276,9 +287,10 @@ class ContentFixture:
             task=task,
             profile_id=self.profile.id,
             profile_revision=self.profile.revision,
-            site_id=self.site.id,
-            site_revision=self.site.revision,
-            site_enabled=self.site.enabled,
+            candidates=(SimpleNamespace(
+                id=self.site.id, revision=self.site.revision,
+                enabled=self.site.enabled,
+            ),),
         )
 
     async def get_profile(self, profile_id):
@@ -287,7 +299,7 @@ class ContentFixture:
     async def get_site(self, site_id):
         return self.site
 
-    async def preview_profile(self, payload):
+    async def preview_profile(self, payload, *, site_id=None):
         self.preview_calls.append(payload)
         return SimpleNamespace(
             status_code=200,
@@ -311,7 +323,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         ok = await service.handle("bot:GroupMessage:g", "/60s get task-get")
         self.assertIn("内容", ok)
         self.assertEqual(self.f.preview_calls, [{
-            "profile_id": "p1", "force_refresh": False,
+            "profile_id": "p1", "force_refresh": False, "site_id": "s1",
         }])
         missing = await service.handle("bot:GroupMessage:g", "/60s get nope")
         denied = await service.handle("bot:GroupMessage:other", "/60s get task-get")
@@ -333,7 +345,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.preview_calls, [])
 
         self.f.site.enabled = True
-        async def failed(payload):
+        async def failed(payload, *, site_id=None):
             self.f.preview_calls.append(payload)
             return SimpleNamespace(status_code=502, body={"data": {"status": "failed"}})
         self.f.preview_profile = failed
@@ -416,6 +428,7 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="并发任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         self.preview = BlockingPreview()
@@ -465,7 +478,7 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         async def mutate():
             current = await self.profiles.get_profile(self.profile.id)
             await self.profiles.update_profile(self.profile.id, ProfileUpdate(
-                name="组合已改", site_id=current.site_id,
+                name="组合已改",
                 items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
                 expected_revision=current.revision,
             ))
@@ -495,7 +508,7 @@ class BlockingPreview:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def preview_profile(self, payload):
+    async def preview_profile(self, payload, *, site_id=None):
         self.started.set()
         await self.release.wait()
         return SimpleNamespace(
@@ -509,6 +522,7 @@ class ImageFixture:
         self.task = SimpleNamespace(
             id="task-image", name="图片任务", profile_id="p1",
             output_format="text", umos=("bot:GroupMessage:g",),
+            sites=("s1",),
             revision=5, created_at="2026-01-01T00:00:00Z",
         )
         self.profile = SimpleNamespace(id="p1", site_id="s1", revision=2)
@@ -531,17 +545,17 @@ class ImageFixture:
         return SimpleNamespace(
             task=self.task, profile_id=self.profile.id,
             profile_revision=self.profile.revision,
-            site_id=self.site.id, site_revision=self.site.revision,
-            site_enabled=self.site.enabled,
+            candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision, enabled=self.site.enabled),),
+            
         )
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_profile(self, payload, *, owner=None, site_id=None):
         self.preview_owners.append(owner)
         return SimpleNamespace(status_code=200, body={"data": {
             "image_snapshot": {"id": "snap-1"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None):
+    async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
         self.owners.append(owner)
         return SimpleNamespace(status_code=200, body={"data": {
             "images": list(self.images),
@@ -584,7 +598,7 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
         self.f.generate_image = ImageFixture().generate_image
         self.f.generate_image = self.f.generate_image.__get__(self.f)
         original = self.f.generate_image
-        async def changed(profile_id, payload, *, owner=None):
+        async def changed(profile_id, payload, *, owner=None, site_id=None):
             result = await original(profile_id, payload, owner=owner)
             self.f.task.revision += 1
             return result
@@ -643,6 +657,7 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="图片竞态任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         self.preview = ImageRacePreview()
@@ -675,7 +690,7 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         await self.preview.started.wait()
         current = await self.profiles.get_profile(self.profile.id)
         await self.profiles.update_profile(self.profile.id, ProfileUpdate(
-            name="图片组合已改", site_id=current.site_id,
+            name="图片组合已改",
             items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
             expected_revision=current.revision,
         ))
@@ -717,14 +732,14 @@ class ImageRacePreview:
         self.render_started = asyncio.Event()
         self.render_release = asyncio.Event()
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_profile(self, payload, *, owner=None, site_id=None):
         self.started.set()
         await self.release.wait()
         return SimpleNamespace(status_code=200, body={"data": {
             "image_snapshot": {"id": "snap"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None):
+    async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
         self.render_started.set()
         await self.render_release.wait()
         encoded = "iVBORw0KGgo="

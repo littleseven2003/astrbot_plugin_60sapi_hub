@@ -90,6 +90,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="图片查询任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="markdown", umos=["bot:GroupMessage:g"],
         ))
         self.query = ChatImageQuery(self.tasks, self.api)
@@ -148,6 +149,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         ))
         task = await self.tasks.create_task(TaskCreate(
             name="部分失败任务", profile_id=profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         reply = await self.query.query("bot:GroupMessage:g", task.id)
@@ -190,7 +192,7 @@ class StubImageApi:
         self.preview_calls = 0
         self.image_calls = 0
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_profile(self, payload, *, owner=None, site_id=None):
         self.preview_calls += 1
         return ProfileApiResult(200, {"status": "ok", "data": {
             "status": "complete",
@@ -199,7 +201,7 @@ class StubImageApi:
             "image_snapshot": {"id": "snap-contract"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None):
+    async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
         self.image_calls += 1
         return ProfileApiResult(200, {"status": "ok", "data": self.data})
 
@@ -235,6 +237,7 @@ class ChatImageSectionContractTest(unittest.IsolatedAsyncioTestCase):
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="契约任务", profile_id=self.profile.id,
+            sites=[self.site.id],
             output_format="image", umos=["bot:GroupMessage:g"],
         ))
 

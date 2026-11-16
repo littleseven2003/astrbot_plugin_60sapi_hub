@@ -143,10 +143,7 @@ class TaskApi:
             return _error(503, "内容获取不可用。", code="content_unavailable")
 
         requirements = requirements_from_items(profile.items)
-        baseline = (
-            task.revision, profile.revision, profile.site_id,
-            tuple(task.sites),
-        )
+        baseline = (task.revision, profile.revision, tuple(task.sites))
         checked: list[dict[str, Any]] = []
         site_snapshot: dict[str, tuple[int, bool]] = {}
         winner: dict[str, Any] | None = None
@@ -218,7 +215,7 @@ class TaskApi:
             return _storage_error()
         if (
             latest_task.revision, latest_profile.revision,
-            latest_profile.site_id, tuple(latest_task.sites),
+            tuple(latest_task.sites),
         ) != baseline:
             return _error(
                 409,
@@ -434,7 +431,6 @@ def _task_dict(
     now: datetime,
     next_run_at: str | None = None,
 ) -> dict[str, Any]:
-    site = sites.get(profile.site_id) if profile is not None else None
     candidates = []
     for site_id in task.sites:
         candidate = sites.get(site_id)
@@ -480,8 +476,9 @@ def _task_dict(
         "name": task.name,
         "profile_id": task.profile_id,
         "profile_name": profile.name if profile else "未知组合",
-        "site_id": profile.site_id if profile else None,
-        "site_enabled": site.enabled if site else False,
+        # 组合不再绑定站点；site_id 保留为 null 供旧前端读取。
+        "site_id": None,
+        "site_enabled": any(item["enabled"] is True for item in candidates),
         "sites": candidates,
         "output_format": task.output_format,
         "output_label": task.output_label,

@@ -126,8 +126,8 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
         captured: list[str] = []
         original = ProfileImageRenderer._footer_lines
 
-        def recording(renderer, section, created_at, width):
-            lines = original(renderer, section, created_at, width)
+        def recording(renderer, section, site_name, created_at, width):
+            lines = original(renderer, section, site_name, created_at, width)
             captured.append(
                 "".join(part.text for line in lines for part in line.parts),
             )
@@ -154,8 +154,8 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
         captured: list[str] = []
         original = ProfileImageRenderer._footer_lines
 
-        def recording(renderer, section, created_at, width):
-            lines = original(renderer, section, created_at, width)
+        def recording(renderer, section, site_name, created_at, width):
+            lines = original(renderer, section, site_name, created_at, width)
             captured.append(
                 "".join(part.text for line in lines for part in line.parts),
             )

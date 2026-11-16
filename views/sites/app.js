@@ -3742,7 +3742,7 @@ function renderTaskSites() {
   if (state.taskSites.length === 0) {
     const empty = document.createElement("li");
     empty.className = "task-site-empty";
-    empty.textContent = "未指定时使用内容组合绑定的站点。";
+    empty.textContent = "还没有候选站点：请至少添加一个，执行时按顺序尝试。";
     elements.taskSiteList.append(empty);
   }
   state.taskSites.forEach((siteId, index) => {
@@ -3753,14 +3753,24 @@ function renderTaskSites() {
     order.textContent = String(index + 1);
     const name = document.createElement("span");
     name.className = "task-site-name";
+    const site = state.sites.find((item) => item.id === siteId);
     name.textContent = siteNameById(siteId);
+    if (!site || !site.enabled) {
+      const status = document.createElement("span");
+      status.className = "task-site-status";
+      status.textContent = site ? "（已停用）" : "（已删除）";
+      name.append(status);
+    }
     const actions = document.createElement("span");
     actions.className = "task-site-actions";
-    actions.append(
-      makeButton("上移", "button button-secondary", () => moveTaskSite(index, -1),
-        "上移候选站点"),
-      makeButton("下移", "button button-secondary", () => moveTaskSite(index, 1),
-        "下移候选站点"),
+    const up = makeButton("上移", "button button-secondary", () => moveTaskSite(index, -1),
+      "上移候选站点");
+    const down = makeButton("下移", "button button-secondary", () => moveTaskSite(index, 1),
+      "下移候选站点");
+    // 首尾位置明确禁用，避免点了没反应。
+    up.disabled = index === 0;
+    down.disabled = index === state.taskSites.length - 1;
+    actions.append(up, down,
       makeButton("移除", "button button-danger", () => removeTaskSite(index),
         "移除候选站点"),
     );
@@ -4040,6 +4050,12 @@ async function handleTaskSave(event) {
   }
   if (!elements.taskProfile.value) {
     showTaskFormError("请选择内容组合。");
+    return;
+  }
+  if (state.taskSites.length === 0) {
+    // 没有候选站点就没有执行目标，不能保存成看似可用的任务。
+    showTaskFormError("请至少添加一个候选站点后再保存。");
+    elements.taskSitePicker?.focus();
     return;
   }
   let schedule;

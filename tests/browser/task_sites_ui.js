@@ -428,6 +428,21 @@ async function openPage(browser, port, overrides = {}) {
       window.__calls.some((call) => call.endpoint.endsWith("/enable")));
     check(true, "A 停用 B 可用时页面实际发出启用请求");
     await page2.close();
+
+    // 首尾位置按钮禁用：首行不能上移、末行不能下移。
+    const first = page.locator("#task-site-list .task-site-row").first();
+    const last = page.locator("#task-site-list .task-site-row").last();
+    check(await first.locator("button", { hasText: "上移" }).isDisabled(),
+      "首行上移按钮应禁用");
+    check(await last.locator("button", { hasText: "下移" }).isDisabled(),
+      "末行下移按钮应禁用");
+    // 添加下拉只列未加入的站点。
+    const pickerValues = await page.$$eval("#task-site-picker option",
+      (nodes) => nodes.map((node) => node.value));
+    const rowSiteIds = await page.$$eval("#task-site-list .task-site-row",
+      (nodes) => nodes.length);
+    check(pickerValues.length + rowSiteIds <= 3,
+      "添加下拉不包含已加入站点：" + JSON.stringify(pickerValues));
     console.log("TASK SITES UI PASS", { assertions });
   } finally {
     await browser.close();

@@ -26,6 +26,7 @@ from .site_store import (
     SiteReferencedError,
     SiteStore,
     SiteStoreClosedError,
+    SiteNameConflictError,
     SiteStoreError,
     StoredSite,
 )
@@ -34,7 +35,8 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 MIN_TIMEOUT_SECONDS = 1.0
 MAX_TIMEOUT_SECONDS = 120.0
 
-MAX_SITE_NAME_LENGTH = 80
+# 名称为空时用完整基础地址兜底，因此上限需覆盖合法长 URL。
+MAX_SITE_NAME_LENGTH = 2048
 MAX_BASE_URL_LENGTH = 2048
 MAX_BEARER_TOKEN_LENGTH = 4096
 MAX_SITE_ID_LENGTH = 64
@@ -200,6 +202,10 @@ class SiteService:
     async def open(self) -> None:
         try:
             await self._store.open()
+        except SiteNameConflictError:
+            raise SiteValidationError(
+                "name", "已存在同名站点，请换一个名称",
+            ) from None
         except SiteStoreError as exc:
             raise SiteStorageError(str(exc)) from exc
 
@@ -210,8 +216,8 @@ class SiteService:
             raise SiteStorageError("关闭站点数据库失败。") from exc
 
     async def create_site(self, data: SiteCreate) -> SiteConfig:
-        name = normalize_site_name(data.name)
         base_url = normalize_base_url(data.base_url)
+        name = normalize_site_name(data.name, fallback=base_url)
         enabled = normalize_enabled(data.enabled)
         timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
         source_kind = normalize_source_kind(
@@ -386,10 +392,15 @@ def normalize_site_id(value: object) -> str:
     return normalized
 
 
-def normalize_site_name(value: object) -> str:
+def normalize_site_name(value: object, fallback: str = "") -> str:
+    if value is None:
+        value = ""
     if not isinstance(value, str):
         raise SiteValidationError("name", "必须是字符串")
     normalized = value.strip()
+    if not normalized:
+        # 名称为空时用已规范化的完整基础地址，保留反向代理路径。
+        normalized = fallback.strip()
     if not normalized:
         raise SiteValidationError("name", "不能为空")
     if len(normalized) > MAX_SITE_NAME_LENGTH:

@@ -251,6 +251,10 @@ class SiteRecordNotFoundError(SiteStoreError):
         super().__init__(f"站点 {site_id} 不存在")
 
 
+class SiteNameConflictError(SiteStoreError):
+    """已有同名站点（去首尾空白、忽略大小写比较）。"""
+
+
 class SiteRevisionConflictError(SiteStoreError):
     """写入时的 revision 与数据库不一致。"""
 
@@ -711,6 +715,18 @@ class SiteStore:
             self._connection = None
             if connection is not None:
                 await connection.close()
+
+    async def _name_taken(
+        self, connection, name: str, exclude_id: str | None = None,
+    ) -> bool:
+        """名称按去首尾空白、忽略大小写比较；旧库重名留给用户处理。"""
+        sql = "SELECT id FROM sites WHERE lower(trim(name)) = lower(trim(?))"
+        params: list[object] = [name]
+        if exclude_id is not None:
+            sql += " AND id != ?"
+            params.append(exclude_id)
+        cursor = await connection.execute(sql, params)
+        return await cursor.fetchone() is not None
 
     async def create_site(
         self,

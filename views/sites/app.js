@@ -3263,8 +3263,13 @@ function renderTasks() {
     meta.className = "site-meta";
     const profile = document.createElement("span");
     profile.textContent = `组合：${task.profile_name}`;
-    if (!task.site_enabled) {
-      profile.textContent += "（站点已停用，仅保存配置）";
+    const taskCandidates = Array.isArray(task.sites) ? task.sites : [];
+    const usableCandidates = taskCandidates.filter(
+      (item) => item && item.enabled && item.exists !== false,
+    );
+    if (taskCandidates.length > 0 && usableCandidates.length === 0) {
+      // 与原组合站点无关：候选全不可用时执行会改发异常提示。
+      profile.textContent += "（候选站点均不可用，执行时将发送异常提示）";
     }
     const output = document.createElement("span");
     output.textContent = `输出：${task.output_label}`;
@@ -3504,10 +3509,15 @@ function updateTaskCapabilityGate() {
   const matches = taskFormMatchesSaved();
   button.disabled = !matches;
   if (!matches) {
+    state.taskCapabilityGateWarning = true;
     setTaskCapabilityResult(
       "当前修改尚未保存；能力测试针对已保存配置，请先保存再测试。",
       "warning",
     );
+  } else if (state.taskCapabilityGateWarning) {
+    // 撤销修改后不再残留警告。
+    state.taskCapabilityGateWarning = false;
+    setTaskCapabilityResult("", null);
   }
 }
 

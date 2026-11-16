@@ -144,12 +144,15 @@ async function openPage(browser, port, overrides = {}) {
             content_policy: "fresh",
           };
         }
-        if (endpoint.endsWith("/capability-test") && window.__capabilityGate) {
-          await window.__capabilityGate;
-        }
         if (endpoint.endsWith("/capability-test")) {
+          // 失败意图在请求发起时固定，之后测试可以安全地改动窗口标志。
+          const failNow = Boolean(window.__capabilityFail);
+          if (window.__capabilityGate) {
+            await window.__capabilityGate;
+          }
           window.__capabilityDoneCount = (window.__capabilityDoneCount || 0) + 1;
-          if (window.__capabilityFail) {
+          if (failNow) {
+            window.__capabilityFailures = (window.__capabilityFailures || 0) + 1;
             throw new Error("测试失败，请稍后重试");
           }
           // 宿主 bridge 成功时直接返回业务 data（不再套一层 data）。
@@ -330,11 +333,21 @@ async function openPage(browser, port, overrides = {}) {
       .querySelector("#task-capability-result").textContent.includes("尚未保存"));
     check(await page.isDisabled("#task-capability-test-button"),
       "在途改组合（失败）后按钮应保持禁用且提示未被覆盖");
+    const failures = await page.evaluate(() => window.__capabilityFailures || 0);
+    check(failures > 0, "延迟失败桩确实触发过请求失败：" + failures);
 
-    // 恢复为已保存组合，避免关闭弹窗时触发未保存确认。
+    // 撤销修改：警告清除、按钮可用，可再次测试。
     await page.selectOption("#task-profile", "profile-1");
     await page.waitForFunction(() =>
       !document.querySelector("#task-capability-test-button").disabled);
+    const clearedHint = await page.textContent("#task-capability-result");
+    check(!clearedHint.includes("尚未保存"),
+      "撤销修改后不应残留“请先保存”：" + clearedHint);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result")
+      .textContent.includes("可以满足"));
+    check(true, "撤销修改后可以再次测试");
 
     await page.click("#task-close-dialog-button");
 

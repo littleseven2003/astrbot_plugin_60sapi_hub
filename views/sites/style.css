@@ -2059,11 +2059,18 @@ dialog.dialog button {
 
 .profile-image-viewer-img {
   display: block;
-  width: 900px;
-  max-width: none;
+  /* 默认按可用宽度显示：窄屏也能一眼读完整行。 */
+  width: 100%;
+  max-width: 900px;
   height: auto;
   margin: 0 auto;
   background: var(--white);
+}
+
+/* 原始尺寸：按 900px 显示，横向滚动查看细节。 */
+.profile-image-viewer-body.is-actual .profile-image-viewer-img {
+  width: 900px;
+  max-width: none;
 }
 
 .profile-image-viewer-foot {

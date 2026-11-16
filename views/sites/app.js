@@ -228,6 +228,7 @@ const elements = {
   profileImageViewerHint: document.getElementById("profile-image-viewer-hint"),
   profileImageViewerClose: document.getElementById("profile-image-viewer-close"),
   profileImageViewerDownload: document.getElementById("profile-image-viewer-download"),
+  profileImageViewerZoom: document.getElementById("profile-image-viewer-zoom"),
   taskCount: document.getElementById("task-count"),
   tasksList: document.getElementById("tasks-list"),
   taskListState: document.getElementById("task-list-state"),
@@ -368,6 +369,7 @@ const state = {
   imageViewerSection: null,
   imageViewerTrigger: null,
   imageViewerScrollY: 0,
+  imageViewerActual: false,
   customBaseUrl: "",
   credentialAutoCleared: false,
   tasks: [],
@@ -1734,7 +1736,10 @@ const PROFILE_IMAGE_STATUS_LABELS = {
 };
 
 const PROFILE_IMAGE_VIEWER_CLASS = "profile-image-viewer-open";
-const PROFILE_IMAGE_VIEWER_HINT = "按原始 900px 显示，窄屏可左右滑动查看。";
+const PROFILE_IMAGE_VIEWER_HINT =
+  "已按屏幕宽度显示完整长图；需要细节时点“原始尺寸”。";
+const PROFILE_IMAGE_VIEWER_HINT_ACTUAL =
+  "原始 900px 显示，窄屏可左右滑动查看细节。";
 
 function profileImageViewerFocusFallback() {
   const candidates = [
@@ -1758,6 +1763,20 @@ function profileImageViewerFocusFallback() {
   return null;
 }
 
+function applyProfileImageViewerZoom(actual) {
+  state.imageViewerActual = Boolean(actual);
+  const body = elements.profileImageViewerBody;
+  if (body) body.classList.toggle("is-actual", state.imageViewerActual);
+  const button = elements.profileImageViewerZoom;
+  if (button) {
+    button.setAttribute("aria-pressed", String(state.imageViewerActual));
+    button.textContent = state.imageViewerActual ? "适应宽度" : "原始尺寸";
+  }
+  elements.profileImageViewerHint.textContent = state.imageViewerActual
+    ? PROFILE_IMAGE_VIEWER_HINT_ACTUAL
+    : PROFILE_IMAGE_VIEWER_HINT;
+}
+
 function openProfileImageViewer(section, trigger) {
   const viewer = elements.profileImageViewer;
   if (!viewer || typeof viewer.showModal !== "function" || viewer.open) {
@@ -1774,7 +1793,7 @@ function openProfileImageViewer(section, trigger) {
   elements.profileImageViewerImg.width = section.width;
   elements.profileImageViewerImg.height = section.height;
   elements.profileImageViewerImg.alt = section.label + "栏目长图（大图）";
-  elements.profileImageViewerHint.textContent = PROFILE_IMAGE_VIEWER_HINT;
+  applyProfileImageViewerZoom(false);
   elements.profileImageViewerDownload.textContent = "下载「" + section.label + "」PNG";
   elements.profileImageViewerDownload.setAttribute(
     "aria-label",
@@ -1802,7 +1821,7 @@ function closeProfileImageViewer(restoreFocus = true) {
   elements.profileImageViewerImg.alt = "";
   elements.profileImageViewerImg.width = 900;
   elements.profileImageViewerImg.height = 0;
-  elements.profileImageViewerHint.textContent = PROFILE_IMAGE_VIEWER_HINT;
+  applyProfileImageViewerZoom(false);
   if (restoreFocus) {
     const target = trigger && document.contains(trigger)
       ? trigger
@@ -1872,6 +1891,9 @@ function bindProfileImageViewer() {
   }
   elements.profileImageViewerClose?.addEventListener("click", () => {
     closeProfileImageViewer(true);
+  });
+  elements.profileImageViewerZoom?.addEventListener("click", () => {
+    applyProfileImageViewerZoom(!state.imageViewerActual);
   });
   elements.profileImageViewerDownload?.addEventListener("click", () => {
     if (state.imageViewerSection) {

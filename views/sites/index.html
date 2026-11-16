@@ -908,11 +908,17 @@
         </div>
         <footer class="profile-image-viewer-foot">
           <p id="profile-image-viewer-hint" class="profile-image-viewer-hint">
-            按原始 900px 显示，窄屏可左右滑动查看。
+            已按屏幕宽度显示完整长图；需要细节时点“原始尺寸”。
           </p>
-          <button id="profile-image-viewer-download" class="button button-secondary" type="button">
-            下载 PNG
-          </button>
+          <div class="profile-image-viewer-actions">
+            <button id="profile-image-viewer-zoom" class="button button-secondary" type="button"
+                    aria-pressed="false">
+              原始尺寸
+            </button>
+            <button id="profile-image-viewer-download" class="button button-secondary" type="button">
+              下载 PNG
+            </button>
+          </div>
         </footer>
       </dialog>
 

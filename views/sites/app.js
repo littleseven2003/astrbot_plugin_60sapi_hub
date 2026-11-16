@@ -3754,15 +3754,18 @@ function taskSiteOptions() {
 
 
 const BATCH_TEST_TYPES = [
-  "daily_news", "bilibili_hot", "zhihu_hot", "douyin_hot", "weibo_hot",
+  "daily_news", "bilibili_hot", "zhihu_hot", "douyin_hot", "toutiao_hot",
 ];
 const BATCH_RESULT_LABELS = {
   success: "可用", empty: "可用（空内容）", error: "不可用",
 };
 
 function batchTestSignature() {
-  return state.sites.map((site) => `${site.id}:${site.revision}:${site.enabled}`)
-    .join(",");
+  // 站点配置或所选站点变化都让在途结果失效，避免结果对不上当前选择。
+  const sites = state.sites.map(
+    (site) => `${site.id}:${site.revision}:${site.enabled}`,
+  ).join(",");
+  return `${sites}|${batchTestSelected().join(",")}`;
 }
 
 function renderBatchTestSites() {

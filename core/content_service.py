@@ -84,6 +84,10 @@ class ContentService:
         return self._client
 
     @property
+    def sites(self) -> SiteService:
+        return self._sites
+
+    @property
     def is_open(self) -> bool:
         return self._client.is_open
 
@@ -121,7 +125,12 @@ class ContentService:
             await self._client.close()
 
     async def test_connection(
-        self, site_id: object, content_type: object, expected_revision: object,
+        self,
+        site_id: object,
+        content_type: object,
+        expected_revision: object,
+        *,
+        inflight_limit: int = 2,
     ) -> dict[str, object]:
         """按已保存站点快照测试一个固定 endpoint；不使用缓存。"""
         from .sites import SiteNotFoundError, SiteValidationError
@@ -137,7 +146,7 @@ class ContentService:
         if not self._test_admitted:
             from .sites import SiteTestUnavailableError
             raise SiteTestUnavailableError()
-        if self._test_inflight >= 2:
+        if self._test_inflight >= inflight_limit:
             from .sites import SiteTestBusyError
             raise SiteTestBusyError()
         self._test_inflight += 1

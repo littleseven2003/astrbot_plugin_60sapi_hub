@@ -45,6 +45,11 @@ from .content_types import (
 )
 
 
+# 批量测试由管理员显式发起，允许比单站点测试更高的并发；仍与单站点
+# 测试共享同一个在途计数，避免页面连点时打爆上游。
+BATCH_INFLIGHT_LIMIT = 6
+
+
 @dataclass(frozen=True, slots=True)
 class ContentApiResult:
     """一个可直接序列化的内容预览 API 结果。"""
@@ -60,7 +65,7 @@ class ContentApi:
         self._service = service
 
     async def test_connection(
-        self, site_id: object, payload: object,
+        self, site_id: object, payload: object, *, inflight_limit: int = 2,
     ) -> ContentApiResult:
         if not isinstance(payload, dict):
             return _error(400, "请求体必须是 JSON 对象。", "invalid_body")
@@ -74,7 +79,7 @@ class ContentApi:
             return _error(400, "revision 无效。", "validation_error")
         try:
             data = await self._service.test_connection(
-                site_id, content_type, revision,
+                site_id, content_type, revision, inflight_limit=inflight_limit,
             )
         except SiteNotFoundError:
             return _error(404, "站点不存在。", "site_not_found")
@@ -130,13 +135,13 @@ class ContentApi:
                 or any(item not in KNOWN_CONTENT_TYPES for item in content_types)):
             return _error(400, "内容类型无效。", "validation_error")
 
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(BATCH_INFLIGHT_LIMIT)
 
         async def run_one(site_id: str, content_type: str) -> dict:
             async with semaphore:
                 started = time.monotonic()
                 try:
-                    site = await self._service._sites.get_site(site_id)
+                    site = await self._service.sites.get_site(site_id)
                 except Exception:
                     return {
                         "site_id": site_id, "content_type": content_type,
@@ -147,9 +152,10 @@ class ContentApi:
                     site_id,
                     {"expected_revision": site.revision,
                      "content_type": content_type},
+                    inflight_limit=BATCH_INFLIGHT_LIMIT,
                 )
                 elapsed = int((time.monotonic() - started) * 1000)
-                if outcome.status == 200:
+                if outcome.status_code == 200:
                     data = outcome.body.get("data") or {}
                     result = "empty" if data.get("result") == "empty" else "success"
                     message = data.get("message") or ""

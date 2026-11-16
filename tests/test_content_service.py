@@ -389,7 +389,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         from core.news import NewsHTTPStatusError, NewsTransportError
         class FailingService:
             def __init__(self, error): self.error = error
-            async def test_connection(self, *args): raise self.error
+            async def test_connection(self, *args, **kwargs): raise self.error
         for error, code in (
             (NewsHTTPStatusError("secret-token reflected"), "test_http_status"),
             (NewsTransportError("secret-token reflected"), "test_network_error"),

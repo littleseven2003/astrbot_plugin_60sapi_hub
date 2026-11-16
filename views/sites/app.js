@@ -248,6 +248,11 @@ const elements = {
   taskCapabilityResult: document.getElementById("task-capability-result"),
   siteTestAllButton: document.getElementById("site-test-all-button"),
   siteTestAllResults: document.getElementById("site-test-all-results"),
+  batchTestType: document.getElementById("batch-test-type"),
+  batchTestRun: document.getElementById("batch-test-run"),
+  batchTestSites: document.getElementById("batch-test-sites"),
+  batchTestState: document.getElementById("batch-test-state"),
+  batchTestResults: document.getElementById("batch-test-results"),
   taskOutputFormat: document.getElementById("task-output-format"),
   taskUmos: document.getElementById("task-umos"),
   taskScheduleNone: document.getElementById("task-schedule-none"),
@@ -333,6 +338,7 @@ const elements = {
 };
 
 const state = {
+  batchTestRequestId: 0,
   sites: [],
   mode: "create",
   editingId: null,
@@ -891,6 +897,7 @@ async function loadSites() {
     const rawSites = result && Array.isArray(result.sites) ? result.sites : [];
     state.sites = rawSites.map(normalizeSite).filter(Boolean);
     renderSites();
+    renderBatchTestSites();
     syncPreviewSites();
     succeeded = true;
     if (elements.status.dataset.tone === "error") {
@@ -3737,6 +3744,111 @@ function taskSiteOptions() {
   }
 }
 
+
+const BATCH_TEST_TYPES = [
+  "daily_news", "bilibili_hot", "zhihu_hot", "douyin_hot", "weibo_hot",
+];
+const BATCH_RESULT_LABELS = {
+  success: "可用", empty: "可用（空内容）", error: "不可用",
+};
+
+function batchTestSignature() {
+  return state.sites.map((site) => `${site.id}:${site.revision}:${site.enabled}`)
+    .join(",");
+}
+
+function renderBatchTestSites() {
+  const box = elements.batchTestSites;
+  if (!box) return;
+  box.replaceChildren();
+  if (state.sites.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "help";
+    empty.textContent = "还没有已保存站点。";
+    box.append(empty);
+    elements.batchTestRun.disabled = true;
+    return;
+  }
+  for (const site of state.sites) {
+    const label = document.createElement("label");
+    label.className = "batch-test-site";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = site.id;
+    input.checked = Boolean(site.enabled);
+    const text = document.createElement("span");
+    text.textContent = site.enabled ? site.name : `${site.name}（已停用）`;
+    label.append(input, text);
+    box.append(label);
+  }
+}
+
+function batchTestSelected() {
+  return Array.from(
+    elements.batchTestSites.querySelectorAll("input[type=checkbox]:checked"),
+  ).map((input) => input.value);
+}
+
+function renderBatchTestResults(results) {
+  const list = elements.batchTestResults;
+  list.replaceChildren();
+  list.hidden = false;
+  const names = new Map(state.sites.map((site) => [site.id, site.name]));
+  for (const item of results) {
+    const row = document.createElement("li");
+    row.className = "batch-test-result";
+    row.dataset.result = item.result;
+    const head = document.createElement("strong");
+    head.textContent = `${names.get(item.site_id) || item.site_id} · ${item.content_type}`;
+    const status = document.createElement("span");
+    status.className = "batch-test-status";
+    status.textContent = BATCH_RESULT_LABELS[item.result] || "未知";
+    const detail = document.createElement("span");
+    detail.className = "batch-test-detail";
+    detail.textContent = item.message || "";
+    row.append(head, status, detail);
+    list.append(row);
+  }
+}
+
+async function runBatchTest() {
+  const siteIds = batchTestSelected();
+  if (siteIds.length === 0) {
+    elements.batchTestState.hidden = false;
+    elements.batchTestState.textContent = "请至少选择一个站点。";
+    return;
+  }
+  const type = elements.batchTestType.value;
+  const contentTypes = type === "all" ? BATCH_TEST_TYPES.slice() : [type];
+  const requestId = ++state.batchTestRequestId;
+  const signature = batchTestSignature();
+  elements.batchTestRun.disabled = true;
+  elements.batchTestState.hidden = false;
+  elements.batchTestState.textContent = "正在测试所选站点…";
+  elements.batchTestResults.hidden = true;
+  try {
+    const data = await bridge.apiPost("sites/test-batch", {
+      site_ids: siteIds, content_types: contentTypes,
+    });
+    if (requestId !== state.batchTestRequestId || signature !== batchTestSignature()) {
+      return;
+    }
+    const payload = data && data.data ? data.data : (data || {});
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    renderBatchTestResults(results);
+    const failed = results.filter((item) => item.result === "error").length;
+    elements.batchTestState.textContent = results.length === 0
+      ? "没有收到测试结果。"
+      : `完成 ${results.length} 项，${failed} 项不可用。`;
+  } catch (error) {
+    if (requestId !== state.batchTestRequestId) return;
+    elements.batchTestState.textContent = friendlyErrorMessage(error);
+  } finally {
+    if (requestId === state.batchTestRequestId) {
+      elements.batchTestRun.disabled = false;
+    }
+  }
+}
 function renderTaskSites() {
   elements.taskSiteList.replaceChildren();
   if (state.taskSites.length === 0) {
@@ -5459,6 +5571,7 @@ function bindEvents() {
     option.textContent = preset.label;
     elements.instancePreset.append(option);
   }
+  elements.batchTestRun?.addEventListener("click", runBatchTest);
   elements.instanceTypePublic.addEventListener("change", () => {
     if (elements.instanceTypePublic.checked) selectInstanceType(SOURCE_KIND_PUBLIC);
   });

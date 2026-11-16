@@ -2095,3 +2095,88 @@ dialog.dialog button {
 .profile-image-viewer-open body {
   overflow: hidden;
 }
+
+/* 批量连接测试：站点多选 + 结果列表 */
+.batch-test-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.batch-test-controls .field {
+  flex: 0 1 220px;
+}
+
+.batch-test-sites {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+}
+
+.batch-test-site {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--white);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.batch-test-site input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.batch-test-site:focus-within {
+  border-color: var(--focus);
+}
+
+.batch-test-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.batch-test-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+  font-size: 12.5px;
+}
+
+.batch-test-result[data-result="error"] {
+  border-color: #f0c9c3;
+  background: #fdf3f1;
+}
+
+.batch-test-status {
+  font-weight: 600;
+}
+
+.batch-test-result[data-result="error"] .batch-test-status {
+  color: #a4362c;
+}
+
+.batch-test-detail {
+  color: var(--sub);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+

@@ -550,7 +550,7 @@ class ImageFixture:
             task=self.task, profile_id=self.profile.id,
             profile_revision=self.profile.revision,
             candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision, enabled=self.site.enabled),),
-            
+
         )
 
     async def get_profile(self, profile_id):

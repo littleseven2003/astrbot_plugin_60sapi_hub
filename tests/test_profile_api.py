@@ -476,7 +476,7 @@ class ProfileApiTest(unittest.IsolatedAsyncioTestCase):
         for value in ("true", 1, 0, None, []):
             with self.subTest(value=value):
                 result = await self.api.preview_profile(
-                    {"site_id": self.site.id, 
+                    {"site_id": self.site.id,
                         "profile_id": created["id"],
                         "force_refresh": value,
                     },

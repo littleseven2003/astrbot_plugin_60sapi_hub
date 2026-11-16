@@ -595,6 +595,25 @@
           </div>
 
           <div class="form-grid">
+            <fieldset class="field field-wide instance-type">
+              <legend>实例类型</legend>
+              <div class="segmented" role="radiogroup" aria-label="实例类型">
+                <label class="segmented-option">
+                  <input type="radio" name="instance_type" id="instance-type-public"
+                         value="public" checked />
+                  <span>公开实例</span>
+                </label>
+                <label class="segmented-option">
+                  <input type="radio" name="instance_type" id="instance-type-self"
+                         value="self_built" />
+                  <span>自建实例</span>
+                </label>
+              </div>
+              <small id="instance-type-hint">
+                公开实例的内容输出只显示域名；自建实例只显示“自建服务”。
+              </small>
+            </fieldset>
+
             <label class="field">
               <span>站点名称</span>
               <input
@@ -621,25 +640,6 @@
                 required
               />
             </label>
-
-            <fieldset class="field field-wide instance-type">
-              <legend>实例类型</legend>
-              <div class="segmented" role="radiogroup" aria-label="实例类型">
-                <label class="segmented-option">
-                  <input type="radio" name="instance_type" id="instance-type-public"
-                         value="public" checked />
-                  <span>公开实例</span>
-                </label>
-                <label class="segmented-option">
-                  <input type="radio" name="instance_type" id="instance-type-self"
-                         value="self_built" />
-                  <span>自建实例</span>
-                </label>
-              </div>
-              <small id="instance-type-hint">
-                公开实例的内容输出只显示域名；自建实例只显示“自建服务”。
-              </small>
-            </fieldset>
 
             <div class="field field-wide" id="preset-field">
               <label class="field">
@@ -887,6 +887,31 @@
           </button>
           <button id="discard-confirm-button" class="button button-danger" type="button">
             放弃修改并关闭
+          </button>
+        </footer>
+      </dialog>
+
+      <dialog
+        id="profile-image-viewer"
+        class="profile-image-viewer"
+        aria-labelledby="profile-image-viewer-title"
+        aria-describedby="profile-image-viewer-hint"
+      >
+        <header class="profile-image-viewer-head">
+          <h2 id="profile-image-viewer-title">栏目长图</h2>
+          <button id="profile-image-viewer-close" class="button button-secondary" type="button">
+            关闭
+          </button>
+        </header>
+        <div id="profile-image-viewer-body" class="profile-image-viewer-body" tabindex="0">
+          <img id="profile-image-viewer-img" class="profile-image-viewer-img" alt="" width="900" height="0" />
+        </div>
+        <footer class="profile-image-viewer-foot">
+          <p id="profile-image-viewer-hint" class="profile-image-viewer-hint">
+            按原始 900px 显示，窄屏可左右滑动查看。
+          </p>
+          <button id="profile-image-viewer-download" class="button button-secondary" type="button">
+            下载 PNG
           </button>
         </footer>
       </dialog>

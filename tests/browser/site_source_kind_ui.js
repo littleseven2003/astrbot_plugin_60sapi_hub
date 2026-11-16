@@ -53,6 +53,11 @@ const SITES = [
     has_bearer_token: false, revision: 1, updated_at: "",
   },
   {
+    id: "site-token", name: "带凭据站点", base_url: "https://t.example.test/n",
+    enabled: true, timeout_seconds: 10, source_kind: "public",
+    has_bearer_token: true, revision: 2, updated_at: "",
+  },
+  {
     id: "site-built", name: "自建站点", base_url: "http://10.0.0.5:8080/p",
     enabled: true, timeout_seconds: 10, source_kind: "self_built",
     has_bearer_token: false, revision: 1, updated_at: "",
@@ -130,7 +135,7 @@ async function openPage(browser, port) {
   });
   await page.waitForFunction(
     () => document.getElementById("sites-list")?.getAttribute("aria-busy") === "false"
-      && document.querySelectorAll("#sites-list li").length === 4,
+      && document.querySelectorAll("#sites-list li").length === 5,
     null, { timeout: 30000 },
   );
   return page;
@@ -186,12 +191,13 @@ async function submitAndCapture(page, endpoint) {
     const metas = await page.$$eval("#sites-list li .site-meta", (nodes) =>
       nodes.map((node) => node.textContent));
     check(metas[0].includes("公开服务"), "公开站点显示公开服务");
-    check(metas[1].includes("自建服务"), "自建站点显示自建服务");
-    check(metas[2].includes("来源类型未知"), "缺失类型显示未知");
-    check(!metas[2].includes("公开服务"), "缺失类型不得显示公开服务");
-    check(!metas[2].includes("自建服务"), "缺失类型不得显示自建服务");
-    check(metas[3].includes("来源类型未知"), "未知类型显示未知");
-    check(!metas[3].includes("公开服务"), "未知类型不得显示公开服务");
+    check(metas[1].includes("公开服务"), "带凭据站点同为公开服务");
+    check(metas[2].includes("自建服务"), "自建站点显示自建服务");
+    check(metas[3].includes("来源类型未知"), "缺失类型显示未知");
+    check(!metas[3].includes("公开服务"), "缺失类型不得显示公开服务");
+    check(!metas[3].includes("自建服务"), "缺失类型不得显示自建服务");
+    check(metas[4].includes("来源类型未知"), "未知类型显示未知");
+    check(!metas[4].includes("公开服务"), "未知类型不得显示公开服务");
 
     // 新建默认公开。
     await page.click("#create-button");
@@ -357,6 +363,56 @@ async function submitAndCapture(page, endpoint) {
       !(await page.isChecked("#instance-type-public"))
         && !(await page.isChecked("#instance-type-self")),
       "未知类型不预选任何实例类型",
+    );
+    await page.click("#close-dialog-button");
+
+    // 关闭可能残留的未保存确认浮层。
+    if (await page.locator("#discard-confirm-button").isVisible()) {
+      await page.click("#discard-confirm-button");
+      await page.waitForFunction(
+        () => document.getElementById("site-dialog")?.open !== true);
+    }
+
+    // 编辑带凭据站点并把地址换到另一个服务：不能默认沿用旧凭据。
+    await openEditFor(page, "带凭据站点");
+    check(
+      await page.isChecked("input[name=\'credential_action\'][value=\'keep\']"),
+      "未更换地址时默认为保留原凭据",
+    );
+    await page.fill("#base-url", "https://another.example.test/n");
+    await page.locator("#base-url").blur();
+    check(
+      await page.isChecked("input[name=\'credential_action\'][value=\'clear\']"),
+      "更换服务地址后默认改为清除凭据",
+    );
+    const credentialNotice = await page.textContent("#credential-state");
+    check(
+      credentialNotice.includes("服务地址已更换"),
+      "更换地址后说明凭据处理：" + credentialNotice,
+    );
+    await page.fill("#name", "带凭据站点改名");
+    const tokenPayload = await submitAndCapture(
+      page, "sites/site-token/update",
+    );
+    check(
+      tokenPayload.credential_action !== "keep",
+      "更换服务后不会静默保留旧凭据：" + tokenPayload.credential_action,
+    );
+
+    // 预设 → 自定义切换保留已输入地址。
+    await page.click("#create-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-dialog")?.open === true);
+    await page.fill("#base-url", "https://keep.example.test/60s");
+    await page.selectOption("#instance-preset", "https://60s.7se.cn");
+    check(
+      await page.inputValue("#base-url") === "https://60s.7se.cn",
+      "选择预设后地址变为预设完整地址",
+    );
+    await page.selectOption("#instance-preset", "custom");
+    check(
+      await page.inputValue("#base-url") === "https://keep.example.test/60s",
+      "切回自定义后恢复先前填写的地址",
     );
     await page.click("#close-dialog-button");
     console.log("SITE SOURCE KIND UI PASS", { assertions });

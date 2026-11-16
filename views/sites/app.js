@@ -717,7 +717,7 @@ function openSiteTest(site) {
   siteTestSite = site;
   siteTestDisplayToken += 1;
   document.getElementById("site-test-site").textContent =
-    `站点：${site.name}（revision ${site.revision}）`;
+    `站点：${site.name}`;
   document.getElementById("site-test-content-type").value = "daily_news";
   elements.siteTestAllResults.hidden = true;
   elements.siteTestAllButton.disabled = false;
@@ -1413,7 +1413,7 @@ function pendingReviewText(pending) {
     ? state.sites.find((item) => item.id === pending.targetId)
     : null;
   const current = site
-    ? `仍在列表中：${site.name}（revision ${site.revision}，${
+    ? `仍在列表中：${site.name}（${
         site.enabled ? "已启用" : "已停用"
       }）。`
     : "不在列表中。";
@@ -1531,7 +1531,7 @@ function renderProfile(profile) {
   const meta = document.createElement("p");
   meta.className = "site-meta";
   addMeta(meta, "栏目", `${profile.items.length} 项`);
-  addMeta(meta, "revision", String(profile.revision));
+
   const updated = formatUpdatedAt(profile.updated_at);
   if (updated) {
     addMeta(meta, "最近更新", updated);
@@ -3576,10 +3576,8 @@ function renderTasks() {
     head.className = "site-card-head";
     const title = document.createElement("h3");
     title.textContent = task.name;
-    const revision = document.createElement("span");
-    revision.className = "badge";
-    revision.textContent = `revision ${task.revision}`;
-    head.append(title, revision);
+    // 版本号只用于并发校验，不展示给用户。
+    head.append(title);
 
     const meta = document.createElement("div");
     meta.className = "site-meta";

@@ -126,6 +126,11 @@ async function openPage(browser, port) {
         window.__calls.push({
           seq: window.__calls.length + 1, method: "POST", endpoint, payload,
         });
+        // 让测试可以把一次真实的保存请求卡在途中。
+        if (window.__saveGate) {
+          window.__saveStarted = true;
+          await window.__saveGate;
+        }
         return {};
       },
     };
@@ -485,6 +490,85 @@ async function submitAndCapture(page, endpoint) {
     });
     check(disabledDuringSave, "保存中预设下拉也应禁用");
     await page.click("#close-dialog-button");
+
+    // 跨域预设后回到原地址：系统自动的“清除”应被撤回。
+    await openEditFor(page, "带凭据站点");
+    await page.selectOption("#instance-preset", "https://60s.7se.cn");
+    check(
+      await page.isChecked("input[name='credential_action'][value='clear']"),
+      "跨域预设后默认清除凭据",
+    );
+    // 切回自定义即回到原地址：系统自动的清除应撤回。
+    await page.selectOption("#instance-preset", "custom");
+    check(
+      await page.inputValue("#base-url") === "https://t.example.test/n",
+      "回到自定义地址为原服务",
+    );
+    check(
+      await page.isChecked("input[name='credential_action'][value='keep']"),
+      "回到原服务后撤销系统自动清除",
+    );
+    check(
+      !(await page.textContent("#credential-state")).includes("服务地址已更换"),
+      "回到原服务后不再提示更换：",
+    );
+    await page.fill("#name", "带凭据站点改名三");
+    const backPayload = await submitAndCapture(
+      page, "sites/site-token/update",
+    );
+    check(
+      backPayload.credential_action === "keep",
+      "回到原服务保存时保留凭据：" + backPayload.credential_action,
+    );
+
+    // 管理员主动清除后，即使地址换回原服务也不应被系统改回保留。
+    await openEditFor(page, "带凭据站点");
+    await page.click("input[name='credential_action'][value='clear']");
+    await page.fill("#base-url", "https://other.example.test/n");
+    await page.locator("#base-url").blur();
+    await page.fill("#base-url", "https://t.example.test/n");
+    await page.locator("#base-url").blur();
+    check(
+      await page.isChecked("input[name='credential_action'][value='clear']"),
+      "管理员主动清除不会被系统覆盖",
+    );
+    await page.fill("#name", "带凭据站点改名四");
+    const manualClearPayload = await submitAndCapture(
+      page, "sites/site-token/update",
+    );
+    check(
+      manualClearPayload.credential_action === "clear",
+      "主动清除后保存仍是清除",
+    );
+
+    // 保存请求真实在途时，预设等控件不可更改，结束后恢复。
+    await openEditFor(page, "公开站点");
+    await page.evaluate(() => {
+      window.__saveStarted = false;
+      window.__saveGate = new Promise((resolve) => {
+        window.__releaseSave = resolve;
+      });
+    });
+    await page.click("#save-button");
+    await page.waitForFunction(() => window.__saveStarted === true);
+    const duringSave = await page.evaluate(() => ({
+      preset: document.getElementById("instance-preset").disabled,
+      name: document.getElementById("name").disabled,
+      baseUrl: document.getElementById("base-url").disabled,
+      typePublic: document.getElementById("instance-type-public").disabled,
+    }));
+    check(duringSave.preset, "保存在途时预设下拉不可更改");
+    check(duringSave.name && duringSave.baseUrl && duringSave.typePublic,
+      "保存在途时其他控件同样不可更改");
+    await page.evaluate(() => {
+      window.__releaseSave();
+      window.__saveGate = null;
+    });
+    await page.waitForFunction(
+      () => document.getElementById("instance-preset").disabled === false,
+      null, { timeout: 15000 },
+    );
+    check(true, "保存结束后控件恢复可用");
     console.log("SITE SOURCE KIND UI PASS", { assertions });
   } finally {
     await browser.close();

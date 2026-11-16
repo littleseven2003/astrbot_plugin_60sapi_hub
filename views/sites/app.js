@@ -369,6 +369,7 @@ const state = {
   imageViewerTrigger: null,
   imageViewerScrollY: 0,
   customBaseUrl: "",
+  credentialAutoCleared: false,
   tasks: [],
   taskMode: "create",
   taskSites: [],
@@ -1820,24 +1821,46 @@ function closeProfileImageViewer(restoreFocus = true) {
  * 编辑站点并把地址换到另一个服务时，旧凭据属于上一个服务。
  * 默认改为“清除凭据”，让管理员显式决定是否继续沿用。
  */
+function credentialActionInput(value) {
+  return elements.siteForm.querySelector(
+    `input[name="credential_action"][value="${value}"]`,
+  );
+}
+
+/** 系统因跨站自动做的凭据调整可被撤回；管理员自己的选择永远优先。 */
+function autoClearCredential(reason) {
+  const keep = credentialActionInput("keep");
+  const clear = credentialActionInput("clear");
+  if (!keep || !clear || !keep.checked) return;
+  clear.checked = true;
+  state.credentialAutoCleared = true;
+  syncCredentialFields(true, "clear");
+  elements.credentialState.textContent = reason;
+}
+
+function restoreAutoClearedCredential() {
+  if (!state.credentialAutoCleared) return;
+  const keep = credentialActionInput("keep");
+  state.credentialAutoCleared = false;
+  if (!keep) return;
+  keep.checked = true;
+  syncCredentialFields(true, "keep");
+}
+
 function handleBaseUrlChanged() {
   if (state.mode !== "edit" || !state.editingHasToken) return;
   const before = state.editingBaseOrigin || "";
   const after = originOf(elements.baseUrl.value);
-  if (!before || !after || before === after) return;
-  const keep = elements.siteForm.querySelector(
-    'input[name="credential_action"][value="keep"]',
-  );
-  const clear = elements.siteForm.querySelector(
-    'input[name="credential_action"][value="clear"]',
-  );
-  if (!keep || !clear || !keep.checked) {
+  if (!before || !after) return;
+  if (before !== after) {
+    // 跨站：先按“清除”处理，避免旧服务凭据悄悄发给新服务。
+    autoClearCredential(
+      "服务地址已更换：原凭据属于上一个服务，已默认改为“清除凭据”。如需继续使用，请手动选择“保留原凭据”。",
+    );
     return;
   }
-  clear.checked = true;
-  syncCredentialFields(true, "clear");
-  elements.credentialState.textContent =
-    "服务地址已更换：原凭据属于上一个服务，已默认改为“清除凭据”。如需继续使用，请手动选择“保留原凭据”。";
+  // 回到原服务：撤销系统自动选择的清除，保留管理员自己的选择。
+  restoreAutoClearedCredential();
 }
 
 bindProfileImageViewer();
@@ -3043,6 +3066,7 @@ function openCreate() {
   elements.sourceKind.value = SOURCE_KIND_PUBLIC;
   elements.instancePreset.value = "custom";
   state.customBaseUrl = "";
+  state.credentialAutoCleared = false;
   setSourceKindHint(false);
   syncInstanceTypeUI();
   clearFormError();
@@ -3069,6 +3093,7 @@ function openEdit(site) {
   state.customBaseUrl = site.base_url;
   state.editingBaseOrigin = originOf(site.base_url);
   state.editingHasToken = Boolean(site.has_bearer_token);
+  state.credentialAutoCleared = false;
   elements.timeout.value = String(site.timeout_seconds);
   elements.enabled.checked = site.enabled;
   const known = isKnownSourceKind(site.source_kind);
@@ -5404,6 +5429,14 @@ function bindEvents() {
   elements.instanceTypeSelf.addEventListener("change", () => {
     if (elements.instanceTypeSelf.checked) selectInstanceType(SOURCE_KIND_SELF_BUILT);
   });
+  for (const action of elements.siteForm.querySelectorAll(
+    'input[name="credential_action"]',
+  )) {
+    action.addEventListener("change", () => {
+      // 管理员明确选择后，不再视作系统自动清除。
+      state.credentialAutoCleared = false;
+    });
+  }
   elements.baseUrl.addEventListener("change", handleBaseUrlChanged);
   elements.baseUrl.addEventListener("input", rememberCustomAddress);
   elements.instancePreset.addEventListener("change", () => {

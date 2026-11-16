@@ -110,6 +110,69 @@ class ContentApi:
             return _error(502, "测试失败，无法完成连接验证。", "test_failed")
         return ContentApiResult(200, {"status": "ok", "data": data})
 
+    async def test_sites_batch(self, payload: object) -> ContentApiResult:
+        """批量连接测试：只做主动检查，不改配置、不启用站点、不发送消息。"""
+        import asyncio
+        import time
+
+        if not isinstance(payload, dict):
+            return _error(400, "请求体必须是 JSON 对象。", "invalid_body")
+        if set(payload) - {"site_ids", "content_types"}:
+            return _error(400, "请求字段无效。", "validation_error")
+        site_ids = payload.get("site_ids")
+        content_types = payload.get("content_types")
+        if (not isinstance(site_ids, list) or not site_ids
+                or len(site_ids) > 20
+                or any(not isinstance(item, str) or not item for item in site_ids)):
+            return _error(400, "请选择 1~20 个站点。", "validation_error")
+        if (not isinstance(content_types, list) or not content_types
+                or len(content_types) > len(KNOWN_CONTENT_TYPES)
+                or any(item not in KNOWN_CONTENT_TYPES for item in content_types)):
+            return _error(400, "内容类型无效。", "validation_error")
+
+        semaphore = asyncio.Semaphore(3)
+
+        async def run_one(site_id: str, content_type: str) -> dict:
+            async with semaphore:
+                started = time.monotonic()
+                try:
+                    site = await self._service._sites.get_site(site_id)
+                except Exception:
+                    return {
+                        "site_id": site_id, "content_type": content_type,
+                        "result": "error", "message": "站点不存在或不可用",
+                        "elapsed_ms": 0,
+                    }
+                outcome = await self.test_connection(
+                    site_id,
+                    {"expected_revision": site.revision,
+                     "content_type": content_type},
+                )
+                elapsed = int((time.monotonic() - started) * 1000)
+                if outcome.status == 200:
+                    data = outcome.body.get("data") or {}
+                    result = "empty" if data.get("result") == "empty" else "success"
+                    message = data.get("message") or ""
+                else:
+                    result = "error"
+                    message = outcome.body.get("message") or "测试失败"
+                return {
+                    "site_id": site_id, "content_type": content_type,
+                    "result": result, "message": message,
+                    "elapsed_ms": elapsed,
+                }
+
+        tasks = [
+            run_one(site_id, content_type)
+            for site_id in site_ids
+            for content_type in content_types
+        ]
+        results = await asyncio.gather(*tasks)
+        return ContentApiResult(200, {
+            "results": list(results),
+            "failed": sum(1 for item in results if item["result"] == "error"),
+        })
+
     async def preview(self, payload: object) -> ContentApiResult:
         if not isinstance(payload, dict):
             return _error(400, "请求体必须是 JSON 对象。", "invalid_body")

@@ -98,10 +98,10 @@ class ChatContentIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_partial_and_all_failed(self) -> None:
         self.mode = "partial"
         _, _, task = await self.make("partial", ("daily_news", "bilibili_hot"))
+        # 栏目不齐等同于“该站点不满足组合”：聊天不返回残缺内容。
         partial = await self.query.query("bot:GroupMessage:g", task.id)
-        self.assertIn("部分成功", partial)
-        self.assertIn("获取失败", partial)
-        self.assertIn("新闻一", partial)
+        self.assertEqual(partial, FAILED_TEXT)
+        self.assertNotIn("新闻一", partial)
 
         self.mode = "all_fail"
         _, _, failed_task = await self.make("fail", ("daily_news", "bilibili_hot"))

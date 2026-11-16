@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from .candidate_preview import first_satisfying_preview
 from .profile_api import ProfileApi
 from .profiles import ContentProfileService, ProfileNotFoundError
 from .site_store import (
@@ -26,7 +27,7 @@ from .site_store import (
     SiteStore,
     StoredDeliveryExecution,
 )
-from .site_requirements import evaluate_sections, requirements_from_items
+from .site_requirements import requirements_from_items
 from .sites import SiteService
 from .tasks import (
     PushTask,
@@ -618,25 +619,20 @@ class DeliveryService:
     ) -> "_Prepared | None":
         """按任务保存的顺序，寻找同一个站点满足全部类别与条数。"""
         requirements = requirements_from_items(profile.items)
-        for candidate in candidates:
-            kwargs = {"owner": execution_id, "site_id": candidate.id}
-            preview = await self._api.preview_profile(
-                {"profile_id": task.profile_id}, **kwargs,
-            )
-            if preview.status_code != 200:
-                continue
-            data = preview.body.get("data")
-            if not isinstance(data, dict):
-                continue
-            sections = data.get("sections")
-            if isinstance(sections, list):
-                satisfied, _ = evaluate_sections(sections, requirements)
-                if not satisfied:
-                    continue
-            return await self._build_prepared(
-                execution_id, task, data, candidate,
-            )
-        return None
+        by_id = {candidate.id: candidate for candidate in candidates}
+        found = await first_satisfying_preview(
+            self._api,
+            profile_id=task.profile_id,
+            requirements=requirements,
+            site_ids=[candidate.id for candidate in candidates],
+            owner=execution_id,
+        )
+        if found is None:
+            return None
+        site_id, data = found
+        return await self._build_prepared(
+            execution_id, task, data, by_id[site_id],
+        )
 
     async def _build_prepared(
         self,

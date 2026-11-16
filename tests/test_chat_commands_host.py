@@ -276,7 +276,10 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                     output_format="image", umos=("bot1:GroupMessage:g1",),
                     revision=2, created_at="2026-01-01T00:00:00Z",
                 )
-                self.profile = SimpleNamespace(id="p1", site_id="s1", revision=3)
+                self.profile = SimpleNamespace(
+                    id="p1", revision=3,
+                    items=(SimpleNamespace(content_type="daily_news", limit=None),),
+                )
                 self.site = SimpleNamespace(id="s1", site_revision=4, enabled=True, revision=4)
 
             async def get_task(self, task_id):
@@ -362,6 +365,12 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(
                     task=task, profile_id="p1", profile_revision=1,
                     candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
+                )
+
+            async def get_profile(self, profile_id):
+                return SimpleNamespace(
+                    id="p1",
+                    items=(SimpleNamespace(content_type="daily_news", limit=None),),
                 )
 
             async def preview_profile(self, payload, *, owner=None, site_id=None):
@@ -596,6 +605,12 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                     ),
                     profile_id="p1", profile_revision=1,
                     candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
+                )
+
+            async def get_profile(self, profile_id):
+                return SimpleNamespace(
+                    id="p1",
+                    items=(SimpleNamespace(content_type="daily_news", limit=None),),
                 )
 
         image_module = importlib.import_module(

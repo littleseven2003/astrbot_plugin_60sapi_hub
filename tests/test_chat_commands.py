@@ -266,7 +266,8 @@ class ContentFixture:
             revision=2, created_at="2026-01-01T00:00:00Z",
         )
         self.profile = SimpleNamespace(
-            id="p1", site_id="s1", revision=3,
+            id="p1", revision=3,
+            items=(SimpleNamespace(content_type="daily_news", limit=None),),
         )
         self.site = SimpleNamespace(id="s1", enabled=True, revision=4)
         self.task_reads = 0
@@ -357,7 +358,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
     async def test_config_change_during_query_suppresses_old_content(self) -> None:
         service = self.build()
         original = self.f.preview_profile
-        async def changed(payload):
+        async def changed(payload, *, site_id=None):
             result = await original(payload)
             self.f.task.revision += 1
             return result
@@ -370,7 +371,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
     async def test_target_removed_during_query(self) -> None:
         service = self.build()
         original = self.f.preview_profile
-        async def removed(payload):
+        async def removed(payload, *, site_id=None):
             result = await original(payload)
             self.f.task.umos = ("bot:GroupMessage:other",)
             return result
@@ -382,7 +383,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_empty_and_truncation(self) -> None:
         service = self.build()
-        async def partial(payload):
+        async def partial(payload, *, site_id=None):
             return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": "状态：部分成功\n空列表，0 条"}}})
         self.f.preview_profile = partial
         text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
@@ -390,7 +391,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("空列表", text)
 
         long_text = "长" * 2500
-        async def long(payload):
+        async def long(payload, *, site_id=None):
             return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": long_text}}})
         self.f.preview_profile = long
         text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
@@ -525,7 +526,10 @@ class ImageFixture:
             sites=("s1",),
             revision=5, created_at="2026-01-01T00:00:00Z",
         )
-        self.profile = SimpleNamespace(id="p1", site_id="s1", revision=2)
+        self.profile = SimpleNamespace(
+            id="p1", revision=2,
+            items=(SimpleNamespace(content_type="daily_news", limit=None),),
+        )
         self.site = SimpleNamespace(id="s1", enabled=True, revision=3)
         self.owners = []
         self.preview_owners = []
@@ -548,6 +552,9 @@ class ImageFixture:
             candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision, enabled=self.site.enabled),),
             
         )
+
+    async def get_profile(self, profile_id):
+        return self.profile
 
     async def preview_profile(self, payload, *, owner=None, site_id=None):
         self.preview_owners.append(owner)

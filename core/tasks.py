@@ -18,6 +18,7 @@ from .schedule import (
     parse_schedule,
 )
 from .profiles import (
+    ContentProfile,
     ContentProfileService,
     ProfileNotFoundError,
     ProfileStorageError,
@@ -169,6 +170,10 @@ class PushTaskService:
     ) -> None:
         self._profiles = profiles
         self._store = store
+
+    async def get_profile(self, profile_id: object) -> ContentProfile:
+        """读取任务依赖的组合定义；聊天查询需要栏目与条数判定。"""
+        return await self._profiles.get_profile(profile_id)
 
     async def list_tasks(self) -> list[PushTask]:
         try:

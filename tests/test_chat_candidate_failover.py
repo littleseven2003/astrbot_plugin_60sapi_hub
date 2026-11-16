@@ -54,6 +54,12 @@ class _Tasks:
             raise TaskNotFoundError(task_id)
         return _snapshot(self.task, self.candidates)
 
+    async def get_profile(self, profile_id):
+        return SimpleNamespace(
+            id=profile_id,
+            items=(SimpleNamespace(content_type="daily_news", limit=None),),
+        )
+
 
 class _TextPreviews:
     def __init__(self, failing=(), on_call=None) -> None:

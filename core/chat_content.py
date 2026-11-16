@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .candidate_preview import satisfied_previews
 from .profile_api import ProfileApi
+from .site_requirements import Requirement, requirements_from_items
 from .tasks import (
     PushTaskService,
     TaskNotFoundError,
@@ -30,6 +32,8 @@ class _Authorized:
     profile_revision: int
     # 启用候选按尝试顺序排列：(site_id, revision)。顺序变化也算配置变化。
     candidates: tuple[tuple[str, int], ...]
+    # 组合的栏目与条数要求；同一站点必须全部满足才算可用。
+    requirements: tuple[Requirement, ...]
 
 
 class ChatContentQuery:
@@ -88,12 +92,18 @@ async def authorize_task(
     resolved = tuple(
         (site_id, int(revision)) for site_id, revision in candidates
     )
+    try:
+        profile = await tasks.get_profile(snapshot.profile_id)
+        requirements = requirements_from_items(profile.items)
+    except Exception:
+        raise _Unavailable from None
     return _Authorized(
         task_id=task.id,
         task_revision=task.revision,
         profile_id=snapshot.profile_id,
         profile_revision=snapshot.profile_revision,
         candidates=resolved,
+        requirements=requirements,
     )
 
 
@@ -125,20 +135,15 @@ async def _first_available(
     previews: ProfileApi,
     authorized: _Authorized,
 ) -> str | None:
-    """按任务候选顺序取第一份可用内容；全部失败返回 None。"""
-    for site_id, _revision in authorized.candidates:
-        try:
-            result = await previews.preview_profile({
-                "profile_id": authorized.profile_id,
-                "force_refresh": False,
-                "site_id": site_id,
-            })
-        except Exception:
-            continue
-        if result.status_code != 200:
-            continue
-        data = result.body.get("data") if isinstance(result.body, dict) else None
-        outputs = data.get("outputs") if isinstance(data, dict) else None
+    """按任务候选顺序取第一份站内满足全部栏目的内容；全部失败返回 None。"""
+    async for _site_id, data in satisfied_previews(
+        previews,
+        profile_id=authorized.profile_id,
+        requirements=authorized.requirements,
+        site_ids=[site_id for site_id, _ in authorized.candidates],
+        catch_errors=True,
+    ):
+        outputs = data.get("outputs")
         text = outputs.get("text") if isinstance(outputs, dict) else None
         if isinstance(text, str) and text.strip():
             return text

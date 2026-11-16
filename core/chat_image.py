@@ -16,6 +16,7 @@ from .chat_content import (
     authorize_task,
     config_changed,
 )
+from .candidate_preview import satisfied_previews
 from .profile_api import ProfileApi
 from .tasks import TaskValidationError, normalize_task_id
 
@@ -75,26 +76,16 @@ class ChatImageQuery:
         authorized,
         owner: str,
     ) -> tuple[tuple[bytes, ...], tuple[str, ...]] | None:
-        """按任务候选顺序取第一份能出图的内容；全部失败返回 None。"""
-        for site_id, _revision in authorized.candidates:
-            try:
-                preview = await self._previews.preview_profile(
-                    {
-                        "profile_id": authorized.profile_id,
-                        "force_refresh": False,
-                        "site_id": site_id,
-                    },
-                    owner=owner,
-                )
-            except Exception:
-                continue
-            if preview.status_code != 200:
-                continue
-            data = (
-                preview.body.get("data")
-                if isinstance(preview.body, dict) else None
-            )
-            snapshot = data.get("image_snapshot") if isinstance(data, dict) else None
+        """按任务候选顺序取第一份满足全部栏目且能出图的内容。"""
+        async for _site_id, data in satisfied_previews(
+            self._previews,
+            profile_id=authorized.profile_id,
+            requirements=authorized.requirements,
+            site_ids=[site_id for site_id, _ in authorized.candidates],
+            owner=owner,
+            catch_errors=True,
+        ):
+            snapshot = data.get("image_snapshot")
             snapshot_id = snapshot.get("id") if isinstance(snapshot, dict) else None
             if not isinstance(snapshot_id, str) or not snapshot_id:
                 continue

@@ -51,7 +51,11 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
         async def handler(request: httpx.Request) -> httpx.Response:
             body = {
                 "code": 200, "message": "ok",
-                "data": {"date": "2026-11-11", "news": ["第一条中文新闻"]},
+                "data": {
+                    "date": "2026-11-11",
+                    # 组合要求 5 条：上游必须真的给满，聊天才把它当作可用内容。
+                    "news": [f"第{i}条中文新闻" for i in range(1, 6)],
+                },
             }
             return httpx.Response(200, content=json.dumps(body).encode())
 

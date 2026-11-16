@@ -138,7 +138,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied.status_code, 403)
 
     @unittest.skipUnless(has_font(), "no CJK font available")
-    async def test_partial_failure_still_renders_images(self) -> None:
+    async def test_partial_failure_is_not_rendered(self) -> None:
         self.partial = True
         profile = await self.profiles.create_profile(ProfileCreate(
             name="部分失败组合", site_id=self.site.id,
@@ -153,7 +153,8 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         reply = await self.query.query("bot:GroupMessage:g", task.id)
-        self.assertGreaterEqual(reply.image_count, 1)
+        # 同一站点缺一个栏目就不算满足，聊天不渲染残缺长图。
+        self.assertEqual(reply, IMAGE_FAILED_TEXT)
         self.assertTrue(any(path.endswith("/v2/bili") for path in self.calls))
 
     async def test_all_failed_returns_safe_text(self) -> None:

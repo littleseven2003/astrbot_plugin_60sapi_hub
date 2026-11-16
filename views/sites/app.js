@@ -5893,6 +5893,11 @@ function navApplyView(view, options) {
     }
   }
   navState.current = view;
+  // 站点专用操作只属于站点页，避免在其他页面出现“新增站点”。
+  const headerActions = document.getElementById("header-actions");
+  if (headerActions) {
+    headerActions.hidden = view !== "sites";
+  }
   navUpdateBreadcrumb(view);
   if (settings.updateHash) {
     navWriteHash(view);

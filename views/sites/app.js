@@ -39,27 +39,22 @@ function presetUrlOf(value) {
   return PRESET_INSTANCES.some((item) => item.value === value) ? value : "custom";
 }
 
-function syncInstanceTypeUI({ keepAddress = true } = {}) {
+function rememberCustomAddress() {
+  const current = elements.baseUrl.value;
+  if (!PRESET_INSTANCES.some((item) => item.value === current)) {
+    state.customBaseUrl = current;
+  }
+}
+
+function syncInstanceTypeUI() {
   const kind = elements.sourceKind.value;
   const isPublic = kind === SOURCE_KIND_PUBLIC;
   const isSelf = kind === SOURCE_KIND_SELF_BUILT;
   elements.instanceTypePublic.checked = isPublic;
   elements.instanceTypeSelf.checked = isSelf;
   elements.presetField.hidden = !isPublic;
-  const preset = isPublic ? elements.instancePreset.value : "custom";
-  const usePreset = isPublic && preset !== "custom";
+  const usePreset = isPublic && elements.instancePreset.value !== "custom";
   elements.baseUrlField.hidden = usePreset;
-  if (usePreset) {
-    if (!PRESET_INSTANCES.some((item) => item.value === elements.baseUrl.value)) {
-      state.customBaseUrl = elements.baseUrl.value;
-    }
-    elements.baseUrl.value = preset;
-  } else if (!keepAddress && !isSelf) {
-    elements.baseUrl.value = "";
-  } else if (state.customBaseUrl) {
-    // 预设 → 自定义时恢复用户此前填写的地址。
-    elements.baseUrl.value = state.customBaseUrl;
-  }
   elements.instanceTypeHint.textContent = isSelf
     ? "自建实例：内容输出只显示“自建服务”，不会暴露地址。"
     : isPublic
@@ -67,13 +62,27 @@ function syncInstanceTypeUI({ keepAddress = true } = {}) {
       : "当前站点的来源类型无法识别；选择实例类型后会按所选类型保存。";
 }
 
+/** 任何会改动实际服务地址的操作都要走同一凭据判断。 */
+function applyAddressChange() {
+  syncInstanceTypeUI();
+  handleBaseUrlChanged();
+}
+
 function selectInstanceType(kind) {
+  const wasPreset = PRESET_INSTANCES.some(
+    (item) => item.value === elements.baseUrl.value,
+  );
   elements.sourceKind.value = kind;
   if (kind === SOURCE_KIND_SELF_BUILT) {
     elements.instancePreset.value = "custom";
+    // 自建实例不该沿用公共预设地址：回到用户自己填写的地址。
+    if (wasPreset) elements.baseUrl.value = state.customBaseUrl || "";
+  } else if (kind === SOURCE_KIND_PUBLIC && state.customBaseUrl) {
+    // 公开实例默认回到自定义，保留用户当前输入。
+    elements.instancePreset.value = "custom";
   }
   setSourceKindHint(false);
-  syncInstanceTypeUI({ keepAddress: true });
+  applyAddressChange();
 }
 function sourceKindLabel(value) {
   if (value === SOURCE_KIND_PUBLIC) {
@@ -3035,7 +3044,7 @@ function openCreate() {
   elements.instancePreset.value = "custom";
   state.customBaseUrl = "";
   setSourceKindHint(false);
-  syncInstanceTypeUI({ keepAddress: false });
+  syncInstanceTypeUI();
   clearFormError();
   resetCredentialForm();
   syncCredentialFields(false, "keep");
@@ -3070,7 +3079,7 @@ function openEdit(site) {
   elements.instancePreset.value =
     site.source_kind === SOURCE_KIND_PUBLIC ? presetUrlOf(site.base_url) : "custom";
   setSourceKindHint(!known);
-  syncInstanceTypeUI({ keepAddress: true });
+  syncInstanceTypeUI();
   elements.baseUrl.value = site.base_url;
   clearFormError();
   resetCredentialForm();
@@ -5396,17 +5405,18 @@ function bindEvents() {
     if (elements.instanceTypeSelf.checked) selectInstanceType(SOURCE_KIND_SELF_BUILT);
   });
   elements.baseUrl.addEventListener("change", handleBaseUrlChanged);
+  elements.baseUrl.addEventListener("input", rememberCustomAddress);
   elements.instancePreset.addEventListener("change", () => {
     const next = elements.instancePreset.value;
-    // 只有“原本填的是预设地址、现在改成自定义”时才清空，避免把预设地址
-    // 当成自定义保存；已经在自定义里填过的地址不能被清掉。
-    const wasPreset = PRESET_INSTANCES.some(
-      (item) => item.value === elements.baseUrl.value,
-    );
-    if (next === "custom" && wasPreset) {
+    if (next === "custom") {
+      // 离开预设：恢复用户此前填写的自定义地址。
       elements.baseUrl.value = state.customBaseUrl || "";
+    } else {
+      // 进入预设：先记住当前自定义地址再替换。
+      rememberCustomAddress();
+      elements.baseUrl.value = next;
     }
-    syncInstanceTypeUI({ keepAddress: next === "custom" });
+    applyAddressChange();
   });
   elements.createTaskButton.addEventListener("click", openCreateTask);
   elements.deliveryRefreshButton.addEventListener("click", () => loadDeliveries(true));

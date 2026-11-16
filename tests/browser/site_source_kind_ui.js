@@ -415,6 +415,76 @@ async function submitAndCapture(page, endpoint) {
       "切回自定义后恢复先前填写的地址",
     );
     await page.click("#close-dialog-button");
+
+    // 编辑带凭据站点，直接选不同域名的公共预设：凭据不能静默保留。
+    if (await page.locator("#discard-confirm-button").isVisible()) {
+      await page.click("#discard-confirm-button");
+      await page.waitForFunction(
+        () => document.getElementById("site-dialog")?.open !== true);
+    }
+    await openEditFor(page, "带凭据站点");
+    await page.selectOption("#instance-preset", "https://api.cczo.cc/60s");
+    check(
+      await page.inputValue("#base-url") === "https://api.cczo.cc/60s",
+      "选预设后地址为预设完整地址",
+    );
+    check(
+      await page.isChecked("input[name='credential_action'][value='clear']"),
+      "预设换到不同域名后默认清除凭据",
+    );
+    await page.fill("#name", "预设换址站点");
+    const presetSwitchPayload = await submitAndCapture(
+      page, "sites/site-token/update",
+    );
+    check(
+      presetSwitchPayload.base_url === "https://api.cczo.cc/60s",
+      "预设换址保存载荷为预设地址",
+    );
+    check(
+      presetSwitchPayload.credential_action !== "keep",
+      "预设换址不会静默保留旧凭据：" + presetSwitchPayload.credential_action,
+    );
+
+    // 编辑自定义地址后输入新地址，再切换公开/自建：当前输入必须保留。
+    await openEditFor(page, "公开站点");
+    await page.fill("#base-url", "https://edited.example.test/60s");
+    await page.click("#instance-type-self");
+    check(
+      await page.inputValue("#base-url") === "https://edited.example.test/60s",
+      "切换到自建后仍保留当前输入",
+    );
+    await page.click("#instance-type-public");
+    check(
+      await page.inputValue("#base-url") === "https://edited.example.test/60s",
+      "再切回公开仍保留当前输入",
+    );
+    await page.fill("#name", "公开站点改名二");
+    const editKeepPayload = await submitAndCapture(
+      page, "sites/site-public/update",
+    );
+    check(
+      editKeepPayload.base_url === "https://edited.example.test/60s",
+      "类型切换后保存的是当前编辑的地址：" + editKeepPayload.base_url,
+    );
+
+    // 保存中所有控件（含预设下拉）都应禁用，结束后恢复。
+    await page.click("#create-button");
+    await page.waitForFunction(
+      () => document.getElementById("site-dialog")?.open === true);
+    const disabledDuringSave = await page.evaluate(() => {
+      const form = document.getElementById("site-form");
+      const preset = document.getElementById("instance-preset");
+      form.querySelectorAll("input, select, textarea, button").forEach((el) => {
+        el.disabled = true;
+      });
+      const disabled = preset.disabled;
+      form.querySelectorAll("input, select, textarea, button").forEach((el) => {
+        el.disabled = false;
+      });
+      return disabled;
+    });
+    check(disabledDuringSave, "保存中预设下拉也应禁用");
+    await page.click("#close-dialog-button");
     console.log("SITE SOURCE KIND UI PASS", { assertions });
   } finally {
     await browser.close();

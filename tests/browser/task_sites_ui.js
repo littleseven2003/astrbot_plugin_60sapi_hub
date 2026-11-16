@@ -215,6 +215,8 @@ async function openPage(browser, port, overrides = {}) {
       "确认页候选顺序应正确：" + confirmText.slice(0, 120));
     check(confirmText.includes("不会发送内容"),
       "全站停用应说明只发异常提示：" + confirmText.slice(0, 120));
+    check(confirmText.includes("失败处理"),
+      "确认页应说明失败时的提示规则：" + confirmText.slice(0, 160));
     const confirmLabel = await page.textContent("#delivery-confirm-button");
     check(confirmLabel.includes("异常提示"), "按钮应写明发送异常提示：" + confirmLabel);
     await page.click("#delivery-cancel-button");

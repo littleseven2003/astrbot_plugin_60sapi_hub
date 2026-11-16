@@ -728,6 +728,18 @@ class SiteStore:
         cursor = await connection.execute(sql, params)
         return await cursor.fetchone() is not None
 
+    async def _name_conflicts(
+        self, connection, site_id: str, name: str,
+    ) -> bool:
+        """编辑时保留本行既有名称不受影响，旧库已有的重名站点仍可继续保存。"""
+        async with connection.execute(
+            "SELECT name FROM sites WHERE id = ?", (site_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is not None and row["name"].strip().lower() == name.strip().lower():
+            return False
+        return await self._name_taken(connection, name, exclude_id=site_id)
+
     async def create_site(
         self,
         *,
@@ -843,7 +855,7 @@ class SiteStore:
             now = _utc_now()
 
             async def perform() -> None:
-                if await self._name_taken(connection, name, exclude_id=site_id):
+                if await self._name_conflicts(connection, site_id, name):
                     raise SiteNameConflictError(name)
                 cursor = await connection.execute(
                     """

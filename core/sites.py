@@ -311,8 +311,8 @@ class SiteService:
                     current.revision,
                 )
 
-            name = normalize_site_name(data.name)
             base_url = normalize_base_url(data.base_url)
+            name = normalize_site_name(data.name, fallback=base_url)
             enabled = normalize_enabled(data.enabled)
             timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
             source_kind = normalize_source_kind(

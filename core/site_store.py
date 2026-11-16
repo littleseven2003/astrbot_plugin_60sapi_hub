@@ -2335,6 +2335,13 @@ class SiteStore:
         except Exception:
             pass
 
+    @staticmethod
+    async def _begin_write(connection: aiosqlite.Connection) -> None:
+        """写锁在手才做写前检查，跨连接的查重与写入才是原子的。"""
+        if connection.in_transaction:
+            await connection.rollback()
+        await connection.execute("BEGIN IMMEDIATE")
+
     async def _commit_write(
         self,
         connection: aiosqlite.Connection,
@@ -2344,6 +2351,7 @@ class SiteStore:
     ) -> None:
         commit_task: asyncio.Task[None] | None = None
         try:
+            await self._begin_write(connection)
             await operation()
             commit_task = asyncio.create_task(connection.commit())
             await asyncio.shield(commit_task)

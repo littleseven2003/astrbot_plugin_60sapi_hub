@@ -278,7 +278,7 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         async def tracked_execute(fn, *args, **kwargs):
             sql = args[0] if args else ""
             if isinstance(sql, str) and sql.lstrip().upper().startswith(
-                ("INSERT", "UPDATE", "DELETE"),
+                ("BEGIN", "INSERT", "UPDATE", "DELETE"),
             ):
                 write_queued.set()
             return await original_execute(fn, *args, **kwargs)

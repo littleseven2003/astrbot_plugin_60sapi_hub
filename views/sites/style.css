@@ -1651,13 +1651,11 @@ dialog.dialog button {
 
   .rail-nav {
     flex-direction: row;
-    flex-wrap: nowrap;
+    /* 窄屏改为换行，避免最后一个目的地在边缘被截断且没有滚动提示。 */
+    flex-wrap: wrap;
     gap: 6px;
     padding-bottom: 2px;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scrollbar-width: thin;
-    -webkit-overflow-scrolling: touch;
+    overflow-x: visible;
   }
 
   .nav-item {
@@ -1914,6 +1912,20 @@ dialog.dialog button {
 @media (max-width: 480px) {
   .segmented {
     grid-template-columns: 1fr;
+  }
+}
+
+
+/* 窄屏：弹窗内容变长时，主操作始终停在可视区域底部。 */
+@media (max-width: 620px) {
+  dialog.dialog .dialog-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin-top: 10px;
+    padding: 10px 0 2px;
+    background: var(--white);
+    box-shadow: 0 -10px 14px -12px rgba(24, 36, 54, 0.45);
   }
 }
 

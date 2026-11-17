@@ -2419,6 +2419,11 @@ dialog.dialog button {
     padding-left: 29px;
   }
 
+  .sites-list .site-icon-button {
+    width: 40px;
+    height: 40px;
+  }
+
   .site-batch-actions {
     width: 100%;
   }

@@ -512,6 +512,85 @@ class SchemaV16UpgradeTest(_MigrationCase):
             await sites.close()
 
 
+    async def test_migration_keeps_schedule_umos_candidate_order_and_history(
+        self,
+    ) -> None:
+        """v16 只改方案归属，不碰计划、白名单、候选顺序和投递历史。"""
+        sites = SiteService(self.path)
+        await sites.open()
+        try:
+            site_a = await sites.create_site(SiteCreate(
+                name="站点 A", base_url="http://a.example.test/60s",
+                enabled=True, timeout_seconds=5,
+            ))
+            site_b = await sites.create_site(SiteCreate(
+                name="站点 B", base_url="http://b.example.test/60s",
+                enabled=True, timeout_seconds=5,
+            ))
+            tasks = PushTaskService(sites.store)
+            # 候选顺序 B→A 与 UMO 顺序都是任务语义的一部分，迁移必须原样保留。
+            task = await tasks.create_task(TaskCreate(
+                name="带计划的任务",
+                items=[_item("daily_news", 2), _item("zhihu_hot", None)],
+                sites=[site_b.id, site_a.id],
+                output_format="markdown",
+                umos=[UMOS[1], UMOS[0]],
+                schedule={
+                    "kind": "daily", "timezone": "Asia/Shanghai",
+                    "time": "08:30",
+                },
+            ))
+            await sites.store.create_delivery_execution(
+                execution_id="exec-legacy",
+                task_id=task.id,
+                task_name=task.name,
+                task_revision=task.revision,
+                profile_id="legacy-shared",
+                profile_revision=3,
+                site_id=site_b.id,
+                site_revision=site_b.revision,
+                output_format="markdown",
+                umos=(UMOS[0],),
+            )
+            self._rewind_to_v15({task.id: "legacy-shared"})
+        finally:
+            await sites.close()
+        self.assertEqual(self._user_version(), 15)
+
+        for _ in range(2):
+            sites = SiteService(self.path)
+            await sites.open()
+            try:
+                self.assertEqual(self._user_version(), SCHEMA_VERSION)
+                tasks = PushTaskService(sites.store)
+                migrated = await tasks.get_task(task.id)
+                self.assertEqual(
+                    [item.content_type for item in migrated.items],
+                    ["daily_news", "zhihu_hot"],
+                )
+                self.assertEqual([item.limit for item in migrated.items], [2, None])
+                self.assertEqual(migrated.schedule.to_dict(), task.schedule.to_dict())
+                self.assertEqual(migrated.umos, (UMOS[1], UMOS[0]))
+                self.assertEqual(migrated.sites, (site_b.id, site_a.id))
+                self.assertEqual(migrated.output_format, "markdown")
+                self.assertEqual(migrated.revision, task.revision)
+                snapshot = await tasks.get_config_snapshot(task.id)
+                self.assertEqual(
+                    [(item.id, item.enabled) for item in snapshot.candidates],
+                    [(site_b.id, True), (site_a.id, True)],
+                )
+                # 历史投递记录仍指向当时的方案行与站点，不被迁移改写；
+                # 未完成的执行按既有恢复规则标记为 stopped，不当作已投递。
+                history = await sites.store.get_delivery_execution("exec-legacy")
+                self.assertEqual(history.task_id, task.id)
+                self.assertEqual(history.profile_id, "legacy-shared")
+                self.assertEqual(history.profile_revision, 3)
+                self.assertEqual(history.site_id, site_b.id)
+                self.assertEqual(history.status, "stopped")
+                self.assertEqual(history.error_code, "never_started")
+            finally:
+                await sites.close()
+
 class FreshDatabaseSchemaTest(_MigrationCase):
     """新库直接是 v16：方案表存在，且方案不再带 site_id 列。"""
 

@@ -50,7 +50,7 @@
         <section class="view" id="view-sites" data-view="sites">
           <div class="view-head">
             <h1>站点管理</h1>
-            <p class="view-lede">维护 60s API 的基础地址、超时和访问凭据。每行可以单独或批量测试全部五类内容接口；测试只发起主动请求，不修改配置、不启用站点、不发送消息，打开页面和勾选站点都不会请求上游。</p>
+            <p class="view-lede">维护 60s API 的基础地址、超时与凭据；测试会按勾选的站点主动请求上游。</p>
           </div>
 
           <section class="list-section" aria-labelledby="sites-heading">
@@ -94,6 +94,7 @@
 
             <ul id="sites-list" class="sites-list" aria-busy="true"></ul>
           </section>
+          <p class="footnote">站点地址只做格式校验；凭据保存后不会回显。</p>
         </section>
 
         <section class="view" id="view-preview" data-view="preview" hidden>
@@ -103,7 +104,7 @@
               <span class="count">5 种内容</span>
             </div>
             <p class="preview-lede">
-              选择已启用站点和内容类型后主动获取；再次获取优先使用未过期缓存，刷新上游会跳过缓存。打开页面、切换选项或保存站点不会请求上游。
+              选择站点与内容类型后主动获取；「刷新上游」会跳过缓存重新请求。
             </p>
             <div class="preview-controls">
               <label class="field preview-site-field">
@@ -190,7 +191,7 @@
               <span id="profile-count" class="count">0 个</span>
             </div>
             <p class="preview-lede">
-              内容组合定义栏目、顺序与每栏条数，不绑定站点；预览和推送时再选站点。打开页面、保存、删除或切换组合不会自动请求上游。
+              定义栏目、顺序与每栏条数，不绑定站点。
             </p>
             <div class="profile-list-actions">
               <button id="create-profile-button" class="button button-primary" type="button">
@@ -216,7 +217,7 @@
               <span class="count">已保存组合</span>
             </div>
             <p class="preview-lede">
-              组合只定义栏目、顺序和条数，不绑定站点。选择组合与本次预览使用的站点后主动获取；普通获取使用缓存，刷新组合会跳过已完成缓存。
+              选择组合与本次预览使用的站点后主动获取；「刷新组合」会跳过缓存。
             </p>
             <div class="preview-controls">
               <label class="field preview-site-field">
@@ -309,7 +310,7 @@
               <span id="task-count" class="count">0 个</span>
             </div>
             <p class="preview-lede">
-              保存任务不会发送消息、不请求上游、也不启用调度。任务保存后保持未启用，需在任务卡片上显式启用；请使用对应会话的 /sid 获取完整 UMO，不能直接填写裸群号或 UID。
+              保存后保持未启用，需在任务卡片上显式启用；UMO 用对应会话的 /sid 获取。
             </p>
             <div class="profile-list-actions">
               <button id="create-task-button" class="button button-primary" type="button">
@@ -333,7 +334,7 @@
         <section class="view" id="view-executions" data-view="executions" hidden>
           <div class="view-head">
             <h1>执行记录</h1>
-            <p class="view-lede">手动测试投递与调度记录分区展示：unknown 表示结果不确定，不会自动重发，这里也不提供补发操作。</p>
+            <p class="view-lede">记录手动测试与调度结果。</p>
           </div>
 
           <section class="delivery-section" aria-labelledby="delivery-heading">
@@ -342,7 +343,7 @@
               <button id="delivery-refresh-button" class="button button-secondary" type="button">刷新记录</button>
             </div>
             <p class="preview-lede">
-              手动测试只由管理员显式提交；不会启用任务或自动推送。确认后按当前保存配置重新准备内容——该准备可能命中内容缓存（默认 300 秒），不保证重新请求上游。unknown 表示结果不确定，不会自动重发。
+              确认后按当前保存配置重新准备，可能命中缓存（默认 300 秒）；unknown 不会自动重发。
             </p>
             <button id="delivery-show-pending-button" class="button button-secondary" type="button" hidden>查看未确认执行</button>
             <div id="delivery-pending-panel" class="uncertain" hidden>
@@ -364,7 +365,7 @@
               <button id="schedule-runs-refresh-button" class="button button-secondary" type="button">刷新记录</button>
             </div>
             <p class="preview-lede">
-              展示调度认领和跳过记录。claimed 只表示已认领，succeeded 也不代表平台已读；unknown 不自动重试。这里不提供重试或补发操作。
+              claimed 只表示已认领，succeeded 也不代表平台已读。
             </p>
             <div id="schedule-runs-state" class="list-state" hidden>
               <p id="schedule-runs-state-text"></p>
@@ -385,10 +386,6 @@
             <button id="schedule-runs-more-button" class="button button-secondary" type="button" hidden>加载更多</button>
           </section>
         </section>
-
-        <p class="footnote">
-          站点保存只做格式校验；内容预览优先使用未过期缓存，刷新上游会强制请求所选 endpoint。内容组合引用已保存站点，不能填写任意 URL。凭据保存后不会回显。
-        </p>
 
         <dialog id="delivery-dialog" class="dialog" aria-labelledby="delivery-dialog-title">
           <form id="delivery-form" class="form">

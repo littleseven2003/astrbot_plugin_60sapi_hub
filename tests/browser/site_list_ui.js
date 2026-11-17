@@ -283,6 +283,19 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     check(await page.isDisabled("#site-test-selected"), "未选站点时批量测试禁用");
     check(await page.isDisabled("#site-delete-selected"), "未选站点时批量删除禁用");
 
+    // 页面说明保持一句话；站点备注只留在站点管理视图里。
+    const copy = await page.evaluate(() => ({
+      ledes: Array.from(document.querySelectorAll(".view-lede, .preview-lede"))
+        .map((node) => node.textContent.trim()),
+      footnotes: Array.from(document.querySelectorAll(".footnote"))
+        .map((node) => node.closest(".view")?.dataset.view ?? ""),
+    }));
+    check(copy.ledes.length === 8, "页面说明 8 处：" + copy.ledes.length);
+    check(copy.ledes.every((text) => text.length <= 60),
+      "说明文案不超过 60 字：" + copy.ledes.map((text) => text.length).join(","));
+    check(copy.footnotes.length === 1 && copy.footnotes[0] === "sites",
+      "站点备注只出现在站点管理视图：" + JSON.stringify(copy.footnotes));
+
     // 每行内容：勾选框、来源药丸、名称、完整地址、五类状态、三个图标按钮。
     check(await page.locator("#sites-list > li").count() === 3, "列表有 3 行");
     const firstRow = await page.evaluate(() => {

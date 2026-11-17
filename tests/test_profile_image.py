@@ -1002,6 +1002,55 @@ class ProfileImageRendererTest(unittest.TestCase):
             ["01", "抖音热点", "热度：12345"],
         )
 
+    def test_heat_column_fits_three_digit_decimal_values(self) -> None:
+        # 热度列宽度要覆盖「热度：128.4 万」这类常见小数热度，
+        # 否则同一张图里部分行内联、部分落到标题下方，行高忽高忽低。
+        hot = "热度：128.4 万"
+        self.assertLessEqual(
+            self.renderer._text_width(hot, image_module._HEAT_SIZE),
+            image_module._HEAT_COL,
+        )
+        data = section(
+            "bilibili_hot", "Bilibili 热榜", [item("标题", hot_value_desc="128.4 万")],
+        )
+        lines = self.renderer._body_lines(
+            image_module._items(data), self.renderer.limits.width,
+        )
+        self.assertEqual(len(lines[0].parts), 3)
+        self.assertEqual(lines[0].parts[2].text, hot)
+        self.assertEqual(
+            lines[0].parts[2].right,
+            self.renderer._content_width(self.renderer.limits.width),
+        )
+
+    def test_empty_state_placeholder_hangs_full_width_parens(self) -> None:
+        # 全角括号自带左侧空白，空状态首行需要悬挂该空白才与正文左对齐。
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines([], width, "douyin_hot")
+        placeholder, note = lines[0].parts[0], lines[1].parts[0]
+        inset = self.renderer._ink_inset(placeholder.text, placeholder.size)
+        self.assertGreater(inset, 0)
+        self.assertEqual(placeholder.x, image_module._NUM_COL + image_module._NUM_GAP - inset)
+        self.assertEqual(placeholder.x + inset, note.x)
+
+    def test_single_character_tail_line_is_avoided(self) -> None:
+        # 长标题在热度列让位后可能只剩一个字落到末行，需要回带一个字符。
+        width = self.renderer.limits.width
+        content_width = self.renderer._content_width(width)
+        text_x = image_module._NUM_COL + image_module._NUM_GAP
+        first_width = content_width - text_x - image_module._HEAT_COL - image_module._HEAT_GAP
+        title = (
+            "20261117-2026Q4-REVISION-8821-9981-DELIVERY-PIPELINE-"
+            "CHECKLIST-AND-ROLLBACK-NOTES 发布"
+        )
+        wrapped = self.renderer._wrap(
+            title, image_module._TITLE_SIZE, content_width - text_x,
+            first_width=first_width,
+        )
+        self.assertGreater(len(wrapped), 1)
+        self.assertGreaterEqual(len(wrapped[-1]), 2)
+        self.assertEqual("".join(wrapped).replace(" ", ""), title.replace(" ", ""))
+
     def test_long_hot_value_moves_below_the_title(self) -> None:
         long_hot = "热度：1.2 亿（较昨日上升 3 位，来自站内实时榜单）"
         data = section(

@@ -126,7 +126,7 @@ _DETAIL_SIZE = 19
 _DETAIL_LEADING = 27
 _DETAIL_GAP = 4
 _HEAT_SIZE = 17
-_HEAT_COL = 112
+_HEAT_COL = 124
 _HEAT_GAP = 16
 _HOT_LEADING = 26
 _HOT_GAP = 4
@@ -435,11 +435,14 @@ class ProfileImageRenderer:
         lines: list[_Line] = []
         if not items:
             # 空状态与条目正文同一左边线，保持整栏对齐。
+            # 全角括号自带左侧字面空白，悬挂掉这段空白后墨迹才与正文对齐。
+            empty_text = "（上游本次没有返回内容）"
+            empty_x = text_x - self._ink_inset(empty_text, 22)
             lines.append(
                 _Line(
                     parts=(
                         _Part(
-                            "（上游本次没有返回内容）", 22, _MUTED, False, text_x,
+                            empty_text, 22, _MUTED, False, empty_x,
                         ),
                     ),
                     leading=32,
@@ -750,6 +753,14 @@ class ProfileImageRenderer:
     def _content_width(width: int) -> int:
         return width - 2 * (_CARD_BORDER + _PAD_X)
 
+    def _ink_inset(self, text: str, size: int) -> float:
+        """返回文字在给定字号下的左侧字面空白，用于中标点悬挂对齐。"""
+        try:
+            box = self._font(size).getmask(text).getbbox()
+        except Exception:
+            return 0.0
+        return max(0.0, float(box[0])) if box else 0.0
+
     def _text_width(self, text: str, size: int, *, bold: bool = False) -> float:
         width = self._font(size).getlength(text)
         return width + 2 if bold else width
@@ -824,6 +835,10 @@ class ProfileImageRenderer:
                 current = candidate
         if current.strip():
             lines.append(current.rstrip())
+        if len(lines) >= 2 and len(lines[-1]) == 1 and len(lines[-2]) > 2:
+            # 末行只剩一个字时把上一行末尾字符带下来，避免孤字成行。
+            lines[-1] = lines[-2][-1] + lines[-1]
+            lines[-2] = lines[-2][:-1]
         return lines or [clean]
 
     def _split_token(

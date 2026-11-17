@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -411,6 +411,8 @@ class StoredTask:
     schedule_interval_minutes: int | str | None = None
     schedule_expression: str | None = None
     sites: tuple[str, ...] = ()
+    # 任务自己的栏目配置（顺序即输出顺序），随任务一起读写。
+    items: tuple[StoredProfileItem, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,6 +740,40 @@ class SiteStore:
                     "ALTER TABLE push_tasks "
                     "ADD COLUMN schedule_interval_minutes INTEGER",
                 )
+            # v16：内容组合并入推送任务。每个任务保存自己的一份栏目配置，
+            # 组合行的 id 等于任务 id（历史执行记录里的 profile_id 因此继续有效）。
+            # 三步都按「该任务是否已有自己的方案行 / 栏目」判断，重复启动不会
+            # 二次复制栏目，也不会改动已迁移的任务。
+            await connection.execute(
+                """
+                INSERT INTO content_profiles
+                    (id, name, revision, created_at, updated_at)
+                SELECT t.id, t.name, 1, t.created_at, t.updated_at
+                FROM push_tasks AS t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM content_profiles AS p WHERE p.id = t.id
+                )
+                """
+            )
+            await connection.execute(
+                """
+                INSERT INTO content_profile_items
+                    (profile_id, position, content_type, params_json, limit_count)
+                SELECT t.id, i.position, i.content_type,
+                       i.params_json, i.limit_count
+                FROM push_tasks AS t
+                JOIN content_profile_items AS i ON i.profile_id = t.profile_id
+                WHERE t.profile_id <> t.id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM content_profile_items AS x
+                      WHERE x.profile_id = t.id
+                  )
+                ORDER BY t.id, i.position
+                """
+            )
+            await connection.execute(
+                "UPDATE push_tasks SET profile_id = id WHERE profile_id <> id"
+            )
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -1182,7 +1218,7 @@ class SiteStore:
         *,
         task_id: str,
         name: str,
-        profile_id: str,
+        items: tuple[StoredProfileItem, ...],
         output_format: str,
         umos: tuple[str, ...],
         site_ids: tuple[str, ...] = (),
@@ -1199,6 +1235,8 @@ class SiteStore:
             now = _utc_now()
 
             async def perform() -> None:
+                # 任务自带一份内容方案（行 id 与任务 id 相同），和任务同一事务落库。
+                await self._insert_plan(connection, task_id, name, items, now)
                 await connection.execute(
                     """
                     INSERT INTO push_tasks (
@@ -1210,7 +1248,7 @@ class SiteStore:
                     ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
-                        task_id, name, profile_id, output_format,
+                        task_id, name, task_id, output_format,
                         schedule_kind, schedule_timezone, schedule_time,
                         schedule_weekdays, schedule_start_at,
                         schedule_interval_minutes, schedule_expression,
@@ -1228,7 +1266,8 @@ class SiteStore:
             return StoredTask(
                 id=task_id,
                 name=name,
-                profile_id=profile_id,
+                profile_id=task_id,
+                items=items,
                 output_format=output_format,
                 umos=umos,
                 sites=site_ids,
@@ -1262,6 +1301,7 @@ class SiteStore:
                 ids = tuple(row["id"] for row in rows)
                 umos = await self._load_task_umos(ids)
                 sites = await self._load_task_sites(ids)
+                items = await self._load_profile_items(ids)
             except SiteStoreError:
                 raise
             except Exception as exc:
@@ -1271,6 +1311,7 @@ class SiteStore:
                     row,
                     umos.get(row["id"], ()),
                     sites.get(row["id"], ()),
+                    items.get(row["id"], ()),
                 )
                 for row in rows
             ]
@@ -1292,21 +1333,23 @@ class SiteStore:
                     raise TaskRecordNotFoundError(task_id)
                 umos = await self._load_task_umos((task_id,))
                 sites = await self._load_task_sites((task_id,))
+                items = await self._load_profile_items((task_id,))
             except SiteStoreError:
                 raise
             except Exception as exc:
                 raise SiteStoreError("读取推送任务失败") from exc
             return _row_to_task(
                 row, umos.get(task_id, ()), sites.get(task_id, ()),
+                items.get(task_id, ()),
             )
 
     async def get_task_config_snapshot(
         self,
         task_id: str,
     ) -> StoredTaskConfigSnapshot:
-        """在一个锁内读取任务、组合和候选站点的配置快照。
+        """在一个锁内读取任务、栏目方案和候选站点的配置快照。
 
-        任务 UMO、任务的候选站点、任务引用的组合以及各自 revision 必须来自
+        任务 UMO、任务的候选站点、任务的内容方案以及各自 revision 必须来自
         同一次一致的存储读取，避免分多次 await 拼装旧状态。
         """
         async with self._lock:
@@ -1325,8 +1368,10 @@ class SiteStore:
                     raise TaskRecordNotFoundError(task_id)
                 umos = await self._load_task_umos((task_id,))
                 sites = await self._load_task_sites((task_id,))
+                items = await self._load_profile_items((task_id,))
                 task = _row_to_task(
                     row, umos.get(task_id, ()), sites.get(task_id, ()),
+                    items.get(task_id, ()),
                 )
                 async with self._require_connection().execute(
                     """
@@ -1386,7 +1431,7 @@ class SiteStore:
         task_id: str,
         *,
         name: str,
-        profile_id: str,
+        items: tuple[StoredProfileItem, ...],
         output_format: str,
         umos: tuple[str, ...],
         expected_revision: int,
@@ -1405,6 +1450,10 @@ class SiteStore:
             now = _utc_now()
 
             async def perform() -> None:
+                # 旧库或异常中断可能缺方案行；先补建，后续外键与栏目写入才成立。
+                await self._ensure_plan_row(
+                    connection, task_id, name, now,
+                )
                 if schedule_unchanged:
                     cursor = await connection.execute(
                         """
@@ -1415,7 +1464,7 @@ class SiteStore:
                         WHERE id = ? AND revision = ?
                         """,
                         (
-                            name, profile_id, output_format, now,
+                            name, task_id, output_format, now,
                             task_id, expected_revision,
                         ),
                     )
@@ -1432,7 +1481,7 @@ class SiteStore:
                         WHERE id = ? AND revision = ?
                         """,
                         (
-                            name, profile_id, output_format,
+                            name, task_id, output_format,
                             schedule_kind, schedule_timezone, schedule_time,
                             schedule_weekdays, schedule_start_at,
                             schedule_interval_minutes, schedule_expression,
@@ -1464,6 +1513,12 @@ class SiteStore:
                     )
                     await self._insert_task_sites(connection, task_id, site_ids)
 
+                # 栏目配置属于这个任务自己：整体替换并提升方案版本，
+                # 历史执行记录里的 profile_revision 仍可读。
+                await self._replace_plan_items(
+                    connection, task_id, name, items, now,
+                )
+
             await self._commit_write(
                 connection,
                 perform,
@@ -1481,8 +1536,10 @@ class SiteStore:
             if row is None:
                 raise TaskRecordNotFoundError(task_id)
             stored_sites = await self._load_task_sites((task_id,))
+            stored_items = await self._load_profile_items((task_id,))
             return _row_to_task(
                 row, umos, stored_sites.get(task_id, ()),
+                stored_items.get(task_id, ()),
             )
 
     async def delete_task(self, task_id: str, *, expected_revision: int) -> None:
@@ -1502,6 +1559,12 @@ class SiteStore:
                     if row is None:
                         raise TaskRecordNotFoundError(task_id)
                     raise TaskRevisionConflictError(int(row["revision"]))
+                # 任务自带的方案随任务删除；共享组合是旧模型的遗留数据，
+                # 可能仍被历史执行记录引用，这里不动它们。
+                await connection.execute(
+                    "DELETE FROM content_profiles WHERE id = ?",
+                    (task_id,),
+                )
 
             await self._commit_write(
                 connection,
@@ -1582,8 +1645,10 @@ class SiteStore:
                 raise TaskRecordNotFoundError(task_id)
             umos = await self._load_task_umos((task_id,))
             sites = await self._load_task_sites((task_id,))
+            items = await self._load_profile_items((task_id,))
             return _row_to_task(
                 row, umos.get(task_id, ()), sites.get(task_id, ()),
+                items.get(task_id, ()),
             )
 
     async def get_schedule_state(self, task_id: str) -> ScheduleState | None:
@@ -2264,6 +2329,67 @@ class SiteStore:
             for task_id, umos in grouped.items()
         }
 
+    async def _insert_plan(
+        self,
+        connection: aiosqlite.Connection,
+        task_id: str,
+        name: str,
+        items: tuple[StoredProfileItem, ...],
+        now: str,
+    ) -> None:
+        """为任务创建私有内容方案行：行 id 与任务 id 相同。"""
+        await connection.execute(
+            """
+            INSERT INTO content_profiles
+                (id, name, revision, created_at, updated_at)
+            VALUES (?, ?, 1, ?, ?)
+            """,
+            (task_id, name, now, now),
+        )
+        await self._insert_profile_items(connection, task_id, items)
+
+    async def _ensure_plan_row(
+        self,
+        connection: aiosqlite.Connection,
+        task_id: str,
+        name: str,
+        now: str,
+    ) -> None:
+        await connection.execute(
+            """
+            INSERT INTO content_profiles
+                (id, name, revision, created_at, updated_at)
+            SELECT ?, ?, 1, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM content_profiles WHERE id = ?
+            )
+            """,
+            (task_id, name, now, now, task_id),
+        )
+
+    async def _replace_plan_items(
+        self,
+        connection: aiosqlite.Connection,
+        task_id: str,
+        name: str,
+        items: tuple[StoredProfileItem, ...],
+        now: str,
+    ) -> None:
+        await self._ensure_plan_row(connection, task_id, name, now)
+        await connection.execute(
+            """
+            UPDATE content_profiles
+            SET name = ?, revision = revision + 1, updated_at = ?
+            WHERE id = ?
+            """,
+            (name, now, task_id),
+        )
+        await connection.execute(
+            "DELETE FROM content_profile_items WHERE profile_id = ?",
+            (task_id,),
+        )
+        await self._insert_profile_items(connection, task_id, items)
+
     async def _insert_profile_items(
         self,
         connection: aiosqlite.Connection,
@@ -2649,11 +2775,13 @@ def _row_to_task(
     row: aiosqlite.Row,
     umos: tuple[str, ...],
     sites: tuple[str, ...] = (),
+    items: tuple[StoredProfileItem, ...] = (),
 ) -> StoredTask:
     return StoredTask(
         id=row["id"],
         name=row["name"],
         profile_id=row["profile_id"],
+        items=items,
         output_format=row["output_format"],
         umos=umos,
         sites=sites,

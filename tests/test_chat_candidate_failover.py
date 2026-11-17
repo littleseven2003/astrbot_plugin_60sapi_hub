@@ -14,6 +14,7 @@ from core.chat_content import (
     ChatContentQuery,
 )
 from core.chat_image import IMAGE_FAILED_TEXT, ChatImageQuery
+from core.content_plan import PlanItem
 
 UMO = "bot:GroupMessage:g"
 PNG_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\n\x00").decode()
@@ -22,8 +23,8 @@ PNG_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\n\x00").decode()
 def _snapshot(task, candidates):
     return SimpleNamespace(
         task=task,
-        profile_id="p1",
-        profile_revision=3,
+        profile_id=task.id,
+        plan_revision=3,
         candidates=tuple(
             SimpleNamespace(id=site_id, revision=revision, enabled=enabled)
             for site_id, revision, enabled in candidates
@@ -38,7 +39,7 @@ class _Tasks:
         self.task = SimpleNamespace(
             id="task-1",
             name="任务",
-            profile_id="p1",
+            items=(PlanItem("daily_news", None),),
             output_format="text",
             umos=(UMO,),
             sites=tuple(item[0] for item in candidates),
@@ -54,12 +55,6 @@ class _Tasks:
             raise TaskNotFoundError(task_id)
         return _snapshot(self.task, self.candidates)
 
-    async def get_profile(self, profile_id):
-        return SimpleNamespace(
-            id=profile_id,
-            items=(SimpleNamespace(content_type="daily_news", limit=None),),
-        )
-
 
 class _TextPreviews:
     def __init__(self, failing=(), on_call=None) -> None:
@@ -67,7 +62,7 @@ class _TextPreviews:
         self.on_call = on_call
         self.calls: list[str | None] = []
 
-    async def preview_profile(self, payload, *, owner=None, site_id=None):
+    async def preview_site(self, payload, *, owner=None, site_id=None):
         # 聊天查询按约定把本次站点放进载荷，而不是单独的关键字参数。
         requested = payload.get("site_id") if isinstance(payload, dict) else None
         self.calls.append(requested)
@@ -89,17 +84,19 @@ class _ImagePreviews:
         self.images = images
         self.preview_calls: list[str | None] = []
         self.generate_calls: list[str] = []
+        self.generate_plan_ids: list[str] = []
 
-    async def preview_profile(self, payload, *, owner=None, site_id=None):
+    async def preview_site(self, payload, *, owner=None, site_id=None):
         requested = payload.get("site_id") if isinstance(payload, dict) else None
         self.preview_calls.append(requested)
         snapshot_id = self.snapshots.get(requested)
         data = {} if snapshot_id is None else {"image_snapshot": {"id": snapshot_id}}
         return SimpleNamespace(status_code=200, body={"data": data})
 
-    async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
+    async def generate_image(self, task_id, payload, *, owner=None, site_id=None):
         snapshot_id = payload.get("snapshot_id")
         self.generate_calls.append(snapshot_id)
+        self.generate_plan_ids.append(task_id)
         return SimpleNamespace(
             status_code=200,
             body={"data": {"images": self.images.get(snapshot_id, [])}},
@@ -125,7 +122,7 @@ class ChatCandidateFailoverTest(unittest.IsolatedAsyncioTestCase):
         tasks = _Tasks(candidates)
         previews = _TextPreviews(failing, on_call)
         service = ChatCommandService(
-            tasks, tasks, tasks,
+            tasks, tasks,
             content_query=ChatContentQuery(tasks, previews),
         )
         return service, tasks, previews
@@ -175,7 +172,7 @@ class ChatCandidateFailoverTest(unittest.IsolatedAsyncioTestCase):
         tasks = _Tasks((("s1", 4, True), ("s2", 5, True)))
         previews = _TextPreviews(failing={"s1"}, on_call=reorder)
         service = ChatCommandService(
-            tasks, tasks, tasks,
+            tasks, tasks,
             content_query=ChatContentQuery(tasks, previews),
         )
         self.assertEqual(
@@ -190,7 +187,7 @@ class ChatCandidateFailoverTest(unittest.IsolatedAsyncioTestCase):
             {"snap-2": [_page(1)]},
         )
         service = ChatCommandService(
-            tasks, tasks, tasks,
+            tasks, tasks,
             image_query=ChatImageQuery(tasks, previews),
         )
         reply = await service.handle(UMO, "/60s image task-1")
@@ -199,6 +196,8 @@ class ChatCandidateFailoverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(previews.preview_calls, ["s1", "s2"])
         # 只有第二份快照被渲染，没有拿第一个站点的空结果冒充图片。
         self.assertEqual(previews.generate_calls, ["snap-2"])
+        # 图片 rerender 用任务 id（组合已并入任务）。
+        self.assertEqual(previews.generate_plan_ids, ["task-1"])
 
     async def test_image_all_candidates_empty_returns_failed_text(self) -> None:
         tasks = _Tasks((("s1", 4, True), ("s2", 5, True)))
@@ -209,7 +208,7 @@ class ChatCandidateFailoverTest(unittest.IsolatedAsyncioTestCase):
             {"snap-1": empty, "snap-2": empty},
         )
         service = ChatCommandService(
-            tasks, tasks, tasks,
+            tasks, tasks,
             image_query=ChatImageQuery(tasks, previews),
         )
         self.assertEqual(

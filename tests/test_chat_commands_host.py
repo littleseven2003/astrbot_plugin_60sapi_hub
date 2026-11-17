@@ -76,21 +76,16 @@ class ListTasks:
     async def list_tasks(self):
         return [
             SimpleNamespace(
-                id="visible", name="可见任务", profile_id="p1",
-                output_format="text", umos=("bot1:GroupMessage:g1",),
+                id="visible", name="可见任务", output_format="text",
+                umos=("bot1:GroupMessage:g1",), sites=("s1",),
                 created_at="2026-01-01T00:00:00Z",
             ),
             SimpleNamespace(
-                id="other", name="其他会话任务", profile_id="p1",
-                output_format="image", umos=("bot1:GroupMessage:other",),
+                id="other", name="其他会话任务", output_format="image",
+                umos=("bot1:GroupMessage:other",), sites=("s1",),
                 created_at="2026-01-01T00:00:01Z",
             ),
         ]
-
-
-class ListProfiles:
-    async def list_profiles(self):
-        return [SimpleNamespace(id="p1", site_id="s1")]
 
 
 class ListSites:
@@ -168,7 +163,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
     async def test_registration_filter_dispatch_to_real_service(self) -> None:
         handler = self.handler_metadata()
         event = self.event("60s list", "bot1:GroupMessage:g1")
-        service = ChatCommandService(ListTasks(), ListProfiles(), ListSites())
+        service = ChatCommandService(ListTasks(), ListSites())
         _, results = await self.dispatch(handler, event, service)
         self.assertEqual(len(results), 1)
         text = results[0].get_plain_text()
@@ -271,13 +266,12 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_command_through_actual_query_service(self) -> None:
         class GetFixture:
             def __init__(self):
+                # 栏目已并入任务：任务自带 items 与候选站点，不再有组合行。
                 self.task = SimpleNamespace(
-                    id="visible", name="可见任务", profile_id="p1",
+                    id="visible", name="可见任务",
                     output_format="image", umos=("bot1:GroupMessage:g1",),
                     revision=2, created_at="2026-01-01T00:00:00Z",
-                )
-                self.profile = SimpleNamespace(
-                    id="p1", revision=3,
+                    sites=("s1",),
                     items=(SimpleNamespace(content_type="daily_news", limit=None),),
                 )
                 self.site = SimpleNamespace(id="s1", site_revision=4, enabled=True, revision=4)
@@ -291,21 +285,16 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             async def get_config_snapshot(self, task_id):
                 task = await self.get_task(task_id)
                 return SimpleNamespace(
-                    task=task, profile_id=self.profile.id,
-                    profile_revision=self.profile.revision,
+                    task=task, plan_revision=3,
                     candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision, enabled=self.site.enabled),),
-
                 )
-
-            async def get_profile(self, profile_id):
-                return self.profile
 
             async def get_site(self, site_id):
                 return self.site
 
-            async def preview_profile(self, payload, *, site_id=None):
+            async def preview_site(self, payload, *, owner=None, site_id=None):
                 return SimpleNamespace(status_code=200, body={
-                    "data": {"outputs": {"text": "组合：可见任务\n纯文字内容"}},
+                    "data": {"outputs": {"text": "任务：可见任务\n纯文字内容"}},
                 })
 
         fixture = GetFixture()
@@ -336,7 +325,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             hub = self.module.SixtySAPIHub(context)
             self.assertIs(
                 hub.chat_commands._image_query._previews,
-                hub.profile_api,
+                hub.plan_preview,
             )
             constructor_image = hub.image_service
             await hub.initialize()
@@ -360,26 +349,21 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 task = SimpleNamespace(
                     id="visible", revision=2,
                     umos=("bot1:GroupMessage:g1",),
-                    profile_id="p1",
+                    sites=("s1",),
+                    items=(SimpleNamespace(content_type="daily_news", limit=None),),
                 )
                 return SimpleNamespace(
-                    task=task, profile_id="p1", profile_revision=1,
+                    task=task, plan_revision=1,
                     candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
                 )
 
-            async def get_profile(self, profile_id):
-                return SimpleNamespace(
-                    id="p1",
-                    items=(SimpleNamespace(content_type="daily_news", limit=None),),
-                )
-
-            async def preview_profile(self, payload, *, owner=None, site_id=None):
+            async def preview_site(self, payload, *, owner=None, site_id=None):
                 return SimpleNamespace(
                     status_code=200,
                     body={"data": {"image_snapshot": {"id": "chat-snapshot"}}},
                 )
 
-            async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
+            async def generate_image(self, task_id, payload, *, owner=None, site_id=None):
                 png = b"\x89PNG\r\n\x1a\npage"
                 encoded = base64.b64encode(png).decode()
                 return SimpleNamespace(status_code=200, body={"data": {"images": [
@@ -417,7 +401,10 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         import tempfile
         from unittest.mock import patch
 
-        context = SimpleNamespace(register_web_api=lambda *args: None)
+        routes: list[str] = []
+        context = SimpleNamespace(
+            register_web_api=lambda path, *args: routes.append(path),
+        )
         with tempfile.TemporaryDirectory() as tmp, patch.object(
             self.module.StarTools, "get_data_dir", return_value=Path(tmp),
         ):
@@ -429,7 +416,6 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             old_scheduler = hub.scheduler
             old_task_web = hub._task_web
             old_delivery_web = hub._delivery_web
-            old_profile_web = hub._profile_web
             await hub.terminate()
             self.assertTrue(old_delivery._closed)
             self.assertFalse(old_image.is_open)
@@ -447,14 +433,16 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(old_scheduler is hub.scheduler)
             self.assertFalse(old_task_web._is_active())
             self.assertFalse(old_delivery_web._is_active())
-            self.assertFalse(old_profile_web._is_active())
             self.assertTrue(hub._task_web._is_active())
+            # 组合并入任务：旧组合 Web/API 与 /profiles 路由一并消失。
+            self.assertFalse(hasattr(hub, "_profile_web"))
+            self.assertNotIn("profiles", " ".join(routes))
             self.assertIs(
-                hub.chat_commands._image_query._previews, hub.profile_api,
+                hub.chat_commands._image_query._previews, hub.plan_preview,
             )
-            from tests.test_profile_image import item, profile, section
+            from tests.test_profile_image import item, profile as snapshot_payload, section
             images = await hub.image_service.render(
-                profile([section(items=[item()])]),
+                snapshot_payload([section(items=[item()])]),
             )
             self.assertGreaterEqual(len(images), 1)
             self.assertEqual(images[0].status, "success")
@@ -487,9 +475,9 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(hub.scheduler.started)
             self.assertTrue(hub.sites.is_open)
             self.assertTrue(hub.image_service.is_open)
-            from tests.test_profile_image import item, profile, section
+            from tests.test_profile_image import item, profile as snapshot_payload, section
             images = await hub.image_service.render(
-                profile([section(items=[item()])]),
+                snapshot_payload([section(items=[item()])]),
             )
             self.assertGreaterEqual(len(images), 1)
             self.assertEqual(images[0].status, "success")
@@ -503,7 +491,6 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
         import httpx
         from core.content_client import ContentHttpClient
         from core.delivery import DeliverySendResult, SendStatus
-        from core.profiles import ProfileCreate
         from core.sites import SiteCreate
         from core.tasks import TaskCreate
 
@@ -541,12 +528,9 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 name="调度站点", base_url="http://example.test/proxy",
                 enabled=True, timeout_seconds=5,
             ))
-            profile = await hub.profiles.create_profile(ProfileCreate(
-                name="调度组合", site_id=site.id,
-                items=[{"content_type": "daily_news", "params": {}, "limit": None}],
-            ))
             task = await hub.tasks.create_task(TaskCreate(
-                name="调度任务", profile_id=profile.id, output_format="text",
+                name="调度任务", output_format="text",
+                items=[{"content_type": "daily_news", "params": {}, "limit": None}],
                 sites=[site.id],
                 umos=["fake:GroupMessage:g"], schedule={
                     "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
@@ -580,13 +564,13 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 self.started = asyncio.Event()
                 self.release = asyncio.Event()
 
-            async def preview_profile(self, payload, *, owner=None, site_id=None):
+            async def preview_site(self, payload, *, owner=None, site_id=None):
                 return SimpleNamespace(
                     status_code=200,
                     body={"data": {"image_snapshot": {"id": "snap"}}},
                 )
 
-            async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
+            async def generate_image(self, task_id, payload, *, owner=None, site_id=None):
                 self.started.set()
                 await self.release.wait()
                 return SimpleNamespace(status_code=200, body={"data": {"images": [
@@ -601,16 +585,11 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(
                     task=SimpleNamespace(
                         id="visible", revision=1,
-                        umos=("bot1:GroupMessage:g1",), profile_id="p1",
+                        umos=("bot1:GroupMessage:g1",), sites=("s1",),
+                        items=(SimpleNamespace(content_type="daily_news", limit=None),),
                     ),
-                    profile_id="p1", profile_revision=1,
+                    plan_revision=1,
                     candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
-                )
-
-            async def get_profile(self, profile_id):
-                return SimpleNamespace(
-                    id="p1",
-                    items=(SimpleNamespace(content_type="daily_news", limit=None),),
                 )
 
         image_module = importlib.import_module(

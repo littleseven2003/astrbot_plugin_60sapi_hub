@@ -12,9 +12,9 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
-from core.profiles import ContentProfileService, ProfileCreate, ProfileUpdate
+from core.plan_preview import PlanPreview
 from core.sites import SiteCreate, SiteService, SiteUpdate
+from core.tasks import PushTaskService, TaskCreate, TaskUpdate
 
 SECRET = "simulated-secret-abc123"
 
@@ -26,7 +26,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self._tmp.name) / "edges.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.sites.store)
         self.snapshots = ImageSnapshotStore()
         self.images = ProfileImageService()
         self.calls: list[str] = []
@@ -65,8 +65,8 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.images,
         )
         self.barrier = None
@@ -131,17 +131,19 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
 
         self.content.preview_cached = wrapped  # type: ignore[assignment]
 
-    async def _profile(self, items=None, name: str = "边界组合"):
-        return await self.profiles.create_profile(
-            ProfileCreate(
+    async def _task(self, items=None, name: str = "边界任务"):
+        return await self.tasks.create_task(
+            TaskCreate(
                 name=name,
-                site_id=self.site.id,
                 items=items
                 or [
                     {"content_type": "daily_news", "params": {}, "limit": 3},
                     {"content_type": "zhihu_hot", "params": {}, "limit": 2},
                     {"content_type": "douyin_hot", "params": {}, "limit": 2},
                 ],
+                output_format="text",
+                umos=[],
+                sites=[self.site.id],
             ),
         )
 
@@ -179,10 +181,10 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
     async def test_site_disabled_mid_preview_returns_409_without_sections(
         self,
     ) -> None:
-        profile = await self._profile()
+        task = await self._task()
         self.barrier = self._disable_site
         self._wrap_preview_cached()
-        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
+        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
         self.assertEqual(result.status_code, 409, result.body)
         data = result.body.get("data") or {}
         self.assertEqual(data.get("code"), "site_disabled")
@@ -193,9 +195,9 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.barrier_fired)
 
     async def test_site_disabled_before_preview_returns_409(self) -> None:
-        profile = await self._profile()
+        task = await self._task()
         await self._disable_site()
-        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
+        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
         self.assertEqual(result.status_code, 409, result.body)
         data = result.body.get("data") or {}
         self.assertEqual(data.get("code"), "site_disabled")
@@ -205,18 +207,18 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
 
     # ---- 2. 预览进行中删除组合 ----
 
-    async def test_profile_deleted_mid_preview_returns_404_without_sections(
+    async def test_task_deleted_mid_preview_returns_404_without_sections(
         self,
     ) -> None:
-        profile = await self._profile()
+        task = await self._task()
 
-        async def delete_profile() -> None:
-            current = await self.profiles.get_profile(profile.id)
-            await self.profiles.delete_profile(profile.id, current.revision)
+        async def delete_task() -> None:
+            current = await self.tasks.get_task(task.id)
+            await self.tasks.delete_task(task.id, current.revision)
 
-        self.barrier = delete_profile
+        self.barrier = delete_task
         self._wrap_preview_cached()
-        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
+        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
         self.assertEqual(result.status_code, 404, result.body)
         data = result.body.get("data") or {}
         self.assertNotIn("sections", data)
@@ -225,36 +227,39 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
 
     # ---- 3. 预览进行中修改组合 ----
 
-    async def test_profile_updated_mid_preview_uses_final_configuration(
+    async def test_task_updated_mid_preview_uses_final_configuration(
         self,
     ) -> None:
-        profile = await self._profile()
+        task = await self._task()
+        initial = await self.tasks.get_config_snapshot(task.id)
         updated_items = [
             {"content_type": "douyin_hot", "params": {}, "limit": 1},
             {"content_type": "daily_news", "params": {}, "limit": 1},
         ]
 
-        async def update_profile() -> None:
-            current = await self.profiles.get_profile(profile.id)
-            await self.profiles.update_profile(
-                profile.id,
-                ProfileUpdate(
+        async def update_task() -> None:
+            current = await self.tasks.get_task(task.id)
+            await self.tasks.update_task(
+                task.id,
+                TaskUpdate(
                     name=current.name,
                     items=updated_items,
+                    output_format=current.output_format,
+                    umos=list(current.umos),
                     expected_revision=current.revision,
                 ),
             )
 
-        self.barrier = update_profile
+        self.barrier = update_task
         self._wrap_preview_cached()
-        result = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": True},
+        result = await self.api.preview_site(
+            {"task_id": task.id, "force_refresh": True}, site_id=self.site.id,
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
-        final = await self.profiles.get_profile(profile.id)
-        self.assertEqual(data["profile_revision"], final.revision)
-        self.assertGreater(final.revision, profile.revision)
+        final = await self.tasks.get_config_snapshot(task.id)
+        self.assertEqual(data["plan_revision"], final.plan_revision)
+        self.assertGreater(final.plan_revision, initial.plan_revision)
         # 栏目顺序与条数来自更新后的配置。
         self.assertEqual(
             [section["content_type"] for section in data["sections"]],
@@ -296,7 +301,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
                           or news_tag, titles)
         snapshot = self.snapshots.get(data["image_snapshot"]["id"])
         self.assertIsNotNone(snapshot)
-        self.assertEqual(snapshot.profile_revision, final.revision)
+        self.assertEqual(snapshot.profile_revision, final.plan_revision)
         snap_tags = {
             str(entry.get("title"))
             for section in snapshot.data["sections"]
@@ -310,9 +315,9 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
 
     # ---- 4. force_refresh 两种取值 + 预热缓存 ----
 
-    async def _warm_cache(self, profile) -> None:
+    async def _warm_cache(self, task) -> None:
         # 预热旧 revision 的缓存，确保后续 preview 可能直接命中。
-        for item in profile.items:
+        for item in task.items:
             await self.content.preview_cached(item.content_type, self.site.id)
         self.calls.clear()
 
@@ -352,11 +357,11 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
     async def test_force_refresh_true_does_not_mix_in_flight_site_change(
         self,
     ) -> None:
-        profile = await self._profile()
-        await self._warm_cache(profile)
+        task = await self._task()
+        await self._warm_cache(task)
         self.barrier = self._switch_site
-        result = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": True},
+        result = await self.api.preview_site(
+            {"task_id": task.id, "force_refresh": True}, site_id=self.site.id,
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -372,18 +377,18 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         tags = {str(item["tag"]) for item in self.responses}
         self.assertEqual(tags, {"OLD", "NEW"}, tags)
         # force_refresh 绕过缓存：两轮各请求全部栏目，上界 2 × 栏目数。
-        self.assertLessEqual(len(self.calls), 2 * len(profile.items), self.calls)
-        self.assertGreaterEqual(len(self.calls), len(profile.items), self.calls)
+        self.assertLessEqual(len(self.calls), 2 * len(task.items), self.calls)
+        self.assertGreaterEqual(len(self.calls), len(task.items), self.calls)
 
     async def test_force_refresh_false_does_not_mix_with_warm_cache(
         self,
     ) -> None:
-        profile = await self._profile()
-        await self._warm_cache(profile)
+        task = await self._task()
+        await self._warm_cache(task)
         self.barrier = self._switch_site
         self._wrap_preview_cached()
-        result = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": False},
+        result = await self.api.preview_site(
+            {"task_id": task.id, "force_refresh": False}, site_id=self.site.id,
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -395,17 +400,17 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.site_revision, final_site.revision)
         # 首轮前段命中旧 revision 缓存，切换后各栏目各请求一次；
         # 夹具固定为 3 个栏目、切换发生在第 2 个栏目之前，上界 3。
-        self.assertLessEqual(len(self.calls), len(profile.items), self.calls)
+        self.assertLessEqual(len(self.calls), len(task.items), self.calls)
 
     async def test_force_refresh_false_in_flight_request_keeps_old_body(
         self,
     ) -> None:
         """请求已发出但未返回时切换站点：该响应必须是旧 host 的数据。"""
-        profile = await self._profile()
+        task = await self._task()
         # 不预热缓存，确保第一个栏目真的发出上游请求。
         self.barrier = self._switch_site
-        result = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile.id, "force_refresh": False},
+        result = await self.api.preview_site(
+            {"task_id": task.id, "force_refresh": False}, site_id=self.site.id,
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -420,7 +425,7 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["host"], "gen0.example.test")
         self.assertEqual(first["tag"], "OLD")
         # 两轮：首轮 3 次（1 旧 + 2 新），次轮补新 revision 的 1 次未命中。
-        self.assertLessEqual(len(self.calls), len(profile.items) + 1, self.calls)
+        self.assertLessEqual(len(self.calls), len(task.items) + 1, self.calls)
 
 
 if __name__ == "__main__":

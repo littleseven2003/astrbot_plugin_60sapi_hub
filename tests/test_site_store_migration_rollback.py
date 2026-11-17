@@ -9,7 +9,6 @@ from unittest import mock
 
 import aiosqlite
 
-from core.profiles import ContentProfileService, ProfileCreate
 from core.site_store import SCHEMA_VERSION, SiteStore, SiteStoreError
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
@@ -73,33 +72,27 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
                     bearer_token="legacy-token",
                 ),
             )
-            profiles = ContentProfileService(sites)
-            profile = await profiles.create_profile(
-                ProfileCreate(
-                    name="关联旧组合",
+            tasks = PushTaskService(sites.store)
+            task = await tasks.create_task(
+                TaskCreate(
+                    name="关联旧任务",
                     items=[
                         {"content_type": "daily_news", "params": {}, "limit": 3},
                         {"content_type": "zhihu_hot", "params": {}, "limit": 2},
                     ],
-                ),
-            )
-            tasks = PushTaskService(profiles, sites.store)
-            task = await tasks.create_task(
-                TaskCreate(
-                    name="关联旧任务",
-                    profile_id=profile.id,
                     sites=[site.id],
                     output_format="text",
                     umos=list(UMOS),
                 ),
             )
+            snapshot = await tasks.get_config_snapshot(task.id)
             await sites.store.create_delivery_execution(
                 execution_id=EXECUTION_ID,
                 task_id=task.id,
                 task_name=task.name,
                 task_revision=task.revision,
-                profile_id=profile.id,
-                profile_revision=profile.revision,
+                profile_id=task.id,
+                profile_revision=snapshot.plan_revision,
                 site_id=site.id,
                 site_revision=site.revision,
                 output_format="text",
@@ -108,12 +101,31 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
             await sites.store.add_delivery_pages(
                 EXECUTION_ID, position=0, page_count=2, image_generated=(1, 0),
             )
-            ids = {"site": site.id, "profile": profile.id, "task": task.id}
+            ids = {"site": site.id, "task": task.id}
         finally:
             await sites.close()
 
         raw = sqlite3.connect(path)
         try:
+            # 再把方案行还原成 v15 的共享组合形状：任务指向别人的组合行，
+            # 历史投递记录仍按任务 id 引用方案。v16 因此必须真复制一次栏目。
+            raw.execute(
+                "INSERT INTO content_profiles "
+                "(id, name, revision, created_at, updated_at) "
+                "SELECT ?, name, revision, created_at, updated_at "
+                "FROM content_profiles WHERE id = ?",
+                ("legacy-shared", task.id),
+            )
+            raw.execute(
+                "UPDATE content_profile_items SET profile_id = ? "
+                "WHERE profile_id = ?",
+                ("legacy-shared", task.id),
+            )
+            raw.execute("DELETE FROM content_profiles WHERE id = ?", (task.id,))
+            raw.execute(
+                "UPDATE push_tasks SET profile_id = ? WHERE id = ?",
+                ("legacy-shared", task.id),
+            )
             for table, column in DROPS_V4:
                 raw.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
             raw.execute("PRAGMA user_version = 4")
@@ -160,6 +172,13 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
         try:
             rows = raw.execute(f"PRAGMA foreign_key_list({table})").fetchall()
             return sorted({row[2] for row in rows})
+        finally:
+            raw.close()
+
+    def _query_scalar(self, path: Path, sql: str, params: tuple = ()):
+        raw = sqlite3.connect(path)
+        try:
+            return raw.execute(sql, params).fetchone()[0]
         finally:
             raw.close()
 
@@ -213,25 +232,34 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
             fetch = await sites.get_fetch_config(ids["site"])
             self.assertEqual(fetch.bearer_token, "legacy-token")
 
-            profiles = ContentProfileService(sites)
-            profile = await profiles.get_profile(ids["profile"])
-            self.assertEqual(profile.name, "关联旧组合")
             async with sites.store._require_connection().execute(
                 "PRAGMA table_info(content_profiles)",
             ) as cursor:
                 columns = {row[1] for row in await cursor.fetchall()}
             self.assertNotIn("site_id", columns)
-            self.assertEqual(
-                [item.content_type for item in profile.items],
-                ["daily_news", "zhihu_hot"],
-            )
-            self.assertEqual([item.limit for item in profile.items], [3, 2])
 
-            tasks = PushTaskService(profiles, sites.store)
+            tasks = PushTaskService(sites.store)
             task = await tasks.get_task(ids["task"])
             self.assertEqual(task.name, "关联旧任务")
             self.assertEqual(list(task.umos), UMOS)
-            self.assertEqual(task.profile_id, ids["profile"])
+            # v16：任务指向自己那份方案行，栏目由旧共享组合复制而来。
+            self.assertEqual(task.profile_id, ids["task"])
+            self.assertEqual(
+                [item.content_type for item in task.items],
+                ["daily_news", "zhihu_hot"],
+            )
+            self.assertEqual([item.limit for item in task.items], [3, 2])
+            self.assertEqual(
+                (await tasks.get_config_snapshot(ids["task"])).plan_revision, 1,
+            )
+            # 旧共享行与它的栏目都保留，历史投递记录仍能引用方案行。
+            async with sites.store._require_connection().execute(
+                "SELECT COUNT(*) FROM content_profile_items "
+                "WHERE profile_id = 'legacy-shared'",
+            ) as cursor:
+                self.assertEqual((await cursor.fetchone())[0], 2)
+            execution = await sites.store.get_delivery_execution(EXECUTION_ID)
+            self.assertEqual(execution.profile_id, ids["task"])
 
             self.assertIn(
                 EXECUTION_ID,
@@ -432,6 +460,21 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
                 "push_tasks",
             )
             observed["push_tasks_v7"] = await has_table("push_tasks_v7")
+            cursor = await connection.execute(
+                "SELECT COUNT(*) FROM content_profiles WHERE id = ?",
+                (ids["task"],),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            observed["private_plan"] = int(row[0])
+            cursor = await connection.execute(
+                "SELECT COUNT(*) FROM content_profile_items "
+                "WHERE profile_id = ?",
+                (ids["task"],),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            observed["private_items"] = int(row[0])
             observed["sites"] = await count("sites")
             observed["umos"] = await count("push_task_umos")
             observed["targets"] = await count("delivery_targets")
@@ -462,6 +505,9 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(observed["schedule_kind"], "注入时 push_tasks 应已重建")
         self.assertFalse(observed["push_tasks_v7"], "重建后不应残留中间表")
+        # v16 的三步插入在注入失败时已执行过，回滚必须把它们一起撤回。
+        self.assertEqual(observed["private_plan"], 1, "注入时 v16 应已复制方案行")
+        self.assertEqual(observed["private_items"], 2, "注入时 v16 应已复制栏目")
         self.assertEqual(observed["sites"], 1)
         self.assertEqual(observed["umos"], 2)
         self.assertEqual(observed["targets"], 1)
@@ -474,7 +520,30 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("source_kind", self._columns(path, "sites"))
         self.assertNotIn("schedule_kind", self._columns(path, "push_tasks"))
         self.assertNotIn("push_tasks_v7", self._tables(path))
+        # v16 的结果同样回滚：任务仍指向旧共享行，没有留下任务私有方案行。
         self.assertEqual(self._count(path, "sites"), 1)
+        self.assertEqual(
+            self._query_scalar(
+                path, "SELECT COUNT(*) FROM content_profiles WHERE id = ?",
+                (ids["task"],),
+            ),
+            0,
+        )
+        self.assertEqual(
+            self._query_scalar(
+                path, "SELECT profile_id FROM push_tasks WHERE id = ?",
+                (ids["task"],),
+            ),
+            "legacy-shared",
+        )
+        self.assertEqual(
+            self._query_scalar(
+                path,
+                "SELECT COUNT(*) FROM content_profile_items "
+                "WHERE profile_id = 'legacy-shared'",
+            ),
+            2,
+        )
         self.assertEqual(self._count(path, "push_task_umos"), 2)
         self.assertEqual(self._count(path, "delivery_targets"), 1)
         self.assertEqual(self._count(path, "delivery_pages"), 2)

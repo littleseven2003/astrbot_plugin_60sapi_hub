@@ -17,8 +17,8 @@ from core.delivery import (
     DeliveryStorageError,
     SendStatus,
 )
-from core.profile_api import ProfileApiResult
-from core.profiles import ContentProfileService, ProfileCreate
+from core.plan_preview import PlanPreviewResult
+from core.content_plan import plan_payload
 from core.site_store import SCHEMA_VERSION, SiteStoreError
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
@@ -32,8 +32,8 @@ def fake_png(tag: bytes) -> bytes:
     return PNG_PREFIX + tag
 
 
-def item():
-    return {"content_type": "daily_news", "params": {}, "limit": None}
+def item(content_type: str = "daily_news", limit=None):
+    return {"content_type": content_type, "params": {}, "limit": limit}
 
 
 class StubApi:
@@ -54,14 +54,14 @@ class StubApi:
         self.partial = False
         self.preview_failed = [{"label": "失败栏目"}]
 
-    async def preview_profile(self, payload, *, owner=None, site_id=None):
+    async def preview_site(self, payload, *, owner=None, site_id=None):
         self.preview_calls += 1
         if self.preview_status != 200:
-            return ProfileApiResult(
+            return PlanPreviewResult(
                 self.preview_status,
                 {"status": "error", "data": {"code": self.preview_code}},
             )
-        return ProfileApiResult(200, {"status": "ok", "data": {
+        return PlanPreviewResult(200, {"status": "ok", "data": {
             "status": "partial" if self.partial else "complete",
             "outputs": {"text": self.text, "markdown": self.markdown},
             "failed_sections": (
@@ -70,10 +70,10 @@ class StubApi:
             "image_snapshot": {"id": "snap-1"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None, site_id=None):
+    async def generate_image(self, task_id, payload, *, owner=None, site_id=None):
         self.image_calls += 1
         if self.image_status != 200:
-            return ProfileApiResult(self.image_status, {
+            return PlanPreviewResult(self.image_status, {
                 "status": "error", "data": {"code": "image_render_failed"},
             })
         images = []
@@ -97,7 +97,7 @@ class StubApi:
                     encoded = base64.b64encode(png).decode()
                 item["png_base64"] = encoded
             images.append(item)
-        return ProfileApiResult(200, {"status": "ok", "data": {
+        return PlanPreviewResult(200, {"status": "ok", "data": {
             "images": images,
             "failed_sections": failed_labels,
             "snapshot_id": "snap-1",
@@ -139,22 +139,18 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.db = Path(self.tmp.name) / "plugin.sqlite3"
         self.sites = SiteService(self.db)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(
             SiteCreate(
                 name="投递站点", base_url="http://example.test/proxy",
                 enabled=True, timeout_seconds=5,
             ),
         )
-        self.profile = await self.profiles.create_profile(
-            ProfileCreate(name="投递组合", site_id=self.site.id, items=[item()]),
-        )
         self.api = StubApi()
         self.sender = FakeSender()
         self.service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=5, sender_timeout_seconds=1),
         )
 
@@ -165,7 +161,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
 
     async def _task(self, umos, output="text"):
         return await self.tasks.create_task(TaskCreate(
-            name="投递任务", profile_id=self.profile.id,
+            name="投递任务", items=[item()],
             sites=[self.site.id],
             output_format=output, umos=umos,
         ))
@@ -582,7 +578,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 await self.tasks.update_task(
                     task.id,
                     TaskUpdate(
-                        name="栏目图变更", profile_id=task.profile_id,
+                        name="栏目图变更", items=[dict(entry) for entry in plan_payload(task.items)],
                         output_format=task.output_format,
                         umos=list(task.umos),
                         expected_revision=task.revision,
@@ -769,7 +765,10 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         result = await self.service.execute(task.id, "record-1")
         self.assertEqual(result.task_id, task.id)
         self.assertEqual(result.task_revision, task.revision)
-        self.assertEqual(result.profile_revision, self.profile.revision)
+        snapshot = await self.tasks.get_config_snapshot(task.id)
+        # 私有方案行的 id 恒等于任务 id，revision 就是这份方案自己的 revision。
+        self.assertEqual(result.profile_id, task.id)
+        self.assertEqual(result.profile_revision, snapshot.plan_revision)
         self.assertEqual(result.site_revision, self.site.revision)
         self.assertEqual(len(result.content_hash or ""), 64)
         self.assertEqual(result.content_status, "complete")
@@ -788,7 +787,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                     task.id,
                     __import__("core.tasks", fromlist=["TaskUpdate"]).TaskUpdate(
                         name=task.name,
-                        profile_id=task.profile_id,
+                        items=[dict(entry) for entry in plan_payload(task.items)],
                         output_format=task.output_format,
                         umos=[task.umos[0]],
                         expected_revision=task.revision,
@@ -812,7 +811,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 task2.id,
                 __import__("core.tasks", fromlist=["TaskUpdate"]).TaskUpdate(
                     name=task2.name,
-                    profile_id=task2.profile_id,
+                    items=[dict(entry) for entry in plan_payload(task2.items)],
                     output_format=task2.output_format,
                     umos=["aiocqhttp:GroupMessage:g2", "aiocqhttp:FriendMessage:new"],
                     expected_revision=task2.revision,
@@ -824,26 +823,28 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result2.status, "success")
         self.assertEqual([t.status for t in result2.targets], ["success"])
 
-    async def test_profile_and_site_change_after_first_send_skips(self) -> None:
+    async def test_item_change_after_first_send_skips_remaining(self) -> None:
         task = await self._task([
             "aiocqhttp:GroupMessage:g1",
             "aiocqhttp:FriendMessage:u1",
         ])
 
-        async def change_profile(message):
+        async def change_items(message):
             if message.umo == task.umos[0]:
-                from core.profiles import ProfileUpdate
-                await self.profiles.update_profile(
-                    self.profile.id,
-                    ProfileUpdate(
-                        name="组合已修改", site_id=self.site.id,
-                        items=[item()],
-                        expected_revision=self.profile.revision,
+                from core.tasks import TaskUpdate
+                await self.tasks.update_task(
+                    task.id,
+                    TaskUpdate(
+                        name=task.name,
+                        items=[item("zhihu_hot")],
+                        output_format=task.output_format,
+                        umos=list(task.umos),
+                        expected_revision=task.revision,
                     ),
                 )
 
-        self.sender.hook = change_profile
-        result = await self.service.execute(task.id, "profile-change-1")
+        self.sender.hook = change_items
+        result = await self.service.execute(task.id, "items-change-1")
         self.assertEqual([t.status for t in result.targets], ["success", "skipped"])
         self.assertEqual(result.status, "partial")
 
@@ -1055,7 +1056,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 await self.tasks.update_task(
                     task.id,
                     TaskUpdate(
-                        name="栏目图变更", profile_id=task.profile_id,
+                        name="栏目图变更", items=[dict(entry) for entry in plan_payload(task.items)],
                         output_format=task.output_format, umos=list(task.umos),
                         expected_revision=task.revision,
                     ),
@@ -1089,7 +1090,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_close_during_config_read_does_not_send(self) -> None:
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
-        original = self.tasks.get_task
+        original = self.tasks.get_config_snapshot
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -1098,7 +1099,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             return await original(task_id)
 
-        self.tasks.get_task = blocked
+        self.tasks.get_config_snapshot = blocked
         running = asyncio.create_task(self.service.execute(task.id, "close-read-1"))
         await entered.wait()
         await self.service.close()
@@ -1124,7 +1125,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 await self.tasks.update_task(
                     task.id,
                     TaskUpdate(
-                        name=task.name, profile_id=task.profile_id,
+                        name=task.name, items=[dict(entry) for entry in plan_payload(task.items)],
                         output_format=task.output_format, umos=[],
                         expected_revision=task.revision,
                     ),
@@ -1150,8 +1151,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             max_execution_seconds=5, sender_timeout_seconds=5,
         )
         service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=limited,
         )
         self.sender.block = True
@@ -1340,14 +1341,14 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
         entered = asyncio.Event()
         release = asyncio.Event()
-        original = self.api.preview_profile
+        original = self.api.preview_site
 
         async def blocked(payload, *, owner=None, site_id=None):
             entered.set()
             await release.wait()
             return await original(payload, owner=owner, site_id=site_id)
 
-        self.api.preview_profile = blocked
+        self.api.preview_site = blocked
         running = asyncio.create_task(self.service.execute(task.id, "close-prepare-1"))
         await entered.wait()
         await self.service.close()
@@ -1365,8 +1366,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             max_execution_seconds=5, sender_timeout_seconds=5,
         )
         service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=limited,
         )
         first = await self._task(["aiocqhttp:GroupMessage:g1"])
@@ -1392,8 +1393,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             max_concurrent_executions=2, max_pending_executions=2,
         )
         service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=limited,
         )
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
@@ -1466,8 +1467,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             max_execution_seconds=10, sender_timeout_seconds=5,
         )
         service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=limited,
         )
         tasks = [
@@ -1520,7 +1521,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 await self.tasks.update_task(
                     task.id,
                     TaskUpdate(
-                        name=task.name, profile_id=task.profile_id,
+                        name=task.name, items=[dict(entry) for entry in plan_payload(task.items)],
                         output_format=task.output_format, umos=[],
                         expected_revision=task.revision,
                     ),
@@ -1572,8 +1573,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         second = await self._task(["aiocqhttp:FriendMessage:u1"])
         await self.service.execute(first.id, "owned-timeout-1")
         limited = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=0.1),
         )
         original = self.sites.store.get_delivery_execution
@@ -1608,8 +1609,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
         await self.service.execute(task.id, "same-timeout-1")
         limited = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=0.1),
         )
         original = self.sites.store.get_delivery_execution
@@ -1642,21 +1643,21 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         from core.delivery import DeliveryCapacityError, DeliveryValidationError
         with self.assertRaises(DeliveryValidationError):
             DeliveryService(
-                tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-                profile_api=self.api, store=self.sites.store,
+                tasks=self.tasks, sites=self.sites,
+                plan_preview=self.api, store=self.sites.store,
                 sender=self.sender,
                 limits=DeliveryLimits(max_concurrent_executions=0),
             )
         with self.assertRaises(DeliveryValidationError):
             DeliveryService(
-                tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-                profile_api=self.api, store=self.sites.store,
+                tasks=self.tasks, sites=self.sites,
+                plan_preview=self.api, store=self.sites.store,
                 sender=self.sender,
                 limits=DeliveryLimits(max_pending_executions=-1),
             )
         service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=DeliveryLimits(
                 max_concurrent_executions=1, max_pending_executions=0,
                 max_execution_seconds=5, sender_timeout_seconds=5,
@@ -1718,8 +1719,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.sender.started.wait()
         limited = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=0.1),
         )
         original = self.sites.store.get_delivery_execution
@@ -1759,8 +1760,8 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(field=field, kind=type(value).__name__):
                     with self.assertRaises(DeliveryValidationError) as caught:
                         DeliveryService(
-                            tasks=self.tasks, profiles=self.profiles,
-                            sites=self.sites, profile_api=self.api,
+                            tasks=self.tasks,
+                            sites=self.sites, plan_preview=self.api,
                             store=self.sites.store, sender=self.sender,
                             limits=DeliveryLimits(**{field: value}),
                         )

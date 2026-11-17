@@ -1,6 +1,6 @@
 """按任务候选顺序寻找同一站点满足全部栏目与条数的预览。
 
-投递与聊天查询共用这一判定：只有单个站点同时满足组合的全部栏目和条数，
+投递与聊天查询共用这一判定：只有单个站点同时满足任务的全部栏目和条数，
 才算可用；不满足就换下一个候选，绝不拼接多个站点的内容。
 """
 
@@ -46,11 +46,12 @@ def attempt_timeout_for(
 async def satisfied_previews(
     previews: object,
     *,
-    profile_id: str,
+    plan_id: str,
     requirements: tuple[Requirement, ...],
     site_ids: Iterable[str],
     owner: str | None = None,
     catch_errors: bool = False,
+    force_refresh: bool = False,
     attempt_timeout: float | None = None,
     deadline: float | None = None,
 ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
@@ -66,8 +67,9 @@ async def satisfied_previews(
     pending = list(site_ids)
     for index, site_id in enumerate(pending):
         payload: dict[str, Any] = {
-            "profile_id": profile_id,
-            "force_refresh": False,
+            "task_id": plan_id,
+            # 后台“预览内容”可以要求跳过缓存；聊天与投递始终用当前缓存策略。
+            "force_refresh": force_refresh,
             "site_id": site_id,
         }
         # 站点同时放进载荷与关键字参数：预览接口两处都接受，调用方无需区分。
@@ -83,10 +85,10 @@ async def satisfied_previews(
         )
         try:
             if timeout is None:
-                preview = await previews.preview_profile(payload, **kwargs)
+                preview = await previews.preview_site(payload, **kwargs)
             else:
                 preview = await asyncio.wait_for(
-                    previews.preview_profile(payload, **kwargs),
+                    previews.preview_site(payload, **kwargs),
                     timeout=timeout,
                 )
         except asyncio.TimeoutError:
@@ -113,22 +115,24 @@ async def satisfied_previews(
 async def first_satisfying_preview(
     previews: object,
     *,
-    profile_id: str,
+    plan_id: str,
     requirements: tuple[Requirement, ...],
     site_ids: Iterable[str],
     owner: str | None = None,
     catch_errors: bool = False,
+    force_refresh: bool = False,
     attempt_timeout: float | None = None,
     deadline: float | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """返回第一个满足全部要求的站点预览；全部不满足时返回 None。"""
     async for result in satisfied_previews(
         previews,
-        profile_id=profile_id,
+        plan_id=plan_id,
         requirements=requirements,
         site_ids=site_ids,
         owner=owner,
         catch_errors=catch_errors,
+        force_refresh=force_refresh,
         attempt_timeout=attempt_timeout,
         deadline=deadline,
     ):

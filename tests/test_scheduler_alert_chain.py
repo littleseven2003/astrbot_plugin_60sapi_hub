@@ -19,8 +19,7 @@ from core.delivery import (
 )
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
-from core.profiles import ContentProfileService, ProfileCreate
+from core.plan_preview import PlanPreview
 from core.scheduler import SchedulerService
 from core.sites import SiteCreate, SiteUpdate, SiteService
 from core.tasks import PushTaskService, TaskCreate
@@ -78,18 +77,17 @@ class SchedulerAlertChainTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.snapshots = ImageSnapshotStore()
         self.images = ProfileImageService()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.images,
         )
         self.sender = RecordingSender()
         self.delivery = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.api, store=self.sites.store, sender=self.sender,
             limits=DeliveryLimits(),
         )
         self.scheduler = SchedulerService(
@@ -123,15 +121,12 @@ class SchedulerAlertChainTest(unittest.IsolatedAsyncioTestCase):
         ))
 
     async def _task(self, sites, *, limit=2, fmt="text", umos=(UMO,)):
-        profile = await self.profiles.create_profile(ProfileCreate(
-            name="组合", site_id=self.a.id,
+        task = await self.tasks.create_task(TaskCreate(
+            name="任务", output_format=fmt,
             items=[
                 {"content_type": "daily_news", "params": {}, "limit": limit},
                 {"content_type": "zhihu_hot", "params": {}, "limit": limit},
             ],
-        ))
-        task = await self.tasks.create_task(TaskCreate(
-            name="任务", profile_id=profile.id, output_format=fmt,
             umos=list(umos), sites=list(sites),
             schedule={"kind": "daily", "timezone": "UTC", "time": "00:30"},
         ))
@@ -154,7 +149,7 @@ class SchedulerAlertChainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.umo, UMO)
         self.assertTrue((message.text or "").startswith("60sAPI推送服务异常："))
 
-    async def test_profile_site_disabled_and_b_insufficient_sends_alert(self) -> None:
+    async def test_task_site_disabled_and_b_insufficient_sends_alert(self) -> None:
         task = await self._task([self.a.id, self.b.id], limit=5)
         await self._disable(self.a)
         await self.scheduler.check_once()

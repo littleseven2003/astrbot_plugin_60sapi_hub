@@ -107,7 +107,7 @@ class ProfileRenderTest(unittest.TestCase):
 
     def test_text_contains_order_limits_dates_warnings_and_heat(self) -> None:
         text = render_profile_text(data())
-        self.assertIn("组合：组合 # [名称]", text)
+        self.assertIn("任务：组合 # [名称]", text)
         self.assertIn("来源站点：站点", text)
         self.assertIn("状态：部分成功（2 成功 / 1 失败）", text)
         self.assertLess(text.index("【每日新闻】"), text.index("【知乎热榜】"))

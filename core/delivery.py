@@ -19,8 +19,7 @@ from enum import Enum
 from typing import Protocol
 
 from .candidate_preview import first_satisfying_preview
-from .profile_api import ProfileApi
-from .profiles import ContentProfileService, ProfileNotFoundError
+from .plan_preview import PlanPreview
 from .site_store import (
     DeliveryExecutionExistsError,
     DeliveryRecordNotFoundError,
@@ -168,17 +167,15 @@ class DeliveryService:
         self,
         *,
         tasks: PushTaskService,
-        profiles: ContentProfileService,
         sites: SiteService,
-        profile_api: ProfileApi,
+        plan_preview: PlanPreview,
         store: SiteStore,
         sender: DeliverySender,
         limits: DeliveryLimits | None = None,
     ) -> None:
         self._tasks = tasks
-        self._profiles = profiles
         self._sites = sites
-        self._api = profile_api
+        self._api = plan_preview
         self._store = store
         self._sender = sender
         self._limits = limits or DeliveryLimits()
@@ -208,7 +205,6 @@ class DeliveryService:
         execution_id: object,
         *,
         expected_task_revision: int | None = None,
-        expected_profile_revision: int | None = None,
         expected_candidates: list | None = None,
         expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
@@ -222,7 +218,6 @@ class DeliveryService:
             self._owned_execute(
                 task_key, execution_key, deadline, start_gate,
                 expected_task_revision,
-                expected_profile_revision,
                 expected_candidates,
                 expected_alert_only,
             ),
@@ -272,7 +267,6 @@ class DeliveryService:
         deadline: float,
         start_gate: asyncio.Event,
         expected_task_revision: int | None = None,
-        expected_profile_revision: int | None = None,
         expected_candidates: list | None = None,
         expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
@@ -288,7 +282,6 @@ class DeliveryService:
                 self._execute_work(
                     task_key, execution_key, owner_token,
                     expected_task_revision,
-                    expected_profile_revision,
                     expected_candidates,
                     expected_alert_only,
                     deadline=deadline,
@@ -312,7 +305,6 @@ class DeliveryService:
         execution_key: str,
         owner_token: str,
         expected_task_revision: int | None = None,
-        expected_profile_revision: int | None = None,
         expected_candidates: list | None = None,
         expected_alert_only: bool | None = None,
         deadline: float | None = None,
@@ -321,13 +313,9 @@ class DeliveryService:
             existing = await self._existing_for_task(execution_key, task_key)
             if existing is not None:
                 return existing
-            task = await self._load_task(task_key)
-            profile = await self._load_profile(task)
-            self._check_revisions(
-                task, profile,
-                expected_task_revision,
-                expected_profile_revision,
-            )
+            config = await self._load_config(task_key)
+            task = config.task
+            self._check_revisions(task, expected_task_revision)
             # 首个候选只作为记录里的初始站点占位；真正取用内容的站点在准备
             # 完成后写回，提示内容保持占位以免误导成「该站点已可用」。
             candidates = await self._candidate_sites(task)
@@ -343,8 +331,8 @@ class DeliveryService:
                     task_id=task.id,
                     task_name=task.name,
                     task_revision=task.revision,
-                    profile_id=profile.id,
-                    profile_revision=profile.revision,
+                    profile_id=task.id,
+                    profile_revision=config.plan_revision,
                     site_id=primary.id if primary is not None else "",
                     site_revision=primary.revision if primary is not None else 0,
                     output_format=task.output_format,
@@ -360,7 +348,7 @@ class DeliveryService:
             except Exception as exc:
                 raise DeliveryStorageError("无法创建投递记录。") from exc
             return await self._run(
-                execution_key, task, profile, primary,
+                execution_key, task, primary,
                 expected_candidates, expected_alert_only,
                 deadline=deadline,
             )
@@ -407,20 +395,13 @@ class DeliveryService:
             raise DeliveryValidationError("limits", "容量/超时配置不合法")
 
     @staticmethod
-    def _check_revisions(
-        task: PushTask,
-        profile: object,
-        task_revision: int | None,
-        profile_revision: int | None,
-    ) -> None:
+    def _check_revisions(task: PushTask, task_revision: int | None) -> None:
         # 站点不上送版本：候选的 id/版本/启用状态由确认快照整体校验。
-        checks = (
-            ("task_revision", task_revision, task.revision),
-            ("profile_revision", profile_revision, profile.revision),
-        )
-        for field, expected, actual in checks:
-            if expected is not None and expected != actual:
-                raise DeliveryRevisionConflictError(field, expected, actual)
+        # 栏目已属于任务本身，任务 revision 变化即代表内容配置变化。
+        if task_revision is not None and task_revision != task.revision:
+            raise DeliveryRevisionConflictError(
+                "task_revision", task_revision, task.revision,
+            )
 
     async def _existing_for_task(
         self,
@@ -447,7 +428,6 @@ class DeliveryService:
         self,
         execution_id: str,
         task: PushTask,
-        profile: object,
         primary: object,
         expected_candidates: list | None = None,
         expected_alert_only: bool | None = None,
@@ -472,7 +452,7 @@ class DeliveryService:
 
         try:
             prepared = await self._prepare(
-                execution_id, task, profile, candidates,
+                execution_id, task, candidates,
                 deadline=deadline,
             )
         except DeliveryConfirmationStaleError:
@@ -536,7 +516,7 @@ class DeliveryService:
             except Exception as exc:
                 raise DeliveryStorageError("无法记录投递站点。") from exc
         record = await self._send_targets(
-            execution_id, task, profile, used_site, prepared,
+            execution_id, task, used_site, prepared,
         )
         if prepared.site is None:
             # 采集失败已由 content_status=failed 记录；这里不改写投递结果，
@@ -603,14 +583,13 @@ class DeliveryService:
         self,
         execution_id: str,
         task: PushTask,
-        profile: object,
         candidates: list[object],
         *,
         deadline: float | None = None,
     ) -> "_Prepared":
         """按顺序寻找同一个站点同时满足全部类别与条数。"""
         prepared = await self._prepare_with_failover(
-            execution_id, task, profile, candidates, deadline=deadline,
+            execution_id, task, candidates, deadline=deadline,
         )
         if prepared is not None:
             return prepared
@@ -621,17 +600,16 @@ class DeliveryService:
         self,
         execution_id: str,
         task: PushTask,
-        profile: object,
         candidates: list[object],
         *,
         deadline: float | None = None,
     ) -> "_Prepared | None":
         """按任务保存的顺序，寻找同一个站点满足全部类别与条数。"""
-        requirements = requirements_from_items(profile.items)
+        requirements = requirements_from_items(task.items)
         by_id = {candidate.id: candidate for candidate in candidates}
         found = await first_satisfying_preview(
             self._api,
-            profile_id=task.profile_id,
+            plan_id=task.id,
             requirements=requirements,
             site_ids=[candidate.id for candidate in candidates],
             owner=execution_id,
@@ -671,7 +649,7 @@ class DeliveryService:
             if not isinstance(snapshot, dict) or not snapshot.get("id"):
                 raise DeliveryNoContentError("image_snapshot_unavailable")
             image = await self._api.generate_image(
-                task.profile_id,
+                task.id,
                 {"snapshot_id": snapshot["id"]},
                 owner=execution_id,
             )
@@ -723,7 +701,6 @@ class DeliveryService:
         self,
         execution_id: str,
         task: PushTask,
-        profile: object,
         site: object,
         prepared: "_Prepared",
     ) -> StoredDeliveryExecution:
@@ -737,9 +714,7 @@ class DeliveryService:
             1 for _, payload in prepared.slots if payload is None
         )
         for position, umo in enumerate(task.umos):
-            unchanged = await self._config_unchanged(
-                task, profile, site, umo,
-            )
+            unchanged = await self._config_unchanged(task, site, umo)
             if not unchanged:
                 await self._mark_skipped_remainder(
                     execution_id, position, prepared.slots,
@@ -771,7 +746,7 @@ class DeliveryService:
                     continue
                 if sent_images > 0:
                     unchanged = await self._config_unchanged(
-                        task, profile, site, umo,
+                        task, site, umo,
                     )
                     if not unchanged:
                         await self._mark_skipped_remainder(
@@ -802,7 +777,7 @@ class DeliveryService:
                 )
                 # 最后一次生命周期/配置校验：必须紧邻外部调用，之后不能再写入。
                 if self._closed or not await self._config_unchanged(
-                    task, profile, site, umo,
+                    task, site, umo,
                 ):
                     await self._mark_skipped_remainder(
                         execution_id, position, prepared.slots,
@@ -944,20 +919,18 @@ class DeliveryService:
     async def _config_unchanged(
         self,
         task: PushTask,
-        profile: object,
         site: object,
         umo: str,
     ) -> bool:
         try:
             current = await self._tasks.get_task(task.id)
-            current_profile = await self._profiles.get_profile(task.profile_id)
             current_site = (
                 await self._sites.get_site(site.id) if site is not None else None
             )
         except Exception:
             return False
-        # 组合只校验 revision；选中站点单独校验自身 revision 与启用状态，
-        # 否则“组合绑定 A、任务选中 B”会被误判为 config_changed。
+        # 栏目以任务 revision 与栏目本身双重校验；选中站点单独校验自身
+        # revision 与启用状态，停用后不得继续发送剩余内容。
         site_ok = True if site is None else (
             current_site is not None
             and current_site.revision == site.revision
@@ -966,10 +939,9 @@ class DeliveryService:
         return (
             not self._closed
             and current.revision == task.revision
-            and current.profile_id == task.profile_id
+            and current.items == task.items
             and current.output_format == task.output_format
             and umo in current.umos
-            and current_profile.revision == profile.revision
             and site_ok
         )
 
@@ -983,11 +955,14 @@ class DeliveryService:
         except TaskStorageError as exc:
             raise DeliveryStorageError("无法读取任务。") from exc
 
-    async def _load_profile(self, task: PushTask) -> object:
+    async def _load_config(self, task_id: str):
+        """读取任务及其私有栏目方案版本，作为本次投递的配置快照。"""
         try:
-            return await self._profiles.get_profile(task.profile_id)
-        except ProfileNotFoundError as exc:
-            raise DeliveryNoContentError("profile_not_found") from exc
+            return await self._tasks.get_config_snapshot(task_id)
+        except TaskValidationError as exc:
+            raise DeliveryValidationError("task_id", exc.reason) from exc
+        except TaskNotFoundError as exc:
+            raise DeliveryNoContentError("task_not_found") from exc
         except Exception as exc:
             raise DeliveryStorageError("无法读取任务配置。") from exc
 

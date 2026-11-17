@@ -16,10 +16,10 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
+from core.plan_preview import PlanPreview
 from core.profile_image import FontUnavailableError, ImageLimitError, find_cjk_font
-from core.profiles import ContentProfileService
 from core.sites import SiteCreate, SiteService, SiteUpdate
+from core.tasks import PushTaskService, TaskCreate, TaskUpdate
 
 
 class FakeClock:
@@ -125,7 +125,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.client = ContentHttpClient(transport=httpx.MockTransport(handler))
         self.content = ContentService(self.sites, client=self.client)
         await self.content.open()
-        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.sites.store)
         self.clock = FakeClock()
         self.snapshots = ImageSnapshotStore(
             ttl_seconds=10,
@@ -134,8 +134,8 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
             wall_clock=self.clock.now,
         )
         self.image_service = ProfileImageService(timeout_seconds=10)
-        self.api = ProfileApi(
-            self.profiles,
+        self.api = PlanPreview(
+            self.tasks,
             self.content,
             self.sites,
             image_snapshots=self.snapshots,
@@ -149,33 +149,33 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self.tmp.cleanup()
 
-    async def _profile(self, items=None):
+    async def _task(self, items=None):
         if items is None:
             items = [
                 {"content_type": "daily_news", "params": {}, "limit": 1},
                 {"content_type": "douyin_hot", "params": {}, "limit": None},
             ]
-        result = await self.api.create_profile(
-            {
-                "name": "图片组合",
-                "site_id": self.site.id,
-                "items": items,
-            },
+        return await self.tasks.create_task(
+            TaskCreate(
+                name="图片任务",
+                items=items,
+                output_format="text",
+                umos=[],
+                sites=[self.site.id],
+            ),
         )
-        assert result.status_code == 201, result.body
-        return result.body["data"]
 
-    async def _snapshot_for(self, api, profile):
-        preview = await api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile["id"]},
+    async def _snapshot_for(self, api, task):
+        preview = await api.preview_site(
+            {"site_id": self.site.id, "task_id": task.id},
             owner="alice",
         )
         self.assertEqual(preview.status_code, 200, preview.body)
         return preview, preview.body["data"]["image_snapshot"]["id"]
 
     def _api_with(self, image_service):
-        return ProfileApi(
-            self.profiles,
+        return PlanPreview(
+            self.tasks,
             self.content,
             self.sites,
             image_snapshots=self.snapshots,
@@ -183,9 +183,9 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_preview_snapshot_and_image_same_content_without_fetch(self) -> None:
-        profile = await self._profile()
-        preview = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile["id"]},
+        task = await self._task()
+        preview = await self.api.preview_site(
+            {"site_id": self.site.id, "task_id": task.id},
             owner="alice",
         )
         self.assertEqual(preview.status_code, 200, preview.body)
@@ -194,7 +194,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("expires_at", snapshot)
         calls_before = list(self.calls)
         image = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot["id"]},
             owner="alice",
         )
@@ -226,7 +226,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         first_png = images[0]["png_base64"]
         self.fail_all = True
         second = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot["id"]},
             owner="alice",
         )
@@ -235,34 +235,33 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, calls_before)
 
     async def test_owner_expiry_and_configuration_invalidation(self) -> None:
-        profile = await self._profile()
-        preview = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile["id"]},
+        task = await self._task()
+        preview = await self.api.preview_site(
+            {"site_id": self.site.id, "task_id": task.id},
             owner="alice",
         )
         snapshot_id = preview.body["data"]["image_snapshot"]["id"]
         wrong_owner = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="bob",
         )
         self.assertEqual(wrong_owner.status_code, 403)
         self.assertEqual(wrong_owner.body["data"]["code"], "forbidden")
 
-        updated = await self.api.update_profile(
-            profile["id"],
-            {
-                "name": "改名",
-                "site_id": self.site.id,
-                "items": [
-                    {"content_type": "daily_news", "params": {}, "limit": 1},
-                ],
-                "expected_revision": profile["revision"],
-            },
+        updated = await self.tasks.update_task(
+            task.id,
+            TaskUpdate(
+                name="改名",
+                items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+                output_format="text",
+                umos=[],
+                expected_revision=task.revision,
+            ),
         )
-        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.items[0].content_type, "daily_news")
         stale = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )
@@ -270,8 +269,8 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.body["data"]["code"], "snapshot_stale")
 
         # New snapshot, then disable the site.
-        preview2 = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile["id"]},
+        preview2 = await self.api.preview_site(
+            {"site_id": self.site.id, "task_id": task.id},
             owner="alice",
         )
         snapshot2 = preview2.body["data"]["image_snapshot"]["id"]
@@ -286,7 +285,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
         stale_disabled = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot2},
             owner="alice",
         )
@@ -294,7 +293,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.clock.advance(11)
         expired = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot2},
             owner="alice",
         )
@@ -302,40 +301,37 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(expired.body["data"]["code"], "snapshot_expired")
 
     async def test_all_failure_has_no_snapshot_and_invalid_id(self) -> None:
-        profile = await self._profile()
+        task = await self._task()
         self.fail_all = True
-        failed = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile["id"]},
+        failed = await self.api.preview_site(
+            {"site_id": self.site.id, "task_id": task.id},
             owner="alice",
         )
         self.assertEqual(failed.status_code, 502)
         self.assertNotIn("image_snapshot", failed.body["data"])
         self.assertNotIn("outputs", failed.body["data"])
         invalid = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": "unknown"},
             owner="alice",
         )
         self.assertEqual(invalid.status_code, 410)
         bad = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": 123},
             owner="alice",
         )
         self.assertEqual(bad.status_code, 400)
-    async def test_deleted_profile_snapshot_is_stale(self) -> None:
-        profile = await self._profile()
-        preview = await self.api.preview_profile(
-            {"site_id": self.site.id, "profile_id": profile["id"]},
+    async def test_deleted_task_snapshot_is_stale(self) -> None:
+        task = await self._task()
+        preview = await self.api.preview_site(
+            {"site_id": self.site.id, "task_id": task.id},
             owner="alice",
         )
         snapshot_id = preview.body["data"]["image_snapshot"]["id"]
-        await self.profiles.delete_profile(
-            profile["id"],
-            profile["revision"],
-        )
+        await self.tasks.delete_task(task.id, task.revision)
         image = await self.api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )
@@ -343,12 +339,12 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(image.body["data"]["code"], "snapshot_stale")
 
     async def test_section_statuses_and_failed_labels(self) -> None:
-        profile = await self._profile(items=[
+        task = await self._task(items=[
             {"content_type": "daily_news", "params": {}, "limit": 1},
             {"content_type": "douyin_hot", "params": {}, "limit": None},
             {"content_type": "zhihu_hot", "params": {}, "limit": None},
         ])
-        _, snapshot_id = await self._snapshot_for(self.api, profile)
+        _, snapshot_id = await self._snapshot_for(self.api, task)
         calls_before = list(self.calls)
         service = FakeImageService(images=(
             FakeSectionImage(1, "daily_news", "每日新闻", "success", png=b"\x89PNG-one"),
@@ -357,7 +353,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         ))
         api = self._api_with(service)
         result = await api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )
@@ -379,8 +375,8 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.calls, 1)
 
     async def test_unknown_status_and_unsafe_error_code_are_normalised(self) -> None:
-        profile = await self._profile()
-        _, snapshot_id = await self._snapshot_for(self.api, profile)
+        task = await self._task()
+        _, snapshot_id = await self._snapshot_for(self.api, task)
         service = FakeImageService(images=(
             FakeSectionImage(1, "daily_news", "每日新闻", "weird", png=b"\x89PNG"),
             FakeSectionImage(
@@ -390,7 +386,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         ))
         api = self._api_with(service)
         result = await api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )
@@ -408,15 +404,15 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_unknown_status_alone_does_not_block_other_sections(self) -> None:
-        profile = await self._profile()
-        _, snapshot_id = await self._snapshot_for(self.api, profile)
+        task = await self._task()
+        _, snapshot_id = await self._snapshot_for(self.api, task)
         service = FakeImageService(images=(
             FakeSectionImage(1, "daily_news", "每日新闻", "weird", png=b"\x89PNG"),
             FakeSectionImage(2, "douyin_hot", "抖音热搜", "empty", png=b"\x89PNG-two"),
         ))
         api = self._api_with(service)
         result = await api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )
@@ -429,15 +425,15 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.body["data"]["failed_sections"], ["每日新闻"])
 
     async def test_all_sections_failed_returns_error_without_png(self) -> None:
-        profile = await self._profile()
-        _, snapshot_id = await self._snapshot_for(self.api, profile)
+        task = await self._task()
+        _, snapshot_id = await self._snapshot_for(self.api, task)
         service = FakeImageService(images=(
             FakeSectionImage(1, "daily_news", "每日新闻", "failed", error="too_tall"),
             FakeSectionImage(2, "douyin_hot", "抖音热搜", "failed", error="too_wide"),
         ))
         api = self._api_with(service)
         result = await api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )
@@ -453,10 +449,10 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_render_limit_error_keeps_text_outputs(self) -> None:
         service = FakeImageService(error=ImageLimitError("too tall"))
         api = self._api_with(service)
-        profile = await self._profile()
-        preview, snapshot_id = await self._snapshot_for(api, profile)
+        task = await self._task()
+        preview, snapshot_id = await self._snapshot_for(api, task)
         image = await api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )
@@ -466,8 +462,8 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("outputs", preview.body["data"])
 
     async def test_total_output_bytes_limit_is_enforced(self) -> None:
-        profile = await self._profile()
-        _, snapshot_id = await self._snapshot_for(self.api, profile)
+        task = await self._task()
+        _, snapshot_id = await self._snapshot_for(self.api, task)
         oversized = b"x" * (5 * 1024 * 1024)
         service = FakeImageService(images=(
             FakeSectionImage(1, "daily_news", "每日新闻", "success", png=oversized),
@@ -475,7 +471,7 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         ))
         api = self._api_with(service)
         result = await api.generate_image(
-            profile["id"],
+            task.id,
             {"snapshot_id": snapshot_id},
             owner="alice",
         )

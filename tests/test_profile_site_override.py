@@ -11,9 +11,9 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
-from core.profiles import ContentProfileService, ProfileCreate
+from core.plan_preview import PlanPreview
 from core.sites import SiteCreate, SiteService
+from core.tasks import PushTaskService, TaskCreate
 
 SECRET = "simulated-secret-abc123"
 
@@ -50,11 +50,11 @@ class ProfileSiteOverrideTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.sites.store)
         self.snapshots = ImageSnapshotStore()
         self.images = ProfileImageService()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.images,
         )
         self.a = await self.sites.create_site(SiteCreate(
@@ -65,12 +65,12 @@ class ProfileSiteOverrideTest(unittest.IsolatedAsyncioTestCase):
             name="站点B", base_url=f"https://b.example.test/{SECRET}",
             enabled=True, timeout_seconds=5, source_kind="public",
         ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="组合", site_id=self.a.id,
-            items=[
+        self.task = await self.tasks.create_task(TaskCreate(
+            name="任务", items=[
                 {"content_type": "daily_news", "params": {}, "limit": 2},
                 {"content_type": "zhihu_hot", "params": {}, "limit": 2},
             ],
+            output_format="text", umos=[], sites=[self.a.id, self.b.id],
         ))
 
     async def asyncTearDown(self) -> None:
@@ -82,8 +82,8 @@ class ProfileSiteOverrideTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sections_and_outputs_come_from_requested_site(self) -> None:
         self.hosts.clear()
-        result = await self.api.preview_profile(
-            {"profile_id": self.profile.id}, site_id=self.b.id,
+        result = await self.api.preview_site(
+            {"task_id": self.task.id}, site_id=self.b.id,
         )
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
@@ -101,19 +101,20 @@ class ProfileSiteOverrideTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(h.startswith("b.") for h in self.hosts), self.hosts)
 
     async def test_snapshot_from_selected_site_can_generate_image(self) -> None:
-        result = await self.api.preview_profile(
-            {"profile_id": self.profile.id}, site_id=self.b.id,
+        result = await self.api.preview_site(
+            {"task_id": self.task.id}, site_id=self.b.id,
         )
         data = result.body["data"]
         snapshot = self.snapshots.get(data["image_snapshot"]["id"])
         self.assertEqual(snapshot.site_id, self.b.id)
+        self.assertEqual(snapshot.profile_id, self.task.id)
         image = await self.api.generate_image(
-            self.profile.id, {"snapshot_id": snapshot.id},
+            self.task.id, {"snapshot_id": snapshot.id},
         )
         self.assertEqual(image.status_code, 200, image.body)
 
-    async def test_default_site_still_used_without_override(self) -> None:
-        result = await self.api.preview_profile({"site_id": self.a.id, "profile_id": self.profile.id})
+    async def test_payload_site_is_used_when_not_passed_as_argument(self) -> None:
+        result = await self.api.preview_site({"site_id": self.a.id, "task_id": self.task.id})
         data = result.body["data"]
         self.assertEqual(data["site_id"], self.a.id)
         self.assertIn("A新闻", data["outputs"]["text"])

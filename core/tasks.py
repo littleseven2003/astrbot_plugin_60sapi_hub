@@ -1,6 +1,8 @@
-"""推送任务的领域模型、UMO 白名单校验和持久化服务。
+"""推送任务的领域模型、内容栏目校验、UMO 白名单和持久化服务。
 
-本轮只保存配置，不发送消息、不调度、不执行上游请求。任务固定保持未启用。
+内容栏目属于任务自己：每个任务保存一份独立的栏目顺序与每栏条数，
+编辑一个任务不会改变其他任务。本轮只保存配置，不发送消息、不调度、
+不执行上游请求；新任务固定保持未启用。
 """
 
 from __future__ import annotations
@@ -17,12 +19,12 @@ from .schedule import (
     ScheduleValidationError,
     parse_schedule,
 )
-from .profiles import (
-    ContentProfile,
-    ContentProfileService,
-    ProfileNotFoundError,
-    ProfileStorageError,
-    normalize_profile_id,
+from .content_plan import (
+    PlanItem,
+    PlanValidationError,
+    normalize_plan_items,
+    plan_items_from_stored,
+    plan_items_to_stored,
 )
 from .site_store import (
     SiteRecordNotFoundError,
@@ -101,7 +103,7 @@ class TaskStorageError(TaskError):
 class PushTask:
     id: str
     name: str
-    profile_id: str
+    items: tuple[PlanItem, ...]
     output_format: str
     umos: tuple[str, ...]
     enabled: bool
@@ -112,6 +114,14 @@ class PushTask:
     schedule_raw: dict[str, object] | None = None
     schedule_error: str | None = None
     sites: tuple[str, ...] = ()
+
+    @property
+    def profile_id(self) -> str:
+        """兼容字段：执行记录仍以 profile_id 列保存本任务的内容方案 id。
+
+        方案行与任务同 id，且只有这个任务会读取它，因此不存在共享可变组合。
+        """
+        return self.id
 
     @property
     def output_label(self) -> str:
@@ -134,15 +144,14 @@ class TaskCandidateSite:
 @dataclass(frozen=True, slots=True)
 class TaskConfigSnapshot:
     task: PushTask
-    profile_id: str | None
-    profile_revision: int | None
+    plan_revision: int | None
     candidates: tuple[TaskCandidateSite, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class TaskCreate:
     name: object
-    profile_id: object
+    items: object
     output_format: object
     umos: object
     schedule: object = None
@@ -152,7 +161,7 @@ class TaskCreate:
 @dataclass(frozen=True, slots=True)
 class TaskUpdate:
     name: object
-    profile_id: object
+    items: object
     output_format: object
     umos: object
     expected_revision: object
@@ -161,19 +170,10 @@ class TaskUpdate:
 
 
 class PushTaskService:
-    """推送任务 CRUD；与站点/组合共用同一个 SQLite 连接和事务锁。"""
+    """推送任务 CRUD；与站点共用同一个 SQLite 连接和事务锁。"""
 
-    def __init__(
-        self,
-        profiles: ContentProfileService,
-        store: SiteStore,
-    ) -> None:
-        self._profiles = profiles
+    def __init__(self, store: SiteStore) -> None:
         self._store = store
-
-    async def get_profile(self, profile_id: object) -> ContentProfile:
-        """读取任务依赖的组合定义；聊天查询需要栏目与条数判定。"""
-        return await self._profiles.get_profile(profile_id)
 
     async def list_tasks(self) -> list[PushTask]:
         try:
@@ -202,8 +202,7 @@ class PushTaskService:
             raise TaskStorageError("读取任务配置快照失败。") from exc
         return TaskConfigSnapshot(
             task=_to_task(stored.task),
-            profile_id=stored.profile_id,
-            profile_revision=stored.profile_revision,
+            plan_revision=stored.profile_revision,
             candidates=tuple(
                 TaskCandidateSite(
                     id=candidate.id,
@@ -216,17 +215,16 @@ class PushTaskService:
 
     async def create_task(self, data: TaskCreate) -> PushTask:
         name = _normalize_task_name(data.name)
-        profile_id = _normalize_profile_id(data.profile_id)
+        items = _normalize_plan_items(data.items)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
         schedule = parse_schedule(data.schedule)
-        await self._require_profile(profile_id)
         site_ids = await self._resolve_site_ids(data.sites)
         try:
             stored = await self._store.create_task(
                 task_id=uuid.uuid4().hex,
                 name=name,
-                profile_id=profile_id,
+                items=plan_items_to_stored(items),
                 output_format=output_format,
                 umos=umos,
                 site_ids=site_ids,
@@ -265,12 +263,11 @@ class PushTaskService:
         normalized_id = normalize_task_id(task_id)
         expected_revision = _normalize_expected_revision(data.expected_revision)
         name = _normalize_task_name(data.name)
-        profile_id = _normalize_profile_id(data.profile_id)
+        items = _normalize_plan_items(data.items)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
         schedule_unchanged = data.schedule is SCHEDULE_UNSET
         schedule = None if schedule_unchanged else parse_schedule(data.schedule)
-        await self._require_profile(profile_id)
         site_ids = await self._resolve_updated_site_ids(
             normalized_id, data.sites,
         )
@@ -278,7 +275,7 @@ class PushTaskService:
             stored = await self._store.update_task(
                 normalized_id,
                 name=name,
-                profile_id=profile_id,
+                items=plan_items_to_stored(items),
                 output_format=output_format,
                 umos=umos,
                 expected_revision=expected_revision,
@@ -383,14 +380,6 @@ class PushTaskService:
         if not ordered:
             raise TaskValidationError("sites", "至少需要一个候选站点")
         return tuple(ordered)
-
-    async def _require_profile(self, profile_id: str) -> None:
-        try:
-            await self._profiles.get_profile(profile_id)
-        except ProfileNotFoundError:
-            raise
-        except ProfileStorageError:
-            raise
 
 
 def normalize_task_id(value: object) -> str:
@@ -500,12 +489,11 @@ def _normalize_task_name(value: object) -> str:
         raise TaskValidationError("name", exc.reason) from exc
 
 
-def _normalize_profile_id(value: object) -> str:
+def _normalize_plan_items(value: object) -> tuple[PlanItem, ...]:
     try:
-        return normalize_profile_id(value)
-    except Exception as exc:
-        reason = getattr(exc, "reason", "必须是有效的内容组合 ID")
-        raise TaskValidationError("profile_id", str(reason)) from exc
+        return normalize_plan_items(value)
+    except PlanValidationError as exc:
+        raise TaskValidationError(exc.field, exc.reason) from exc
 
 
 def _to_task(stored: StoredTask) -> PushTask:
@@ -557,7 +545,7 @@ def _to_task(stored: StoredTask) -> PushTask:
     return PushTask(
         id=stored.id,
         name=stored.name,
-        profile_id=stored.profile_id,
+        items=plan_items_from_stored(stored.items),
         output_format=stored.output_format,
         umos=tuple(stored.umos),
         sites=sites,
@@ -576,6 +564,7 @@ __all__ = [
     "MAX_UMO_LENGTH",
     "OUTPUT_FORMAT_LABELS",
     "SUPPORTED_OUTPUT_FORMATS",
+    "PlanItem",
     "PushTask",
     "PushTaskService",
     "TaskConflictError",

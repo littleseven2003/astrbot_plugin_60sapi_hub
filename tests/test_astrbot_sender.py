@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 from core.astrbot_sender import AstrBotAiocqhttpSender
 from core.delivery import DeliveryMessage, DeliverySendResult, SendStatus
-from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 from core.delivery import DeliveryLimits, DeliveryService
@@ -262,24 +261,20 @@ class AstrBotAiocqhttpSenderTest(unittest.IsolatedAsyncioTestCase):
             sites = SiteService(Path(tmp) / "plugin.sqlite3")
             await sites.open()
             try:
-                profiles = ContentProfileService(sites)
-                tasks = PushTaskService(profiles, sites.store)
+                tasks = PushTaskService(sites.store)
                 site = await sites.create_site(SiteCreate(
                     name="发送站点", base_url="http://example.test/proxy",
                     enabled=True, timeout_seconds=5,
                 ))
-                profile = await profiles.create_profile(ProfileCreate(
-                    name="发送组合", site_id=site.id, items=[item()],
-                ))
                 task = await tasks.create_task(TaskCreate(
-                    name="发送任务", profile_id=profile.id,
+                    name="发送任务", items=[item()],
                     sites=[site.id],
                     output_format="text",
                     umos=["demo_qq_01:GroupMessage:123"],
                 ))
                 service = DeliveryService(
-                    tasks=tasks, profiles=profiles, sites=sites,
-                    profile_api=StubApi(), store=sites.store,
+                    tasks=tasks, sites=sites,
+                    plan_preview=StubApi(), store=sites.store,
                     sender=self.sender,
                     limits=DeliveryLimits(
                         max_execution_seconds=5, sender_timeout_seconds=5,

@@ -14,7 +14,6 @@ from .delivery import (
     DeliveryError,
     DeliveryService,
 )
-from .profiles import ProfileStorageError
 from .schedule import (
     DailySchedule,
     ScheduleCalculationError,
@@ -107,7 +106,7 @@ class SchedulerService:
             raise SchedulerValidationError("umos", "白名单不能为空")
         try:
             snapshot = await self._tasks.get_config_snapshot(task.id)
-        except (TaskStorageError, ProfileStorageError) as exc:
+        except TaskStorageError as exc:
             raise SchedulerUnavailableError("无法读取任务配置快照。") from exc
         self._validate_snapshot(snapshot)
         next_run = self._next_run(task.schedule, self._now())
@@ -299,7 +298,7 @@ class SchedulerService:
                 scheduled_for=state.next_run_at,
                 execution_id=execution_id,
                 task_revision=task.revision,
-                profile_revision=snapshot.profile_revision or 0,
+                profile_revision=snapshot.plan_revision or 0,
                 # 站点不再随组合固定：记录首选候选当时的版本，仅供追溯。
                 site_revision=(
                     snapshot.candidates[0].revision or 0
@@ -315,7 +314,6 @@ class SchedulerService:
                     task.id,
                     execution_id,
                     expected_task_revision=task.revision,
-                    expected_profile_revision=snapshot.profile_revision,
                 )
                 if any(target.status == "unknown" for target in result.targets):
                     status = "unknown"
@@ -413,8 +411,8 @@ class SchedulerService:
 
     def _validate_snapshot(self, snapshot: StoredTaskConfigSnapshot) -> None:
         task = snapshot.task
-        if snapshot.profile_id is None:
-            raise SchedulerValidationError("profile", "内容组合不存在")
+        if snapshot.plan_revision is None:
+            raise SchedulerValidationError("items", "任务内容栏目不存在")
         # 站点可用性不在这里拦截：全部候选停用或内容不足时，投递层仍要
         # 向任务白名单发送一条安全异常提示，静默跳过会让用户收不到通知。
         if not task.umos:
@@ -550,7 +548,7 @@ def _execution_id(task_id: str, scheduled: datetime) -> str:
 
 def exemplify(field: str) -> str:
     return {
-        "profile": "profile_invalid",
+        "items": "items_invalid",
         "site": "site_disabled",
         "umos": "umos_invalid",
         "schedule": "schedule_invalid",

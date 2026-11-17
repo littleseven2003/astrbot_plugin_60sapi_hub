@@ -19,17 +19,13 @@ from .delivery import (
     DeliveryTimeoutError,
     DeliveryValidationError,
 )
-from .profiles import (
-    ContentProfileService,
-    ProfileNotFoundError,
-    ProfileStorageError,
-)
 from .site_store import (
     DeliveryRecordNotFoundError,
     SiteStore,
     StoredDeliveryExecution,
 )
 from .sites import SiteService, SiteStorageError
+from .content_plan import plan_payload
 from .tasks import (
     PushTaskService,
     TaskNotFoundError,
@@ -50,29 +46,25 @@ class DeliveryApi:
         *,
         delivery: DeliveryService,
         tasks: PushTaskService,
-        profiles: ContentProfileService,
         sites: SiteService,
         store: SiteStore,
         inspector: object,
     ) -> None:
         self._delivery = delivery
         self._tasks = tasks
-        self._profiles = profiles
         self._sites = sites
         self._store = store
         self._inspector = inspector
 
     async def preview(self, task_id: str) -> DeliveryApiResult:
         try:
-            task = await self._tasks.get_task(task_id)
-            profile = await self._profiles.get_profile(task.profile_id)
+            config = await self._tasks.get_config_snapshot(task_id)
+            task = config.task
         except TaskValidationError as exc:
             return _validation_error(exc)
         except TaskNotFoundError:
             return _not_found_error("推送任务不存在。")
-        except ProfileNotFoundError:
-            return _not_found_error("任务引用的内容组合不存在。")
-        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
@@ -119,10 +111,9 @@ class DeliveryApi:
             "task_id": task.id,
             "task_name": task.name,
             "task_revision": task.revision,
-            "profile_id": profile.id,
-            "profile_name": profile.name,
-            "profile_revision": profile.revision,
-            # 组合不再绑定站点：站点字段仅为旧前端保留，一律为空，
+            "plan_revision": config.plan_revision,
+            "items": plan_payload(task.items),
+            # 任务不再绑定站点：站点字段仅为旧前端保留，一律为空，
             # 真实来源由 candidate_sites 按尝试顺序给出。
             "site_id": None,
             "site_name": None,
@@ -162,7 +153,6 @@ class DeliveryApi:
             return {"reason": "invalid_confirmation"}
         try:
             task = await self._tasks.get_task(task_id)
-            await self._profiles.get_profile(task.profile_id)
         except Exception:
             return None
         current: list[dict] = []
@@ -197,12 +187,16 @@ class DeliveryApi:
         execution_id = data.get("execution_id")
         if not isinstance(execution_id, str) or not execution_id.strip():
             return _error(400, "execution_id 必须是非空字符串。", code="validation_error", data={"field": "execution_id"})
-        revisions = {}
-        for field in ("expected_task_revision", "expected_profile_revision"):
-            value = data.get(field)
-            if type(value) is not int or value < 1:
-                return _error(400, f"{field} 必须是正整数。", code="validation_error", data={"field": field})
-            revisions[field] = value
+        task_revision = data.get("expected_task_revision")
+        if type(task_revision) is not int or task_revision < 1:
+            return _error(400, "expected_task_revision 必须是正整数。", code="validation_error", data={"field": "expected_task_revision"})
+        # 栏目已属于任务本身：旧客户端仍传 expected_profile_revision，
+        # 只校验格式，版本一致性由 expected_task_revision 覆盖。
+        legacy_revision = data.get("expected_profile_revision")
+        if legacy_revision is not None and (
+            type(legacy_revision) is not int or legacy_revision < 1
+        ):
+            return _error(400, "expected_profile_revision 必须是正整数。", code="validation_error", data={"field": "expected_profile_revision"})
         # 组合不再绑定站点，站点版本不再是必填；旧客户端仍传时只校验格式。
         site_revision = data.get("expected_site_revision")
         if site_revision is not None and (
@@ -236,8 +230,7 @@ class DeliveryApi:
         try:
             execution = await self._delivery.execute(
                 task_id, execution_id.strip(),
-                expected_task_revision=revisions["expected_task_revision"],
-                expected_profile_revision=revisions["expected_profile_revision"],
+                expected_task_revision=task_revision,
                 # expected_site_revision 仍被接受以兼容旧客户端，但站点不再
                 # 归属组合：候选集合由 expected_candidates 整体校验。
                 expected_candidates=expected_candidates,

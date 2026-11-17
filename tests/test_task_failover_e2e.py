@@ -18,8 +18,7 @@ from core.delivery import (
 )
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
-from core.profiles import ContentProfileService, ProfileCreate
+from core.plan_preview import PlanPreview
 from core.sites import SiteCreate, SiteUpdate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 
@@ -75,20 +74,18 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.snapshots = ImageSnapshotStore()
         self.images = ProfileImageService()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.images,
         )
         self.sender = RecordingSender()
         self.delivery = DeliveryService(
             tasks=self.tasks,
-            profiles=self.profiles,
             sites=self.sites,
-            profile_api=self.api,
+            plan_preview=self.api,
             store=self.sites.store,
             sender=self.sender,
             limits=DeliveryLimits(),
@@ -118,25 +115,23 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
             expected_revision=current.revision,
         ))
 
-    async def _profile(self, site_id: str, limit: int = 2):
-        return await self.profiles.create_profile(ProfileCreate(
-            name="组合", site_id=site_id,
-            items=[
-                {"content_type": "daily_news", "params": {}, "limit": limit},
-                {"content_type": "zhihu_hot", "params": {}, "limit": limit},
-            ],
-        ))
+    @staticmethod
+    def _items(limit: int = 2):
+        return [
+            {"content_type": "daily_news", "params": {}, "limit": limit},
+            {"content_type": "zhihu_hot", "params": {}, "limit": limit},
+        ]
 
-    async def _task(self, profile_id: str, sites, *, fmt: str = "text",
+    async def _task(self, sites, *, items=None, fmt: str = "text",
                     umos=(UMO,)):
         return await self.tasks.create_task(TaskCreate(
-            name="任务", profile_id=profile_id, output_format=fmt,
-            umos=list(umos), sites=list(sites),
+            name="任务", items=items if items is not None else self._items(),
+            output_format=fmt, umos=list(umos), sites=list(sites),
         ))
 
     async def test_insufficient_first_site_falls_back_to_second(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         self.hosts.clear()
         record = await self.delivery.execute(task.id, "exec-1")
         self.assertEqual(len(self.sender.messages), 1)
@@ -149,23 +144,23 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_limit_is_a_required_count_not_only_a_display_cap(self) -> None:
         # 站点 B 有 3 条新闻、2 条热榜：条数 2 满足，条数 4 就一个站点都不满足。
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.b.id])
+        items = self._items(2)
+        task = await self._task([self.b.id], items=items)
         record = await self.delivery.execute(task.id, "exec-limit-ok")
         self.assertIn("B新闻", self.sender.messages[0].text or "")
         self.assertNotEqual(record.status, "failed")
 
-        strict = await self._profile(self.a.id, limit=4)
-        strict_task = await self._task(strict.id, [self.b.id])
+        strict_items = self._items(4)
+        strict_task = await self._task([self.b.id], items=strict_items)
         self.sender.messages.clear()
         blocked = await self.delivery.execute(strict_task.id, "exec-limit-strict")
         text = self.sender.messages[0].text or ""
         self.assertTrue(text.startswith("60sAPI推送服务异常："), text)
         self.assertEqual(blocked.content_status, "failed")
 
-    async def test_only_candidate_b_is_used_even_if_profile_binds_a(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.b.id])
+    async def test_only_candidate_b_is_used(self) -> None:
+        items = self._items(2)
+        task = await self._task([self.b.id], items=items)
         record = await self.delivery.execute(task.id, "exec-2")
         self.assertEqual(len(self.sender.messages), 1)
         self.assertIn("B新闻", self.sender.messages[0].text or "")
@@ -173,8 +168,8 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(record.status, "failed")
 
     async def test_all_candidates_failing_sends_safe_alert(self) -> None:
-        profile = await self._profile(self.a.id, limit=5)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(5)
+        task = await self._task([self.a.id, self.b.id], items=items)
         record = await self.delivery.execute(task.id, "exec-3")
         self.assertEqual(len(self.sender.messages), 1)
         text = self.sender.messages[0].text or ""
@@ -184,8 +179,8 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.content_status, "failed")
 
     async def test_image_task_alert_is_sent_as_text(self) -> None:
-        profile = await self._profile(self.a.id, limit=9)
-        task = await self._task(profile.id, [self.a.id], fmt="image")
+        items = self._items(9)
+        task = await self._task([self.a.id], fmt="image", items=items)
         await self.delivery.execute(task.id, "exec-4")
         self.assertEqual(len(self.sender.messages), 1)
         message = self.sender.messages[0]
@@ -193,14 +188,14 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((message.text or "").startswith("60sAPI推送服务异常："))
 
     async def test_empty_whitelist_sends_nothing(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.b.id], umos=())
+        items = self._items(2)
+        task = await self._task([self.b.id], umos=(), items=items)
         await self.delivery.execute(task.id, "exec-5")
         self.assertEqual(self.sender.messages, [])
 
     async def test_disabled_candidate_is_skipped(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         current = await self.sites.get_site(self.a.id)
         await self.sites.update_site(self.a.id, SiteUpdate(
             name=current.name, base_url=current.base_url, enabled=False,
@@ -214,8 +209,8 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_alert_message_kind_is_text_for_image_tasks(self) -> None:
-        profile = await self._profile(self.a.id, limit=9)
-        task = await self._task(profile.id, [self.a.id], fmt="image")
+        items = self._items(9)
+        task = await self._task([self.a.id], fmt="image", items=items)
         record = await self.delivery.execute(task.id, "exec-kind")
         self.assertEqual(len(self.sender.messages), 1)
         message = self.sender.messages[0]
@@ -232,12 +227,11 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
 
         unknown = UnknownSender()
         self.delivery = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.api, store=self.sites.store, sender=unknown,
-            limits=DeliveryLimits(),
+            tasks=self.tasks, sites=self.sites, plan_preview=self.api,
+            store=self.sites.store, sender=unknown, limits=DeliveryLimits(),
         )
-        profile = await self._profile(self.a.id, limit=9)
-        task = await self._task(profile.id, [self.a.id])
+        items = self._items(9)
+        task = await self._task([self.a.id], items=items)
         record = await self.delivery.execute(task.id, "exec-unknown")
         self.assertEqual(len(unknown.messages), 1)
         # 采集失败与投递结果分别可见，unknown 不能被改写成明确失败。
@@ -263,7 +257,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         from core.delivery_api import DeliveryApi
 
         return DeliveryApi(
-            delivery=self.delivery, tasks=self.tasks, profiles=self.profiles,
+            delivery=self.delivery, tasks=self.tasks,
             sites=self.sites, store=self.sites.store, inspector=_Inspector(),
         )
 
@@ -271,8 +265,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
 
     async def test_confirmed_alert_only_is_delivered(self) -> None:
         """A/B 均停用、配置未变化：确认过的文字提示必须发出。"""
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         await self._set_enabled(self.a, False)
         await self._set_enabled(self.b, False)
@@ -281,7 +275,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         result = await api.execute(task.id, {
             "execution_id": "ok-alert",
             "expected_task_revision": data["task_revision"],
-            "expected_profile_revision": data["profile_revision"],
+            "expected_profile_revision": data["plan_revision"],
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": True,
@@ -297,8 +291,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
 
     async def test_confirmed_content_from_backup_is_delivered(self) -> None:
         """A 停用、B 可用、配置未变化：确认过的 B 内容必须发出。"""
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         await self._set_enabled(self.a, False)
         data = (await api.preview(task.id)).body["data"]
@@ -306,7 +300,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         result = await api.execute(task.id, {
             "execution_id": "ok-content",
             "expected_task_revision": data["task_revision"],
-            "expected_profile_revision": data["profile_revision"],
+            "expected_profile_revision": data["plan_revision"],
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,
@@ -317,8 +311,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         self.assertEqual(result.body["data"]["site_id"], self.b.id)
 
     async def test_stale_confirmation_leaves_terminal_record(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         await self._set_enabled(self.a, False)
         await self._set_enabled(self.b, False)
@@ -327,7 +321,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         result = await api.execute(task.id, {
             "execution_id": "stale-terminal",
             "expected_task_revision": data["task_revision"],
-            "expected_profile_revision": data["profile_revision"],
+            "expected_profile_revision": data["plan_revision"],
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": True,
@@ -344,15 +338,15 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
 
     async def test_content_failure_after_confirmation_sends_alert(self) -> None:
         """A/B 均启用、配置未变，但条数不足：发送已说明的异常提示。"""
-        profile = await self._profile(self.a.id, limit=5)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(5)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         data = (await api.preview(task.id)).body["data"]
         self.assertFalse(data["alert_only"])
         result = await api.execute(task.id, {
             "execution_id": "content-fail",
             "expected_task_revision": data["task_revision"],
-            "expected_profile_revision": data["profile_revision"],
+            "expected_profile_revision": data["plan_revision"],
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,
@@ -367,8 +361,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
 
     async def test_upstream_error_after_confirmation_sends_alert(self) -> None:
         """上游全部失败同样按已说明规则发提示，而不是报配置变化。"""
-        profile = await self._profile(self.a.id, limit=9)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(9)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         data = (await api.preview(task.id)).body["data"]
         # 让两个站点在确认后都无法提供足够内容。
@@ -376,7 +370,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         result = await api.execute(task.id, {
             "execution_id": "upstream-fail",
             "expected_task_revision": data["task_revision"],
-            "expected_profile_revision": data["profile_revision"],
+            "expected_profile_revision": data["plan_revision"],
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,
@@ -391,8 +385,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
 
         from core.delivery import DeliveryService
 
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         await self._set_enabled(self.a, False)
         await self._set_enabled(self.b, False)
@@ -413,7 +407,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             result = await api.execute(task.id, {
                 "execution_id": "race-1",
                 "expected_task_revision": data["task_revision"],
-                "expected_profile_revision": data["profile_revision"],
+                "expected_profile_revision": data["plan_revision"],
                 "expected_site_revision": data["site_revision"],
                 "expected_candidates": data["candidate_snapshot"],
                 "expected_alert_only": True,
@@ -428,8 +422,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         self.assertEqual(record.error_code, "confirmation_stale")
 
     async def test_same_execution_id_returns_original_record(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         first = await self.delivery.execute(task.id, "idem-1")
         sent = len(self.sender.messages)
         self.assertGreaterEqual(sent, 1)
@@ -447,8 +441,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         self.assertEqual(len(self.sender.messages), sent)
 
     async def test_alert_only_confirmation_cannot_become_content(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         await self._set_enabled(self.a, False)
         await self._set_enabled(self.b, False)
@@ -460,7 +454,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         result = await api.execute(task.id, {
             "execution_id": "confirm-1",
             "expected_task_revision": data["task_revision"],
-            "expected_profile_revision": data["profile_revision"],
+            "expected_profile_revision": data["plan_revision"],
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": True,
@@ -470,8 +464,8 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         self.assertEqual(self.sender.messages, [])
 
     async def test_content_confirmation_cannot_become_alert(self) -> None:
-        profile = await self._profile(self.a.id, limit=2)
-        task = await self._task(profile.id, [self.a.id, self.b.id])
+        items = self._items(2)
+        task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
         await self._set_enabled(self.a, False)
         preview = await api.preview(task.id)
@@ -482,7 +476,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         result = await api.execute(task.id, {
             "execution_id": "confirm-2",
             "expected_task_revision": data["task_revision"],
-            "expected_profile_revision": data["profile_revision"],
+            "expected_profile_revision": data["plan_revision"],
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,

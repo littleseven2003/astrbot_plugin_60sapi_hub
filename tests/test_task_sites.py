@@ -9,9 +9,8 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-from core.profiles import ContentProfileService, ProfileCreate
 from core.site_store import SCHEMA_VERSION
-from core.sites import SiteCreate, SiteReferencedProfilesError, SiteService
+from core.sites import SiteCreate, SiteReferencedTasksError, SiteService
 from core.tasks import (
     PushTaskService,
     TaskCreate,
@@ -38,8 +37,8 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
     async def _open(self) -> None:
         self.sites = SiteService(self.path)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+
+        self.tasks = PushTaskService(self.sites.store)
 
     async def _close(self) -> None:
         await self.sites.close()
@@ -55,16 +54,11 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def _profile(self):
-        return await self.profiles.create_profile(
-            ProfileCreate(name="组合", items=ITEMS),
-        )
-
-    async def _task(self, profile_id: str, sites=None):
+    async def _task(self, sites=None):
         return await self.tasks.create_task(
             TaskCreate(
                 name="任务",
-                profile_id=profile_id,
+                items=ITEMS,
                 output_format="text",
                 umos=["aiocqhttp:GroupMessage:g:1"],
                 sites=sites,
@@ -75,8 +69,8 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
         first = await self._site("a")
         second = await self._site("b")
         third = await self._site("c")
-        profile = await self._profile()
-        task = await self._task(profile.id, sites=[third.id, first.id, second.id])
+
+        task = await self._task(sites=[third.id, first.id, second.id])
         self.assertEqual(task.sites, (third.id, first.id, second.id))
         loaded = await self.tasks.get_task(task.id)
         self.assertEqual(loaded.sites, (third.id, first.id, second.id))
@@ -84,13 +78,13 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
     async def test_update_reorders_and_persists_after_reopen(self) -> None:
         first = await self._site("a")
         second = await self._site("b")
-        profile = await self._profile()
-        task = await self._task(profile.id, sites=[first.id, second.id])
+
+        task = await self._task(sites=[first.id, second.id])
         updated = await self.tasks.update_task(
             task.id,
             TaskUpdate(
                 name=task.name,
-                profile_id=profile.id,
+                items=ITEMS,
                 output_format="text",
                 umos=list(task.umos),
                 expected_revision=task.revision,
@@ -105,23 +99,23 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reloaded.revision, updated.revision)
 
     async def test_task_requires_explicit_candidates(self) -> None:
-        """组合不再绑定站点，任务创建必须显式给出候选站点。"""
+        """任务自带栏目与候选站点，创建时必须显式给出候选站点。"""
         await self._site("a", kind="self_built")
-        profile = await self._profile()
+
         with self.assertRaises(TaskValidationError) as raised:
-            await self._task(profile.id)
+            await self._task()
         self.assertEqual(raised.exception.field, "sites")
 
     async def test_update_without_sites_keeps_order(self) -> None:
         first = await self._site("a")
         second = await self._site("b")
-        profile = await self._profile()
-        task = await self._task(profile.id, sites=[second.id, first.id])
+
+        task = await self._task(sites=[second.id, first.id])
         updated = await self.tasks.update_task(
             task.id,
             TaskUpdate(
                 name="改名",
-                profile_id=profile.id,
+                items=ITEMS,
                 output_format="text",
                 umos=list(task.umos),
                 expected_revision=task.revision,
@@ -134,13 +128,13 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
     async def test_update_explicit_sites_replaces_order(self) -> None:
         first = await self._site("a")
         second = await self._site("b")
-        profile = await self._profile()
-        task = await self._task(profile.id, sites=[first.id])
+
+        task = await self._task(sites=[first.id])
         updated = await self.tasks.update_task(
             task.id,
             TaskUpdate(
                 name=task.name,
-                profile_id=profile.id,
+                items=ITEMS,
                 output_format="text",
                 umos=list(task.umos),
                 expected_revision=task.revision,
@@ -151,34 +145,34 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_candidates_are_rejected(self) -> None:
         site = await self._site("a")
-        profile = await self._profile()
+
         with self.assertRaises(TaskValidationError):
-            await self._task(profile.id, sites=[])
+            await self._task(sites=[])
         with self.assertRaises(TaskValidationError):
-            await self._task(profile.id, sites=[""])
+            await self._task(sites=[""])
         with self.assertRaises(TaskNotFoundError):
-            await self._task(profile.id, sites=["missing-site"])
+            await self._task(sites=["missing-site"])
 
     async def test_site_delete_blocked_by_task_reference(self) -> None:
         first = await self._site("a")
         second = await self._site("b")
-        profile = await self._profile()
-        await self._task(profile.id, sites=[first.id, second.id])
-        with self.assertRaises(SiteReferencedProfilesError):
+
+        await self._task(sites=[first.id, second.id])
+        with self.assertRaises(SiteReferencedTasksError):
             await self.sites.delete_site(second.id, second.revision)
 
     async def test_legacy_single_site_task_is_backfilled(self) -> None:
         site = await self._site("a")
-        profile = await self._profile()
-        task = await self._task(profile.id, sites=[site.id])
+
+        task = await self._task(sites=[site.id])
         await self._close()
         raw = sqlite3.connect(self.path)
         try:
-            # 还原 v14 之前的旧库形状：组合自带 site_id，任务没有候选表。
+            # 还原 v14 之前的旧库形状：栏目方案行自带 site_id，任务没有候选表。
             raw.execute("ALTER TABLE content_profiles ADD COLUMN site_id TEXT")
             raw.execute(
                 "UPDATE content_profiles SET site_id = ? WHERE id = ?",
-                (site.id, profile.id),
+                (site.id, task.id),
             )
             raw.execute("DROP TABLE push_task_sites")
             raw.execute("PRAGMA user_version = 13")

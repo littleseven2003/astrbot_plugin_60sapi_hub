@@ -50,6 +50,18 @@ class TaskWeb:
                 "测试候选站点是否满足任务配置（不投递）",
             ),
             (
+                "tasks/<task_id>/preview",
+                self.preview_task,
+                ["POST"],
+                "按已保存配置获取一次任务内容预览",
+            ),
+            (
+                "tasks/<task_id>/image",
+                self.generate_task_image,
+                ["POST"],
+                "生成任务预览的栏目长图",
+            ),
+            (
                 "schedule-runs",
                 self.list_schedule_runs,
                 ["GET"],
@@ -105,6 +117,24 @@ class TaskWeb:
             return guard
         return self._respond(await self._api.disable_task(
             task_id, await request.json(),
+        ))
+
+    async def preview_task(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(await self._api.preview_task(
+            task_id, payload, owner=request.username,
+        ))
+
+    async def generate_task_image(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(await self._api.generate_task_image(
+            task_id, payload, owner=request.username,
         ))
 
     async def create_task(self):

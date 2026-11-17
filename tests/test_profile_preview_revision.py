@@ -11,9 +11,9 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
-from core.profiles import ContentProfileService, ProfileCreate
+from core.plan_preview import PlanPreview
 from core.sites import SiteCreate, SiteService, SiteUpdate
+from core.tasks import PushTaskService, TaskCreate
 
 SECRET = "simulated-secret-abc123"
 
@@ -37,7 +37,7 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self._tmp.name) / "preview.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
+        self.tasks = PushTaskService(self.sites.store)
         self.snapshots = ImageSnapshotStore()
         self.images = ProfileImageService()
         self.mutate_on_call: int | None = None
@@ -67,8 +67,8 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.images,
         )
 
@@ -95,24 +95,26 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def _profile(self):
-        return await self.profiles.create_profile(
-            ProfileCreate(
-                name="多栏目组合",
-                site_id=self.site.id,
+    async def _task(self):
+        return await self.tasks.create_task(
+            TaskCreate(
+                name="多栏目任务",
                 items=[
                     {"content_type": "daily_news", "params": {}, "limit": 2},
                     {"content_type": "zhihu_hot", "params": {}, "limit": 1},
                     {"content_type": "douyin_hot", "params": {}, "limit": 1},
                 ],
+                output_format="text",
+                umos=[],
+                sites=[self.site.id],
             ),
         )
 
     async def test_mid_preview_change_never_mixes_sources(self) -> None:
-        profile = await self._profile()
+        task = await self._task()
         # 第一次上游请求返回前切换站点来源类型，制造“中途变化”。
         self.mutate_on_call = 1
-        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
+        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
         # 整次结果必须来自同一个 revision：要么全旧，要么全新，且与新状态一致。
@@ -137,7 +139,7 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(snapshot)
         self.assertEqual(snapshot.site_revision, final_site.revision)
         image = await self.api.generate_image(
-            profile.id, {"snapshot_id": snapshot_id},
+            task.id, {"snapshot_id": snapshot_id},
         )
         self.assertEqual(image.status_code, 200, image.body)
         images = image.body["data"]["images"]
@@ -145,10 +147,10 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item["status"] == "success" for item in images))
 
     async def test_persistent_change_fails_without_mixing(self) -> None:
-        profile = await self._profile()
+        task = await self._task()
         # 每次请求前都改配置：无法收敛时必须明确失败，而不是拼接结果。
         self.always_mutate = True
-        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
+        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
         self.assertEqual(result.status_code, 409, result.body)
         self.assertEqual(
             result.body["data"]["code"], "preview_revision_changed",
@@ -158,7 +160,7 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.snapshots.size, 0)
 
     async def test_single_section_upstream_failure_is_not_a_conflict(self) -> None:
-        profile = await self._profile()
+        task = await self._task()
         original = self.content.preview_cached
         calls = {"count": 0}
 
@@ -169,7 +171,7 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
             return await original(content_type, site_id, **kwargs)
 
         self.content.preview_cached = flaky  # type: ignore[assignment]
-        result = await self.api.preview_profile({"site_id": self.site.id, "profile_id": profile.id})
+        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
         self.assertEqual(result.status_code, 200, result.body)
         data = result.body["data"]
         self.assertEqual(data["status"], "partial")

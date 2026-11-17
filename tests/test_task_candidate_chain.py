@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 from core.delivery_api import DeliveryApi
-from core.profiles import ContentProfileService, ProfileCreate
 from core.scheduler import SchedulerService, SchedulerValidationError
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
@@ -34,8 +33,7 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self._tmp.name) / "chain.sqlite3"
         self.sites = SiteService(self.path)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.a = await self.sites.create_site(SiteCreate(
             name="A", base_url="https://a.example.test/p", enabled=True,
             timeout_seconds=5, source_kind="public",
@@ -44,12 +42,10 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
             name="B", base_url="https://b.example.test/p", enabled=True,
             timeout_seconds=5, source_kind="public",
         ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="组合", site_id=self.a.id,
-            items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
-        ))
         self.task = await self.tasks.create_task(TaskCreate(
-            name="任务", profile_id=self.profile.id, output_format="text",
+            name="任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+            output_format="text",
             umos=[UMO], sites=[self.a.id, self.b.id],
             schedule={"kind": "daily", "timezone": "UTC", "time": "09:00"},
         ))
@@ -95,7 +91,7 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         await self._disable(self.a)
         api = DeliveryApi(
-            delivery=None, tasks=self.tasks, profiles=self.profiles,
+            delivery=None, tasks=self.tasks,
             sites=self.sites, store=self.sites.store, inspector=_Inspector(),
         )
         result = await api.preview(self.task.id)
@@ -112,7 +108,7 @@ class CandidateChainTest(unittest.IsolatedAsyncioTestCase):
         await self._disable(self.a)
         await self._disable(self.b)
         api = DeliveryApi(
-            delivery=None, tasks=self.tasks, profiles=self.profiles,
+            delivery=None, tasks=self.tasks,
             sites=self.sites, store=self.sites.store, inspector=_Inspector(),
         )
         result = await api.preview(self.task.id)

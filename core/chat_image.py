@@ -1,4 +1,4 @@
-"""聊天图片查询：复用文字授权、组合快照与按栏目生成的长图渲染链路。"""
+"""聊天图片查询：复用文字授权、任务栏目与按栏目生成的长图渲染链路。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .chat_content import (
     config_changed,
 )
 from .candidate_preview import satisfied_previews
-from .profile_api import ProfileApi
+from .plan_preview import PlanPreview
 from .tasks import TaskValidationError, normalize_task_id
 
 IMAGE_FAILED_TEXT = (
@@ -44,7 +44,7 @@ class ChatImageReply:
 
 
 class ChatImageQuery:
-    def __init__(self, tasks, previews: ProfileApi) -> None:
+    def __init__(self, tasks, previews: PlanPreview) -> None:
         self._tasks = tasks
         self._previews = previews
 
@@ -79,7 +79,7 @@ class ChatImageQuery:
         """按任务候选顺序取第一份满足全部栏目且能出图的内容。"""
         async for _site_id, data in satisfied_previews(
             self._previews,
-            profile_id=authorized.profile_id,
+            plan_id=authorized.task_id,
             requirements=authorized.requirements,
             site_ids=[site_id for site_id, _ in authorized.candidates],
             owner=owner,
@@ -91,7 +91,7 @@ class ChatImageQuery:
                 continue
             try:
                 image = await self._previews.generate_image(
-                    authorized.profile_id,
+                    authorized.task_id,
                     {"snapshot_id": snapshot_id},
                     owner=owner,
                 )

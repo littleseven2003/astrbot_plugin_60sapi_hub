@@ -37,7 +37,7 @@ from core.delivery import (
 )
 from core.image_service import ProfileImageService
 from core.news import NewsInvalidJSONError
-from core.profiles import ContentProfileService, ProfileCreate
+from core.plan_preview import PlanPreviewResult
 from core.sites import SiteCreate, SiteNotFoundError, SiteService, SiteTestBusyError
 from core.tasks import PushTaskService, TaskCreate
 
@@ -159,13 +159,11 @@ class FakeSender:
         return DeliverySendResult(SendStatus.SUCCESS)
 
 
-class StubProfileApi:
-    """固定返回合法正文的组合预览替身，避免测试请求上游。"""
+class StubPlanPreview:
+    """固定返回合法正文的任务预览替身，避免测试请求上游。"""
 
-    async def preview_profile(self, payload, *, owner=None, site_id=None):
-        from core.profile_api import ProfileApiResult
-
-        return ProfileApiResult(
+    async def preview_site(self, payload, *, owner=None, site_id=None):
+        return PlanPreviewResult(
             200,
             {
                 "status": "ok",
@@ -249,8 +247,7 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
         )
         await self.sites.open()
         self.clock = lambda: datetime(2026, 10, 24, 2, 0, tzinfo=timezone.utc)
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self._closers: list[object] = []
 
     async def asyncTearDown(self) -> None:
@@ -287,17 +284,10 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
         return content
 
     async def _existing_configuration(self, site):
-        profile = await self.profiles.create_profile(
-            ProfileCreate(
-                name="已有组合",
-                site_id=site.id,
-                items=[_daily_item()],
-            ),
-        )
         task = await self.tasks.create_task(
             TaskCreate(
                 name="已有任务",
-                profile_id=profile.id,
+                items=[_daily_item()],
                 sites=[site.id],
                 output_format="text",
                 umos=[FAKE_UMO],
@@ -311,9 +301,8 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
         sender = FakeSender()
         delivery = DeliveryService(
             tasks=self.tasks,
-            profiles=self.profiles,
             sites=self.sites,
-            profile_api=StubProfileApi(),
+            plan_preview=StubPlanPreview(),
             store=self.sites.store,
             sender=sender,
             limits=DeliveryLimits(max_execution_seconds=5),
@@ -323,10 +312,23 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
             task.id,
             "existing-run",
             expected_task_revision=task.revision,
-            expected_profile_revision=profile.revision,
         )
         self.assertEqual(execution.status, "success")
-        return profile, task, delivery, sender
+        return task, delivery, sender
+
+    async def _plan_rows(self):
+        connection = self.sites.store._require_connection()
+        async with connection.execute(
+            "SELECT id, name, revision, created_at, updated_at "
+            "FROM content_profiles ORDER BY id",
+        ) as cursor:
+            plans = tuple(tuple(row) for row in await cursor.fetchall())
+        async with connection.execute(
+            "SELECT profile_id, position, content_type, params_json, limit_count "
+            "FROM content_profile_items ORDER BY profile_id, position",
+        ) as cursor:
+            items = tuple(tuple(row) for row in await cursor.fetchall())
+        return plans, items
 
     async def _snapshot(self):
         sites = [
@@ -343,7 +345,7 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
             )
             for item in await self.sites.list_sites()
         ]
-        profiles = await self.profiles.list_profiles()
+        plans = await self._plan_rows()
         tasks = await self.tasks.list_tasks()
         execution_ids = await self.sites.store.list_delivery_execution_ids(
             limit=20,
@@ -353,7 +355,7 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
             await self.sites.store.get_delivery_execution(execution_id)
             for execution_id in execution_ids
         ])
-        return sites, profiles, tasks, runs
+        return sites, plans, tasks, runs
 
 
 class SiteConnectionWebGuardTest(SiteConnectionFixture):
@@ -692,11 +694,16 @@ class SiteConnectionStateTest(SiteConnectionFixture):
             bearer_token="keep-token",
         )
         disabled_site = await self._site("停用站点")
-        _profile, _task, _delivery, sender = (
+        _task, _delivery, sender = (
             await self._existing_configuration(site)
         )
         content = await self._opened_content(self._empty_handler)
         before = await self._snapshot()
+        self.assertEqual(len(before[1][0]), 1)
+        self.assertEqual(
+            [row[2] for row in before[1][1]],
+            ["daily_news"],
+        )
         self.assertEqual(len(before[3]), 1)
 
         for content_type in (
@@ -727,7 +734,7 @@ class SiteConnectionStateTest(SiteConnectionFixture):
 
     async def test_connection_test_never_sends_or_renders_images(self) -> None:
         site = await self._site("不触达站点", enabled=True)
-        _profile, _task, _delivery, sender = (
+        _task, _delivery, sender = (
             await self._existing_configuration(site)
         )
         self.assertEqual(len(sender.calls), 1)
@@ -768,7 +775,7 @@ class SiteConnectionStateTest(SiteConnectionFixture):
 
     async def test_missing_site_never_reaches_sender_or_image(self) -> None:
         delivery_site = await self._site("投递站点", enabled=True)
-        _profile, _task, _delivery, sender = (
+        _task, _delivery, sender = (
             await self._existing_configuration(delivery_site)
         )
         content = await self._opened_content(self._empty_handler)

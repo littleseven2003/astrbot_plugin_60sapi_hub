@@ -1,4 +1,9 @@
-"""内容组合 CRUD 和组合预览的后台 API 业务层。"""
+"""按一份内容方案在单个站点上取内容的预览与图片生成服务。
+
+预览、聊天查询、手动/定时投递共用这里：调用方给出栏目方案与站点，
+本类只负责「这一个站点上的这一套栏目」是否取全、版本是否稳定，
+不判断候选站点是否满足要求（那是 candidate_preview 的事）。
+"""
 
 from __future__ import annotations
 
@@ -39,23 +44,18 @@ from .profile_image import (
     ProfileImageError,
 )
 from .profile_render import render_profile_outputs
-from .profiles import (
-    ContentProfile,
-    ContentProfileService,
-    ProfileConflictError,
-    ProfileCreate,
-    ProfileNotFoundError,
-    ProfileReferencedError,
-    ProfileStorageError,
-    ProfileUpdate,
-    ProfileValidationError,
+from .content_plan import PlanItem, plan_payload
+from .tasks import (
+    PushTaskService,
+    TaskNotFoundError,
+    TaskStorageError,
+    TaskValidationError,
 )
 from .sites import (
     SiteDisabledError,
     SiteNotFoundError,
     SiteService,
     SiteStorageError,
-    SiteValidationError,
 )
 
 _SECTION_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})
@@ -65,154 +65,37 @@ _MAX_PREVIEW_ATTEMPTS = 2
 
 
 @dataclass(frozen=True, slots=True)
-class ProfileApiResult:
+class PlanPreviewResult:
     status_code: int
     body: dict[str, Any]
 
 
-class ProfileApi:
-    """内容组合持久化和组合预览。"""
+class PlanPreview:
+    """把一份栏目方案落到一个站点上取内容，并保存可渲染的图片快照。"""
 
     def __init__(
         self,
-        profiles: ContentProfileService,
+        tasks: PushTaskService,
         content: ContentService,
         sites: SiteService,
         *,
         image_snapshots: ImageSnapshotStore | None = None,
         image_service: ProfileImageService | None = None,
     ) -> None:
-        self._profiles = profiles
+        self._tasks = tasks
         self._content = content
         self._sites = sites
         self._image_snapshots = image_snapshots
         self._image_service = image_service
 
-    async def list_profiles(self) -> ProfileApiResult:
-        try:
-            profiles = await self._profiles.list_profiles()
-        except SiteStorageError:
-            return _storage_error()
-        except ProfileStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        return _ok(
-            {
-                "profiles": [_profile_dict(profile) for profile in profiles],
-            },
-        )
 
-    async def get_profile(self, profile_id: str) -> ProfileApiResult:
-        try:
-            profile = await self._profiles.get_profile(profile_id)
-        except ProfileValidationError as exc:
-            return _validation_error(exc)
-        except ProfileNotFoundError:
-            return _not_found_error()
-        except SiteNotFoundError:
-            return _site_not_found_error()
-        except (SiteStorageError, ProfileStorageError):
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        return _ok(_profile_dict(profile))
-
-    async def create_profile(self, payload: object) -> ProfileApiResult:
-        data = _payload_dict(payload)
-        if data is None:
-            return _invalid_body_error()
-        try:
-            profile = await self._profiles.create_profile(
-                ProfileCreate(
-                    name=data.get("name"),
-                    site_id=data.get("site_id"),
-                    items=data.get("items"),
-                ),
-            )
-        except (ProfileValidationError, SiteValidationError) as exc:
-            return _validation_error(exc)
-        except SiteNotFoundError:
-            return _site_not_found_error()
-        except ProfileStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        return _ok(_profile_dict(profile), status_code=201)
-
-    async def update_profile(
-        self,
-        profile_id: str,
-        payload: object,
-    ) -> ProfileApiResult:
-        data = _payload_dict(payload)
-        if data is None:
-            return _invalid_body_error()
-        try:
-            profile = await self._profiles.update_profile(
-                profile_id,
-                ProfileUpdate(
-                    name=data.get("name"),
-                    site_id=data.get("site_id"),
-                    items=data.get("items"),
-                    expected_revision=data.get("expected_revision"),
-                ),
-            )
-        except (ProfileValidationError, SiteValidationError) as exc:
-            return _validation_error(exc)
-        except ProfileNotFoundError:
-            return _not_found_error()
-        except SiteNotFoundError:
-            return _site_not_found_error()
-        except ProfileConflictError as exc:
-            return _conflict_error(exc)
-        except ProfileStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        return _ok(_profile_dict(profile))
-
-    async def delete_profile(
-        self,
-        profile_id: str,
-        payload: object,
-    ) -> ProfileApiResult:
-        data = _payload_dict(payload)
-        if data is None:
-            return _invalid_body_error()
-        try:
-            await self._profiles.delete_profile(
-                profile_id,
-                data.get("expected_revision"),
-            )
-        except (ProfileValidationError, SiteValidationError) as exc:
-            return _validation_error(exc)
-        except ProfileNotFoundError:
-            return _not_found_error()
-        except ProfileConflictError as exc:
-            return _conflict_error(exc)
-        except ProfileReferencedError as exc:
-            return _error(
-                409,
-                "内容组合仍被推送任务引用，不能删除："
-                + "、".join(exc.task_names)
-                + "。",
-                code="profile_referenced",
-                data={"task_names": list(exc.task_names)},
-            )
-        except ProfileStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        return _ok({"deleted_id": profile_id})
-
-    async def preview_profile(
+    async def preview_site(
         self,
         payload: object,
         *,
         owner: str | None = None,
         site_id: object = None,
-    ) -> ProfileApiResult:
+    ) -> PlanPreviewResult:
         data = _payload_dict(payload)
         if data is None:
             return _invalid_body_error()
@@ -223,7 +106,10 @@ class ProfileApi:
                 "force_refresh 必须是布尔值。",
                 code="invalid_force_refresh",
             )
-        profile_id = data.get("profile_id")
+        task_id = data.get("task_id")
+        if task_id is None:
+            # 旧客户端仍可能发送 profile_id；方案行 id 与任务 id 相同。
+            task_id = data.get("profile_id")
         if site_id is None:
             site_id = data.get("site_id")
         if site_id is None or site_id == "":
@@ -233,25 +119,28 @@ class ProfileApi:
                 code="site_required",
             )
         try:
-            profile, site = await self._profiles.load_for_preview(
-                profile_id, site_id,
-            )
-        except ProfileValidationError as exc:
+            config = await self._tasks.get_config_snapshot(task_id)
+            site = await self._sites.get_site(site_id)
+        except TaskValidationError as exc:
             return _validation_error(exc)
-        except ProfileNotFoundError:
-            return _not_found_error()
-        except SiteDisabledError:
-            return _error(
-                409,
-                "组合引用的站点未启用，无法获取上游内容。",
-                code="site_disabled",
-            )
+        except TaskNotFoundError:
+            return _task_not_found_error()
+        except TaskStorageError:
+            return _storage_error()
         except SiteNotFoundError:
             return _site_not_found_error()
-        except ProfileStorageError:
+        except SiteStorageError:
             return _storage_error()
         except Exception:
             return _internal_error()
+        if not site.enabled:
+            return _error(
+                409,
+                "该站点未启用，无法获取上游内容。",
+                code="site_disabled",
+            )
+        plan_items = config.task.items
+        plan_revision = config.plan_revision
 
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
@@ -261,30 +150,29 @@ class ProfileApi:
         # 绝不把不同版本的栏目拼进同一个 200 响应。
         for attempt in range(_MAX_PREVIEW_ATTEMPTS):
             sections, failures = await self._collect_sections(
-                profile, force_refresh, site.id,
+                plan_items, force_refresh, site.id,
             )
             try:
-                latest_profile, latest_site = (
-                    await self._profiles.load_for_preview(profile_id, site_id)
-                )
-            except SiteDisabledError:
-                return _error(
-                    409,
-                    "组合引用的站点未启用，无法获取上游内容。",
-                    code="site_disabled",
-                )
-            except ProfileNotFoundError:
-                return _not_found_error()
+                latest = await self._tasks.get_config_snapshot(task_id)
+                latest_site = await self._sites.get_site(site_id)
+            except TaskValidationError as exc:
+                return _validation_error(exc)
+            except TaskNotFoundError:
+                return _task_not_found_error()
             except SiteNotFoundError:
                 return _site_not_found_error()
-            except ProfileValidationError as exc:
-                return _validation_error(exc)
-            except ProfileStorageError:
+            except (TaskStorageError, SiteStorageError):
                 return _storage_error()
             except Exception:
                 return _internal_error()
+            if not latest_site.enabled:
+                return _error(
+                    409,
+                    "该站点未启用，无法获取上游内容。",
+                    code="site_disabled",
+                )
             if (
-                latest_profile.revision == profile.revision
+                latest.plan_revision == plan_revision
                 and latest_site.id == site.id
                 and latest_site.revision == site.revision
             ):
@@ -292,16 +180,20 @@ class ProfileApi:
             if attempt + 1 >= _MAX_PREVIEW_ATTEMPTS:
                 return _error(
                     409,
-                    "组合或站点配置在获取期间发生变化，本次预览已取消，请重试。",
+                    "任务配置在获取期间发生变化，本次预览已取消，请重试。",
                     code="preview_revision_changed",
                 )
-            profile, site = latest_profile, latest_site
+            plan_items = latest.task.items
+            plan_revision = latest.plan_revision
+            site = latest_site
 
         success_count = len(sections) - len(failures)
         data = {
-            "profile_id": profile.id,
-            "profile_name": profile.name,
-            "profile_revision": profile.revision,
+            "task_id": config.task.id,
+            "task_name": config.task.name,
+            "task_revision": config.task.revision,
+            "plan_revision": plan_revision,
+            "items": plan_payload(plan_items),
             "site_id": site.id,
             "site_name": site.name,
             "success_count": success_count,
@@ -339,8 +231,8 @@ class ProfileApi:
             try:
                 snapshot = self._image_snapshots.put(
                     owner=owner or "",
-                    profile_id=profile.id,
-                    profile_revision=profile.revision,
+                    profile_id=config.task.id,
+                    profile_revision=plan_revision,
                     site_id=site.id,
                     site_revision=site.revision,
                     data=_image_snapshot_data(data),
@@ -356,14 +248,14 @@ class ProfileApi:
 
     async def _collect_sections(
         self,
-        profile: Any,
+        plan_items: tuple[PlanItem, ...],
         force_refresh: bool,
         site_id: str,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """按给定组合配置获取全部栏目；失败栏目单独记录，不中断其余栏目。"""
+        """按给定栏目方案获取全部栏目；失败栏目单独记录，不中断其余栏目。"""
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        for item in profile.items:
+        for item in plan_items:
             try:
                 # 必须使用本次实际选中的站点，否则会出现“标记 B、内容来自 A”。
                 cached = await self._content.preview_cached(
@@ -418,11 +310,11 @@ class ProfileApi:
 
     async def generate_image(
         self,
-        profile_id: str,
+        plan_id: str,
         payload: object,
         *,
         owner: str | None = None,
-    ) -> ProfileApiResult:
+    ) -> PlanPreviewResult:
         data = _payload_dict(payload)
         if data is None:
             return _invalid_body_error()
@@ -450,7 +342,7 @@ class ProfileApi:
         if snapshot is None:
             return _error(
                 410,
-                "图片快照已过期或被淘汰，请重新预览组合。",
+                "图片快照已过期或被淘汰，请重新预览。",
                 code="snapshot_expired",
             )
         if (owner or "") != snapshot.owner:
@@ -459,23 +351,25 @@ class ProfileApi:
                 "无权使用该图片快照。",
                 code="forbidden",
             )
-        if snapshot.profile_id != profile_id:
+        if snapshot.profile_id != plan_id:
             return _error(
                 404,
-                "图片快照不属于该组合。",
+                "图片快照不属于该任务。",
                 code="snapshot_not_found",
             )
         try:
-            profile = await self._profiles.get_profile(profile_id)
-        except ProfileNotFoundError:
+            config = await self._tasks.get_config_snapshot(plan_id)
+        except TaskNotFoundError:
             return _stale_snapshot_error()
-        except (ProfileStorageError, ProfileValidationError):
+        except TaskValidationError:
+            return _stale_snapshot_error()
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
-        # 组合 revision 必须一致；站点则校验快照记录的那一个，
+        # 方案 revision 必须一致；站点则校验快照记录的那一个，
         # 这样故障切换选中的备用站点快照不会被误判为过期。
-        if profile.revision != snapshot.profile_revision:
+        if config.plan_revision != snapshot.profile_revision:
             return _stale_snapshot_error()
         try:
             site = await self._sites.get_site(snapshot.site_id)
@@ -672,7 +566,8 @@ def _safe_error_code(value: Any) -> str:
 def _image_snapshot_data(data: dict[str, Any]) -> dict[str, Any]:
     """只保存渲染需要的已验证数据，不保存 HTML 或前端路径。"""
     return {
-        "profile_name": data.get("profile_name"),
+        # 渲染器沿用 profile_name 作为标题，这里由任务名映射过去。
+        "profile_name": data.get("task_name"),
         "site_name": data.get("site_name"),
         "status": data.get("status"),
         "success_count": data.get("success_count"),
@@ -681,44 +576,20 @@ def _image_snapshot_data(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stale_snapshot_error() -> ProfileApiResult:
+def _stale_snapshot_error() -> PlanPreviewResult:
     return _error(
         409,
-        "组合或站点配置已变化，请重新预览后再生成图片。",
+        "任务或站点配置已变化，请重新预览后再生成图片。",
         code="snapshot_stale",
     )
-
-
-def _profile_dict(profile: ContentProfile) -> dict[str, Any]:
-    return {
-        "id": profile.id,
-        "name": profile.name,
-        # 组合不再绑定站点，站点由任务候选与预览选择决定。旧字段保留为
-        # null，避免旧前端读到过期站点后误以为组合仍在使用它。
-        "site_id": None,
-        "site_name": None,
-        "site_enabled": None,
-        "items": [
-            {
-                "content_type": item.content_type,
-                "label": item.label,
-                "params": {},
-                "limit": item.limit,
-            }
-            for item in profile.items
-        ],
-        "revision": profile.revision,
-        "created_at": profile.created_at,
-        "updated_at": profile.updated_at,
-    }
 
 
 def _payload_dict(payload: object) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _ok(data: Any, *, status_code: int = 200) -> ProfileApiResult:
-    return ProfileApiResult(
+def _ok(data: Any, *, status_code: int = 200) -> PlanPreviewResult:
+    return PlanPreviewResult(
         status_code=status_code,
         body={"status": "ok", "data": data},
     )
@@ -730,17 +601,17 @@ def _error(
     *,
     code: str,
     data: dict[str, Any] | None = None,
-) -> ProfileApiResult:
+) -> PlanPreviewResult:
     details = {"code": code}
     if data:
         details.update(data)
-    return ProfileApiResult(
+    return PlanPreviewResult(
         status_code=status_code,
         body={"status": "error", "message": message, "data": details},
     )
 
 
-def _invalid_body_error() -> ProfileApiResult:
+def _invalid_body_error() -> PlanPreviewResult:
     return _error(
         400,
         "请求体必须是 JSON 对象。",
@@ -748,7 +619,7 @@ def _invalid_body_error() -> ProfileApiResult:
     )
 
 
-def _validation_error(exc: Exception) -> ProfileApiResult:
+def _validation_error(exc: Exception) -> PlanPreviewResult:
     field = getattr(exc, "field", "request")
     return _error(
         400,
@@ -758,35 +629,23 @@ def _validation_error(exc: Exception) -> ProfileApiResult:
     )
 
 
-def _not_found_error() -> ProfileApiResult:
-    return _error(404, "内容组合不存在或已被删除。", code="not_found")
+def _task_not_found_error() -> PlanPreviewResult:
+    return _error(404, "推送任务不存在或已被删除。", code="not_found")
 
 
-def _site_not_found_error() -> ProfileApiResult:
+def _site_not_found_error() -> PlanPreviewResult:
     return _error(404, "引用的站点不存在。", code="site_not_found")
 
 
-def _conflict_error(exc: ProfileConflictError) -> ProfileApiResult:
-    return _error(
-        409,
-        "内容组合已被其他操作修改，请重新读取后再保存。",
-        code="revision_conflict",
-        data={
-            "expected_revision": exc.expected_revision,
-            "actual_revision": exc.actual_revision,
-        },
-    )
-
-
-def _storage_error() -> ProfileApiResult:
+def _storage_error() -> PlanPreviewResult:
     return _error(
         503,
-        "内容组合存储暂不可用，请稍后重试。",
+        "配置存储暂不可用，请稍后重试。",
         code="storage_unavailable",
     )
 
 
-def _internal_error() -> ProfileApiResult:
+def _internal_error() -> PlanPreviewResult:
     return _error(
         500,
         "服务器内部错误，请稍后重试。",
@@ -794,4 +653,4 @@ def _internal_error() -> ProfileApiResult:
     )
 
 
-__all__ = ["ProfileApi", "ProfileApiResult"]
+__all__ = ["PlanPreview", "PlanPreviewResult"]

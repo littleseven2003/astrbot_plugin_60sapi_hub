@@ -31,9 +31,13 @@ def render_profile_text(data: Any) -> str:
     if not isinstance(data, dict):
         raise ValueError("组合预览数据格式异常")
     lines: list[str] = []
-    name = _plain_inline(data.get("profile_name")) or "未知组合"
+    name = (
+        _plain_inline(data.get("task_name"))
+        or _plain_inline(data.get("profile_name"))
+        or "未知任务"
+    )
     site = _plain_inline(data.get("site_name")) or "未知站点"
-    lines.append(f"组合：{name}")
+    lines.append(f"任务：{name}")
     lines.append(f"来源站点：{site}")
     lines.append(f"状态：{_status_text(data)}")
     lines.append("")
@@ -53,7 +57,11 @@ def render_profile_markdown(data: Any) -> str:
     if not isinstance(data, dict):
         raise ValueError("组合预览数据格式异常")
     lines: list[str] = []
-    name = _md_inline(data.get("profile_name")) or "未知组合"
+    name = (
+        _md_inline(data.get("task_name"))
+        or _md_inline(data.get("profile_name"))
+        or "未知任务"
+    )
     site = _md_inline(data.get("site_name")) or "未知站点"
     lines.append(f"# {name}")
     lines.append("")

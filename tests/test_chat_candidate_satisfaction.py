@@ -20,13 +20,13 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
+from core.content_plan import plan_payload
+from core.plan_preview import PlanPreview
 from core.profile_image import (
     FontUnavailableError,
     ProfileImageRenderer,
     find_cjk_font,
 )
-from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate, TaskUpdate
 
@@ -48,8 +48,7 @@ class ChatCandidateSatisfactionTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self._tmp.name) / "candidates.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         # 每个上游域名的可用内容条数；值为负数表示该 endpoint 直接失败。
         self.upstream: dict[str, dict[str, int]] = {}
         self.calls: list[tuple[str, str]] = []
@@ -88,8 +87,8 @@ class ChatCandidateSatisfactionTest(unittest.IsolatedAsyncioTestCase):
         await self.content.open()
         self.snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.image_service,
         )
         self.content_query = ChatContentQuery(self.tasks, self.api)
@@ -117,16 +116,12 @@ class ChatCandidateSatisfactionTest(unittest.IsolatedAsyncioTestCase):
         output_format: str = "text",
         umos: list[str] | None = None,
     ):
-        profile = await self.profiles.create_profile(ProfileCreate(
-            name="候选组合",
+        return await self.tasks.create_task(TaskCreate(
+            name="候选任务",
             items=items or [
                 {"content_type": "daily_news", "params": {}, "limit": 3},
                 {"content_type": "bilibili_hot", "params": {}, "limit": 2},
             ],
-        ))
-        return await self.tasks.create_task(TaskCreate(
-            name="候选任务",
-            profile_id=profile.id,
             sites=[site.id for site in sites],
             output_format=output_format,
             umos=umos or [UMO],
@@ -205,7 +200,8 @@ class ChatCandidateSatisfactionTest(unittest.IsolatedAsyncioTestCase):
 
         await self.tasks.update_task(task.id, TaskUpdate(
             name="候选任务",
-            profile_id=task.profile_id,
+            # 栏目本身不变，只调整候选站点顺序：任务 id 与方案 revision 都保持。
+            items=[dict(entry) for entry in plan_payload(task.items)],
             output_format="text",
             umos=[UMO],
             expected_revision=task.revision,
@@ -321,8 +317,7 @@ class ChatCandidateSatisfactionServiceTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self._tmp.name) / "commands.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.calls: list[str] = []
 
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -343,20 +338,18 @@ class ChatCandidateSatisfactionServiceTest(unittest.IsolatedAsyncioTestCase):
             name="命令站", base_url="http://o.example.test/60s",
             enabled=True, timeout_seconds=5,
         ))
-        profile = await self.profiles.create_profile(ProfileCreate(
-            name="命令组合",
+        self.task = await self.tasks.create_task(TaskCreate(
+            name="命令任务",
             items=[
                 {"content_type": "daily_news", "params": {}, "limit": None},
             ],
-        ))
-        self.task = await self.tasks.create_task(TaskCreate(
-            name="命令任务", profile_id=profile.id, sites=[site.id],
+            sites=[site.id],
             output_format="text", umos=[UMO],
         ))
         self.service = ChatCommandService(
-            self.tasks, self.profiles, self.sites,
-            content_query=ChatContentQuery(self.tasks, ProfileApi(
-                self.profiles, self.content, self.sites,
+            self.tasks, self.sites,
+            content_query=ChatContentQuery(self.tasks, PlanPreview(
+                self.tasks, self.content, self.sites,
                 image_snapshots=self.snapshots,
                 image_service=self.image_service,
             )),

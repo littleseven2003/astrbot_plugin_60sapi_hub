@@ -6,12 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from .profiles import (
-    ContentProfileService,
-    ProfileNotFoundError,
-    ProfileStorageError,
-    ProfileValidationError,
-)
 from .scheduler import (
     SchedulerUnavailableError,
     SchedulerValidationError,
@@ -24,7 +18,9 @@ from .schedule import (
     next_scheduled_run,
     parse_schedule,
 )
+from .candidate_preview import first_satisfying_preview
 from .content_api import content_snapshot_dict
+from .content_plan import plan_payload
 from .site_requirements import evaluate_sections, requirements_from_items
 from .sites import SiteService, SiteStorageError
 
@@ -55,34 +51,30 @@ class TaskApi:
     def __init__(
         self,
         tasks: PushTaskService,
-        profiles: ContentProfileService,
         sites: SiteService,
         *,
         clock=None,
         scheduler=None,
         content=None,
+        plan_preview=None,
     ) -> None:
         self._tasks = tasks
-        self._profiles = profiles
         self._sites = sites
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._scheduler = scheduler
         self._content = content
+        self._plan_preview = plan_preview
 
     async def list_tasks(self) -> TaskApiResult:
         now = self._clock()
         try:
             tasks = await self._tasks.list_tasks()
-            profiles = {
-                profile.id: profile
-                for profile in await self._profiles.list_profiles()
-            }
             sites = {site.id: site for site in await self._sites.list_sites()}
             runtime = (
                 await self._scheduler.runtime_status()
                 if self._scheduler is not None else {}
             )
-        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
@@ -91,7 +83,6 @@ class TaskApi:
                 "tasks": [
                     _task_dict(
                         task,
-                        profiles.get(task.profile_id),
                         sites,
                         now,
                         runtime.get(task.id),
@@ -105,7 +96,6 @@ class TaskApi:
         now = self._clock()
         try:
             task = await self._tasks.get_task(task_id)
-            profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
             runtime = (
                 await self._scheduler.runtime_status()
@@ -115,35 +105,30 @@ class TaskApi:
             return _validation_error(exc)
         except TaskNotFoundError:
             return _not_found_error()
-        except ProfileNotFoundError:
-            return _profile_not_found_error()
-        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
         return _ok(_task_dict(
-            task, profile, sites, now, runtime.get(task.id),
+            task, sites, now, runtime.get(task.id),
         ))
 
     async def test_task(self, task_id: str) -> TaskApiResult:
         """按任务配置的类别与条数，判断是否有单个站点能满足整份配置。"""
         try:
             task = await self._tasks.get_task(task_id)
-            profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
         except TaskNotFoundError:
             return _not_found_error()
-        except ProfileNotFoundError:
-            return _profile_not_found_error()
-        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
         if self._content is None:
             return _error(503, "内容获取不可用。", code="content_unavailable")
 
-        requirements = requirements_from_items(profile.items)
-        baseline = (task.revision, profile.revision, tuple(task.sites))
+        requirements = requirements_from_items(task.items)
+        baseline = (task.revision, tuple(task.sites))
         checked: list[dict[str, Any]] = []
         site_snapshot: dict[str, tuple[int, bool]] = {}
         winner: dict[str, Any] | None = None
@@ -170,7 +155,7 @@ class TaskApi:
                 checked.append(entry)
                 continue
             sections: list[dict[str, Any]] = []
-            for item in profile.items:
+            for item in task.items:
                 try:
                     cached = await self._content.preview_cached(
                         item.content_type, site_id,
@@ -210,16 +195,12 @@ class TaskApi:
         # 测试期间配置发生变化时，不能把旧结果报告为当前配置可用。
         try:
             latest_task = await self._tasks.get_task(task.id)
-            latest_profile = await self._profiles.get_profile(task.profile_id)
         except Exception:
             return _storage_error()
-        if (
-            latest_task.revision, latest_profile.revision,
-            tuple(latest_task.sites),
-        ) != baseline:
+        if (latest_task.revision, tuple(latest_task.sites)) != baseline:
             return _error(
                 409,
-                "任务或组合在测试期间发生变化，请重新测试。",
+                "任务在测试期间发生变化，请重新测试。",
                 code="config_changed",
             )
         # 所有候选的 revision 与启用状态都必须与测试开始时一致，
@@ -293,7 +274,6 @@ class TaskApi:
                 task = await self._scheduler.disable_task(
                     task_id, data.get("expected_revision"),
                 )
-            profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
             runtime = await self._scheduler.runtime_status()
         except TaskValidationError as exc:
@@ -306,12 +286,12 @@ class TaskApi:
             return _not_found_error()
         except TaskConflictError as exc:
             return _conflict_error(exc)
-        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
         return _ok(_task_dict(
-            task, profile, sites, self._clock(), runtime.get(task.id),
+            task, sites, self._clock(), runtime.get(task.id),
         ))
 
     async def create_task(self, payload: object) -> TaskApiResult:
@@ -326,28 +306,23 @@ class TaskApi:
             task = await self._tasks.create_task(
                 TaskCreate(
                     name=data.get("name"),
-                    profile_id=data.get("profile_id"),
+                    items=data.get("items"),
                     output_format=data.get("output_format"),
                     umos=data.get("umos"),
                     schedule=data.get("schedule"),
                     sites=data.get("sites"),
                 ),
             )
-            profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
-        except (TaskValidationError, ProfileValidationError, ScheduleValidationError) as exc:
+        except (TaskValidationError, ScheduleValidationError) as exc:
             return _validation_error(exc)
         except ScheduleTimezoneUnavailableError as exc:
             return _error(400, str(exc), code="schedule_timezone_unavailable")
-        except ProfileNotFoundError:
-            return _profile_not_found_error()
-        except TaskStorageError:
-            return _storage_error()
-        except (ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(_task_dict(task, profile, sites, now), status_code=201)
+        return _ok(_task_dict(task, sites, now), status_code=201)
 
     async def update_task(
         self,
@@ -366,7 +341,7 @@ class TaskApi:
                 task_id,
                 TaskUpdate(
                     name=data.get("name"),
-                    profile_id=data.get("profile_id"),
+                    items=data.get("items"),
                     output_format=data.get("output_format"),
                     umos=data.get("umos"),
                     expected_revision=data.get("expected_revision"),
@@ -378,25 +353,125 @@ class TaskApi:
                     sites=data.get("sites"),
                 ),
             )
-            profile = await self._profiles.get_profile(task.profile_id)
             sites = {site.id: site for site in await self._sites.list_sites()}
-        except (TaskValidationError, ProfileValidationError, ScheduleValidationError) as exc:
+        except (TaskValidationError, ScheduleValidationError) as exc:
             return _validation_error(exc)
         except ScheduleTimezoneUnavailableError as exc:
             return _error(400, str(exc), code="schedule_timezone_unavailable")
         except TaskNotFoundError:
             return _not_found_error()
-        except ProfileNotFoundError:
-            return _profile_not_found_error()
         except TaskConflictError as exc:
             return _conflict_error(exc)
-        except TaskStorageError:
-            return _storage_error()
-        except (ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
-        return _ok(_task_dict(task, profile, sites, now))
+        return _ok(_task_dict(task, sites, now))
+
+    async def preview_task(
+        self,
+        task_id: str,
+        payload: object,
+        *,
+        owner: str | None = None,
+    ) -> TaskApiResult:
+        """按任务已保存的栏目与候选顺序取一次内容；不发送、不改配置。"""
+        data = _payload_dict(payload)
+        if data is None:
+            data = {}
+        force_refresh = data.get("force_refresh", False)
+        if type(force_refresh) is not bool:
+            return _error(
+                400,
+                "force_refresh 必须是布尔值。",
+                code="invalid_force_refresh",
+            )
+        if self._plan_preview is None:
+            return _error(
+                503,
+                "内容预览当前不可用。",
+                code="preview_unavailable",
+            )
+        try:
+            task = await self._tasks.get_task(task_id)
+            sites = {site.id: site for site in await self._sites.list_sites()}
+        except TaskValidationError as exc:
+            return _validation_error(exc)
+        except TaskNotFoundError:
+            return _not_found_error()
+        except (TaskStorageError, SiteStorageError):
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        # 预览只走仍启用的候选；停用或已删除的站点不请求上游。
+        candidates = [
+            site_id for site_id in task.sites
+            if getattr(sites.get(site_id), "enabled", False)
+        ]
+        try:
+            found = await first_satisfying_preview(
+                self._plan_preview,
+                plan_id=task.id,
+                requirements=requirements_from_items(task.items),
+                site_ids=candidates,
+                owner=owner,
+                catch_errors=True,
+                force_refresh=force_refresh,
+            )
+        except Exception:
+            return _internal_error()
+        if found is None:
+            return _error(
+                502,
+                "没有候选站点能同时提供全部栏目，请调整栏目或候选站点。",
+                code="content_unavailable",
+            )
+        try:
+            latest = await self._tasks.get_task(task.id)
+        except Exception:
+            return _storage_error()
+        if latest.revision != task.revision:
+            return _error(
+                409,
+                "任务配置在获取期间发生变化，本次预览已取消，请重试。",
+                code="preview_revision_changed",
+            )
+        _, preview_data = found
+        result = dict(preview_data)
+        result["task_id"] = task.id
+        result["task_name"] = task.name
+        result["task_revision"] = task.revision
+        result["items"] = plan_payload(task.items)
+        return _ok(result)
+
+    async def generate_task_image(
+        self,
+        task_id: str,
+        payload: object,
+        *,
+        owner: str | None = None,
+    ) -> TaskApiResult:
+        """把一次任务预览得到的快照渲染成栏目长图。"""
+        if self._plan_preview is None:
+            return _error(
+                503,
+                "图片渲染当前不可用。",
+                code="image_unavailable",
+            )
+        try:
+            task = await self._tasks.get_task(task_id)
+        except TaskValidationError as exc:
+            return _validation_error(exc)
+        except TaskNotFoundError:
+            return _not_found_error()
+        except (TaskStorageError, SiteStorageError):
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        result = await self._plan_preview.generate_image(
+            task.id, payload, owner=owner,
+        )
+        return TaskApiResult(result.status_code, result.body)
 
     async def delete_task(
         self,
@@ -426,7 +501,6 @@ class TaskApi:
 
 def _task_dict(
     task: PushTask,
-    profile: Any,
     sites: dict[str, Any],
     now: datetime,
     next_run_at: str | None = None,
@@ -474,9 +548,8 @@ def _task_dict(
     return {
         "id": task.id,
         "name": task.name,
-        "profile_id": task.profile_id,
-        "profile_name": profile.name if profile else "未知组合",
-        # 组合不再绑定站点；site_id 保留为 null 供旧前端读取。
+        "items": plan_payload(task.items),
+        # 任务自带栏目；site_id 保留为 null 供旧前端读取。
         "site_id": None,
         "site_enabled": any(item["enabled"] is True for item in candidates),
         "sites": candidates,
@@ -555,14 +628,6 @@ def _validation_error(exc: Exception) -> TaskApiResult:
 
 def _not_found_error() -> TaskApiResult:
     return _error(404, "推送任务不存在或已被删除。", code="not_found")
-
-
-def _profile_not_found_error() -> TaskApiResult:
-    return _error(
-        404,
-        "引用的内容组合不存在或已被删除。",
-        code="profile_not_found",
-    )
 
 
 def _conflict_error(exc: TaskConflictError) -> TaskApiResult:

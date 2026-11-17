@@ -15,13 +15,12 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
+from core.plan_preview import PlanPreview
 from core.profile_image import (
     FontUnavailableError,
     ProfileImageRenderer,
     find_cjk_font,
 )
-from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 
@@ -45,15 +44,14 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self._tmp.name) / "chat.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
 
         async def handler(request: httpx.Request) -> httpx.Response:
             body = {
                 "code": 200, "message": "ok",
                 "data": {
                     "date": "2026-11-11",
-                    # 组合要求 5 条：上游必须真的给满，聊天才把它当作可用内容。
+                    # 任务栏目要求 5 条：上游必须真的给满，聊天才把它当作可用内容。
                     "news": [f"第{i}条中文新闻" for i in range(1, 6)],
                 },
             }
@@ -66,12 +64,12 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
         await self.content.open()
         self.snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.image_service,
         )
         self.service = ChatCommandService(
-            self.tasks, self.profiles, self.sites,
+            self.tasks, self.sites,
             content_query=ChatContentQuery(self.tasks, self.api),
             image_query=ChatImageQuery(self.tasks, self.api),
         )
@@ -93,17 +91,10 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
                 timeout_seconds=5,
             ),
         )
-        profile = await self.profiles.create_profile(
-            ProfileCreate(
-                name="聊天来源组合",
-                site_id=site.id,
-                items=[{"content_type": "daily_news", "params": {}, "limit": 5}],
-            ),
-        )
         return await self.tasks.create_task(
             TaskCreate(
                 name="聊天来源任务",
-                profile_id=profile.id,
+                items=[{"content_type": "daily_news", "params": {}, "limit": 5}],
                 sites=[site.id],
                 output_format=output_format,
                 umos=[UMO],

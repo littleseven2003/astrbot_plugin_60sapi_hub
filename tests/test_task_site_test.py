@@ -9,7 +9,6 @@ import httpx
 
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
-from core.profiles import ContentProfileService, ProfileCreate
 from core.site_requirements import Requirement, evaluate_sections
 from core.sites import SiteCreate, SiteService
 from core.task_api import TaskApi
@@ -90,10 +89,9 @@ class TaskSiteTestApiTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.api = TaskApi(
-            self.tasks, self.profiles, self.sites, content=self.content,
+            self.tasks, self.sites, content=self.content,
         )
 
     async def asyncTearDown(self) -> None:
@@ -113,21 +111,13 @@ class TaskSiteTestApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _task(self, site_ids):
-        first = site_ids[0]
-        profile = await self.profiles.create_profile(
-            ProfileCreate(
-                name="组合",
-                site_id=first,
+        return await self.tasks.create_task(
+            TaskCreate(
+                name="任务",
                 items=[
                     {"content_type": "daily_news", "params": {}, "limit": 3},
                     {"content_type": "zhihu_hot", "params": {}, "limit": 2},
                 ],
-            ),
-        )
-        return await self.tasks.create_task(
-            TaskCreate(
-                name="任务",
-                profile_id=profile.id,
                 output_format="text",
                 umos=["aiocqhttp:GroupMessage:g:1"],
                 sites=list(site_ids),
@@ -206,7 +196,14 @@ class TaskSiteTestApiTest(unittest.IsolatedAsyncioTestCase):
                     task.id,
                     __import__("core.tasks", fromlist=["TaskUpdate"]).TaskUpdate(
                         name="改名",
-                        profile_id=current.profile_id,
+                        items=[
+                            {
+                                "content_type": item.content_type,
+                                "params": {},
+                                "limit": item.limit,
+                            }
+                            for item in current.items
+                        ],
                         output_format=current.output_format,
                         umos=list(current.umos),
                         expected_revision=current.revision,

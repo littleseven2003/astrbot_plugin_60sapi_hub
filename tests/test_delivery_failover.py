@@ -4,7 +4,8 @@ import unittest
 from types import SimpleNamespace
 
 from core.delivery import DeliveryService
-from core.profile_api import ProfileApiResult
+from core.content_plan import PlanItem
+from core.plan_preview import PlanPreviewResult
 
 
 def _data(marker: str, items: int) -> dict:
@@ -22,8 +23,8 @@ def _data(marker: str, items: int) -> dict:
     }
 
 
-def _ok(data: dict) -> ProfileApiResult:
-    return ProfileApiResult(status_code=200, body={"status": "ok", "data": data})
+def _ok(data: dict) -> PlanPreviewResult:
+    return PlanPreviewResult(status_code=200, body={"status": "ok", "data": data})
 
 
 class _FakeApi:
@@ -31,11 +32,11 @@ class _FakeApi:
         self.by_site = by_site
         self.calls: list[str] = []
 
-    async def preview_profile(self, payload, *, owner=None, site_id=None):
+    async def preview_site(self, payload, *, owner=None, site_id=None):
         self.calls.append(site_id)
         data = self.by_site.get(site_id)
         if data is None:
-            return ProfileApiResult(
+            return PlanPreviewResult(
                 status_code=502, body={"status": "error", "data": {"code": "x"}},
             )
         return _ok(data)
@@ -63,14 +64,12 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         service._sites = sites
         return service
 
-    def _profile(self, limit: int):
+    def _task(self, sites: tuple[str, ...], limit: int):
+        # 栏目方案是任务自身的一部分：条数直接取自任务 items。
         return SimpleNamespace(
-            site_id="site-a",
-            items=[SimpleNamespace(content_type="daily_news", limit=limit)],
+            id="p1", output_format="text", sites=sites,
+            items=(PlanItem("daily_news", limit),),
         )
-
-    def _task(self, sites: tuple[str, ...]):
-        return SimpleNamespace(profile_id="p1", output_format="text", sites=sites)
 
     async def test_uses_first_site_that_satisfies_everything(self) -> None:
         api = _FakeApi({
@@ -83,8 +82,8 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         })
         service = self._service(api, sites)
         prepared = await service._prepare_with_failover(
-            "exec-1", self._task(("site-a", "site-b")),
-            self._profile(2), [sites.sites["site-a"], sites.sites["site-b"]],
+            "exec-1", self._task(("site-a", "site-b"), 2),
+            [sites.sites["site-a"], sites.sites["site-b"]],
         )
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared.slots[0][1], "B 文本")
@@ -102,8 +101,8 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         })
         service = self._service(api, sites)
         prepared = await service._prepare_with_failover(
-            "exec-2", self._task(("site-a", "site-b")),
-            self._profile(2), [sites.sites["site-a"], sites.sites["site-b"]],
+            "exec-2", self._task(("site-a", "site-b"), 2),
+            [sites.sites["site-a"], sites.sites["site-b"]],
         )
         body = prepared.slots[0][1]
         self.assertIn("B", body)
@@ -117,8 +116,7 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         })
         service = self._service(api, sites)
         prepared = await service._prepare(
-            "exec-3", self._task(("site-a", "site-b")),
-            self._profile(3),
+            "exec-3", self._task(("site-a", "site-b"), 3),
             [sites.sites["site-a"], sites.sites["site-b"]],
         )
         text = prepared.slots[0][1]
@@ -137,7 +135,7 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
         })
         service = self._service(api, sites)
         resolved = await service._candidate_sites(
-            self._task(("site-a", "site-b", "missing", "site-c")),
+            self._task(("site-a", "site-b", "missing", "site-c"), 1),
         )
         # 完整候选按顺序返回（含停用），由调用方在“选择内容”时跳过停用项。
         self.assertEqual(

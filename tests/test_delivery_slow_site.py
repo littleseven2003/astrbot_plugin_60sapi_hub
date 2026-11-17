@@ -21,8 +21,7 @@ from core.delivery import (
 )
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
-from core.profile_api import ProfileApi
-from core.profiles import ContentProfileService, ProfileCreate
+from core.plan_preview import PlanPreview
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 
@@ -87,12 +86,11 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
             client=ContentHttpClient(transport=httpx.MockTransport(handler)),
         )
         await self.content.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.snapshots = ImageSnapshotStore()
         self.images = ProfileImageService()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.images,
         )
         self.sender = RecordingSender()
@@ -118,41 +116,31 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
     def _make_delivery(self, budget: float) -> DeliveryService:
         return DeliveryService(
             tasks=self.tasks,
-            profiles=self.profiles,
             sites=self.sites,
-            profile_api=self.api,
+            plan_preview=self.api,
             store=self.sites.store,
             sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=budget),
         )
 
-    async def _news_profile(self, limit: int = 2):
-        # 单栏目组合：一次上游请求耗时就是整次预览耗时，便于按秒数验证预算。
-        return await self.profiles.create_profile(ProfileCreate(
-            name="单栏目组合",
-            items=[
-                {"content_type": "daily_news", "params": {}, "limit": limit},
-            ],
-        ))
-
-    async def _profile(self, limit: int = 2):
-        return await self.profiles.create_profile(ProfileCreate(
-            name="组合",
-            items=[
-                {"content_type": "daily_news", "params": {}, "limit": limit},
-                {"content_type": "zhihu_hot", "params": {}, "limit": limit},
-            ],
-        ))
-
-    async def _task(self, profile_id: str, sites, *, umos=(UMO,)):
+    async def _task(
+        self, sites, *, items=("daily_news", "zhihu_hot"), limit: int = 2,
+        umos=(UMO,),
+    ):
+        # 栏目方案是任务自身的一部分：单栏目时一次上游请求耗时就是整次
+        # 预览耗时，便于按秒数验证预算。
         return await self.tasks.create_task(TaskCreate(
-            name="任务", profile_id=profile_id, output_format="text",
+            name="任务",
+            items=[
+                {"content_type": content_type, "params": {}, "limit": limit}
+                for content_type in items
+            ],
+            output_format="text",
             umos=list(umos), sites=list(sites),
         ))
 
     async def test_slow_first_candidate_leaves_room_for_backup(self) -> None:
-        profile = await self._profile()
-        task = await self._task(profile.id, [self.slow.id, self.fast.id])
+        task = await self._task([self.slow.id, self.fast.id])
         started = time.monotonic()
         record = await self.delivery.execute(task.id, "slow-exec-1")
         elapsed = time.monotonic() - started
@@ -170,8 +158,7 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_candidates_slow_sends_safe_alert(self) -> None:
         self.slow_sites = {"slow.example.test", "fast.example.test"}
-        profile = await self._profile()
-        task = await self._task(profile.id, [self.slow.id, self.fast.id])
+        task = await self._task([self.slow.id, self.fast.id])
         started = time.monotonic()
         record = await self.delivery.execute(task.id, "slow-exec-2")
         elapsed = time.monotonic() - started
@@ -183,8 +170,7 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.content_status, "failed")
 
     async def test_empty_whitelist_sends_nothing_even_when_slow(self) -> None:
-        profile = await self._profile()
-        task = await self._task(profile.id, [self.slow.id], umos=())
+        task = await self._task([self.slow.id], umos=())
         record = await self.delivery.execute(task.id, "slow-exec-3")
         self.assertEqual(self.sender.messages, [])
         self.assertEqual(record.status, "no_targets")
@@ -194,8 +180,7 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         # “固定对半（0.5 秒）”提前判为不可用。
         self.delays = {"fast.example.test": 0.65}
         self.delivery = self._make_delivery(1.0)
-        profile = await self._news_profile()
-        task = await self._task(profile.id, [self.fast.id])
+        task = await self._task([self.fast.id], items=("daily_news",))
         started = time.monotonic()
         record = await self.delivery.execute(task.id, "single-budget")
         elapsed = time.monotonic() - started
@@ -210,8 +195,7 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         # 总预算 2 秒、两个候选：首站 1.2 秒返回也属于正常可用，不应被
         # 固定对半（1.0 秒）跳过而落到后面的候选。
         self.delays = {"fast.example.test": 1.2}
-        profile = await self._news_profile()
-        task = await self._task(profile.id, [self.fast.id, self.slow.id])
+        task = await self._task([self.fast.id, self.slow.id], items=("daily_news",))
         started = time.monotonic()
         record = await self.delivery.execute(task.id, "half-budget")
         elapsed = time.monotonic() - started
@@ -222,8 +206,7 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("快新闻一", self.sender.messages[0].text or "")
 
     async def test_candidate_order_prefers_first_satisfying_site(self) -> None:
-        profile = await self._profile()
-        task = await self._task(profile.id, [self.fast.id, self.slow.id])
+        task = await self._task([self.fast.id, self.slow.id])
         record = await self.delivery.execute(task.id, "slow-exec-4")
         self.assertEqual(record.site_id, self.fast.id)
         self.assertNotIn("slow.example.test", self.hosts[-1:] or [""])

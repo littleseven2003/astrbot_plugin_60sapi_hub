@@ -7,7 +7,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from core.profiles import ContentProfileService, ProfileCreate, ProfileReferencedError
+from core.content_plan import PlanValidationError, normalize_plan_items
 from core.site_store import SCHEMA_VERSION, SiteStore
 from core.sites import SiteCreate, SiteService, SiteStorageError
 from core.tasks import (
@@ -125,8 +125,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         self.db_path = Path(self.tmp.name) / "plugin.sqlite3"
         self.sites = SiteService(self.db_path)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(
             SiteCreate(
                 name="任务站点",
@@ -135,23 +134,19 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                 timeout_seconds=5,
             ),
         )
-        self.profile = await self.profiles.create_profile(
-            ProfileCreate(
-                name="任务组合",
-                site_id=self.site.id,
-                items=[item()],
-            ),
-        )
 
     async def asyncTearDown(self) -> None:
         await self.sites.close()
         self.tmp.cleanup()
 
+    async def _plan_revision(self, task_id):
+        return (await self.tasks.get_config_snapshot(task_id)).plan_revision
+
     async def _create(self, name="任务"):
         return await self.tasks.create_task(
             TaskCreate(
                 name=name,
-                profile_id=self.profile.id,
+                items=[item()],
                 sites=[self.site.id],
                 output_format="image",
                 umos=[
@@ -163,7 +158,9 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_read_update_delete_and_restart(self) -> None:
         task = await self._create()
-        self.assertEqual(task.profile_id, self.profile.id)
+        self.assertEqual(task.profile_id, task.id)
+        self.assertEqual([entry.content_type for entry in task.items], ["daily_news"])
+        self.assertIsNone(task.items[0].limit)
         self.assertEqual(task.output_format, "image")
         self.assertEqual(task.umos, (
             "aiocqhttp:GroupMessage:g:1",
@@ -177,7 +174,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             task.id,
             TaskUpdate(
                 name="改名任务",
-                profile_id=self.profile.id,
+                items=[item()],
                 output_format="markdown",
                 umos=[],
                 expected_revision=task.revision,
@@ -191,7 +188,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                 task.id,
                 TaskUpdate(
                     name="冲突",
-                    profile_id=self.profile.id,
+                    items=[item()],
                     output_format="text",
                     umos=[],
                     expected_revision=task.revision,
@@ -201,10 +198,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            tasks = PushTaskService(
-                ContentProfileService(reopened),
-                reopened.store,
-            )
+            tasks = PushTaskService(reopened.store)
             loaded = await tasks.get_task(task.id)
             self.assertEqual(loaded.name, "改名任务")
             self.assertEqual(loaded.output_format, "markdown")
@@ -212,22 +206,111 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await reopened.close()
 
-    async def test_profile_delete_protection_and_delete_task(self) -> None:
+    async def test_delete_task_removes_private_plan_rows(self) -> None:
         task = await self._create()
-        with self.assertRaises(ProfileReferencedError) as caught:
-            await self.profiles.delete_profile(self.profile.id, self.profile.revision)
-        self.assertEqual(caught.exception.task_names, ("任务",))
+        other = await self._create("另一个任务")
         await self.tasks.delete_task(task.id, task.revision)
         with self.assertRaises(TaskNotFoundError):
             await self.tasks.get_task(task.id)
-        await self.profiles.delete_profile(self.profile.id, self.profile.revision)
+        with closing(sqlite3.connect(self.db_path)) as check:
+            self.assertEqual(
+                check.execute(
+                    "SELECT COUNT(*) FROM content_profiles WHERE id = ?",
+                    (task.id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                check.execute(
+                    "SELECT COUNT(*) FROM content_profile_items WHERE profile_id = ?",
+                    (task.id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                check.execute(
+                    "SELECT COUNT(*) FROM content_profiles WHERE id = ?",
+                    (other.id,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                check.execute(
+                    "SELECT COUNT(*) FROM content_profile_items WHERE profile_id = ?",
+                    (other.id,),
+                ).fetchone()[0],
+                1,
+            )
+
+    async def test_items_persist_in_order_and_edit_stays_private(self) -> None:
+        first = await self.tasks.create_task(
+            TaskCreate(
+                name="任务A",
+                items=[item("daily_news", 2), item("zhihu_hot", 5), item("douyin_hot")],
+                sites=[self.site.id],
+                output_format="text",
+                umos=[],
+            ),
+        )
+        second = await self.tasks.create_task(
+            TaskCreate(
+                name="任务B",
+                items=[item("bilibili_hot", 1)],
+                sites=[self.site.id],
+                output_format="text",
+                umos=[],
+            ),
+        )
+        self.assertEqual(
+            [(entry.content_type, entry.limit) for entry in first.items],
+            [("daily_news", 2), ("zhihu_hot", 5), ("douyin_hot", None)],
+        )
+        await self.sites.close()
+        reopened = SiteService(self.db_path)
+        await reopened.open()
+        try:
+            tasks = PushTaskService(reopened.store)
+            stored = await tasks.get_task(first.id)
+            self.assertEqual(
+                [entry.content_type for entry in stored.items],
+                ["daily_news", "zhihu_hot", "douyin_hot"],
+            )
+            self.assertEqual([entry.limit for entry in stored.items], [2, 5, None])
+            before_b = await tasks.get_config_snapshot(second.id)
+            await tasks.update_task(
+                first.id,
+                TaskUpdate(
+                    name="任务A改名",
+                    items=[item("toutiao_hot", 7)],
+                    output_format="text",
+                    umos=[],
+                    expected_revision=stored.revision,
+                ),
+            )
+            updated_a = await tasks.get_task(first.id)
+            self.assertEqual(
+                [entry.content_type for entry in updated_a.items],
+                ["toutiao_hot"],
+            )
+            untouched_b = await tasks.get_task(second.id)
+            self.assertEqual(
+                [entry.content_type for entry in untouched_b.items],
+                ["bilibili_hot"],
+            )
+            self.assertEqual(untouched_b.items[0].limit, 1)
+            after_b = await tasks.get_config_snapshot(second.id)
+            self.assertEqual(after_b.plan_revision, before_b.plan_revision)
+            after_a = await tasks.get_config_snapshot(first.id)
+            self.assertGreater(after_a.plan_revision, before_b.plan_revision)
+        finally:
+            await reopened.close()
 
     async def test_daily_schedule_persists_preserves_clears_and_migrates_v5(self) -> None:
         from core.schedule import DailySchedule
         from datetime import time as dt_time
 
         task = await self.tasks.create_task(TaskCreate(
-            name="计划任务", profile_id=self.profile.id,
+            name="计划任务", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={
@@ -236,14 +319,14 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         ))
         self.assertEqual(task.schedule, DailySchedule("Asia/Shanghai", dt_time(8, 30)))
         updated = await self.tasks.update_task(task.id, TaskUpdate(
-            name="计划保留", profile_id=self.profile.id,
+            name="计划保留", items=[item()],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             expected_revision=task.revision,
         ))
         self.assertEqual(updated.schedule, task.schedule)
         self.assertEqual(updated.revision, 2)
         cleared = await self.tasks.update_task(task.id, TaskUpdate(
-            name="计划清除", profile_id=self.profile.id,
+            name="计划清除", items=[item()],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             expected_revision=updated.revision, schedule=None,
         ))
@@ -252,7 +335,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
         # Re-add, then simulate a schema-v5 database without schedule columns.
         scheduled = await self.tasks.update_task(task.id, TaskUpdate(
-            name="重启后计划", profile_id=self.profile.id,
+            name="重启后计划", items=[item()],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             expected_revision=cleared.revision,
             schedule={"kind": "daily", "timezone": "UTC", "time": "09:00"},
@@ -260,7 +343,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.store.create_delivery_execution(
             execution_id="migration-history", task_id=task.id,
             task_name=task.name, task_revision=task.revision,
-            profile_id=self.profile.id, profile_revision=self.profile.revision,
+            profile_id=task.id, profile_revision=await self._plan_revision(task.id),
             site_id=self.site.id, site_revision=self.site.revision,
             output_format="text", umos=(),
         )
@@ -277,9 +360,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            tasks = PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            )
+            tasks = PushTaskService(reopened.store)
             loaded = await tasks.get_task(task.id)
             self.assertIsNone(loaded.schedule)
             self.assertEqual(loaded.revision, scheduled.revision)
@@ -299,7 +380,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_v7_schema_real_migration_preserves_runtime_and_history(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="v7真实迁移", profile_id=self.profile.id,
+            name="v7真实迁移", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
@@ -311,14 +392,14 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.sites.store.create_delivery_execution(
             execution_id="v7-history", task_id=task.id, task_name=task.name,
-            task_revision=2, profile_id=self.profile.id,
-            profile_revision=self.profile.revision, site_id=self.site.id,
+            task_revision=2, profile_id=task.id,
+            profile_revision=await self._plan_revision(task.id), site_id=self.site.id,
             site_revision=self.site.revision, output_format="text", umos=(),
         )
         await self.sites.store.claim_schedule(
             task_id=task.id, scheduled_for="2026-01-01T00:30:00+00:00",
             execution_id="v7-claim", task_revision=2,
-            profile_revision=self.profile.revision, site_revision=self.site.revision,
+            profile_revision=await self._plan_revision(task.id), site_revision=self.site.revision,
             next_run_at="2026-01-02T00:30:00+00:00",
             now="2026-01-01T00:30:00+00:00",
         )
@@ -333,9 +414,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertTrue(loaded.enabled)
             self.assertEqual(loaded.revision, 2)
             self.assertEqual(loaded.schedule.time.strftime("%H:%M"), "08:30")
@@ -358,7 +437,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import patch
         import aiosqlite
         task = await self.tasks.create_task(TaskCreate(
-            name="v7失败", profile_id=self.profile.id, output_format="text",
+            name="v7失败", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "UTC", "time": "08:30"},
@@ -396,7 +475,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_v7_schema_adds_weekdays_and_preserves_weekly(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="v7每周迁移", profile_id=self.profile.id,
+            name="v7每周迁移", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "Asia/Shanghai",
@@ -412,9 +491,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertEqual(loaded.schedule.weekdays, (1, 3))
         finally:
             await reopened.close()
@@ -422,7 +499,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_weekly_daily_null_switch_and_edit_disables(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="切换计划", profile_id=self.profile.id, output_format="text",
+            name="切换计划", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
@@ -434,7 +511,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             now="2026-01-01T00:00:00+00:00",
         )
         updated = await self.tasks.update_task(task.id, TaskUpdate(
-            name="切换每日", profile_id=self.profile.id,
+            name="切换每日", items=[item()],
             output_format="text", umos=list(task.umos),
             expected_revision=2,
             schedule={"kind": "daily", "timezone": "UTC", "time": "09:00"},
@@ -443,7 +520,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.schedule.kind, "daily")
         self.assertIsNone(await self.sites.store.get_schedule_state(task.id))
         cleared = await self.tasks.update_task(task.id, TaskUpdate(
-            name="切换无计划", profile_id=self.profile.id,
+            name="切换无计划", items=[item()],
             output_format="text", umos=list(task.umos),
             expected_revision=3, schedule=None,
         ))
@@ -451,7 +528,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_corrupt_weekdays_are_reported_and_omitted_update_preserves(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="异常星期", profile_id=self.profile.id, output_format="text",
+            name="异常星期", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
@@ -469,7 +546,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.schedule_error, "schedule_invalid")
         self.assertEqual(loaded.schedule_raw["weekdays"], "1,x,3")
         updated = await self.tasks.update_task(task.id, TaskUpdate(
-            name="异常保留", profile_id=self.profile.id,
+            name="异常保留", items=[item()],
             output_format="text", umos=list(task.umos),
             expected_revision=task.revision,
         ))
@@ -480,7 +557,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                 "1,x,3",
             )
         cleared = await self.tasks.update_task(task.id, TaskUpdate(
-            name="异常清除", profile_id=self.profile.id,
+            name="异常清除", items=[item()],
             output_format="text", umos=list(task.umos),
             expected_revision=updated.revision, schedule=None,
         ))
@@ -489,7 +566,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_v8_real_migration_adds_interval_columns(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="v8迁移", profile_id=self.profile.id, output_format="text",
+            name="v8迁移", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
@@ -508,9 +585,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertTrue(loaded.enabled)
             self.assertEqual(loaded.schedule.weekdays, (1, 3))
             with closing(sqlite3.connect(self.db_path)) as check:
@@ -524,7 +599,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_v9_real_migration_adds_cron_column(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="v9迁移", profile_id=self.profile.id, output_format="text",
+            name="v9迁移", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
@@ -542,9 +617,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertTrue(loaded.enabled)
             self.assertEqual(loaded.schedule.interval_minutes, 60)
             with closing(sqlite3.connect(self.db_path)) as check:
@@ -560,7 +633,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import patch
         import aiosqlite
         task = await self.tasks.create_task(TaskCreate(
-            name="v9回滚", profile_id=self.profile.id, output_format="text",
+            name="v9回滚", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "UTC", "time": "08:30",
@@ -592,9 +665,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         retried = SiteService(self.db_path)
         await retried.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(retried), retried.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(retried.store).get_task(task.id)
             self.assertEqual(loaded.schedule.weekdays, (1,))
         finally:
             await retried.close()
@@ -602,7 +673,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_cron_schedule_persists_and_restarts(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="Cron任务", profile_id=self.profile.id, output_format="text",
+            name="Cron任务", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "Asia/Shanghai",
@@ -613,9 +684,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertEqual(loaded.schedule.expression, "30 8 * * 1-5")
         finally:
             await reopened.close()
@@ -623,7 +692,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_corrupt_interval_is_reported_and_preserved(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="损坏间隔", profile_id=self.profile.id, output_format="text",
+            name="损坏间隔", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
@@ -640,19 +709,19 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.schedule_error, "schedule_invalid")
         self.assertEqual(loaded.schedule_raw["interval_minutes"], "abc")
         updated = await self.tasks.update_task(task.id, TaskUpdate(
-            name="损坏保留", profile_id=self.profile.id, output_format="text",
+            name="损坏保留", items=[item()], output_format="text",
             umos=list(task.umos), expected_revision=task.revision,
         ))
         self.assertEqual(updated.schedule_error, "schedule_invalid")
         cleared = await self.tasks.update_task(task.id, TaskUpdate(
-            name="损坏清除", profile_id=self.profile.id, output_format="text",
+            name="损坏清除", items=[item()], output_format="text",
             umos=list(task.umos), expected_revision=updated.revision, schedule=None,
         ))
         self.assertIsNone(cleared.schedule)
 
     async def test_interval_schedule_persists_and_switches(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="间隔任务", profile_id=self.profile.id, output_format="text",
+            name="间隔任务", items=[item()], output_format="text",
             sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "Asia/Shanghai",
@@ -664,9 +733,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertEqual(loaded.schedule.start_at, "2026-11-04T08:30")
             self.assertEqual(loaded.schedule.interval_minutes, 60)
         finally:
@@ -675,7 +742,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_weekly_schedule_persists_and_restarts(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="每周任务", profile_id=self.profile.id,
+            name="每周任务", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={
@@ -689,9 +756,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertEqual(loaded.schedule.weekdays, (1, 3, 5))
             self.assertEqual(loaded.schedule.time.strftime("%H:%M"), "08:30")
         finally:
@@ -700,7 +765,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_daily_schedule_survives_restart(self) -> None:
         task = await self.tasks.create_task(TaskCreate(
-            name="重启计划", profile_id=self.profile.id,
+            name="重启计划", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "UTC", "time": "10:00"},
@@ -709,9 +774,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertEqual(loaded.schedule, task.schedule)
             self.assertEqual(loaded.revision, 1)
         finally:
@@ -741,9 +804,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                     check.execute("SELECT COUNT(*) FROM push_tasks").fetchone()[0],
                     1,
                 )
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertIsNone(loaded.schedule)
         finally:
             await reopened.close()
@@ -757,7 +818,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.store.create_delivery_execution(
             execution_id="v5-failure-history", task_id=task.id,
             task_name=task.name, task_revision=task.revision,
-            profile_id=self.profile.id, profile_revision=self.profile.revision,
+            profile_id=task.id, profile_revision=await self._plan_revision(task.id),
             site_id=self.site.id, site_revision=self.site.revision,
             output_format="text", umos=(),
         )
@@ -835,7 +896,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_unexpected_schedule_parse_error_is_not_silently_swallowed(self) -> None:
         from unittest.mock import patch
         await self.tasks.create_task(TaskCreate(
-            name="异常计划任务", profile_id=self.profile.id,
+            name="异常计划任务", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=[],
             schedule={"kind": "daily", "timezone": "UTC", "time": "08:00"},
@@ -847,7 +908,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_v6_schema_migrates_enabled_constraint_and_preserves_task(self) -> None:
         from core.site_store import SCHEMA_VERSION
         task = await self.tasks.create_task(TaskCreate(
-            name="v6启用迁移", profile_id=self.profile.id,
+            name="v6启用迁移", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
@@ -888,9 +949,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         reopened = SiteService(self.db_path)
         await reopened.open()
         try:
-            loaded = await PushTaskService(
-                ContentProfileService(reopened), reopened.store,
-            ).get_task(task.id)
+            loaded = await PushTaskService(reopened.store).get_task(task.id)
             self.assertFalse(loaded.enabled)
             self.assertEqual(loaded.schedule.time.strftime("%H:%M"), "08:30")
             with closing(sqlite3.connect(self.db_path)) as check:
@@ -913,7 +972,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
         import aiosqlite
 
         task = await self.tasks.create_task(TaskCreate(
-            name="v6迁移失败", profile_id=self.profile.id,
+            name="v6迁移失败", items=[item()],
             sites=[self.site.id],
             output_format="text", umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
@@ -995,7 +1054,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                 self.tasks.create_task(
                     TaskCreate(
                         name="取消任务",
-                        profile_id=self.profile.id,
+                        items=[item()],
                         sites=[self.site.id],
                         output_format="text",
                         umos=[],
@@ -1020,7 +1079,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                         task.id,
                         TaskUpdate(
                             name="不应写入",
-                            profile_id=self.profile.id,
+                            items=[item()],
                             output_format="text",
                             umos=[],
                             expected_revision=value,
@@ -1040,7 +1099,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             task.id,
             TaskUpdate(
                 name="合法写入",
-                profile_id=self.profile.id,
+                items=[item()],
                 output_format="text",
                 umos=[],
                 expected_revision=task.revision,
@@ -1052,33 +1111,46 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                 task.id,
                 TaskUpdate(
                     name="过期整数",
-                    profile_id=self.profile.id,
+                    items=[item()],
                     output_format="text",
                     umos=[],
                     expected_revision=task.revision,
                 ),
             )
 
-    async def test_missing_profile_missing_task_and_validation(self) -> None:
-        with self.assertRaises(Exception):
-            await self.tasks.create_task(
-                TaskCreate(
-                    name="坏任务",
-                    profile_id="missing",
-                    output_format="text",
-                    umos=[],
-                ),
-            )
-        with self.assertRaises(TaskValidationError):
+    async def test_invalid_items_field_and_missing_task(self) -> None:
+        cases = [
+            ([], "items"),
+            ([item("daily_news"), item("daily_news")], "items[1].content_type"),
+            ([item("unknown")], "items[0].content_type"),
+            ([item("daily_news", 1001)], "items[0].limit"),
+            ([{"content_type": "daily_news", "params": {"a": 1}}], "items[0].params"),
+        ]
+        for items, field in cases:
+            with self.subTest(field=field):
+                with self.assertRaises(TaskValidationError) as caught:
+                    await self.tasks.create_task(
+                        TaskCreate(
+                            name="坏任务",
+                            items=items,
+                            sites=[self.site.id],
+                            output_format="text",
+                            umos=[],
+                        ),
+                    )
+                self.assertEqual(caught.exception.field, field)
+        with self.assertRaises(TaskValidationError) as caught:
             await self.tasks.create_task(
                 TaskCreate(
                     name="坏格式",
-                    profile_id=self.profile.id,
+                    items=[item()],
                     sites=[self.site.id],
                     output_format="pdf",
                     umos=[],
                 ),
             )
+        self.assertEqual(caught.exception.field, "output_format")
+        self.assertEqual(await self.tasks.list_tasks(), [])
         with self.assertRaises(TaskNotFoundError):
             await self.tasks.get_task("missing")
 
@@ -1105,10 +1177,7 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
                     check.execute("SELECT COUNT(*) FROM content_profiles").fetchone()[0],
                     1,
                 )
-            tasks = PushTaskService(
-                ContentProfileService(reopened),
-                reopened.store,
-            )
+            tasks = PushTaskService(reopened.store)
             self.assertEqual(await tasks.list_tasks(), [])
         finally:
             await reopened.close()
@@ -1157,13 +1226,12 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             raw.close()
 
 class TaskConcurrencyTest(unittest.IsolatedAsyncioTestCase):
-    async def test_concurrent_task_create_and_profile_delete_no_dangling(self) -> None:
+    async def test_concurrent_create_and_delete_leaves_no_dangling_plan_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "plugin.sqlite3"
             sites = SiteService(db)
             await sites.open()
-            profiles = ContentProfileService(sites)
-            tasks = PushTaskService(profiles, sites.store)
+            tasks = PushTaskService(sites.store)
             site = await sites.create_site(
                 SiteCreate(
                     name="并发站点",
@@ -1172,15 +1240,22 @@ class TaskConcurrencyTest(unittest.IsolatedAsyncioTestCase):
                     timeout_seconds=5,
                 ),
             )
-            profile = await profiles.create_profile(
-                ProfileCreate(name="并发组合", site_id=site.id, items=[item()]),
+            doomed = await tasks.create_task(
+                TaskCreate(
+                    name="待删任务",
+                    items=[item()],
+                    sites=[site.id],
+                    output_format="text",
+                    umos=[],
+                ),
             )
+
             async def create():
                 try:
                     return await tasks.create_task(
                         TaskCreate(
                             name="并发任务",
-                            profile_id=profile.id,
+                            items=[item("zhihu_hot", 2)],
                             sites=[site.id],
                             output_format="text",
                             umos=[],
@@ -1188,15 +1263,88 @@ class TaskConcurrencyTest(unittest.IsolatedAsyncioTestCase):
                     )
                 except Exception as exc:  # noqa: BLE001
                     return exc
+
             async def delete():
                 try:
-                    await profiles.delete_profile(profile.id, profile.revision)
+                    await tasks.delete_task(doomed.id, doomed.revision)
                     return "deleted"
                 except Exception as exc:  # noqa: BLE001
                     return exc
+
             created, deleted = await asyncio.gather(create(), delete())
-            if isinstance(created, Exception):
-                self.assertIsInstance(deleted, str)
-            else:
-                self.assertIsInstance(deleted, Exception)
+            self.assertNotIsInstance(created, Exception)
+            self.assertEqual(deleted, "deleted")
+            self.assertEqual([entry.id for entry in await tasks.list_tasks()], [created.id])
+            with closing(sqlite3.connect(db)) as check:
+                self.assertEqual(
+                    [row[0] for row in check.execute(
+                        "SELECT id FROM content_profiles ORDER BY id",
+                    )],
+                    [created.id],
+                )
+                self.assertEqual(
+                    [row[0] for row in check.execute(
+                        "SELECT profile_id FROM content_profile_items ORDER BY profile_id",
+                    )],
+                    [created.id],
+                )
             await sites.close()
+
+
+class PlanItemValidationTest(unittest.TestCase):
+    def test_valid_items_keep_order_and_limits(self) -> None:
+        parsed = normalize_plan_items(
+            [
+                item("daily_news", None),
+                item("zhihu_hot", 1),
+                item("bilibili_hot", 1000),
+                {"content_type": "douyin_hot"},
+            ],
+        )
+        self.assertEqual(
+            [entry.content_type for entry in parsed],
+            ["daily_news", "zhihu_hot", "bilibili_hot", "douyin_hot"],
+        )
+        self.assertEqual([entry.limit for entry in parsed], [None, 1, 1000, None])
+        self.assertEqual(parsed[0].label, "每日新闻")
+
+    def test_rejects_bad_length_and_duplicates(self) -> None:
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items([])
+        self.assertEqual(caught.exception.field, "items")
+        self.assertEqual(caught.exception.reason, "必须包含 1～5 个栏目")
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items([item("daily_news")] * 6)
+        self.assertEqual(caught.exception.field, "items")
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items([item("daily_news"), item("daily_news")])
+        self.assertEqual(caught.exception.field, "items[1].content_type")
+        self.assertEqual(caught.exception.reason, "同一任务不能重复选择内容类型")
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items("daily_news")
+        self.assertEqual(caught.exception.field, "items")
+        self.assertEqual(caught.exception.reason, "必须是数组")
+
+    def test_rejects_unsupported_type_and_params(self) -> None:
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items([item("unknown")])
+        self.assertEqual(caught.exception.field, "items[0].content_type")
+        self.assertEqual(caught.exception.reason, "不是支持的内容类型")
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items(["daily_news"])
+        self.assertEqual(caught.exception.field, "items[0]")
+        self.assertEqual(caught.exception.reason, "必须是对象")
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items([{"content_type": "daily_news", "params": {"a": 1}}])
+        self.assertEqual(caught.exception.field, "items[0].params")
+        self.assertEqual(caught.exception.reason, "当前接口不支持非空参数")
+        with self.assertRaises(PlanValidationError) as caught:
+            normalize_plan_items([{"content_type": "daily_news", "params": []}])
+        self.assertEqual(caught.exception.field, "items[0].params")
+
+    def test_rejects_bad_limits(self) -> None:
+        for limit in (True, False, 0, -1, 1.5, "10", 1001):
+            with self.subTest(limit=limit):
+                with self.assertRaises(PlanValidationError) as caught:
+                    normalize_plan_items([item("daily_news", limit)])
+                self.assertEqual(caught.exception.field, "items[0].limit")

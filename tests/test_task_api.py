@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfoNotFoundError
 
-from core.profiles import ContentProfileService, ProfileCreate
-from core.sites import SiteCreate, SiteService
+from core.plan_preview import PlanPreviewResult
+from core.sites import SiteCreate, SiteService, SiteUpdate
 from core.task_api import TaskApi
 from core.tasks import PushTaskService
 
@@ -23,8 +23,7 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.db = Path(self.tmp.name) / "plugin.sqlite3"
         self.sites = SiteService(self.db)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(
             SiteCreate(
                 name="禁用站点",
@@ -33,13 +32,10 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
                 timeout_seconds=5,
             ),
         )
-        self.profile = await self.profiles.create_profile(
-            ProfileCreate(name="API组合", items=[item()]),
-        )
-        self.api = TaskApi(self.tasks, self.profiles, self.sites)
+        self.api = TaskApi(self.tasks, self.sites)
         self.payload = {
             "name": "API任务",
-            "profile_id": self.profile.id,
+            "items": [item()],
             "sites": [self.site.id],
             "output_format": "text",
             "umos": ["aiocqhttp:GroupMessage:g:1"],
@@ -56,7 +52,12 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(task["enabled"])
         self.assertFalse(task["can_send"])
         self.assertEqual(task["target_count"], 1)
-        self.assertEqual(task["profile_name"], "API组合")
+        self.assertEqual(
+            task["items"],
+            [{"content_type": "daily_news", "label": "每日新闻", "limit": None}],
+        )
+        self.assertNotIn("profile_id", task)
+        self.assertNotIn("profile_name", task)
         self.assertFalse(task["site_enabled"])
         listed = await self.api.list_tasks()
         self.assertEqual(len(listed.body["data"]["tasks"]), 1)
@@ -95,15 +96,21 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
                     result.body["data"]["code"],
                     "unsupported_enable_request",
                 )
-        missing = await self.api.create_task(
-            {**self.payload, "profile_id": "missing"},
-        )
+        for items in ([], [item(), item()], [{"content_type": "unknown"}]):
+            with self.subTest(items=items):
+                bad_items = await self.api.create_task({**self.payload, "items": items})
+                self.assertEqual(bad_items.status_code, 400, bad_items.body)
+                self.assertEqual(bad_items.body["data"]["code"], "validation_error")
+                self.assertTrue(
+                    bad_items.body["data"]["field"].startswith("items"),
+                    bad_items.body,
+                )
+        missing = await self.api.get_task("missing")
         self.assertEqual(missing.status_code, 404)
-        self.assertEqual(missing.body["data"]["code"], "profile_not_found")
 
     async def test_cron_no_candidate_preview_error(self) -> None:
         clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-        self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)
+        self.api = TaskApi(self.tasks, self.sites, clock=clock)
         created = await self.api.create_task({**self.payload, "schedule": {
             "kind": "cron", "timezone": "UTC", "expression": "0 0 31 2 *",
         }})
@@ -125,7 +132,7 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_schedule_create_update_preserve_clear_and_preview(self) -> None:
         clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-        self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)
+        self.api = TaskApi(self.tasks, self.sites, clock=clock)
         payload = {**self.payload, "schedule": {
             "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
         }}
@@ -166,7 +173,7 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_timezone_unavailable_preserves_plan_on_omitted_update(self) -> None:
         clock = lambda: datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-        self.api = TaskApi(self.tasks, self.profiles, self.sites, clock=clock)
+        self.api = TaskApi(self.tasks, self.sites, clock=clock)
         created = await self.api.create_task({**self.payload, "schedule": {
             "kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30",
         }})
@@ -305,23 +312,93 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         missing = await self.api.get_task("missing")
         self.assertEqual(missing.status_code, 404)
 
-    async def test_profile_delete_reference_response(self) -> None:
+    async def test_item_edits_are_task_private_and_visible(self) -> None:
         created = await self.api.create_task(self.payload)
         task = created.body["data"]
-        # Exercise the profile API mapping through the service exception path.
-        from core.profile_api import ProfileApi
-        from core.content_service import ContentService
+        other = await self.api.create_task({**self.payload, "name": "另一个任务"})
+        other_task = other.body["data"]
+        updated = await self.api.update_task(
+            task["id"],
+            {
+                **self.payload,
+                "items": [
+                    {"content_type": "zhihu_hot", "limit": 3},
+                    {"content_type": "douyin_hot"},
+                ],
+                "expected_revision": task["revision"],
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.body)
+        self.assertEqual(
+            [entry["content_type"] for entry in updated.body["data"]["items"]],
+            ["zhihu_hot", "douyin_hot"],
+        )
+        self.assertEqual(updated.body["data"]["items"][0]["limit"], 3)
+        untouched = await self.api.get_task(other_task["id"])
+        self.assertEqual(
+            [entry["content_type"] for entry in untouched.body["data"]["items"]],
+            ["daily_news"],
+        )
 
-        content = ContentService(self.sites)
-        await content.open()
-        try:
-            profile_api = ProfileApi(self.profiles, content, self.sites)
-            deleted = await profile_api.delete_profile(
-                self.profile.id,
-                {"expected_revision": self.profile.revision},
-            )
-        finally:
-            await content.close()
-        self.assertEqual(deleted.status_code, 409)
-        self.assertEqual(deleted.body["data"]["code"], "profile_referenced")
-        self.assertEqual(deleted.body["data"]["task_names"], ["API任务"])
+    async def test_preview_needs_plan_preview_and_candidate_site(self) -> None:
+        created = await self.api.create_task(self.payload)
+        task = created.body["data"]
+        unavailable = await self.api.preview_task(task["id"], {})
+        self.assertEqual(unavailable.status_code, 503)
+        self.assertEqual(unavailable.body["data"]["code"], "preview_unavailable")
+        self.image_unavailable = await self.api.generate_task_image(task["id"], {})
+        self.assertEqual(self.image_unavailable.status_code, 503)
+
+        previews = _StubPlanPreview(
+            sections=[{"content_type": "daily_news", "status": "ok", "items": ["a"]}],
+        )
+        self.api = TaskApi(self.tasks, self.sites, plan_preview=previews)
+        # 站点停用：候选为空，不请求上游。
+        disabled = await self.api.preview_task(task["id"], {})
+        self.assertEqual(disabled.status_code, 502)
+        self.assertEqual(disabled.body["data"]["code"], "content_unavailable")
+        self.assertEqual(previews.calls, [])
+
+        await self.sites.update_site(
+            self.site.id,
+            SiteUpdate(
+                name=self.site.name,
+                base_url=self.site.base_url,
+                enabled=True,
+                timeout_seconds=self.site.timeout_seconds,
+                expected_revision=self.site.revision,
+            ),
+        )
+        ok = await self.api.preview_task(task["id"], {"force_refresh": True})
+        self.assertEqual(ok.status_code, 200, ok.body)
+        data = ok.body["data"]
+        self.assertEqual(data["task_id"], task["id"])
+        self.assertEqual(data["task_name"], "API任务")
+        self.assertEqual(
+            [entry["content_type"] for entry in data["items"]],
+            ["daily_news"],
+        )
+        self.assertEqual(previews.calls, [(task["id"], self.site.id)])
+        self.assertEqual(previews.payloads[0]["force_refresh"], True)
+
+
+class _StubPlanPreview:
+    def __init__(self, *, sections) -> None:
+        self.sections = sections
+        self.calls: list[tuple[str, str]] = []
+        self.payloads: list[dict] = []
+
+    async def preview_site(self, payload, *, owner=None, site_id=None):
+        self.payloads.append(dict(payload))
+        self.calls.append((str(payload.get("task_id")), site_id))
+        return PlanPreviewResult(
+            200,
+            {
+                "status": "ok",
+                "data": {
+                    "task_id": payload.get("task_id"),
+                    "sections": self.sections,
+                    "outputs": {"text": "内容"},
+                },
+            },
+        )

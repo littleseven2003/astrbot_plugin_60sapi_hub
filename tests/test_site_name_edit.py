@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from core.site_api import SiteApi
-from core.sites import SiteService
+from core.sites import MAX_SITE_NAME_LENGTH, SiteService
 
 
 class SiteNameEditTest(unittest.IsolatedAsyncioTestCase):
@@ -147,7 +147,71 @@ class LongNamePrivacyTest(unittest.IsolatedAsyncioTestCase):
         )
         result = await self.api.create_site({"name": "", "base_url": base_url})
         self.assertEqual(result.status_code, 201, result.body)
-        self.assertEqual(result.body["data"]["name"], base_url)
+        name = result.body["data"]["name"]
+        # 名称有 40 字符上限：兜底名按上限截断，保留反向代理路径的开头。
+        self.assertLessEqual(len(name), MAX_SITE_NAME_LENGTH)
+        self.assertEqual(name, base_url[: MAX_SITE_NAME_LENGTH - 1].rstrip() + "…")
+        self.assertTrue(base_url.startswith(name[:-1]), name)
+
+    async def test_name_over_the_limit_is_rejected(self) -> None:
+        result = await self.api.create_site(
+            {"name": "超" * (MAX_SITE_NAME_LENGTH + 1), "base_url": "https://a.example.test"},
+        )
+        self.assertEqual(result.status_code, 400, result.body)
+        self.assertEqual(result.body["data"]["field"], "name")
+        self.assertIn(
+            f"长度不能超过 {MAX_SITE_NAME_LENGTH} 个字符",
+            result.body["message"],
+        )
+
+    async def test_legacy_over_long_name_can_still_be_saved_unchanged(self) -> None:
+        legacy_name = "旧库里的超长站点名称" * 6
+        await self.service.close()
+        with closing(sqlite3.connect(self.db_path)) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO sites (
+                    id, name, base_url, enabled, timeout_seconds,
+                    source_kind, bearer_token, revision, created_at, updated_at
+                ) VALUES (
+                    'legacy-long', ?, 'https://legacy.example.test',
+                    1, 10, 'public', NULL, 1,
+                    '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00'
+                )
+                """,
+                (legacy_name,),
+            )
+            connection.commit()
+        self.service = SiteService(self.db_path)
+        await self.service.open()
+        self.api = SiteApi(self.service)
+
+        current = (await self.api.get_site("legacy-long")).body["data"]
+        kept = await self.api.update_site(
+            "legacy-long",
+            {
+                "name": legacy_name,
+                "base_url": current["base_url"],
+                "enabled": current["enabled"],
+                "timeout_seconds": 12,
+                "expected_revision": current["revision"],
+            },
+        )
+        self.assertEqual(kept.status_code, 200, kept.body)
+        self.assertEqual(kept.body["data"]["name"], legacy_name)
+
+        renamed = await self.api.update_site(
+            "legacy-long",
+            {
+                "name": "改短的名字",
+                "base_url": current["base_url"],
+                "enabled": current["enabled"],
+                "timeout_seconds": 12,
+                "expected_revision": kept.body["data"]["revision"],
+            },
+        )
+        self.assertEqual(renamed.status_code, 200, renamed.body)
+        self.assertEqual(renamed.body["data"]["name"], "改短的名字")
 
     async def test_default_name_of_public_site_keeps_no_credentials(self) -> None:
         result = await self.api.create_site(

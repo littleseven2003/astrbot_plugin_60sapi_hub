@@ -35,8 +35,8 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 MIN_TIMEOUT_SECONDS = 1.0
 MAX_TIMEOUT_SECONDS = 120.0
 
-# 名称为空时用完整基础地址兜底，因此上限需覆盖合法长 URL。
-MAX_SITE_NAME_LENGTH = 2048
+# 名称设置时就限制长度；留空时用基础地址兜底并按同一上限截断。
+MAX_SITE_NAME_LENGTH = 40
 MAX_BASE_URL_LENGTH = 2048
 MAX_BEARER_TOKEN_LENGTH = 4096
 MAX_SITE_ID_LENGTH = 64
@@ -316,7 +316,11 @@ class SiteService:
                 )
 
             base_url = normalize_base_url(data.base_url)
-            name = normalize_site_name(data.name, fallback=base_url)
+            name = normalize_site_name(
+                data.name,
+                fallback=base_url,
+                keep=current.name,
+            )
             enabled = normalize_enabled(data.enabled)
             timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
             source_kind = normalize_source_kind(
@@ -404,7 +408,12 @@ def normalize_site_id(value: object) -> str:
     return normalized
 
 
-def normalize_site_name(value: object, fallback: str = "") -> str:
+def normalize_site_name(
+    value: object,
+    fallback: str = "",
+    *,
+    keep: str | None = None,
+) -> str:
     if value is None:
         value = ""
     if not isinstance(value, str):
@@ -412,10 +421,11 @@ def normalize_site_name(value: object, fallback: str = "") -> str:
     normalized = value.strip()
     if not normalized:
         # 名称为空时用已规范化的完整基础地址，保留反向代理路径。
-        normalized = fallback.strip()
+        normalized = _truncate_site_name(fallback.strip())
     if not normalized:
         raise SiteValidationError("name", "不能为空")
-    if len(normalized) > MAX_SITE_NAME_LENGTH:
+    # keep 是库里的既有名称：旧数据可能超过现在的上限，原样保存时不受影响。
+    if len(normalized) > MAX_SITE_NAME_LENGTH and normalized != keep:
         raise SiteValidationError(
             "name",
             f"长度不能超过 {MAX_SITE_NAME_LENGTH} 个字符",
@@ -428,6 +438,12 @@ def normalize_site_name(value: object, fallback: str = "") -> str:
     ):
         raise SiteValidationError("name", "不能包含换行或控制字符")
     return normalized
+
+
+def _truncate_site_name(value: str) -> str:
+    if len(value) <= MAX_SITE_NAME_LENGTH:
+        return value
+    return value[: MAX_SITE_NAME_LENGTH - 1].rstrip() + "…"
 
 
 def normalize_enabled(value: object) -> bool:

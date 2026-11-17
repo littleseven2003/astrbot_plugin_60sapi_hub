@@ -3594,6 +3594,12 @@ async function handleSave(event) {
   if (!elements.siteForm.reportValidity()) {
     return;
   }
+  const typedName = elements.name.value.trim();
+  if (typedName.length > elements.name.maxLength) {
+    showFormError(`站点名称最多 ${elements.name.maxLength} 个字符。`);
+    elements.name.focus();
+    return;
+  }
 
   state.saving = true;
   const idleLabel =

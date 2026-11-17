@@ -115,9 +115,6 @@ async function openPage(browser, port, options) {
           }
           return { sites: window.__siteFixtures.map((site) => ({ ...site })) };
         }
-        if (endpoint === "profiles") {
-          return { profiles: [] };
-        }
         if (endpoint === "tasks") {
           return { tasks: [] };
         }
@@ -308,7 +305,7 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
       footnotes: Array.from(document.querySelectorAll(".footnote"))
         .map((node) => node.closest(".view")?.dataset.view ?? ""),
     }));
-    check(copy.ledes.length === 8, "页面说明 8 处：" + copy.ledes.length);
+    check(copy.ledes.length === 6, "页面说明 6 处：" + copy.ledes.length);
     check(copy.ledes.every((text) => text.length <= 60),
       "说明文案不超过 60 字：" + copy.ledes.map((text) => text.length).join(","));
     check(copy.footnotes.length === 1 && copy.footnotes[0] === "sites",

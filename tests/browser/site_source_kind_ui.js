@@ -108,9 +108,6 @@ async function openPage(browser, port) {
         if (endpoint === "sites") {
           return { sites: window.__siteFixtures };
         }
-        if (endpoint === "profiles") {
-          return { profiles: [] };
-        }
         if (endpoint === "tasks") {
           return { tasks: [] };
         }

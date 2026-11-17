@@ -20,7 +20,6 @@
         <nav class="rail-nav" aria-label="工作区导航">
           <button type="button" class="nav-item is-active" data-view="sites" aria-current="page">站点管理</button>
           <button type="button" class="nav-item" data-view="preview">内容预览</button>
-          <button type="button" class="nav-item" data-view="profiles">内容组合</button>
           <button type="button" class="nav-item" data-view="tasks">推送任务</button>
           <button type="button" class="nav-item" data-view="executions">执行记录</button>
         </nav>
@@ -187,125 +186,6 @@
           </section>
         </section>
 
-        <section class="view" id="view-profiles" data-view="profiles" hidden>
-          <section class="profiles-section" aria-labelledby="profiles-heading">
-            <div class="section-head">
-              <h1 id="profiles-heading">内容组合</h1>
-              <span id="profile-count" class="count">0 个</span>
-            </div>
-            <p class="preview-lede">
-              定义栏目、顺序与每栏条数，不绑定站点。
-            </p>
-            <div class="profile-list-actions">
-              <button id="create-profile-button" class="button button-primary" type="button">
-                新增组合
-              </button>
-            </div>
-            <div id="profile-list-state" class="list-state" hidden>
-              <p id="profile-list-state-text"></p>
-              <button id="profile-retry-button" class="button button-secondary" type="button" hidden>
-                重试
-              </button>
-            </div>
-            <div id="profile-empty-state" class="profile-empty-state" hidden>
-              <p class="empty-title">还没有内容组合</p>
-              <p>创建一个组合，选择栏目顺序和每栏条数。</p>
-            </div>
-            <ul id="profiles-list" class="sites-list profiles-list" aria-busy="true"></ul>
-          </section>
-
-          <section class="profile-preview-section" aria-labelledby="profile-preview-heading">
-            <div class="section-head">
-              <h2 id="profile-preview-heading">组合预览</h2>
-              <span class="count">已保存组合</span>
-            </div>
-            <p class="preview-lede">
-              选择组合与本次预览使用的站点后主动获取；「刷新组合」会跳过缓存。
-            </p>
-            <div class="preview-controls">
-              <label class="field preview-site-field">
-                <span>内容组合</span>
-                <select id="profile-preview-select" disabled></select>
-              </label>
-              <label class="field preview-site-field">
-                <span>预览站点</span>
-                <select id="profile-preview-site" disabled></select>
-              </label>
-              <button id="profile-preview-button" class="button button-primary" type="button" disabled>
-                获取组合
-              </button>
-              <button id="profile-preview-refresh-button" class="button button-secondary" type="button" disabled>
-                刷新组合
-              </button>
-            </div>
-            <p id="profile-preview-hint" class="help" hidden></p>
-            <div id="profile-preview-status" class="status preview-status" role="status" aria-live="polite" hidden></div>
-            <div id="profile-preview-result" class="preview-result" hidden>
-              <div class="preview-meta">
-                <div class="preview-meta-item">
-                  <span class="preview-label">组合</span>
-                  <strong id="profile-preview-name"></strong>
-                </div>
-                <div class="preview-meta-item">
-                  <span class="preview-label">来源</span>
-                  <span id="profile-preview-source"></span>
-                </div>
-                <div class="preview-meta-item">
-                  <span class="preview-label">栏目</span>
-                  <span id="profile-preview-counts"></span>
-                </div>
-                <div class="preview-meta-item">
-                  <span class="preview-label">状态</span>
-                  <span id="profile-preview-state"></span>
-                </div>
-              </div>
-              <div id="profile-preview-sections" class="profile-sections"></div>
-              <div id="profile-output-panel" class="profile-output-panel">
-                <div class="profile-output-head">
-                  <fieldset class="profile-output-format" aria-label="输出格式">
-                    <legend>输出格式</legend>
-                    <label class="radio">
-                      <input type="radio" name="profile-output-format" value="text" checked />
-                      <span>纯文字</span>
-                    </label>
-                    <label class="radio">
-                      <input type="radio" name="profile-output-format" value="markdown" />
-                      <span>Markdown 源码</span>
-                    </label>
-                  </fieldset>
-                  <div class="profile-output-actions">
-                    <button id="profile-copy-button" class="button button-secondary" type="button" disabled>
-                      复制
-                    </button>
-                    <button id="profile-download-button" class="button button-secondary" type="button" disabled>
-                      下载 .txt
-                    </button>
-                  </div>
-                </div>
-                <textarea
-                  id="profile-output-text"
-                  class="profile-output-text"
-                  rows="14"
-                  readonly
-                  spellcheck="false"
-                  aria-label="当前组合文字输出"
-                ></textarea>
-                <p id="profile-output-hint" class="help" hidden></p>
-              </div>
-              <div class="profile-image-panel">
-                <div class="profile-image-head">
-                  <button id="profile-image-button" class="button button-primary" type="button" disabled>
-                    生成图片
-                  </button>
-                  <span id="profile-image-state" class="help" hidden></span>
-                </div>
-                <p id="profile-image-hint" class="help" hidden></p>
-                <div id="profile-image-pages" class="profile-image-pages"></div>
-              </div>
-            </div>
-          </section>
-        </section>
-
         <section class="view" id="view-tasks" data-view="tasks" hidden>
           <section class="tasks-section" aria-labelledby="tasks-heading">
             <div class="section-head">
@@ -315,7 +195,7 @@
             <p class="preview-lede">
               保存后保持未启用，需在任务卡片上显式启用；UMO 用对应会话的 /sid 获取。
             </p>
-            <div class="profile-list-actions">
+            <div class="list-actions">
               <button id="create-task-button" class="button button-primary" type="button">
                 新增任务
               </button>
@@ -326,11 +206,11 @@
                 重试
               </button>
             </div>
-            <div id="task-empty-state" class="profile-empty-state" hidden>
+            <div id="task-empty-state" class="task-empty-state" hidden>
               <p class="empty-title">还没有推送任务</p>
-              <p>创建一个任务，引用已有内容组合并填写独立的 UMO 白名单。保存不会发送消息。</p>
+              <p>创建一个任务，直接选择内容栏目与候选站点，并填写独立的 UMO 白名单。保存不会发送消息。</p>
             </div>
-            <ul id="tasks-list" class="sites-list profiles-list" aria-busy="true"></ul>
+            <ul id="tasks-list" class="sites-list tasks-list" aria-busy="true"></ul>
           </section>
         </section>
 
@@ -438,16 +318,26 @@
               </div>
             </div>
 
+            <div class="form-group">
+              <p class="form-group-title">内容</p>
             <label class="field">
               <span>任务名称</span>
               <input id="task-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览推送" />
             </label>
 
-            <label class="field">
-              <span>内容组合</span>
-              <select id="task-profile" required></select>
-              <small>必须引用已保存组合；可以引用站点已停用的组合，保存不会发送。</small>
-            </label>
+            <div class="field">
+              <span>内容栏目（顺序即推送顺序）</span>
+              <div class="task-item-picker-row">
+                <select id="task-item-picker" aria-label="可添加的栏目类型"></select>
+                <button id="task-item-add-button" class="button button-secondary" type="button">添加栏目</button>
+              </div>
+              <ul id="task-item-list" class="task-item-list"></ul>
+              <small>五个栏目各可添加一次；条数留空表示不限，填写后同样是一次推送里必须达到的下限。至少一个栏目才能保存。</small>
+            </div>
+            </div>
+
+            <div class="form-group">
+              <p class="form-group-title">候选站点</p>
 
             <div class="field">
               <span>候选站点（按顺序尝试）</span>
@@ -456,7 +346,7 @@
                 <button id="task-site-add-button" class="button button-secondary" type="button">添加</button>
               </div>
               <ul id="task-site-list" class="task-site-list"></ul>
-              <small>同一个站点必须同时满足全部栏目与条数才会被使用：组合里的条数在推送时是必须达到的下限，留空表示不限。按此顺序尝试，不足时自动切换下一个。</small>
+              <small>同一个站点必须同时提供全部栏目：栏目里的条数在推送时是必须达到的下限，留空表示不限。按此顺序尝试，不足时自动切换下一个。</small>
             </div>
 
             <div class="field">
@@ -465,7 +355,14 @@
               <p id="task-capability-result" class="site-test-result" role="status" hidden></p>
               <small>只检查是否有单个站点满足当前类别与条数，不发送消息。</small>
             </div>
+            <div class="field">
+              <button id="task-preview-form-button" class="button button-secondary" type="button" disabled>预览内容</button>
+              <small>预览使用已保存的任务配置，不发送消息；有未保存的修改时请先保存。</small>
+            </div>
+            </div>
 
+            <div class="form-group">
+              <p class="form-group-title">输出与计划</p>
             <label class="field">
               <span>输出方式</span>
               <select id="task-output-format">
@@ -525,7 +422,10 @@
               <p id="task-schedule-error" class="form-error" role="alert" hidden></p>
               <p id="task-schedule-saved" class="task-schedule-saved" hidden></p>
             </div>
+            </div>
 
+            <div class="form-group">
+              <p class="form-group-title">发送目标</p>
             <label class="field">
               <span>UMO 白名单（一行一个）</span>
               <textarea id="task-umos" rows="6" spellcheck="false" placeholder="aiocqhttp:GroupMessage:123456789&#10;aiocqhttp:FriendMessage:987654321"></textarea>
@@ -537,7 +437,7 @@
             </label>
 
             <p class="help">任务保存后仍保持未启用；保存本身不发送消息。后台“测试投递”是独立的手动操作；“定时计划”保存配置和理论时间；保存会自动停用，需显式启用后才实际调度。</p>
-
+            </div>
             <footer class="dialog-actions">
               <button id="task-cancel-button" class="button button-secondary" type="button">取消</button>
               <button id="task-save-button" class="button button-primary" type="submit">保存任务</button>
@@ -786,82 +686,66 @@
         </div>
       </dialog>
 
-      <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-dialog-title">
-        <form id="profile-form" class="form">
+      <dialog id="task-preview-dialog" class="dialog dialog-wide" aria-labelledby="task-preview-title">
+        <div id="task-preview-root" class="form">
           <header class="dialog-head">
-            <h2 id="profile-dialog-title">新增组合</h2>
-            <button id="profile-close-dialog-button" class="icon-button" type="button" aria-label="关闭">
+            <h2 id="task-preview-title">预览内容</h2>
+            <button id="task-preview-close-button" class="icon-button" type="button" aria-label="关闭">
               ×
             </button>
           </header>
-
-          <div id="profile-form-error" class="form-error" role="alert" hidden></div>
-
-          <div id="profile-write-uncertain" class="uncertain" role="alert" hidden>
-            <h3>保存结果未确认</h3>
-            <p id="profile-write-uncertain-text" class="uncertain-text"></p>
-            <div class="uncertain-actions">
-              <button id="profile-recheck-button" class="button button-primary" type="button">
-                重新读取最新组合
-              </button>
-              <button id="profile-review-close-button" class="button button-secondary" type="button" hidden>
-                关闭并查看最新组合
-              </button>
+          <p id="task-preview-status" class="status preview-status" role="status" aria-live="polite" hidden></p>
+          <div id="task-preview-meta" class="preview-meta"></div>
+          <div id="task-preview-sections" class="preview-sections"></div>
+          <div id="task-preview-failed" class="preview-failed" hidden></div>
+          <div class="preview-output-panel">
+            <div class="preview-output-head">
+              <fieldset class="preview-output-format" aria-label="输出格式">
+                <legend>输出格式</legend>
+                <label class="radio">
+                  <input type="radio" name="task-preview-output-format" value="text" checked />
+                  <span>纯文字</span>
+                </label>
+                <label class="radio">
+                  <input type="radio" name="task-preview-output-format" value="markdown" />
+                  <span>Markdown 源码</span>
+                </label>
+              </fieldset>
+              <div class="preview-output-actions">
+                <button id="task-preview-copy-button" class="button button-secondary" type="button" disabled>
+                  复制
+                </button>
+                <button id="task-preview-download-button" class="button button-secondary" type="button" disabled>
+                  下载 .txt
+                </button>
+              </div>
             </div>
+            <textarea
+              id="task-preview-output-text"
+              class="preview-output-text"
+              rows="12"
+              readonly
+              spellcheck="false"
+              aria-label="本次预览的文字输出"
+            ></textarea>
+            <p id="task-preview-output-hint" class="help" hidden></p>
           </div>
-
-          <label class="field">
-            <span>组合名称</span>
-            <input id="profile-name" name="name" type="text" maxlength="80" required autocomplete="off" placeholder="例如：每日速览" />
-          </label>
-
-
-          <fieldset class="profile-items-fieldset">
-            <legend>栏目、顺序与每栏条数</legend>
-            <p class="help">
-              至少选择一个栏目；每栏条数留空表示不限，最多 1000 条。预览最多展示这么多条；
-              推送和聊天查询选择站点时，它同时是该站点必须达到的条数，达不到就换下一个候选。
-              当前五类接口没有可配置参数。
-            </p>
-            <div id="profile-item-editor" class="profile-item-editor"></div>
-          </fieldset>
-
-          <footer class="dialog-actions">
-            <button id="profile-cancel-button" class="button button-secondary" type="button">
-              取消
-            </button>
-            <button id="profile-save-button" class="button button-primary" type="submit">
-              保存组合
-            </button>
-          </footer>
-        </form>
-      </dialog>
-
-      <dialog id="profile-delete-dialog" class="dialog dialog-small" aria-labelledby="profile-delete-title">
-        <div class="form">
-          <header class="dialog-head">
-            <h2 id="profile-delete-title">删除内容组合</h2>
-          </header>
-          <p id="profile-delete-message"></p>
-          <div id="profile-delete-error" class="form-error" role="alert" hidden></div>
-          <div id="profile-delete-uncertain" class="uncertain" role="alert" hidden>
-            <h3>删除结果未确认</h3>
-            <p id="profile-delete-uncertain-text" class="uncertain-text"></p>
-            <div class="uncertain-actions">
-              <button id="profile-delete-recheck-button" class="button button-primary" type="button">
-                重新读取最新组合
+          <div class="preview-image-panel">
+            <div class="preview-image-head">
+              <button id="task-preview-image-button" class="button button-primary" type="button" disabled>
+                生成长图
               </button>
-              <button id="profile-delete-review-close-button" class="button button-secondary" type="button" hidden>
-                关闭并查看最新组合
-              </button>
+              <span id="task-preview-image-state" class="help" hidden></span>
             </div>
+            <p id="task-preview-image-hint" class="help" hidden></p>
+            <div id="task-preview-image-pages" class="preview-image-pages"></div>
           </div>
           <footer class="dialog-actions">
-            <button id="profile-delete-cancel-button" class="button button-secondary" type="button">
-              取消
+            <button id="task-preview-refresh-button" class="button button-secondary" type="button">
+              重新获取
             </button>
-            <button id="profile-delete-confirm-button" class="button button-danger" type="button">
-              删除
+            <button id="task-preview-done-button" class="button button-primary" type="button">
+              关闭
             </button>
           </footer>
         </div>
@@ -891,30 +775,30 @@
       </dialog>
 
       <dialog
-        id="profile-image-viewer"
-        class="profile-image-viewer"
-        aria-labelledby="profile-image-viewer-title"
-        aria-describedby="profile-image-viewer-hint"
+        id="preview-image-viewer"
+        class="preview-image-viewer"
+        aria-labelledby="preview-image-viewer-title"
+        aria-describedby="preview-image-viewer-hint"
       >
-        <header class="profile-image-viewer-head">
-          <h2 id="profile-image-viewer-title">栏目长图</h2>
-          <button id="profile-image-viewer-close" class="button button-secondary" type="button">
+        <header class="preview-image-viewer-head">
+          <h2 id="preview-image-viewer-title">栏目长图</h2>
+          <button id="preview-image-viewer-close" class="button button-secondary" type="button">
             关闭
           </button>
         </header>
-        <div id="profile-image-viewer-body" class="profile-image-viewer-body" tabindex="0">
-          <img id="profile-image-viewer-img" class="profile-image-viewer-img" alt="" width="900" height="0" />
+        <div id="preview-image-viewer-body" class="preview-image-viewer-body" tabindex="0">
+          <img id="preview-image-viewer-img" class="preview-image-viewer-img" alt="" width="900" height="0" />
         </div>
-        <footer class="profile-image-viewer-foot">
-          <p id="profile-image-viewer-hint" class="profile-image-viewer-hint">
+        <footer class="preview-image-viewer-foot">
+          <p id="preview-image-viewer-hint" class="preview-image-viewer-hint">
             已按屏幕宽度显示完整长图；需要细节时点“原始尺寸”。
           </p>
-          <div class="profile-image-viewer-actions">
-            <button id="profile-image-viewer-zoom" class="button button-secondary" type="button"
+          <div class="preview-image-viewer-actions">
+            <button id="preview-image-viewer-zoom" class="button button-secondary" type="button"
                     aria-pressed="false">
               原始尺寸
             </button>
-            <button id="profile-image-viewer-download" class="button button-secondary" type="button">
+            <button id="preview-image-viewer-download" class="button button-secondary" type="button">
               下载 PNG
             </button>
           </div>

@@ -2,7 +2,7 @@
  * 任务候选站点与站点五类测试的页面逻辑回归。
  *
  * 真实 Chromium 加载 views/sites/index.html + app.js，只替换宿主 bridge。
- * 验证：候选站点添加/排序/移除进入保存载荷、能力测试打到独立路由、
+ * 验证：候选站点添加/排序/移除进入保存载荷、栏目条数改动让旧能力测试结论失效、能力测试打到独立路由、
  * 站点“测试全部五类”逐一请求五类接口。
  *
  * 这是桩 bridge 的页面逻辑验证，不代表真实 AstrBot 后台/数据库往返，
@@ -49,23 +49,18 @@ const SITES = [
     has_bearer_token: true, revision: 1, updated_at: "" },
 ];
 
-const PROFILES = [{
-  id: "profile-1", name: "组合一", site_id: "site-a", site_enabled: true,
-  revision: 1, items: [{ content_type: "daily_news", params: {}, limit: 2 }],
-  created_at: "", updated_at: "",
-}, {
-  id: "profile-2", name: "组合二", site_id: "site-b", site_enabled: true,
-  revision: 1, items: [{ content_type: "daily_news", params: {}, limit: 2 }],
-  created_at: "", updated_at: "",
-}];
-
 const TASKS = [{
-  id: "task-1", name: "任务一", profile_id: "profile-1", profile_name: "组合一",
-  site_id: "site-a", site_enabled: true, output_format: "text",
-  output_label: "纯文字", umos: ["aiocqhttp:GroupMessage:g:1"],
+  id: "task-1", name: "任务一",
+  items: [
+    { content_type: "daily_news", label: "每日新闻", limit: 2 },
+    { content_type: "zhihu_hot", label: "知乎热榜", limit: null },
+  ],
+  output_format: "text", output_label: "纯文字",
+  umos: ["aiocqhttp:GroupMessage:g:1"],
   enabled: false, revision: 2, created_at: "", updated_at: "",
   schedule: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
   schedule_raw: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
+  schedule_error: null,
   sites: [{ id: "site-a", name: "站点A", enabled: true }],
 }];
 
@@ -100,7 +95,6 @@ async function openPage(browser, port, overrides = {}) {
       },
       apiGet: async (endpoint) => {
         if (endpoint === "sites") return { sites: fixtures.sites };
-        if (endpoint === "profiles") return { profiles: fixtures.profiles };
         if (endpoint === "tasks") {
           const task = { ...fixtures.tasks[0] };
           task.sites = window.__taskSites.map((id) => ({
@@ -120,15 +114,12 @@ async function openPage(browser, port, overrides = {}) {
         if (endpoint.endsWith("/enable") || endpoint.endsWith("/disable")) {
           return { task_id: "task-1", enabled: true, revision: 3 };
         }
-        if (endpoint.endsWith("/enable") || endpoint.endsWith("/disable")) {
-          return { task_id: "task-1", enabled: true, revision: 3 };
-        }
         if (endpoint.endsWith("/test-preview")) {
           // 全站停用时的手动确认：明确这次只发异常提示。
           return {
             task_id: "task-1", task_name: "任务一", task_revision: 2,
-            profile_id: "profile-1", profile_name: "组合一",
-            profile_revision: 1, site_id: "site-a", site_name: "站点A",
+            items: fixtures.tasks[0].items,
+            plan_revision: 4, site_id: "site-a", site_name: "站点A",
             site_revision: 3, site_enabled: false, output_format: "text",
             output_label: "纯文字", can_deliver: true, alert_only: true,
             reason: "content_unavailable",
@@ -183,7 +174,7 @@ async function openPage(browser, port, overrides = {}) {
         return {};
       },
     };
-  }, { sites: SITES, profiles: PROFILES, tasks: overrides.tasks || TASKS });
+  }, { sites: SITES, tasks: overrides.tasks || TASKS });
   await page.goto("http://127.0.0.1:" + port + "/index.html", {
     waitUntil: "domcontentloaded",
   });
@@ -238,7 +229,7 @@ async function openPage(browser, port, overrides = {}) {
     await page.waitForFunction(
       () => document.querySelectorAll("#task-site-list .task-site-row").length === 2,
     );
-    await page.getByRole("button", { name: "上移" }).nth(1).click();
+    await page.locator("#task-site-list button", { hasText: "上移" }).nth(1).click();
     rows = await page.$$eval("#task-site-list .task-site-name",
       (nodes) => nodes.map((node) => node.textContent));
     check(rows[0] === "站点B" && rows[1] === "站点A", "上移后顺序：" + rows);
@@ -284,7 +275,7 @@ async function openPage(browser, port, overrides = {}) {
     );
     check(true, "撤销改动后能力测试恢复可用");
 
-    // 在途更换组合（成功响应）：旧结论不得覆盖“先保存”，按钮保持禁用。
+    // 在途修改栏目条数（成功响应）：旧结论不得覆盖“先保存”，按钮保持禁用。
     await page.evaluate(() => {
       window.__capabilityGate = new Promise((resolve) => {
         window.__releaseCapability = resolve;
@@ -295,7 +286,7 @@ async function openPage(browser, port, overrides = {}) {
     await page.click("#task-capability-test-button");
     await page.waitForFunction(
       (n) => (window.__capabilityDoneCount || 0) === n, doneBefore);
-    await page.selectOption("#task-profile", "profile-2");
+    await page.fill("#task-item-list .task-item-limit-input", "5");
     await page.evaluate(() => {
       window.__releaseCapability();
       window.__capabilityGate = null;
@@ -305,10 +296,10 @@ async function openPage(browser, port, overrides = {}) {
     await page.waitForFunction(() => document
       .querySelector("#task-capability-result").textContent.includes("尚未保存"));
     check(await page.isDisabled("#task-capability-test-button"),
-      "在途改组合（成功）后按钮应保持禁用");
+      "在途改栏目（成功）后按钮应保持禁用");
 
-    // 恢复为已保存组合后可以再次测试；随后验证失败响应同样被丢弃。
-    await page.selectOption("#task-profile", "profile-1");
+    // 恢复为已保存栏目后可以再次测试；随后验证失败响应同样被丢弃。
+    await page.fill("#task-item-list .task-item-limit-input", "2");
     await page.waitForFunction(
       () => !document.querySelector("#task-capability-test-button").disabled);
     await page.evaluate(() => {
@@ -321,7 +312,7 @@ async function openPage(browser, port, overrides = {}) {
     await page.click("#task-capability-test-button");
     await page.waitForFunction(
       (n) => (window.__capabilityDoneCount || 0) === n, doneBefore);
-    await page.selectOption("#task-profile", "profile-2");
+    await page.fill("#task-item-list .task-item-limit-input", "5");
     await page.evaluate(() => {
       window.__releaseCapability();
       window.__capabilityGate = null;
@@ -332,12 +323,12 @@ async function openPage(browser, port, overrides = {}) {
     await page.waitForFunction(() => document
       .querySelector("#task-capability-result").textContent.includes("尚未保存"));
     check(await page.isDisabled("#task-capability-test-button"),
-      "在途改组合（失败）后按钮应保持禁用且提示未被覆盖");
+      "在途改栏目（失败）后按钮应保持禁用且提示未被覆盖");
     const failures = await page.evaluate(() => window.__capabilityFailures || 0);
     check(failures > 0, "延迟失败桩确实触发过请求失败：" + failures);
 
     // 撤销修改：警告清除、按钮可用，可再次测试。
-    await page.selectOption("#task-profile", "profile-1");
+    await page.fill("#task-item-list .task-item-limit-input", "2");
     await page.waitForFunction(() =>
       !document.querySelector("#task-capability-test-button").disabled);
     const clearedHint = await page.textContent("#task-capability-result");

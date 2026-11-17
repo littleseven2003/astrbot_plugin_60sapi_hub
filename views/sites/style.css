@@ -658,8 +658,7 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
-.credential-section,
-.profile-items-fieldset {
+.credential-section {
   margin: 0;
   padding: 12px 14px;
   border: 1px solid var(--line);
@@ -668,8 +667,7 @@ textarea:focus-visible {
 }
 
 .credential-section legend,
-.profile-items-fieldset legend,
-.profile-output-format legend {
+.preview-output-format legend {
   padding: 0 6px;
   color: var(--ink-2);
   font-size: 12.5px;
@@ -825,26 +823,6 @@ textarea:focus-visible {
   background: var(--line-strong);
 }
 
-.profile-row .badge[data-enabled=true] {
-  border-color: var(--ok-line);
-  background: var(--ok-soft);
-  color: var(--ok);
-}
-
-.profile-row .badge[data-enabled=true]::before {
-  background: var(--ok);
-}
-
-.profile-row .badge[data-enabled=false] {
-  border-color: var(--danger-line);
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.profile-row .badge[data-enabled=false]::before {
-  background: var(--danger-line);
-}
-
 .count {
   padding: 3px 10px;
   border: 1px solid var(--line);
@@ -926,7 +904,7 @@ textarea:focus-visible {
   font-weight: 650;
 }
 
-.profile-empty-state {
+.task-empty-state {
   margin: 12px 0 0;
   padding: 18px;
   border: 1px dashed var(--line);
@@ -950,11 +928,9 @@ textarea:focus-visible {
 
 .list-section,
 .preview-section,
-.profiles-section,
 .tasks-section,
 .delivery-section,
-.schedule-runs-section,
-.profile-preview-section {
+.schedule-runs-section {
   min-width: 0;
   padding: 20px 22px;
   border: 1px solid var(--line);
@@ -991,7 +967,7 @@ textarea:focus-visible {
   font-size: 13.5px;
 }
 
-.profile-list-actions {
+.list-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -1181,20 +1157,16 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.profile-card-actions {
+.task-card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.profile-card-actions .button {
+.task-card-actions .button {
   min-height: 34px;
   padding: 8px 12px;
   font-size: 12.5px;
-}
-
-.profile-summary {
-  color: var(--ink-2);
 }
 
 .task-disabled {
@@ -1358,28 +1330,28 @@ textarea:focus-visible {
   font-size: 11.5px;
 }
 
-/* ---------- 组合预览与输出 ---------- */
+/* ---------- 预览内容与输出 ---------- */
 
-.profile-sections {
+.preview-sections {
   display: flex;
   flex-direction: column;
   gap: 12px;
   margin: 14px 0 0;
 }
 
-.profile-section {
+.preview-block {
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--white);
 }
 
-.profile-section[data-status=error] {
+.preview-block[data-status=error] {
   border-color: var(--danger-line);
   background: var(--danger-soft);
 }
 
-.profile-section-head {
+.preview-block-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1387,19 +1359,19 @@ textarea:focus-visible {
   gap: 10px;
 }
 
-.profile-section-head h3 {
+.preview-block-head h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 650;
 }
 
-.profile-section-error {
+.preview-block-error {
   margin: 8px 0 0;
   color: var(--danger);
   font-size: 12.5px;
 }
 
-.profile-output-panel {
+.preview-output-panel {
   margin-top: 14px;
   padding: 14px;
   border: 1px solid var(--line);
@@ -1407,7 +1379,7 @@ textarea:focus-visible {
   background: var(--white);
 }
 
-.profile-output-head {
+.preview-output-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1416,7 +1388,7 @@ textarea:focus-visible {
   margin-bottom: 10px;
 }
 
-.profile-output-format {
+.preview-output-format {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1426,19 +1398,19 @@ textarea:focus-visible {
   border: 0;
 }
 
-.profile-output-actions {
+.preview-output-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.profile-output-actions .button {
+.preview-output-actions .button {
   min-height: 34px;
   padding: 8px 12px;
   font-size: 12.5px;
 }
 
-.profile-output-text {
+.preview-output-text {
   width: 100%;
   min-height: 220px;
   padding: 12px;
@@ -1452,11 +1424,11 @@ textarea:focus-visible {
   resize: vertical;
 }
 
-.profile-output-text:focus {
+.preview-output-text:focus {
   border-color: var(--focus);
 }
 
-.profile-image-panel {
+.preview-image-panel {
   margin-top: 14px;
   padding: 14px;
   border: 1px solid var(--line);
@@ -1464,21 +1436,21 @@ textarea:focus-visible {
   background: var(--surface-2);
 }
 
-.profile-image-head {
+.preview-image-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
 
-.profile-image-pages {
+.preview-image-pages {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   margin-top: 12px;
 }
 
-.profile-image-page {
+.preview-image-page {
   margin: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1486,13 +1458,13 @@ textarea:focus-visible {
   overflow: hidden;
 }
 
-.profile-image-page img {
+.preview-image-page img {
   display: block;
   width: 100%;
   height: auto;
 }
 
-.profile-image-page figcaption {
+.preview-image-page figcaption {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1504,20 +1476,20 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
-.profile-image-page .button {
+.preview-image-page .button {
   min-height: 32px;
   padding: 6px 10px;
   font-size: 12px;
 }
 
-.profile-item-editor {
+.task-item-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin-top: 8px;
 }
 
-.profile-editor-row {
+.task-item-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1528,7 +1500,7 @@ textarea:focus-visible {
   background: var(--white);
 }
 
-.profile-editor-toggle {
+.task-item-label {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -1536,24 +1508,24 @@ textarea:focus-visible {
   cursor: pointer;
 }
 
-.profile-editor-toggle input {
+.task-item-label input {
   margin: 0;
   accent-color: var(--blue);
 }
 
-.profile-order-actions {
+.task-item-actions {
   display: inline-flex;
   gap: 6px;
   margin-left: auto;
 }
 
-.profile-order-actions .button {
+.task-item-actions .button {
   min-height: 30px;
   padding: 5px 9px;
   font-size: 12px;
 }
 
-.profile-limit-input {
+.task-item-limit-input {
   width: 92px;
 }
 
@@ -1775,11 +1747,9 @@ dialog.dialog button {
 
   .list-section,
   .preview-section,
-  .profiles-section,
   .tasks-section,
   .delivery-section,
-  .schedule-runs-section,
-  .profile-preview-section {
+    .schedule-runs-section {
     padding: 16px 14px;
     border-radius: var(--radius-card);
   }
@@ -1806,7 +1776,7 @@ dialog.dialog button {
   }
 
   .site-actions .button,
-  .profile-card-actions .button {
+  .task-card-actions .button {
     min-height: 40px;
     padding: 9px 13px;
     font-size: 12.5px;
@@ -1833,12 +1803,12 @@ dialog.dialog button {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .profile-order-actions {
+  .task-item-actions {
     margin-left: 0;
   }
 
-  .profile-output-actions .button,
-  .profile-image-page .button {
+  .preview-output-actions .button,
+  .preview-image-page .button {
     min-height: 40px;
   }
 
@@ -1884,11 +1854,11 @@ dialog.dialog button {
 
 /* ---------- 列表变体与编辑器容器（保持既有 class 名） ---------- */
 
-.profiles-list {
+.tasks-list {
   gap: 12px;
 }
 
-.profile-card {
+.task-card {
   border-radius: var(--radius-card);
 }
 
@@ -2010,7 +1980,7 @@ dialog.dialog button {
   }
 }
 
-.profile-image-panel {
+.preview-image-panel {
   margin-top: 14px;
   padding: 14px;
   border: 1px solid var(--line);
@@ -2018,14 +1988,14 @@ dialog.dialog button {
   background: var(--surface-2);
 }
 
-.profile-image-head {
+.preview-image-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
 
-.profile-image-pages {
+.preview-image-pages {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(480px, 100%), 1fr));
   align-items: start;
@@ -2033,7 +2003,7 @@ dialog.dialog button {
   margin-top: 12px;
 }
 
-.profile-image-page {
+.preview-image-page {
   margin: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -2041,19 +2011,19 @@ dialog.dialog button {
   overflow: hidden;
 }
 
-.profile-image-page img {
+.preview-image-page img {
   display: block;
   width: 100%;
   height: auto;
   cursor: zoom-in;
 }
 
-.profile-image-page img:focus-visible {
+.preview-image-page img:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 
-.profile-image-page figcaption {
+.preview-image-page figcaption {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2065,13 +2035,13 @@ dialog.dialog button {
   font-size: 12px;
 }
 
-.profile-image-page .button {
+.preview-image-page .button {
   min-height: 32px;
   padding: 6px 10px;
   font-size: 12px;
 }
 
-.profile-image-actions {
+.preview-image-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -2079,13 +2049,13 @@ dialog.dialog button {
   border-top: 1px solid var(--line);
 }
 
-.profile-image-actions .button {
+.preview-image-actions .button {
   flex: 1 1 auto;
   min-width: 0;
 }
 
 /* 栏目长图放大查看：按 900px 原始尺寸显示，窄屏横向滑动查看。 */
-.profile-image-viewer {
+.preview-image-viewer {
   width: min(940px, calc(100vw - 24px));
   height: min(calc(100vh - 24px), 1000px);
   height: min(calc(100dvh - 24px), 1000px);
@@ -2099,16 +2069,16 @@ dialog.dialog button {
   overflow: hidden;
 }
 
-.profile-image-viewer[open] {
+.preview-image-viewer[open] {
   display: flex;
   flex-direction: column;
 }
 
-.profile-image-viewer::backdrop {
+.preview-image-viewer::backdrop {
   background: rgba(15, 23, 36, 0.62);
 }
 
-.profile-image-viewer-head {
+.preview-image-viewer-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2117,13 +2087,13 @@ dialog.dialog button {
   border-bottom: 1px solid var(--line);
 }
 
-.profile-image-viewer-head h2 {
+.preview-image-viewer-head h2 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
 }
 
-.profile-image-viewer-body {
+.preview-image-viewer-body {
   flex: 1 1 auto;
   min-height: 0;
   padding: 12px;
@@ -2133,12 +2103,12 @@ dialog.dialog button {
   -webkit-overflow-scrolling: touch;
 }
 
-.profile-image-viewer-body:focus-visible {
+.preview-image-viewer-body:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 
-.profile-image-viewer-img {
+.preview-image-viewer-img {
   display: block;
   /* 默认按可用宽度显示：窄屏也能一眼读完整行。 */
   width: 100%;
@@ -2149,12 +2119,12 @@ dialog.dialog button {
 }
 
 /* 原始尺寸：按 900px 显示，横向滚动查看细节。 */
-.profile-image-viewer-body.is-actual .profile-image-viewer-img {
+.preview-image-viewer-body.is-actual .preview-image-viewer-img {
   width: 900px;
   max-width: none;
 }
 
-.profile-image-viewer-foot {
+.preview-image-viewer-foot {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2164,7 +2134,7 @@ dialog.dialog button {
   border-top: 1px solid var(--line);
 }
 
-.profile-image-viewer-hint {
+.preview-image-viewer-hint {
   flex: 1 1 220px;
   margin: 0;
   color: var(--sub);
@@ -2172,8 +2142,8 @@ dialog.dialog button {
 }
 
 /* 浮层打开期间锁住页面滚动；关闭后由脚本移除并恢复位置。 */
-.profile-image-viewer-open,
-.profile-image-viewer-open body {
+.preview-image-viewer-open,
+.preview-image-viewer-open body {
   overflow: hidden;
 }
 
@@ -2578,5 +2548,169 @@ dialog.dialog button {
 @media (prefers-reduced-motion: reduce) {
   .site-test-chip[data-state="running"] .site-test-icon svg {
     animation: none;
+  }
+}
+
+/* ---------- 任务栏目编辑器、任务卡片与内容预览 ---------- */
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+}
+
+.form-group-title {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.task-item-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.task-item-picker-row select {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.task-item-picker-row .button {
+  flex: 0 0 auto;
+  min-height: 38px;
+}
+
+.task-item-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--sub);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.task-item-label {
+  flex: 1 1 120px;
+  display: block;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: default;
+  overflow-wrap: anywhere;
+}
+
+.task-item-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  color: var(--sub);
+  font-size: 12.5px;
+}
+
+.task-item-limit-input {
+  width: 92px;
+}
+
+.task-item-limit-text {
+  color: var(--sub);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.task-item-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--sub);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.task-card-items,
+.task-card-sites {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.task-card-sites {
+  color: var(--sub);
+}
+
+.preview-failed {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger-line);
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.preview-failed ul {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+}
+
+.preview-image-state {
+  color: var(--sub);
+  font-size: 12.5px;
+}
+
+.dialog-wide {
+  max-width: min(940px, calc(100vw - 32px));
+}
+
+@media (max-width: 480px) {
+  .form-group {
+    padding: 12px;
+  }
+
+  .task-item-row {
+    align-items: stretch;
+    padding: 10px;
+  }
+
+  .task-item-picker-row select,
+  .task-item-picker-row .button {
+    flex: 1 1 100%;
+  }
+
+  .task-item-limit {
+    flex: 1 1 auto;
+  }
+
+  .task-item-limit-input {
+    width: 100%;
+    max-width: 120px;
+  }
+
+  .task-item-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .task-item-actions .button {
+    min-height: 40px;
+    padding: 8px 12px;
+  }
+
+  .dialog-wide {
+    max-width: calc(100vw - 16px);
   }
 }

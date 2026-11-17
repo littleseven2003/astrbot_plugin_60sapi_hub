@@ -175,63 +175,36 @@ const elements = {
   ),
   deleteCancelButton: document.getElementById("delete-cancel-button"),
   deleteConfirmButton: document.getElementById("delete-confirm-button"),
-  profileCount: document.getElementById("profile-count"),
-  profilesList: document.getElementById("profiles-list"),
-  profileListState: document.getElementById("profile-list-state"),
-  profileListStateText: document.getElementById("profile-list-state-text"),
-  profileRetryButton: document.getElementById("profile-retry-button"),
-  profileEmptyState: document.getElementById("profile-empty-state"),
-  createProfileButton: document.getElementById("create-profile-button"),
-  profileDialog: document.getElementById("profile-dialog"),
-  profileForm: document.getElementById("profile-form"),
-  profileDialogTitle: document.getElementById("profile-dialog-title"),
-  profileName: document.getElementById("profile-name"),
-  profilePreviewSite: document.getElementById("profile-preview-site"),
-  profileItemEditor: document.getElementById("profile-item-editor"),
-  profileFormError: document.getElementById("profile-form-error"),
-  profileWriteUncertain: document.getElementById("profile-write-uncertain"),
-  profileWriteUncertainText: document.getElementById("profile-write-uncertain-text"),
-  profileRecheckButton: document.getElementById("profile-recheck-button"),
-  profileReviewCloseButton: document.getElementById("profile-review-close-button"),
-  profileCloseDialogButton: document.getElementById("profile-close-dialog-button"),
-  profileCancelButton: document.getElementById("profile-cancel-button"),
-  profileSaveButton: document.getElementById("profile-save-button"),
-  profileDeleteDialog: document.getElementById("profile-delete-dialog"),
-  profileDeleteMessage: document.getElementById("profile-delete-message"),
-  profileDeleteError: document.getElementById("profile-delete-error"),
-  profileDeleteUncertain: document.getElementById("profile-delete-uncertain"),
-  profileDeleteUncertainText: document.getElementById("profile-delete-uncertain-text"),
-  profileDeleteRecheckButton: document.getElementById("profile-delete-recheck-button"),
-  profileDeleteReviewCloseButton: document.getElementById("profile-delete-review-close-button"),
-  profileDeleteCancelButton: document.getElementById("profile-delete-cancel-button"),
-  profileDeleteConfirmButton: document.getElementById("profile-delete-confirm-button"),
-  profilePreviewSelect: document.getElementById("profile-preview-select"),
-  profilePreviewButton: document.getElementById("profile-preview-button"),
-  profilePreviewRefreshButton: document.getElementById("profile-preview-refresh-button"),
-  profilePreviewHint: document.getElementById("profile-preview-hint"),
-  profilePreviewStatus: document.getElementById("profile-preview-status"),
-  profilePreviewResult: document.getElementById("profile-preview-result"),
-  profilePreviewName: document.getElementById("profile-preview-name"),
-  profilePreviewSource: document.getElementById("profile-preview-source"),
-  profilePreviewCounts: document.getElementById("profile-preview-counts"),
-  profilePreviewState: document.getElementById("profile-preview-state"),
-  profilePreviewSections: document.getElementById("profile-preview-sections"),
-  profileCopyButton: document.getElementById("profile-copy-button"),
-  profileDownloadButton: document.getElementById("profile-download-button"),
-  profileOutputText: document.getElementById("profile-output-text"),
-  profileOutputHint: document.getElementById("profile-output-hint"),
-  profileImageButton: document.getElementById("profile-image-button"),
-  profileImageState: document.getElementById("profile-image-state"),
-  profileImageHint: document.getElementById("profile-image-hint"),
-  profileImagePages: document.getElementById("profile-image-pages"),
-  profileImageViewer: document.getElementById("profile-image-viewer"),
-  profileImageViewerTitle: document.getElementById("profile-image-viewer-title"),
-  profileImageViewerBody: document.getElementById("profile-image-viewer-body"),
-  profileImageViewerImg: document.getElementById("profile-image-viewer-img"),
-  profileImageViewerHint: document.getElementById("profile-image-viewer-hint"),
-  profileImageViewerClose: document.getElementById("profile-image-viewer-close"),
-  profileImageViewerDownload: document.getElementById("profile-image-viewer-download"),
-  profileImageViewerZoom: document.getElementById("profile-image-viewer-zoom"),
+  taskItemPicker: document.getElementById("task-item-picker"),
+  taskItemAddButton: document.getElementById("task-item-add-button"),
+  taskItemList: document.getElementById("task-item-list"),
+  taskPreviewFormButton: document.getElementById("task-preview-form-button"),
+  taskPreviewDialog: document.getElementById("task-preview-dialog"),
+  taskPreviewTitle: document.getElementById("task-preview-title"),
+  taskPreviewRoot: document.getElementById("task-preview-root"),
+  taskPreviewStatus: document.getElementById("task-preview-status"),
+  taskPreviewMeta: document.getElementById("task-preview-meta"),
+  taskPreviewSections: document.getElementById("task-preview-sections"),
+  taskPreviewFailed: document.getElementById("task-preview-failed"),
+  taskPreviewOutputText: document.getElementById("task-preview-output-text"),
+  taskPreviewOutputHint: document.getElementById("task-preview-output-hint"),
+  taskPreviewCopyButton: document.getElementById("task-preview-copy-button"),
+  taskPreviewDownloadButton: document.getElementById("task-preview-download-button"),
+  taskPreviewImageButton: document.getElementById("task-preview-image-button"),
+  taskPreviewImageState: document.getElementById("task-preview-image-state"),
+  taskPreviewImageHint: document.getElementById("task-preview-image-hint"),
+  taskPreviewImagePages: document.getElementById("task-preview-image-pages"),
+  taskPreviewRefreshButton: document.getElementById("task-preview-refresh-button"),
+  taskPreviewDoneButton: document.getElementById("task-preview-done-button"),
+  taskPreviewCloseButton: document.getElementById("task-preview-close-button"),
+  previewImageViewer: document.getElementById("preview-image-viewer"),
+  previewImageViewerTitle: document.getElementById("preview-image-viewer-title"),
+  previewImageViewerBody: document.getElementById("preview-image-viewer-body"),
+  previewImageViewerImg: document.getElementById("preview-image-viewer-img"),
+  previewImageViewerHint: document.getElementById("preview-image-viewer-hint"),
+  previewImageViewerClose: document.getElementById("preview-image-viewer-close"),
+  previewImageViewerDownload: document.getElementById("preview-image-viewer-download"),
+  previewImageViewerZoom: document.getElementById("preview-image-viewer-zoom"),
   taskCount: document.getElementById("task-count"),
   tasksList: document.getElementById("tasks-list"),
   taskListState: document.getElementById("task-list-state"),
@@ -243,7 +216,6 @@ const elements = {
   taskForm: document.getElementById("task-form"),
   taskDialogTitle: document.getElementById("task-dialog-title"),
   taskName: document.getElementById("task-name"),
-  taskProfile: document.getElementById("task-profile"),
   taskSitePicker: document.getElementById("task-site-picker"),
   taskSiteAddButton: document.getElementById("task-site-add-button"),
   taskSiteList: document.getElementById("task-site-list"),
@@ -359,28 +331,19 @@ const state = {
   previewLoading: false,
   previewSiteId: null,
   previewRequestId: 0,
-  profiles: [],
-  profileLoading: false,
-  profileSaving: false,
-  profileDeleting: false,
-  profileMode: "create",
-  editingProfileId: null,
-  editingProfileRevision: null,
-  profileDeleteTarget: null,
-  profilePending: null,
-  profileEditorItems: [],
-  profilePreviewLoading: false,
-  profilePreviewId: null,
-  profilePreviewRequestId: 0,
-  profilePreviewBaseline: null,
-  profilePreviewSiteId: null,
-  profilePreviewOutputs: null,
-  profilePreviewFormat: "text",
-  profileOutputEpoch: 0,
-  profileCopyOperationId: 0,
-  profileImageSnapshotId: null,
-  profileImageRequestId: 0,
-  profileImageLoading: false,
+  taskItems: [],
+  taskPreviewLoading: false,
+  taskPreviewTaskId: null,
+  taskPreviewTaskRevision: null,
+  taskPreviewRequestId: 0,
+  taskPreviewSnapshotId: null,
+  taskPreviewOutputs: null,
+  taskPreviewFormat: "text",
+  taskPreviewOutputEpoch: 0,
+  taskPreviewCopyOperationId: 0,
+  taskPreviewImageSnapshotId: null,
+  taskPreviewImageRequestId: 0,
+  taskPreviewImageLoading: false,
   imageViewerSection: null,
   imageViewerTrigger: null,
   imageViewerScrollY: 0,
@@ -464,8 +427,6 @@ const EXPLICIT_WRITE_REJECTIONS = [
   /已被其他操作修改/,
   /站点存储暂不可用/,
   /仍是任务的候选站点/,
-  /内容组合不存在/,
-  /内容组合存储暂不可用/,
   /时区数据不可用/,
   /确认的配置版本已变化/,
   /投递容量已满/,
@@ -1333,7 +1294,6 @@ async function loadSites() {
     state.sites = rawSites.map(normalizeSite).filter(Boolean);
     renderSites();
     syncPreviewSites();
-    profilePreviewSiteOptions();
     succeeded = true;
     if (elements.status.dataset.tone === "error") {
       clearStatus();
@@ -1904,239 +1864,24 @@ function clearPendingPanels() {
   elements.deleteReviewCloseButton.hidden = true;
 }
 
-function normalizeProfile(raw) {
-  if (!raw || typeof raw !== "object" || typeof raw.id !== "string") {
-    return null;
-  }
-  const items = Array.isArray(raw.items)
-    ? raw.items
-        .map((item) => {
-          if (!item || typeof item !== "object") {
-            return null;
-          }
-          const type = item.content_type;
-          if (typeof type !== "string" || !CONTENT_LABELS[type]) {
-            return null;
-          }
-          const limit = Number.isInteger(item.limit) && item.limit >= 1
-            ? item.limit
-            : null;
-          return { content_type: type, limit };
-        })
-        .filter(Boolean)
-    : [];
-  return {
-    id: raw.id,
-    name: typeof raw.name === "string" ? raw.name : "未命名组合",
-    items,
-    revision: Number.isInteger(raw.revision) ? raw.revision : 1,
-    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : "",
-  };
-}
-
-function profileSummary(profile) {
-  return profile.items
-    .map((item) => {
-      const label = CONTENT_LABELS[item.content_type] || item.content_type;
-      return item.limit === null ? label : `${label}（${item.limit} 条）`;
-    })
-    .join(" · ");
-}
-
-function renderProfile(profile) {
-  const row = document.createElement("li");
-  row.className = "site-row profile-row";
-  row.dataset.profileId = profile.id;
-
-  const main = document.createElement("div");
-  main.className = "site-main";
-  const titleLine = document.createElement("div");
-  titleLine.className = "site-title-line";
-  const name = document.createElement("h3");
-  name.className = "site-name";
-  name.textContent = profile.name;
-  titleLine.append(name);
-
-  const summary = document.createElement("p");
-  summary.className = "site-meta profile-summary";
-  summary.textContent = profileSummary(profile) || "没有栏目";
-  const meta = document.createElement("p");
-  meta.className = "site-meta";
-  addMeta(meta, "栏目", `${profile.items.length} 项`);
-
-  const updated = formatUpdatedAt(profile.updated_at);
-  if (updated) {
-    addMeta(meta, "最近更新", updated);
-  }
-  main.append(titleLine, summary, meta);
-
-  const actions = document.createElement("div");
-  actions.className = "site-actions";
-  actions.append(
-    makeButton(
-      "编辑",
-      "button button-secondary",
-      () => openEditProfile(profile),
-      `编辑内容组合 ${profile.name}`,
-    ),
-    makeButton(
-      "删除",
-      "button button-quiet-danger",
-      () => openProfileDelete(profile),
-      `删除内容组合 ${profile.name}`,
-    ),
-  );
-  row.append(main, actions);
-  return row;
-}
-
-function renderProfiles() {
-  elements.profileCount.textContent = `${state.profiles.length} 个`;
-  elements.profilesList.replaceChildren();
-  if (state.profiles.length === 0) {
-    elements.profilesList.hidden = true;
-    elements.profileEmptyState.hidden = false;
-    clearProfileListState();
-    return;
-  }
-  elements.profileEmptyState.hidden = true;
-  elements.profilesList.hidden = false;
-  clearProfileListState();
-  for (const profile of state.profiles) {
-    elements.profilesList.append(renderProfile(profile));
-  }
-}
-
-function setProfileListState(message, showRetry) {
-  elements.profileListStateText.textContent = message;
-  elements.profileRetryButton.hidden = !showRetry;
-  elements.profileListState.hidden = false;
-}
-
-function clearProfileListState() {
-  elements.profileListStateText.textContent = "";
-  elements.profileRetryButton.hidden = true;
-  elements.profileListState.hidden = true;
-}
-
-function profileSignature(profile) {
-  return JSON.stringify({
-    id: profile.id,
-    revision: profile.revision,
-    name: profile.name,
-    items: profile.items.map((item) => [
-      item.content_type,
-      item.limit,
-    ]),
-  });
-}
-
-async function loadProfiles() {
-  if (!bridge || state.profileLoading) {
-    return false;
-  }
-  state.profileLoading = true;
-  elements.profilesList.setAttribute("aria-busy", "true");
-  if (state.profiles.length === 0) {
-    elements.profileEmptyState.hidden = true;
-    elements.profilesList.hidden = true;
-    setProfileListState("正在读取内容组合…", false);
-  }
-  try {
-    const result = await bridge.apiGet("profiles");
-    const raw = result && Array.isArray(result.profiles) ? result.profiles : [];
-    state.profiles = raw.map(normalizeProfile).filter(Boolean);
-    const baseline = state.profilePreviewBaseline;
-    if (baseline) {
-      const current = state.profiles.find(
-        (profile) => profile.id === state.profilePreviewId,
-      );
-      if (!current || profileSignature(current) !== baseline) {
-        invalidateProfilePreview();
-      }
-    }
-    renderProfiles();
-    syncProfilePreview();
-    return true;
-  } catch (error) {
-    showStatus(`读取内容组合失败：${friendlyErrorMessage(error)}`, "error");
-    if (state.profiles.length === 0) {
-      elements.profileEmptyState.hidden = true;
-      elements.profilesList.hidden = true;
-      setProfileListState("无法读取内容组合。请确认插件已启用，然后重试。", true);
-    }
-    return false;
-  } finally {
-    state.profileLoading = false;
-    elements.profilesList.setAttribute("aria-busy", "false");
-  }
-}
-
-function syncProfilePreview() {
-  const profiles = state.profiles;
-  if (!profiles.some((profile) => profile.id === state.profilePreviewId)) {
-    state.profilePreviewId = profiles.length ? profiles[0].id : null;
-  }
-  elements.profilePreviewSelect.replaceChildren();
-  if (profiles.length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "没有已保存组合";
-    elements.profilePreviewSelect.append(option);
-    elements.profilePreviewSelect.disabled = true;
-    elements.profilePreviewButton.disabled = true;
-    elements.profilePreviewRefreshButton.disabled = true;
-    elements.profilePreviewHint.textContent =
-      "暂无内容组合。请先创建一个组合。";
-    elements.profilePreviewHint.hidden = false;
-    resetProfilePreview();
-    return;
-  }
-  for (const profile of profiles) {
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.textContent = profile.name;
-    elements.profilePreviewSelect.append(option);
-  }
-  elements.profilePreviewSelect.value = state.profilePreviewId;
-  elements.profilePreviewSelect.disabled = state.profilePreviewLoading;
-  elements.profilePreviewButton.disabled = state.profilePreviewLoading;
-  elements.profilePreviewRefreshButton.disabled = state.profilePreviewLoading;
-  elements.profilePreviewHint.hidden = true;
-}
-
-function setProfilePreviewBusy(busy) {
-  state.profilePreviewLoading = busy;
-  const hasProfile = Boolean(elements.profilePreviewSelect.value);
-  const hasSite = Boolean(elements.profilePreviewSite.value);
-  elements.profilePreviewSelect.disabled = busy || !hasProfile;
-  elements.profilePreviewSite.disabled = busy || !hasSite;
-  elements.profilePreviewButton.disabled = busy || !hasProfile;
-  elements.profilePreviewRefreshButton.disabled = busy || !hasProfile;
-  elements.profilePreviewButton.textContent = busy ? "正在获取…" : "获取组合";
-  elements.profilePreviewRefreshButton.textContent = busy ? "正在刷新…" : "刷新组合";
-  syncProfileOutputButtons();
-  syncProfileImageButton();
-}
-
-function resetProfileImages() {
-  state.profileImageRequestId += 1;
-  state.profileImageLoading = false;
-  state.profileImageSnapshotId = null;
+function resetPreviewImages() {
+  state.taskPreviewImageRequestId += 1;
+  state.taskPreviewImageLoading = false;
+  state.taskPreviewSnapshotId = null;
   const hadViewer = Boolean(
-    elements.profileImageViewer && elements.profileImageViewer.open,
+    elements.previewImageViewer && elements.previewImageViewer.open,
   );
-  elements.profileImagePages.replaceChildren();
-  closeProfileImageViewer(false);
-  elements.profileImageState.textContent = "";
-  elements.profileImageState.hidden = true;
-  elements.profileImageHint.textContent = "";
-  elements.profileImageHint.hidden = true;
-  syncProfileImageButton();
+  elements.taskPreviewImagePages.replaceChildren();
+  closePreviewImageViewer(false);
+  elements.taskPreviewImageState.textContent = "";
+  elements.taskPreviewImageState.hidden = true;
+  elements.taskPreviewImageHint.textContent = "";
+  elements.taskPreviewImageHint.hidden = true;
+  syncPreviewImageButton();
   if (hadViewer) {
     // 浮层因预览刷新被收起时，按钮可能同时被禁用；把焦点交给视图标题，
     // 避免焦点落到 body 或已关闭的浮层里。
-    const heading = document.querySelector("#view-profiles h1");
+    const heading = document.querySelector("#view-tasks h1");
     if (heading) {
       if (!heading.hasAttribute("tabindex")) {
         heading.setAttribute("tabindex", "-1");
@@ -2146,37 +1891,37 @@ function resetProfileImages() {
   }
 }
 
-function syncProfileImageButton() {
+function syncPreviewImageButton() {
   const hasImageContext = Boolean(
-    state.profilePreviewOutputs &&
-    state.profileImageSnapshotId &&
-    state.profilePreviewId,
+    state.taskPreviewOutputs &&
+    state.taskPreviewSnapshotId &&
+    state.taskPreviewTaskId,
   );
-  elements.profileImageButton.disabled =
-    state.profilePreviewLoading ||
-    state.profileImageLoading ||
+  elements.taskPreviewImageButton.disabled =
+    state.taskPreviewLoading ||
+    state.taskPreviewImageLoading ||
     !hasImageContext;
-  elements.profileImageButton.textContent =
-    state.profileImageLoading ? "正在生成…" : "生成图片";
+  elements.taskPreviewImageButton.textContent =
+    state.taskPreviewImageLoading ? "正在生成…" : "生成长图";
 }
 
-const PROFILE_IMAGE_STATUS_LABELS = {
+const PREVIEW_IMAGE_STATUS_LABELS = {
   success: "已生成",
   empty: "空栏目",
   failed: "未生成",
 };
 
-const PROFILE_IMAGE_VIEWER_CLASS = "profile-image-viewer-open";
-const PROFILE_IMAGE_VIEWER_HINT =
+const PREVIEW_IMAGE_VIEWER_CLASS = "preview-image-viewer-open";
+const PREVIEW_IMAGE_VIEWER_HINT =
   "已按屏幕宽度显示完整长图；需要细节时点“原始尺寸”。";
-const PROFILE_IMAGE_VIEWER_HINT_ACTUAL =
+const PREVIEW_IMAGE_VIEWER_HINT_ACTUAL =
   "原始 900px 显示，窄屏可左右滑动查看细节。";
 
-function profileImageViewerFocusFallback() {
+function previewImageViewerFocusFallback() {
   const candidates = [
-    elements.profileImageButton,
-    elements.profilePreviewSelect,
-    elements.profilePreviewButton,
+    elements.taskPreviewImageButton,
+    elements.taskPreviewRefreshButton,
+    elements.taskPreviewDoneButton,
   ];
   for (const candidate of candidates) {
     if (candidate && !candidate.disabled && !candidate.hidden) {
@@ -2184,7 +1929,7 @@ function profileImageViewerFocusFallback() {
     }
   }
   // 预览进行中时上述控件都可能被禁用，退到当前视图标题，避免焦点落到 body。
-  const heading = document.querySelector("#view-profiles h1");
+  const heading = document.querySelector("#view-tasks h1");
   if (heading) {
     if (!heading.hasAttribute("tabindex")) {
       heading.setAttribute("tabindex", "-1");
@@ -2194,22 +1939,22 @@ function profileImageViewerFocusFallback() {
   return null;
 }
 
-function applyProfileImageViewerZoom(actual) {
+function applyPreviewImageViewerZoom(actual) {
   state.imageViewerActual = Boolean(actual);
-  const body = elements.profileImageViewerBody;
+  const body = elements.previewImageViewerBody;
   if (body) body.classList.toggle("is-actual", state.imageViewerActual);
-  const button = elements.profileImageViewerZoom;
+  const button = elements.previewImageViewerZoom;
   if (button) {
     button.setAttribute("aria-pressed", String(state.imageViewerActual));
     button.textContent = state.imageViewerActual ? "适应宽度" : "原始尺寸";
   }
-  elements.profileImageViewerHint.textContent = state.imageViewerActual
-    ? PROFILE_IMAGE_VIEWER_HINT_ACTUAL
-    : PROFILE_IMAGE_VIEWER_HINT;
+  elements.previewImageViewerHint.textContent = state.imageViewerActual
+    ? PREVIEW_IMAGE_VIEWER_HINT_ACTUAL
+    : PREVIEW_IMAGE_VIEWER_HINT;
 }
 
-function openProfileImageViewer(section, trigger) {
-  const viewer = elements.profileImageViewer;
+function openPreviewImageViewer(section, trigger) {
+  const viewer = elements.previewImageViewer;
   if (!viewer || typeof viewer.showModal !== "function" || viewer.open) {
     return;
   }
@@ -2219,27 +1964,27 @@ function openProfileImageViewer(section, trigger) {
   state.imageViewerSection = section;
   state.imageViewerTrigger = trigger || null;
   state.imageViewerScrollY = window.scrollY;
-  elements.profileImageViewerTitle.textContent = section.index + ". " + section.label;
-  elements.profileImageViewerImg.src = "data:image/png;base64," + section.png_base64;
-  elements.profileImageViewerImg.width = section.width;
-  elements.profileImageViewerImg.height = section.height;
-  elements.profileImageViewerImg.alt = section.label + "栏目长图（大图）";
-  applyProfileImageViewerZoom(false);
-  elements.profileImageViewerDownload.textContent = "下载「" + section.label + "」PNG";
-  elements.profileImageViewerDownload.setAttribute(
+  elements.previewImageViewerTitle.textContent = section.index + ". " + section.label;
+  elements.previewImageViewerImg.src = "data:image/png;base64," + section.png_base64;
+  elements.previewImageViewerImg.width = section.width;
+  elements.previewImageViewerImg.height = section.height;
+  elements.previewImageViewerImg.alt = section.label + "栏目长图（大图）";
+  applyPreviewImageViewerZoom(false);
+  elements.previewImageViewerDownload.textContent = "下载「" + section.label + "」PNG";
+  elements.previewImageViewerDownload.setAttribute(
     "aria-label",
     "下载" + section.label + "栏目长图",
   );
-  document.documentElement.classList.add(PROFILE_IMAGE_VIEWER_CLASS);
-  elements.profileImageViewerBody.scrollTop = 0;
-  elements.profileImageViewerBody.scrollLeft = 0;
+  document.documentElement.classList.add(PREVIEW_IMAGE_VIEWER_CLASS);
+  elements.previewImageViewerBody.scrollTop = 0;
+  elements.previewImageViewerBody.scrollLeft = 0;
   viewer.showModal();
-  elements.profileImageViewerClose.focus();
+  elements.previewImageViewerClose.focus();
 }
 
-function closeProfileImageViewer(restoreFocus = true) {
-  document.documentElement.classList.remove(PROFILE_IMAGE_VIEWER_CLASS);
-  const viewer = elements.profileImageViewer;
+function closePreviewImageViewer(restoreFocus = true) {
+  document.documentElement.classList.remove(PREVIEW_IMAGE_VIEWER_CLASS);
+  const viewer = elements.previewImageViewer;
   if (!viewer || !viewer.open) {
     return;
   }
@@ -2248,15 +1993,15 @@ function closeProfileImageViewer(restoreFocus = true) {
   state.imageViewerSection = null;
   state.imageViewerTrigger = null;
   viewer.close();
-  elements.profileImageViewerImg.removeAttribute("src");
-  elements.profileImageViewerImg.alt = "";
-  elements.profileImageViewerImg.width = 900;
-  elements.profileImageViewerImg.height = 0;
-  applyProfileImageViewerZoom(false);
+  elements.previewImageViewerImg.removeAttribute("src");
+  elements.previewImageViewerImg.alt = "";
+  elements.previewImageViewerImg.width = 900;
+  elements.previewImageViewerImg.height = 0;
+  applyPreviewImageViewerZoom(false);
   if (restoreFocus) {
     const target = trigger && document.contains(trigger)
       ? trigger
-      : profileImageViewerFocusFallback();
+      : previewImageViewerFocusFallback();
     if (target && typeof target.focus === "function") {
       target.focus({ preventScroll: true });
     }
@@ -2313,41 +2058,41 @@ function handleBaseUrlChanged() {
   restoreAutoClearedCredential();
 }
 
-bindProfileImageViewer();
+bindPreviewImageViewer();
 
-function bindProfileImageViewer() {
-  const viewer = elements.profileImageViewer;
+function bindPreviewImageViewer() {
+  const viewer = elements.previewImageViewer;
   if (!viewer) {
     return;
   }
-  elements.profileImageViewerClose?.addEventListener("click", () => {
-    closeProfileImageViewer(true);
+  elements.previewImageViewerClose?.addEventListener("click", () => {
+    closePreviewImageViewer(true);
   });
-  elements.profileImageViewerZoom?.addEventListener("click", () => {
-    applyProfileImageViewerZoom(!state.imageViewerActual);
+  elements.previewImageViewerZoom?.addEventListener("click", () => {
+    applyPreviewImageViewerZoom(!state.imageViewerActual);
   });
-  elements.profileImageViewerDownload?.addEventListener("click", () => {
+  elements.previewImageViewerDownload?.addEventListener("click", () => {
     if (state.imageViewerSection) {
-      downloadProfileImageSection(state.imageViewerSection);
+      downloadPreviewImageSection(state.imageViewerSection);
     }
   });
   viewer.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeProfileImageViewer(true);
+    closePreviewImageViewer(true);
   });
   viewer.addEventListener("click", (event) => {
     if (event.target === viewer) {
-      closeProfileImageViewer(true);
+      closePreviewImageViewer(true);
     }
   });
 }
 
-function renderProfileImages(data) {
+function renderPreviewImages(data) {
   if (!data || !Array.isArray(data.images) || data.images.length === 0) {
     throw new Error("图片数据格式异常。");
   }
-  elements.profileImagePages.replaceChildren();
-  closeProfileImageViewer(true);
+  elements.taskPreviewImagePages.replaceChildren();
+  closePreviewImageViewer(true);
   let generated = 0;
   let missing = 0;
   for (const section of data.images) {
@@ -2357,12 +2102,12 @@ function renderProfileImages(data) {
       typeof section.content_type !== "string" ||
       typeof section.label !== "string" ||
       !section.label ||
-      !PROFILE_IMAGE_STATUS_LABELS[section.status]
+      !PREVIEW_IMAGE_STATUS_LABELS[section.status]
     ) {
       throw new Error("栏目长图数据格式异常。");
     }
     const figure = document.createElement("figure");
-    figure.className = "profile-image-page";
+    figure.className = "preview-image-page";
     figure.dataset.status = section.status;
     const hasImage = section.status !== "failed";
     if (hasImage) {
@@ -2385,12 +2130,12 @@ function renderProfileImages(data) {
       image.setAttribute("aria-label", "查看「" + section.label + "」大图");
       image.title = "点击查看大图";
       image.addEventListener("click", () => {
-        openProfileImageViewer(section, image);
+        openPreviewImageViewer(section, image);
       });
       image.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
           event.preventDefault();
-          openProfileImageViewer(section, image);
+          openPreviewImageViewer(section, image);
         }
       });
       figure.append(image);
@@ -2403,7 +2148,7 @@ function renderProfileImages(data) {
       caption.textContent =
         section.index + ". " + section.label + " · " +
         section.width + "×" + section.height + " · " +
-        PROFILE_IMAGE_STATUS_LABELS[section.status];
+        PREVIEW_IMAGE_STATUS_LABELS[section.status];
     } else {
       caption.className = "task-disabled";
       const reason = typeof section.error === "string" && section.error
@@ -2415,35 +2160,35 @@ function renderProfileImages(data) {
     figure.append(caption);
     if (hasImage) {
       const actions = document.createElement("div");
-      actions.className = "profile-image-actions";
+      actions.className = "preview-image-actions";
       const download = makeButton(
         "下载「" + section.label + "」PNG",
         "button button-secondary",
-        () => downloadProfileImageSection(section),
+        () => downloadPreviewImageSection(section),
         "下载" + section.label + "栏目长图",
       );
       const view = makeButton(
         "查看大图",
         "button button-secondary",
-        () => openProfileImageViewer(section, view),
+        () => openPreviewImageViewer(section, view),
         "查看" + section.label + "大图",
       );
       actions.append(download, view);
       figure.append(actions);
     }
-    elements.profileImagePages.append(figure);
+    elements.taskPreviewImagePages.append(figure);
   }
-  elements.profileImageState.textContent = missing
+  elements.taskPreviewImageState.textContent = missing
     ? "已生成 " + generated + " 张栏目长图，" + missing + " 个栏目未生成"
     : "已生成 " + generated + " 张栏目长图";
-  elements.profileImageState.hidden = false;
-  elements.profileImageHint.textContent = missing
+  elements.taskPreviewImageState.hidden = false;
+  elements.taskPreviewImageHint.textContent = missing
     ? "未生成的栏目没有可用图片；如需完整出图，请减少栏目条数后重新预览再生成。"
     : "";
-  elements.profileImageHint.hidden = !missing;
+  elements.taskPreviewImageHint.hidden = !missing;
 }
 
-function downloadProfileImageSection(section) {
+function downloadPreviewImageSection(section) {
   try {
     const raw = atob(section.png_base64);
     const bytes = new Uint8Array(raw.length);
@@ -2454,14 +2199,14 @@ function downloadProfileImageSection(section) {
         bytes[2] !== 0x4e || bytes[3] !== 0x47) {
       throw new Error("not a png");
     }
-    const safeId = String(state.profilePreviewId || "profile")
+    const safeId = String(state.taskPreviewTaskId || "task")
       .replace(/[^A-Za-z0-9_-]/g, "")
-      .slice(0, 64) || "profile";
+      .slice(0, 64) || "task";
     const safeType = String(section.content_type || "section")
       .replace(/[^A-Za-z0-9_-]/g, "")
       .slice(0, 32) || "section";
     const filename =
-      "60sapi-profile-" + safeId + "-" + safeType + "-" + section.index + ".png";
+      "60sapi-task-" + safeId + "-" + safeType + "-" + section.index + ".png";
     const blob = new Blob([bytes], { type: "image/png" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2472,124 +2217,124 @@ function downloadProfileImageSection(section) {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    elements.profileImageHint.textContent = "已下载 " + filename + "。";
-    elements.profileImageHint.hidden = false;
+    elements.taskPreviewImageHint.textContent = "已下载 " + filename + "。";
+    elements.taskPreviewImageHint.hidden = false;
   } catch {
-    elements.profileImageHint.textContent = "图片下载失败，请重新生成。";
-    elements.profileImageHint.hidden = false;
+    elements.taskPreviewImageHint.textContent = "图片下载失败，请重新生成。";
+    elements.taskPreviewImageHint.hidden = false;
   }
 }
 
-async function generateProfileImage() {
+async function generatePreviewImage() {
   if (
     !bridge ||
-    state.profileImageLoading ||
-    state.profilePreviewLoading ||
-    !state.profileImageSnapshotId ||
-    !state.profilePreviewOutputs
+    state.taskPreviewImageLoading ||
+    state.taskPreviewLoading ||
+    !state.taskPreviewSnapshotId ||
+    !state.taskPreviewOutputs
   ) {
     return;
   }
-  const profileId = state.profilePreviewId;
-  const snapshotId = state.profileImageSnapshotId;
-  const requestId = ++state.profileImageRequestId;
-  state.profileImageLoading = true;
-  elements.profileImagePages.replaceChildren();
-  elements.profileImageHint.textContent = "";
-  elements.profileImageHint.hidden = true;
-  elements.profileImageState.textContent = "正在生成图片…";
-  elements.profileImageState.hidden = false;
-  syncProfileImageButton();
+  const taskId = state.taskPreviewTaskId;
+  const snapshotId = state.taskPreviewSnapshotId;
+  const requestId = ++state.taskPreviewImageRequestId;
+  state.taskPreviewImageLoading = true;
+  elements.taskPreviewImagePages.replaceChildren();
+  elements.taskPreviewImageHint.textContent = "";
+  elements.taskPreviewImageHint.hidden = true;
+  elements.taskPreviewImageState.textContent = "正在生成图片…";
+  elements.taskPreviewImageState.hidden = false;
+  syncPreviewImageButton();
   try {
     const data = await bridge.apiPost(
-      `profiles/${encodeURIComponent(profileId)}/image`,
+      `tasks/${encodeURIComponent(taskId)}/image`,
       { snapshot_id: snapshotId },
     );
     if (
-      requestId !== state.profileImageRequestId ||
-      snapshotId !== state.profileImageSnapshotId ||
-      profileId !== state.profilePreviewId ||
-      !state.profilePreviewOutputs
+      requestId !== state.taskPreviewImageRequestId ||
+      snapshotId !== state.taskPreviewSnapshotId ||
+      taskId !== state.taskPreviewTaskId ||
+      !state.taskPreviewOutputs
     ) {
       return;
     }
-    renderProfileImages(data);
+    renderPreviewImages(data);
   } catch (error) {
-    if (requestId === state.profileImageRequestId) {
-      elements.profileImageState.textContent = "";
-      elements.profileImageState.hidden = true;
-      elements.profileImageHint.textContent =
+    if (requestId === state.taskPreviewImageRequestId) {
+      elements.taskPreviewImageState.textContent = "";
+      elements.taskPreviewImageState.hidden = true;
+      elements.taskPreviewImageHint.textContent =
         `图片生成失败：${friendlyErrorMessage(error)}；文字和 Markdown 仍可使用。`;
-      elements.profileImageHint.hidden = false;
+      elements.taskPreviewImageHint.hidden = false;
     }
   } finally {
-    if (requestId === state.profileImageRequestId) {
-      state.profileImageLoading = false;
-      syncProfileImageButton();
+    if (requestId === state.taskPreviewImageRequestId) {
+      state.taskPreviewImageLoading = false;
+      syncPreviewImageButton();
     }
   }
 }
 
-function resetProfileOutput() {
-  state.profileOutputEpoch += 1;
-  state.profilePreviewOutputs = null;
-  state.profilePreviewFormat = "text";
-  elements.profileOutputText.value = "";
-  elements.profileOutputHint.textContent = "";
-  elements.profileOutputHint.hidden = true;
-  const textRadio = elements.profilePreviewResult?.querySelector(
-    'input[name="profile-output-format"][value="text"]',
+function resetPreviewOutput() {
+  state.taskPreviewOutputEpoch += 1;
+  state.taskPreviewOutputs = null;
+  state.taskPreviewFormat = "text";
+  elements.taskPreviewOutputText.value = "";
+  elements.taskPreviewOutputHint.textContent = "";
+  elements.taskPreviewOutputHint.hidden = true;
+  const textRadio = elements.taskPreviewRoot?.querySelector(
+    'input[name="task-preview-output-format"][value="text"]',
   );
   if (textRadio) {
     textRadio.checked = true;
   }
-  syncProfileOutputButtons();
+  syncPreviewOutputButtons();
 }
 
-function selectedProfileOutput() {
-  if (!state.profilePreviewOutputs) {
+function selectedPreviewOutput() {
+  if (!state.taskPreviewOutputs) {
     return "";
   }
-  return state.profilePreviewFormat === "markdown"
-    ? state.profilePreviewOutputs.markdown
-    : state.profilePreviewOutputs.text;
+  return state.taskPreviewFormat === "markdown"
+    ? state.taskPreviewOutputs.markdown
+    : state.taskPreviewOutputs.text;
 }
 
-function syncProfileOutputButtons() {
-  const hasOutput = Boolean(selectedProfileOutput());
-  elements.profileCopyButton.disabled =
-    state.profilePreviewLoading || !hasOutput;
-  elements.profileDownloadButton.disabled =
-    state.profilePreviewLoading || !hasOutput;
-  elements.profileDownloadButton.textContent =
-    state.profilePreviewFormat === "markdown" ? "下载 .md" : "下载 .txt";
+function syncPreviewOutputButtons() {
+  const hasOutput = Boolean(selectedPreviewOutput());
+  elements.taskPreviewCopyButton.disabled =
+    state.taskPreviewLoading || !hasOutput;
+  elements.taskPreviewDownloadButton.disabled =
+    state.taskPreviewLoading || !hasOutput;
+  elements.taskPreviewDownloadButton.textContent =
+    state.taskPreviewFormat === "markdown" ? "下载 .md" : "下载 .txt";
 }
 
-function renderProfileOutput() {
-  state.profileOutputEpoch += 1;
-  const output = selectedProfileOutput();
-  elements.profileOutputText.value = output;
-  elements.profileOutputHint.textContent = "";
-  elements.profileOutputHint.hidden = true;
-  syncProfileOutputButtons();
+function renderPreviewOutput() {
+  state.taskPreviewOutputEpoch += 1;
+  const output = selectedPreviewOutput();
+  elements.taskPreviewOutputText.value = output;
+  elements.taskPreviewOutputHint.textContent = "";
+  elements.taskPreviewOutputHint.hidden = true;
+  syncPreviewOutputButtons();
 }
 
-async function copyProfileOutput() {
-  const output = selectedProfileOutput();
-  if (!output || state.profilePreviewLoading) {
+async function copyPreviewOutput() {
+  const output = selectedPreviewOutput();
+  if (!output || state.taskPreviewLoading) {
     return;
   }
   const operation = {
-    id: ++state.profileCopyOperationId,
-    epoch: state.profileOutputEpoch,
-    format: state.profilePreviewFormat,
+    id: ++state.taskPreviewCopyOperationId,
+    epoch: state.taskPreviewOutputEpoch,
+    format: state.taskPreviewFormat,
     text: output,
   };
   const ownsOperation = () =>
-    operation.id === state.profileCopyOperationId &&
-    operation.epoch === state.profileOutputEpoch &&
-    operation.format === state.profilePreviewFormat &&
-    operation.text === selectedProfileOutput();
+    operation.id === state.taskPreviewCopyOperationId &&
+    operation.epoch === state.taskPreviewOutputEpoch &&
+    operation.format === state.taskPreviewFormat &&
+    operation.text === selectedPreviewOutput();
   try {
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
       throw new Error("clipboard unavailable");
@@ -2598,32 +2343,32 @@ async function copyProfileOutput() {
     if (!ownsOperation()) {
       return;
     }
-    elements.profileOutputHint.textContent =
+    elements.taskPreviewOutputHint.textContent =
       `已复制${operation.format === "markdown" ? " Markdown 源码" : "纯文字"}。`;
-    elements.profileOutputHint.hidden = false;
+    elements.taskPreviewOutputHint.hidden = false;
   } catch {
     if (!ownsOperation()) {
       return;
     }
-    elements.profileOutputText.focus();
-    elements.profileOutputText.select();
-    elements.profileOutputHint.textContent =
+    elements.taskPreviewOutputText.focus();
+    elements.taskPreviewOutputText.select();
+    elements.taskPreviewOutputHint.textContent =
       "无法访问剪贴板，已选中当前文本，请手动复制。";
-    elements.profileOutputHint.hidden = false;
+    elements.taskPreviewOutputHint.hidden = false;
   }
 }
 
-function downloadProfileOutput() {
-  const output = selectedProfileOutput();
-  if (!output || state.profilePreviewLoading) {
+function downloadPreviewOutput() {
+  const output = selectedPreviewOutput();
+  if (!output || state.taskPreviewLoading) {
     return;
   }
-  state.profileOutputEpoch += 1;
-  const extension = state.profilePreviewFormat === "markdown" ? "md" : "txt";
-  const safeId = String(state.profilePreviewId || "profile")
+  state.taskPreviewOutputEpoch += 1;
+  const extension = state.taskPreviewFormat === "markdown" ? "md" : "txt";
+  const safeId = String(state.taskPreviewTaskId || "task")
     .replace(/[^A-Za-z0-9_-]/g, "")
-    .slice(0, 64) || "profile";
-  const filename = `60sapi-profile-${safeId}.${extension}`;
+    .slice(0, 64) || "task";
+  const filename = `60sapi-task-${safeId}.${extension}`;
   try {
     const blob = new Blob([output], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -2635,555 +2380,22 @@ function downloadProfileOutput() {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    elements.profileOutputHint.textContent = `已下载 ${filename}。`;
-    elements.profileOutputHint.hidden = false;
+    elements.taskPreviewOutputHint.textContent = `已下载 ${filename}。`;
+    elements.taskPreviewOutputHint.hidden = false;
   } catch {
-    elements.profileOutputHint.textContent = "无法生成下载文件。";
-    elements.profileOutputHint.hidden = false;
+    elements.taskPreviewOutputHint.textContent = "无法生成下载文件。";
+    elements.taskPreviewOutputHint.hidden = false;
   }
 }
 
-function clearProfilePreview() {
-  elements.profilePreviewResult.hidden = true;
-  resetProfileOutput();
-  resetProfileImages();
-  elements.profilePreviewName.textContent = "";
-  elements.profilePreviewSource.textContent = "";
-  elements.profilePreviewCounts.textContent = "";
-  elements.profilePreviewState.textContent = "";
-  elements.profilePreviewSections.replaceChildren();
-  elements.profilePreviewStatus.hidden = true;
-  elements.profilePreviewStatus.textContent = "";
-  delete elements.profilePreviewStatus.dataset.tone;
-}
-
-function invalidateProfilePreview() {
-  state.profilePreviewRequestId += 1;
-  state.profilePreviewBaseline = null;
-  state.profilePreviewLoading = false;
-  clearProfilePreview();
-  setProfilePreviewBusy(false);
-}
-
-function resetProfilePreview() {
-  invalidateProfilePreview();
-}
-
-function invalidateIfPreviewing(profileId) {
-  if (profileId && state.profilePreviewId === profileId) {
-    invalidateProfilePreview();
-  }
-}
-
-function profilePreviewSiteOptions() {
-  const select = elements.profilePreviewSite;
-  select.replaceChildren();
-  if (state.sites.length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "没有站点";
-    select.append(option);
-    select.disabled = true;
-    state.profilePreviewSiteId = null;
-    return;
-  }
-  for (const site of state.sites) {
-    const option = document.createElement("option");
-    option.value = site.id;
-    option.textContent = site.enabled ? site.name : `${site.name}（已停用）`;
-    select.append(option);
-  }
-  if (!state.sites.some((site) => site.id === state.profilePreviewSiteId)) {
-    // 预览只接受启用站点，但允许显式选中停用站点看后端拒绝原因。
-    const preferred = state.sites.find((site) => site.enabled) || state.sites[0];
-    state.profilePreviewSiteId = preferred.id;
-  }
-  select.value = state.profilePreviewSiteId;
-  select.disabled = state.profilePreviewLoading;
-}
-
-function renderProfileEditor() {
-  elements.profileItemEditor.replaceChildren();
-  const selectedTypes = new Set(
-    state.profileEditorItems.map((item) => item.content_type),
-  );
-  const orderedTypes = [
-    ...state.profileEditorItems.map((item) => item.content_type),
-    ...Object.keys(CONTENT_LABELS).filter(
-      (type) => !selectedTypes.has(type),
-    ),
-  ];
-  for (const type of orderedTypes) {
-    const row = document.createElement("div");
-    row.className = "profile-editor-row";
-    row.dataset.contentType = type;
-    const toggle = document.createElement("label");
-    toggle.className = "profile-editor-toggle";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = selectedTypes.has(type);
-    checkbox.setAttribute("aria-label", `选择${CONTENT_LABELS[type]}`);
-    const name = document.createElement("span");
-    name.textContent = CONTENT_LABELS[type];
-    toggle.append(checkbox, name);
-
-    const limit = document.createElement("input");
-    limit.type = "number";
-    limit.className = "profile-limit-input";
-    limit.min = "1";
-    limit.max = "1000";
-    limit.step = "1";
-    limit.placeholder = "全部";
-    limit.setAttribute("aria-label", `${CONTENT_LABELS[type]}最多展示条数`);
-    limit.disabled = !checkbox.checked;
-    const current = state.profileEditorItems.find(
-      (item) => item.content_type === type,
-    );
-    limit.value = current ? current.limitText : "";
-
-    const actions = document.createElement("div");
-    actions.className = "profile-order-actions";
-    const position = state.profileEditorItems.findIndex(
-      (item) => item.content_type === type,
-    );
-    const up = makeButton("上移", "button button-quiet", () => {
-      moveProfileItem(type, -1);
-    });
-    const down = makeButton("下移", "button button-quiet", () => {
-      moveProfileItem(type, 1);
-    });
-    up.disabled = !checkbox.checked || position <= 0;
-    down.disabled =
-      !checkbox.checked || position < 0 ||
-      position >= state.profileEditorItems.length - 1;
-    actions.append(up, down);
-
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) {
-        state.profileEditorItems.push({ content_type: type, limitText: "" });
-      } else {
-        state.profileEditorItems = state.profileEditorItems.filter(
-          (item) => item.content_type !== type,
-        );
-      }
-      renderProfileEditor();
-    });
-    limit.addEventListener("input", () => {
-      const entry = state.profileEditorItems.find(
-        (item) => item.content_type === type,
-      );
-      if (entry) {
-        entry.limitText = limit.value;
-      }
-    });
-    row.append(toggle, limit, actions);
-    elements.profileItemEditor.append(row);
-  }
-}
-
-function moveProfileItem(type, delta) {
-  const index = state.profileEditorItems.findIndex(
-    (item) => item.content_type === type,
-  );
-  const target = index + delta;
-  if (index < 0 || target < 0 || target >= state.profileEditorItems.length) {
-    return;
-  }
-  const [entry] = state.profileEditorItems.splice(index, 1);
-  state.profileEditorItems.splice(target, 0, entry);
-  renderProfileEditor();
-}
-
-function collectProfileItems() {
-  if (state.profileEditorItems.length === 0) {
-    throw new Error("请至少选择一个栏目。");
-  }
-  return state.profileEditorItems.map((entry) => {
-    const raw = entry.limitText.trim();
-    let limit = null;
-    if (raw !== "") {
-      if (!/^\d+$/.test(raw)) {
-        throw new Error(
-          `${CONTENT_LABELS[entry.content_type]}的条数必须是正整数或留空。`,
-        );
-      }
-      limit = Number(raw);
-      if (limit < 1 || limit > 1000) {
-        throw new Error(
-          `${CONTENT_LABELS[entry.content_type]}的条数必须在 1～1000 之间。`,
-        );
-      }
-    }
-    return {
-      content_type: entry.content_type,
-      params: {},
-      limit,
-    };
-  });
-}
-
-function showProfileFormError(message) {
-  elements.profileFormError.textContent = message;
-  elements.profileFormError.hidden = false;
-}
-
-function clearProfileFormError() {
-  elements.profileFormError.textContent = "";
-  elements.profileFormError.hidden = true;
-}
-
-function setProfileFormDisabled(disabled) {
-  for (const control of elements.profileForm.querySelectorAll(
-    "input, select, button",
-  )) {
-    control.disabled = disabled;
-  }
-  elements.profileForm.setAttribute("aria-busy", String(disabled));
-}
-
-function openCreateProfile() {
-  if (blockIfPendingWrite()) {
-    return;
-  }
-  clearProfilePendingPanels();
-  state.profileMode = "create";
-  state.editingProfileId = null;
-  state.editingProfileRevision = null;
-  state.profileEditorItems = [{ content_type: "daily_news", limitText: "" }];
-  elements.profileForm.reset();
-  elements.profileDialogTitle.textContent = "新增组合";
-  elements.profileName.value = "";
-  clearProfileFormError();
-  setProfileFormDisabled(false);
-  elements.profileSaveButton.textContent = "保存组合";
-  renderProfileEditor();
-  openDialog(elements.profileDialog);
-  elements.profileName.focus();
-}
-
-function openEditProfile(profile) {
-  if (blockIfPendingWrite()) {
-    return;
-  }
-  clearProfilePendingPanels();
-  state.profileMode = "edit";
-  state.editingProfileId = profile.id;
-  state.editingProfileRevision = profile.revision;
-  state.profileEditorItems = profile.items.map((item) => ({
-    content_type: item.content_type,
-    limitText: item.limit === null ? "" : String(item.limit),
-  }));
-  elements.profileDialogTitle.textContent = "编辑组合";
-  elements.profileName.value = profile.name;
-  clearProfileFormError();
-  setProfileFormDisabled(false);
-  elements.profileSaveButton.textContent = "保存更改";
-  renderProfileEditor();
-  openDialog(elements.profileDialog);
-  elements.profileName.focus();
-  elements.profileName.select();
-}
-
-async function handleProfileSave(event) {
-  event.preventDefault();
-  if (state.profileSaving || state.profilePending || state.pendingWrite) {
-    return;
-  }
-  clearProfileFormError();
-  if (!elements.profileForm.reportValidity()) {
-    return;
-  }
-  let items;
-  try {
-    items = collectProfileItems();
-  } catch (error) {
-    showProfileFormError(friendlyErrorMessage(error));
-    return;
-  }
-  state.profileSaving = true;
-  const idleLabel = state.profileMode === "create" ? "保存组合" : "保存更改";
-  elements.profileSaveButton.textContent = "保存中…";
-  setProfileFormDisabled(true);
-  try {
-    const payload = {
-      name: elements.profileName.value,
-      items,
-    };
-    if (state.profileMode === "create") {
-      await bridge.apiPost("profiles", payload);
-    } else {
-      payload.expected_revision = state.editingProfileRevision;
-      await bridge.apiPost(
-        `profiles/${encodeURIComponent(state.editingProfileId)}/update`,
-        payload,
-      );
-      invalidateIfPreviewing(state.editingProfileId);
-    }
-    closeDialog(elements.profileDialog);
-    const reloaded = await loadProfiles();
-    showStatus(
-      reloaded ? "内容组合已保存。" : "内容组合已保存，但列表刷新失败，请重试。",
-      reloaded ? "success" : "error",
-    );
-  } catch (error) {
-    const message = friendlyErrorMessage(error);
-    if (state.profileMode === "edit" && isConflictMessage(message)) {
-      invalidateIfPreviewing(state.editingProfileId);
-      closeDialog(elements.profileDialog);
-      const reloaded = await loadProfiles();
-      showStatus(
-        reloaded
-          ? "该组合已被其他操作修改，已重新加载最新数据。请重新编辑。"
-          : "该组合已被其他操作修改，但列表刷新失败。",
-        "error",
-      );
-    } else if (isMissingMessage(message)) {
-      invalidateIfPreviewing(state.editingProfileId);
-      closeDialog(elements.profileDialog);
-      const reloaded = await loadProfiles();
-      showStatus(
-        reloaded
-          ? "该组合已被删除，已重新加载最新数据。"
-          : "该组合已被删除，但列表刷新失败。",
-        "error",
-      );
-    } else if (isExplicitWriteRejection(message)) {
-      showProfileFormError(message);
-    } else {
-      enterProfilePending(
-        state.profileMode,
-        writeFailureDetail(error),
-      );
-    }
-  } finally {
-    state.profileSaving = false;
-    if (!state.profilePending) {
-      setProfileFormDisabled(false);
-      elements.profileSaveButton.textContent = idleLabel;
-    }
-  }
-}
-
-function openProfileDelete(profile) {
-  if (blockIfPendingWrite()) {
-    return;
-  }
-  clearProfilePendingPanels();
-  state.profileDeleteTarget = profile;
-  elements.profileDeleteMessage.textContent =
-    `确定删除“${profile.name}”吗？删除组合不会删除站点或内容缓存。`;
-  elements.profileDeleteError.textContent = "";
-  elements.profileDeleteError.hidden = true;
-  elements.profileDeleteCancelButton.disabled = false;
-  elements.profileDeleteConfirmButton.disabled = false;
-  elements.profileDeleteConfirmButton.textContent = "删除";
-  openDialog(elements.profileDeleteDialog);
-  elements.profileDeleteCancelButton.focus();
-}
-
-async function confirmProfileDelete() {
-  if (state.profileDeleting || state.profilePending || state.pendingWrite ||
-      !state.profileDeleteTarget) {
-    return;
-  }
-  const target = state.profileDeleteTarget;
-  state.profileDeleting = true;
-  elements.profileDeleteCancelButton.disabled = true;
-  elements.profileDeleteConfirmButton.disabled = true;
-  elements.profileDeleteConfirmButton.textContent = "删除中…";
-  try {
-    await bridge.apiPost(
-      `profiles/${encodeURIComponent(target.id)}/delete`,
-      { expected_revision: target.revision },
-    );
-    invalidateIfPreviewing(target.id);
-    closeDialog(elements.profileDeleteDialog);
-    state.profileDeleteTarget = null;
-    const reloaded = await loadProfiles();
-    showStatus(
-      reloaded ? `已删除“${target.name}”。` : "组合已删除，但列表刷新失败。",
-      reloaded ? "success" : "error",
-    );
-  } catch (error) {
-    const message = friendlyErrorMessage(error);
-    if (isConflictMessage(message) || isMissingMessage(message)) {
-      invalidateIfPreviewing(target.id);
-      closeDialog(elements.profileDeleteDialog);
-      state.profileDeleteTarget = null;
-      const reloaded = await loadProfiles();
-      showStatus(
-        reloaded
-          ? "该组合已被修改或删除，已重新加载最新数据。"
-          : "该组合已被修改或删除，但列表刷新失败。",
-        "error",
-      );
-    } else if (isExplicitWriteRejection(message)) {
-      elements.profileDeleteError.textContent = message;
-      elements.profileDeleteError.hidden = false;
-    } else {
-      enterProfilePending("profile_delete", writeFailureDetail(error), target);
-    }
-  } finally {
-    state.profileDeleting = false;
-    if (!state.profilePending) {
-      elements.profileDeleteCancelButton.disabled = false;
-      elements.profileDeleteConfirmButton.disabled = false;
-      elements.profileDeleteConfirmButton.textContent = "删除";
-    }
-  }
-}
-
-function profilePendingElements(pending) {
-  if (pending.kind === "profile_delete") {
-    return {
-      panel: elements.profileDeleteUncertain,
-      text: elements.profileDeleteUncertainText,
-      recheck: elements.profileDeleteRecheckButton,
-      review: elements.profileDeleteReviewCloseButton,
-    };
-  }
-  return {
-    panel: elements.profileWriteUncertain,
-    text: elements.profileWriteUncertainText,
-    recheck: elements.profileRecheckButton,
-    review: elements.profileReviewCloseButton,
-  };
-}
-
-function updateProfilePendingUI(text) {
-  const pending = state.profilePending;
-  if (!pending) {
-    return;
-  }
-  const ui = profilePendingElements(pending);
-  ui.panel.hidden = false;
-  ui.text.textContent = text;
-  if (pending.kind === "profile_delete") {
-    elements.profileDeleteCancelButton.disabled = true;
-    elements.profileDeleteConfirmButton.disabled = true;
-  } else {
-    setProfileFormDisabled(true);
-    elements.profileSaveButton.disabled = true;
-    elements.profileSaveButton.textContent = "等待确认结果";
-  }
-  if (pending.phase === "checking") {
-    ui.recheck.hidden = false;
-    ui.recheck.disabled = true;
-    ui.recheck.textContent = "正在重新读取…";
-    ui.review.hidden = true;
-  } else if (pending.phase === "review") {
-    ui.recheck.hidden = true;
-    ui.review.hidden = false;
-    ui.review.disabled = false;
-  } else {
-    ui.recheck.hidden = false;
-    ui.recheck.disabled = false;
-    ui.recheck.textContent = "重新读取最新组合";
-    ui.review.hidden = true;
-  }
-}
-
-function enterProfilePending(kind, detail, target) {
-  state.profilePending = {
-    kind,
-    phase: "unconfirmed",
-    targetId: target ? target.id : null,
-  };
-  if (kind === "profile_delete") {
-    elements.profileDeleteError.hidden = true;
-    elements.profileDeleteError.textContent = "";
-  } else {
-    clearProfileFormError();
-  }
-  updateProfilePendingUI(
-    "服务器可能已经完成，也可能没有收到请求。" +
-      "为避免重复写入，请先重新读取最新组合列表确认。" +
-      `\n\n错误信息：${detail}`,
-  );
-}
-
-function profilePendingReviewText(pending) {
-  if (pending.kind === "create") {
-    return (
-      `已重新读取最新组合列表，当前共有 ${state.profiles.length} 个组合。` +
-      "系统不能仅凭名称判断哪一条（如有）来自本次操作；" +
-      "请关闭对话框查看列表并人工确认。"
-    );
-  }
-  const profile = pending.targetId
-    ? state.profiles.find((item) => item.id === pending.targetId)
-    : null;
-  const current = profile
-    ? `仍在列表中：${profile.name}（revision ${profile.revision}）。`
-    : "不在列表中。";
-  return (
-    `已重新读取最新组合列表。该组合当前${current}` +
-    "请关闭对话框查看列表并判断是否符合预期；如需继续，请重新打开对应操作。"
-  );
-}
-
-async function recheckProfilePending() {
-  const pending = state.profilePending;
-  if (!pending || pending.phase === "checking") {
-    return;
-  }
-  pending.phase = "checking";
-  updateProfilePendingUI("正在重新读取最新组合…");
-  const succeeded = await loadProfiles();
-  if (state.profilePending !== pending) {
-    return;
-  }
-  if (succeeded) {
-    pending.phase = "review";
-    updateProfilePendingUI(profilePendingReviewText(pending));
-  } else {
-    pending.phase = "unconfirmed";
-    updateProfilePendingUI(
-      "仍无法确认结果：重新读取最新组合失败。请不要重复提交；" +
-        "保持此页面，稍后再次读取。",
-    );
-  }
-}
-
-function clearProfilePendingPanels() {
-  elements.profileWriteUncertain.hidden = true;
-  elements.profileWriteUncertainText.textContent = "";
-  elements.profileReviewCloseButton.hidden = true;
-  elements.profileDeleteUncertain.hidden = true;
-  elements.profileDeleteUncertainText.textContent = "";
-  elements.profileDeleteReviewCloseButton.hidden = true;
-}
-
-function finishProfilePendingReview() {
-  const pending = state.profilePending;
-  if (!pending || pending.phase !== "review") {
-    return;
-  }
-  const deleting = pending.kind === "profile_delete";
-  closeDialog(deleting ? elements.profileDeleteDialog : elements.profileDialog);
-  state.profilePending = null;
-  clearProfilePendingPanels();
-  if (deleting) {
-    state.profileDeleteTarget = null;
-  } else {
-    setProfileFormDisabled(false);
-    elements.profileSaveButton.textContent =
-      state.profileMode === "create" ? "保存组合" : "保存更改";
-  }
-  showStatus(
-    "已重新读取最新组合列表，并关闭未确认的操作。请根据列表判断结果。",
-    "info",
-  );
-}
-
-function profileSectionCacheText(section) {
+function previewSectionCacheText(section) {
   const cache = section.cache && typeof section.cache === "object"
     ? section.cache
     : {};
   return cache.hit === true ? "缓存命中" : "本次上游获取";
 }
 
-function appendProfileSectionItems(container, section) {
+function appendPreviewSectionItems(container, section) {
   const items = Array.isArray(section.items) ? section.items : [];
   if (items.length === 0) {
     const empty = document.createElement("p");
@@ -3233,12 +2445,12 @@ function appendProfileSectionItems(container, section) {
   container.append(list);
 }
 
-function renderProfileSection(section) {
+function renderPreviewSection(section) {
   const article = document.createElement("article");
-  article.className = "profile-section";
+  article.className = "preview-block";
   article.dataset.status = section.status === "error" ? "error" : "ok";
   const head = document.createElement("div");
-  head.className = "profile-section-head";
+  head.className = "preview-block-head";
   const title = document.createElement("h3");
   title.textContent = section.label || CONTENT_LABELS[section.content_type] ||
     section.content_type || "栏目";
@@ -3250,7 +2462,7 @@ function renderProfileSection(section) {
 
   if (section.status === "error") {
     const error = document.createElement("p");
-    error.className = "profile-section-error";
+    error.className = "preview-block-error";
     error.textContent = `${section.message || "栏目获取失败。"}（${section.code || "error"}）`;
     article.append(error);
     return article;
@@ -3269,7 +2481,7 @@ function renderProfileSection(section) {
   addMeta(meta, "条数", section.limit === null
     ? `${shown} / ${total}（全部）`
     : `${shown} / ${total}（最多 ${section.limit}）`);
-  addMeta(meta, "缓存", profileSectionCacheText(section));
+  addMeta(meta, "缓存", previewSectionCacheText(section));
   if (typeof section.content_date === "string" && section.content_date) {
     addMeta(meta, "内容日期", section.content_date);
   }
@@ -3301,172 +2513,407 @@ function renderProfileSection(section) {
     warning.textContent = section.warnings.join("\n");
     article.append(warning);
   }
-  appendProfileSectionItems(article, section);
+  appendPreviewSectionItems(article, section);
   return article;
 }
 
-function renderProfilePreview(data) {
-  if (!data || !Array.isArray(data.sections)) {
-    throw new Error("组合预览数据格式异常。");
+/* ---------- 任务内容栏目：类型/条数/顺序都在任务表单里维护 ---------- */
+
+const TASK_ITEM_TYPES = Object.keys(CONTENT_LABELS);
+const TASK_ITEM_MAX = TASK_ITEM_TYPES.length;
+const TASK_ITEM_LIMIT_MAX = 1000;
+
+function taskItemLabel(contentType) {
+  return CONTENT_LABELS[contentType] || contentType;
+}
+
+function taskItemLimitText(limit) {
+  return Number.isInteger(limit) ? String(limit) : "";
+}
+
+function taskItemsSignature(items) {
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const limit = Number.isInteger(item.limit) ? item.limit : "";
+    return item.content_type + ":" + limit;
+  }).join(",");
+}
+
+function savedTaskItems(task) {
+  const list = task && Array.isArray(task.items) ? task.items : [];
+  return list
+    .filter((item) => item && typeof item.content_type === "string")
+    .map((item) => ({
+      content_type: item.content_type,
+      limit: Number.isInteger(item.limit) ? item.limit : null,
+    }));
+}
+
+function taskItemOptions() {
+  const used = new Set(state.taskItems.map((item) => item.content_type));
+  const available = TASK_ITEM_TYPES.filter((type) => !used.has(type));
+  elements.taskItemPicker.replaceChildren();
+  if (available.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "五个栏目都已添加";
+    elements.taskItemPicker.append(option);
+    elements.taskItemPicker.disabled = true;
+    elements.taskItemAddButton.disabled = true;
+    return;
   }
-  elements.profilePreviewName.textContent = data.profile_name || "未知组合";
-  elements.profilePreviewSource.textContent = data.site_name || "未知站点";
-  elements.profilePreviewCounts.textContent =
-    `${data.success_count || 0} 成功 / ${data.failure_count || 0} 失败`;
-  const stateText = data.status === "complete"
-    ? "完整成功"
-    : data.status === "partial"
-      ? "部分成功"
-      : "全部失败";
-  elements.profilePreviewState.textContent = stateText;
-  elements.profilePreviewSections.replaceChildren();
-  for (const section of data.sections) {
-    elements.profilePreviewSections.append(renderProfileSection(section));
+  elements.taskItemPicker.disabled = false;
+  elements.taskItemAddButton.disabled = false;
+  for (const type of available) {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = taskItemLabel(type);
+    elements.taskItemPicker.append(option);
   }
-  if (
-    !data.outputs ||
-    typeof data.outputs.text !== "string" ||
-    typeof data.outputs.markdown !== "string"
-  ) {
-    throw new Error("组合输出数据格式异常。");
+}
+
+function renderTaskItems() {
+  elements.taskItemList.replaceChildren();
+  if (state.taskItems.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "task-item-empty";
+    empty.textContent = "还没有栏目：请至少添加一个。栏目顺序即推送顺序。";
+    elements.taskItemList.append(empty);
   }
-  state.profilePreviewOutputs = {
-    text: data.outputs.text,
-    markdown: data.outputs.markdown,
+  state.taskItems.forEach((item, index) => {
+    const row = document.createElement("li");
+    row.className = "task-item-row";
+    row.dataset.contentType = item.content_type;
+    const order = document.createElement("span");
+    order.className = "task-item-order";
+    order.textContent = String(index + 1);
+    const label = document.createElement("span");
+    label.className = "task-item-label";
+    label.textContent = taskItemLabel(item.content_type);
+    const limitField = document.createElement("label");
+    limitField.className = "task-item-limit";
+    const limitInput = document.createElement("input");
+    limitInput.type = "number";
+    limitInput.min = "1";
+    limitInput.max = String(TASK_ITEM_LIMIT_MAX);
+    limitInput.step = "1";
+    limitInput.inputMode = "numeric";
+    limitInput.className = "task-item-limit-input";
+    limitInput.value = item.limitText;
+    limitInput.placeholder = "不限";
+    limitInput.dataset.itemIndex = String(index);
+    limitInput.setAttribute("aria-label", taskItemLabel(item.content_type) + "条数");
+    limitInput.addEventListener("input", () => {
+      state.taskItems[index].limitText = limitInput.value;
+      updateTaskCapabilityGate();
+      updateTaskPreviewGate();
+    });
+    const limitText = document.createElement("span");
+    limitText.className = "task-item-limit-text";
+    limitText.textContent = "条";
+    limitField.append(limitInput, limitText);
+    const actions = document.createElement("span");
+    actions.className = "task-item-actions";
+    const up = makeButton("上移", "button button-secondary",
+      () => moveTaskItem(index, -1), "上移栏目 " + taskItemLabel(item.content_type));
+    const down = makeButton("下移", "button button-secondary",
+      () => moveTaskItem(index, 1), "下移栏目 " + taskItemLabel(item.content_type));
+    up.disabled = index === 0;
+    down.disabled = index === state.taskItems.length - 1;
+    actions.append(up, down,
+      makeButton("移除", "button button-quiet-danger",
+        () => removeTaskItem(index), "移除栏目 " + taskItemLabel(item.content_type)),
+    );
+    row.append(order, label, limitField, actions);
+    elements.taskItemList.append(row);
+  });
+  taskItemOptions();
+  updateTaskCapabilityGate();
+  updateTaskPreviewGate();
+}
+
+function addTaskItem() {
+  const contentType = elements.taskItemPicker.value;
+  if (!contentType) return;
+  if (state.taskItems.some((item) => item.content_type === contentType)) return;
+  if (state.taskItems.length >= TASK_ITEM_MAX) return;
+  // 新栏目插到末尾：表单里的顺序就是推送顺序。
+  state.taskItems.push({ content_type: contentType, limitText: "" });
+  renderTaskItems();
+}
+
+function moveTaskItem(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= state.taskItems.length) return;
+  const [item] = state.taskItems.splice(index, 1);
+  state.taskItems.splice(target, 0, item);
+  renderTaskItems();
+}
+
+function removeTaskItem(index) {
+  state.taskItems.splice(index, 1);
+  renderTaskItems();
+}
+
+function collectTaskItems() {
+  const seen = new Set();
+  const items = [];
+  for (const item of state.taskItems) {
+    if (seen.has(item.content_type)) {
+      throw new Error("同一栏目只能添加一次。");
+    }
+    seen.add(item.content_type);
+    const raw = String(item.limitText == null ? "" : item.limitText).trim();
+    if (!raw) {
+      items.push({ content_type: item.content_type, limit: null });
+      continue;
+    }
+    const limit = Number(raw);
+    if (!Number.isInteger(limit) || limit < 1 || limit > TASK_ITEM_LIMIT_MAX) {
+      throw new Error(
+        taskItemLabel(item.content_type) + "的条数需为 1-" +
+        TASK_ITEM_LIMIT_MAX + " 的整数，留空表示不限。",
+      );
+    }
+    items.push({ content_type: item.content_type, limit });
+  }
+  return items;
+}
+
+/* ---------- 任务预览：POST tasks/<id>/preview ---------- */
+
+function resetTaskPreviewImages() {
+  // 预览重新获取后旧快照失效：长图必须重新生成。
+  state.taskPreviewSnapshotId = null;
+  state.taskPreviewImageRequestId += 1;
+  state.taskPreviewImageLoading = false;
+  elements.taskPreviewImagePages.replaceChildren();
+  elements.taskPreviewImageState.textContent = "";
+  elements.taskPreviewImageState.hidden = true;
+  elements.taskPreviewImageHint.textContent = "";
+  elements.taskPreviewImageHint.hidden = true;
+  closePreviewImageViewer(true);
+  syncPreviewImageButton();
+}
+
+function clearTaskPreviewResults() {
+  elements.taskPreviewSections.replaceChildren();
+  elements.taskPreviewFailed.replaceChildren();
+  elements.taskPreviewFailed.hidden = true;
+  elements.taskPreviewMeta.replaceChildren();
+  elements.taskPreviewMeta.hidden = true;
+  resetPreviewOutput();
+  resetTaskPreviewImages();
+}
+
+function clearTaskPreviewPanels() {
+  state.taskPreviewRequestId += 1;
+  state.taskPreviewLoading = false;
+  state.taskPreviewOutputs = null;
+  state.taskPreviewTaskRevision = null;
+  clearTaskPreviewResults();
+  elements.taskPreviewStatus.textContent = "";
+  elements.taskPreviewStatus.hidden = true;
+  elements.taskPreviewStatus.className = "status preview-status";
+  setTaskPreviewBusy(false);
+}
+
+function showTaskPreviewStatus(text, tone) {
+  const node = elements.taskPreviewStatus;
+  if (!text) {
+    node.textContent = "";
+    node.hidden = true;
+    node.className = "status preview-status";
+    return;
+  }
+  node.hidden = false;
+  node.textContent = text;
+  node.className = "status preview-status preview-status-" + (tone || "info");
+}
+
+function setTaskPreviewBusy(busy) {
+  state.taskPreviewLoading = busy;
+  elements.taskPreviewRefreshButton.disabled = busy;
+  elements.taskPreviewRefreshButton.textContent = busy ? "正在获取…" : "重新获取";
+  syncPreviewOutputButtons();
+  syncPreviewImageButton();
+}
+
+function taskPreviewErrorText(error) {
+  const detail = error && typeof error === "object" ? error : {};
+  const payload = detail.data && typeof detail.data === "object" ? detail.data : {};
+  const code = String(detail.code || payload.code || "");
+  const message = friendlyErrorMessage(error);
+  if (code === "content_unavailable" || message.includes("没有候选站点能同时提供全部栏目")) {
+    return "没有候选站点能同时提供全部栏目，请调整栏目或候选站点后再预览。";
+  }
+  if (code === "preview_revision_changed" || message.includes("任务配置在获取期间发生变化")) {
+    return "任务配置在获取期间发生变化，本次预览已取消，请重试。";
+  }
+  return "预览失败：" + message;
+}
+
+function renderTaskPreviewMeta(data) {
+  const meta = elements.taskPreviewMeta;
+  meta.replaceChildren();
+  addMeta(meta, "任务", data.task_name || "未命名任务");
+  addMeta(meta, "站点", data.site_name || "未记录");
+  const items = Array.isArray(data.items) ? data.items : [];
+  addMeta(meta, "栏目", items.length > 0
+    ? items.map((item) => {
+      const label = item.label || taskItemLabel(item.content_type);
+      return Number.isInteger(item.limit) ? label + "（" + item.limit + " 条）" : label;
+    }).join("、")
+    : "未记录");
+  const sections = Array.isArray(data.sections) ? data.sections : [];
+  const source = sections.find((section) =>
+    section && typeof section.source_display === "string" && section.source_display);
+  if (source) {
+    // source_display 已按隐私规则处理：自建服务只显示标签，不含地址与凭据。
+    addMeta(meta, "来源", source.source_display);
+  }
+  addMeta(meta, "结果",
+    "成功 " + Number(data.success_count || 0) + " 个栏目 · 失败 " +
+    Number(data.failure_count || 0) + " 个栏目");
+  meta.hidden = false;
+}
+
+function renderTaskPreviewFailures(data) {
+  const failed = Array.isArray(data.failed_sections) ? data.failed_sections : [];
+  elements.taskPreviewFailed.replaceChildren();
+  if (failed.length === 0) {
+    elements.taskPreviewFailed.hidden = true;
+    return;
+  }
+  for (const entry of failed) {
+    const row = document.createElement("p");
+    row.className = "preview-block-error";
+    const label = entry && (entry.label || taskItemLabel(entry.content_type));
+    const reason = entry && typeof entry.message === "string" && entry.message
+      ? entry.message
+      : "该栏目未能获取内容。";
+    row.textContent = (label || "栏目") + "：" + reason;
+    elements.taskPreviewFailed.append(row);
+  }
+  elements.taskPreviewFailed.hidden = false;
+}
+
+function renderTaskPreview(data) {
+  if (!data || typeof data !== "object") {
+    throw new Error("预览数据格式异常。");
+  }
+  state.taskPreviewTaskRevision = Number.isInteger(data.task_revision)
+    ? data.task_revision
+    : null;
+  const outputs = data.outputs && typeof data.outputs === "object" ? data.outputs : {};
+  state.taskPreviewOutputs = {
+    text: typeof outputs.text === "string" ? outputs.text : "",
+    markdown: typeof outputs.markdown === "string" ? outputs.markdown : "",
   };
-  state.profilePreviewFormat = "text";
-  const textRadio = elements.profilePreviewResult.querySelector(
-    'input[name="profile-output-format"][value="text"]',
-  );
-  if (textRadio) {
-    textRadio.checked = true;
-  }
-  renderProfileOutput();
-  resetProfileImages();
+  // 先清掉上一次预览的长图状态，再记录本次快照；顺序反了会把快照 id 清空。
+  resetTaskPreviewImages();
   const snapshot = data.image_snapshot && typeof data.image_snapshot === "object"
     ? data.image_snapshot
     : null;
-  state.profileImageSnapshotId =
-    snapshot && typeof snapshot.id === "string" && snapshot.id
-      ? snapshot.id
-      : null;
-  if (!state.profileImageSnapshotId) {
-    elements.profileImageHint.textContent =
-      "本次预览未保留图片快照，可能超过大小限制；文字和 Markdown 仍可使用。";
-    elements.profileImageHint.hidden = false;
+  state.taskPreviewSnapshotId = snapshot && typeof snapshot.id === "string"
+    ? snapshot.id
+    : null;
+  renderTaskPreviewMeta(data);
+  const sections = Array.isArray(data.sections) ? data.sections : [];
+  elements.taskPreviewSections.replaceChildren();
+  for (const section of sections) {
+    if (!section || typeof section !== "object") continue;
+    elements.taskPreviewSections.append(renderPreviewSection(section));
   }
-  syncProfileImageButton();
-  elements.profilePreviewResult.hidden = false;
-  const tone = data.status === "complete"
-    ? "success"
-    : data.status === "partial"
-      ? "info"
-      : "error";
-  const message = data.status === "complete"
-    ? `组合预览完成：${data.success_count} 个栏目成功。`
-    : data.status === "partial"
-      ? `组合预览部分成功：${data.success_count} 个成功，${data.failure_count} 个失败。`
-      : "组合预览全部失败。";
-  showProfilePreviewStatus(message, tone);
-}
-
-function showProfilePreviewStatus(message, tone = "info") {
-  elements.profilePreviewStatus.textContent = message;
-  elements.profilePreviewStatus.dataset.tone = tone;
-  elements.profilePreviewStatus.hidden = false;
-}
-
-async function previewProfile(forceRefresh = false) {
-  if (!bridge || state.profilePreviewLoading) {
-    return;
-  }
-  const profileId = elements.profilePreviewSelect.value;
-  if (!profileId) {
-    showProfilePreviewStatus("请先选择一个已保存组合。", "error");
-    return;
-  }
-  const siteId = elements.profilePreviewSite.value;
-  if (!siteId) {
-    showProfilePreviewStatus("请先选择本次预览使用的站点。", "error");
-    return;
-  }
-  state.profilePreviewId = profileId;
-  const profile = state.profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    showProfilePreviewStatus("组合不存在或已被删除，请重新选择。", "error");
-    return;
-  }
-  const requestSignature = profileSignature(profile);
-  const requestRevision = profile.revision;
-  const requestId = ++state.profilePreviewRequestId;
-  state.profilePreviewBaseline = requestSignature;
-  state.profilePreviewLoading = true;
-  clearProfilePreview();
-  showProfilePreviewStatus(
-    forceRefresh ? "正在刷新组合（跳过缓存）…" : "正在获取组合…",
-    "info",
+  renderTaskPreviewFailures(data);
+  state.taskPreviewFormat = "text";
+  renderPreviewOutput();
+  elements.taskPreviewImagePages.replaceChildren();
+  syncPreviewImageButton();
+  showTaskPreviewStatus(
+    sections.length === 0
+      ? "预览完成，但没有可展示的栏目内容。"
+      : "预览完成：实际使用站点 " + (data.site_name || "未知") + "。预览不会发送消息，也不改动任务配置。",
+    "success",
   );
-  setProfilePreviewBusy(true);
+}
+
+async function requestTaskPreview(force) {
+  const taskId = state.taskPreviewTaskId;
+  if (!bridge || !taskId || state.taskPreviewLoading) {
+    return false;
+  }
+  const requestId = ++state.taskPreviewRequestId;
+  clearTaskPreviewResults();
+  setTaskPreviewBusy(true);
+  showTaskPreviewStatus("正在获取内容…", "info");
   try {
+    // 载荷只带 force_refresh：栏目与候选站点一律用已保存的任务配置。
     const data = await bridge.apiPost(
-      `profiles/${encodeURIComponent(profileId)}/preview`,
-      { force_refresh: Boolean(forceRefresh), site_id: siteId },
+      "tasks/" + encodeURIComponent(taskId) + "/preview",
+      { force_refresh: force === true },
     );
-    const currentProfile = state.profiles.find(
-      (item) => item.id === profileId,
-    );
-    const currentSignature = currentProfile
-      ? profileSignature(currentProfile)
-      : null;
-    const revisionMatches =
-      currentProfile &&
-      currentProfile.revision === requestRevision &&
-      data &&
-      data.profile_id === profileId &&
-      data.profile_revision === requestRevision;
-    if (
-      requestId !== state.profilePreviewRequestId ||
-      elements.profilePreviewSelect.value !== profileId ||
-      elements.profilePreviewSite.value !== siteId ||
-      !currentProfile ||
-      currentSignature !== requestSignature ||
-      !revisionMatches
-    ) {
-      if (requestId === state.profilePreviewRequestId) {
-        invalidateProfilePreview();
-      }
-      return;
+    if (requestId !== state.taskPreviewRequestId || taskId !== state.taskPreviewTaskId) {
+      return false;
     }
-    renderProfilePreview(data);
+    renderTaskPreview(data && data.data ? data.data : data);
+    return true;
   } catch (error) {
-    if (requestId === state.profilePreviewRequestId) {
-      state.profilePreviewBaseline = null;
-      invalidateProfilePreview();
-      showProfilePreviewStatus(
-        `组合获取失败：${friendlyErrorMessage(error)}`,
-        "error",
-      );
+    if (requestId !== state.taskPreviewRequestId) {
+      return false;
     }
+    clearTaskPreviewResults();
+    showTaskPreviewStatus(taskPreviewErrorText(error), "error");
+    return false;
   } finally {
-    if (requestId === state.profilePreviewRequestId) {
-      state.profilePreviewLoading = false;
-      setProfilePreviewBusy(false);
+    if (requestId === state.taskPreviewRequestId) {
+      setTaskPreviewBusy(false);
     }
   }
 }
 
+function openTaskPreview(task) {
+  if (!bridge || !task || typeof task.id !== "string" || state.taskPreviewLoading) {
+    return;
+  }
+  state.taskPreviewTaskId = task.id;
+  elements.taskPreviewTitle.textContent = "预览内容 · " + task.name;
+  clearTaskPreviewPanels();
+  openDialog(elements.taskPreviewDialog);
+  requestTaskPreview(false);
+}
+
+function closeTaskPreview() {
+  state.taskPreviewRequestId += 1;
+  state.taskPreviewTaskId = null;
+  closePreviewImageViewer(true);
+  closeDialog(elements.taskPreviewDialog);
+  clearTaskPreviewPanels();
+}
+
+function updateTaskPreviewGate() {
+  const button = elements.taskPreviewFormButton;
+  if (!button) return;
+  button.disabled = state.taskFormDisabled || state.taskMode !== "edit" ||
+    !state.editingTask || state.taskSaving;
+}
+
+function previewSavedTask() {
+  if (state.taskMode !== "edit" || !state.editingTask) {
+    showTaskFormError("请先保存任务后再预览。");
+    return;
+  }
+  if (!taskFormMatchesSaved()) {
+    // 未保存的修改不能预览：预览只读取已保存的任务配置。
+    showTaskFormError("请先保存任务修改后再预览。");
+    return;
+  }
+  openTaskPreview(state.editingTask);
+}
 
 function blockIfPendingWrite() {
   if (state.pendingWrite) {
     showStatus(
       "有站点写操作结果尚未确认。请先重新读取最新列表并关闭确认面板。",
-      "error",
-    );
-    return true;
-  }
-  if (state.profilePending) {
-    showStatus(
-      "有内容组合写操作结果尚未确认。请先重新读取最新组合并关闭确认面板。",
       "error",
     );
     return true;
@@ -3973,31 +3420,6 @@ async function confirmDelete() {
 }
 
 
-function taskProfileOptions(selectedId) {
-  elements.taskProfile.replaceChildren();
-  if (state.profiles.length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "没有已保存组合";
-    elements.taskProfile.append(option);
-    elements.taskProfile.disabled = true;
-    return;
-  }
-  elements.taskProfile.disabled = false;
-  for (const profile of state.profiles) {
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.textContent = profile.name;
-    if (profile.id === selectedId) {
-      option.selected = true;
-    }
-    elements.taskProfile.append(option);
-  }
-  if (!selectedId && state.profiles.length > 0) {
-    elements.taskProfile.value = state.profiles[0].id;
-  }
-}
-
 const SCHEDULE_ERROR_LABELS = {
   schedule_timezone_unavailable: "时区数据不可用，无法计算理论下次时间。",
   schedule_invalid: "已保存计划格式异常，无法计算理论下次时间。",
@@ -4215,6 +3637,38 @@ function collectTaskSchedule() {
   return { kind: "weekly", timezone, time, weekdays };
 }
 
+function itemsSummary(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return "无栏目";
+  return list
+    .map((item) => {
+      const label = item.label || taskItemLabel(item.content_type);
+      return Number.isInteger(item.limit)
+        ? `${label} 最多 ${item.limit} 条`
+        : `${label} 不限条数`;
+    })
+    .join(" · ");
+}
+
+function taskItemsSummary(task) {
+  return itemsSummary(task && task.items);
+}
+
+function taskCandidateText(task) {
+  const list = task && Array.isArray(task.sites) ? task.sites : [];
+  if (list.length === 0) return "无候选站点";
+  return list
+    .map((item, index) => {
+      const name = item && typeof item.name === "string" && item.name
+        ? item.name
+        : item && item.exists === false
+          ? "已删除的站点"
+          : (item && item.id) || "未知站点";
+      return `${index + 1}. ${name}${item && item.enabled === false ? "（已停用）" : ""}`;
+    })
+    .join(" → ");
+}
+
 function renderTasks() {
   elements.taskCount.textContent = `${state.tasks.length} 个`;
   elements.tasksList.replaceChildren();
@@ -4230,7 +3684,7 @@ function renderTasks() {
   clearTaskListState();
   for (const task of state.tasks) {
     const card = document.createElement("li");
-    card.className = "site-card profile-card";
+    card.className = "site-card task-card";
     card.dataset.taskId = task.id;
     const head = document.createElement("div");
     head.className = "site-card-head";
@@ -4241,20 +3695,11 @@ function renderTasks() {
 
     const meta = document.createElement("div");
     meta.className = "site-meta";
-    const profile = document.createElement("span");
-    profile.textContent = `组合：${task.profile_name}`;
-    const taskCandidates = Array.isArray(task.sites) ? task.sites : [];
-    const usableCandidates = taskCandidates.filter(
-      (item) => item && item.enabled && item.exists !== false,
-    );
-    if (taskCandidates.length > 0 && usableCandidates.length === 0) {
-      // 与原组合站点无关：候选全不可用时执行会改发异常提示。
-      profile.textContent += "（候选站点均不可用，执行时将发送异常提示）";
-    }
+    const items = document.createElement("span");
+    items.className = "task-card-items";
+    items.textContent = `栏目：${taskItemsSummary(task)}`;
     const output = document.createElement("span");
-    output.textContent = `输出：${task.output_label}`;
-    const targets = document.createElement("span");
-    targets.textContent = `目标数量：${task.target_count} 个 UMO`;
+    output.textContent = `输出：${task.output_label || task.output_format}`;
     const schedule = document.createElement("span");
     schedule.textContent = scheduleLabel(task);
     const preview = document.createElement("span");
@@ -4262,19 +3707,36 @@ function renderTasks() {
     preview.textContent = schedulePreviewText(task);
     const runtime = document.createElement("span");
     if (task.next_run_at) {
-      runtime.textContent =
-        `实际下次执行（服务端 UTC）：${task.next_run_at}`;
+      runtime.textContent = `实际下次执行（服务端 UTC）：${task.next_run_at}`;
       runtime.className = "task-schedule-runtime";
     }
+    const candidateList = Array.isArray(task.sites) ? task.sites : [];
+    const usableCandidates = candidateList.filter(
+      (item) => item && item.enabled && item.exists !== false,
+    );
+    const candidates = document.createElement("span");
+    candidates.className = "task-card-sites";
+    candidates.textContent = `候选站点：${taskCandidateText(task)}`;
+    if (candidateList.length > 0 && usableCandidates.length === 0) {
+      // 候选全不可用时执行会改发异常提示，卡片上必须能看出来。
+      candidates.textContent += "（候选站点均不可用，执行时将发送异常提示）";
+    }
+    const umoCount = Array.isArray(task.umos)
+      ? task.umos.length
+      : (Number.isInteger(task.target_count) ? task.target_count : 0);
+    const targets = document.createElement("span");
+    targets.textContent = `目标数量：${umoCount} 个 UMO`;
     const disabled = document.createElement("span");
     disabled.className = "task-disabled";
     disabled.textContent = task.enabled
       ? "已启用 · 定时调度"
       : "未启用 · 仅管理员手动测试";
-    meta.append(profile, output, schedule, preview, runtime, targets, disabled);
+    meta.append(items, output, schedule, preview, runtime, candidates, targets, disabled);
 
     const actions = document.createElement("div");
-    actions.className = "profile-card-actions";
+    actions.className = "task-card-actions";
+    const previewButton = makeButton("预览内容", "button button-secondary",
+      () => openTaskPreview(task), `预览推送任务 ${task.name} 的内容`);
     const edit = makeButton("编辑", "button button-secondary", () =>
       openTaskEditor(task), `编辑推送任务 ${task.name}`);
     const power = makeButton(
@@ -4289,7 +3751,7 @@ function renderTasks() {
       openTaskDelete(task), `删除推送任务 ${task.name}`);
     power.dataset.taskPower = "1";
     power.disabled = state.taskPowerSaving;
-    actions.append(power, test, edit, remove);
+    actions.append(previewButton, power, test, edit, remove);
     card.append(head, meta, actions);
     elements.tasksList.append(card);
   }
@@ -4481,11 +3943,24 @@ function savedTaskSites(task) {
   return task.sites.map((item) => (typeof item === "string" ? item : item.id));
 }
 
+function currentTaskItems() {
+  return state.taskItems.map((item) => {
+    const raw = String(item.limitText == null ? "" : item.limitText).trim();
+    return {
+      content_type: item.content_type,
+      limit: /^[0-9]+$/.test(raw) ? Number(raw) : null,
+    };
+  });
+}
+
 function taskFormMatchesSaved() {
   if (state.taskMode !== "edit" || !state.editingTask) return false;
-  if (elements.taskProfile.value !== state.editingTask.profile_id) return false;
+  if (taskItemsSignature(currentTaskItems())
+      !== taskItemsSignature(savedTaskItems(state.editingTask))) {
+    return false;
+  }
   const saved = savedTaskSites(state.editingTask);
-  // 组合不再提供默认站点：候选完全由任务自己决定，空候选不算“没有变化”。
+  // 候选完全由任务自己决定，空候选也是一种已保存状态。
   return saved.join(",") === state.taskSites.join(",");
 }
 
@@ -4518,15 +3993,15 @@ async function runTaskCapabilityTest() {
   const taskId = state.editingTaskId;
   const revision = state.editingTaskRevision;
   const sitesSnapshot = state.taskSites.slice().join(",");
-  const profileSnapshot = elements.taskProfile.value;
+  const itemsSnapshot = taskItemsSignature(currentTaskItems());
   elements.taskCapabilityTestButton.disabled = true;
   setTaskCapabilityResult("正在检查候选站点…", "info");
-  // 切换任务、关闭弹窗或改了候选/组合后，旧请求（成功或失败）都作废。
+  // 切换任务、关闭弹窗或改了候选/栏目后，旧请求（成功或失败）都作废。
   const stillCurrent = () => state.taskMode === "edit"
     && state.editingTaskId === taskId
     && state.editingTaskRevision === revision
     && state.taskSites.slice().join(",") === sitesSnapshot
-    && elements.taskProfile.value === profileSnapshot;
+    && taskItemsSignature(currentTaskItems()) === itemsSnapshot;
   try {
     const data = await bridge.apiPost(
       `tasks/${encodeURIComponent(taskId)}/capability-test`, {},
@@ -4574,14 +4049,11 @@ function openCreateTask() {
   setTaskCapabilityResult("", null);
   updateTaskCapabilityGate();
   elements.taskDialogTitle.textContent = "新增推送任务";
-  taskProfileOptions(null);
+  state.taskItems = [];
+  renderTaskItems();
   clearTaskFormError();
   setTaskFormDisabled(false);
   elements.taskSaveButton.textContent = "保存任务";
-  if (state.profiles.length === 0) {
-    showTaskFormError("请先创建至少一个内容组合。");
-    elements.taskSaveButton.disabled = true;
-  }
   openDialog(elements.taskDialog);
   elements.taskName.focus();
 }
@@ -4599,13 +4071,17 @@ function openTaskEditor(task) {
   state.editingTaskRevision = task.revision;
   elements.taskDialogTitle.textContent = "编辑推送任务";
   elements.taskName.value = task.name;
-  taskProfileOptions(task.profile_id);
   elements.taskOutputFormat.value = task.output_format;
   elements.taskUmos.value = Array.isArray(task.umos) ? task.umos.join("\n") : "";
   state.editingTask = task;
+  state.taskItems = savedTaskItems(task).map((item) => ({
+    content_type: item.content_type,
+    limitText: Number.isInteger(item.limit) ? String(item.limit) : "",
+  }));
   state.taskSites = Array.isArray(task.sites)
     ? task.sites.map((item) => (typeof item === "string" ? item : item.id))
     : [];
+  renderTaskItems();
   renderTaskSites();
   setTaskCapabilityResult("", null);
   updateTaskCapabilityGate();
@@ -4634,8 +4110,16 @@ async function handleTaskSave(event) {
   if (!elements.taskForm.reportValidity()) {
     return;
   }
-  if (!elements.taskProfile.value) {
-    showTaskFormError("请选择内容组合。");
+  let items;
+  try {
+    items = collectTaskItems();
+  } catch (error) {
+    showTaskFormError(friendlyErrorMessage(error));
+    return;
+  }
+  if (items.length === 0) {
+    showTaskFormError("请至少添加一个内容栏目后再保存。");
+    elements.taskItemPicker?.focus();
     return;
   }
   if (state.taskSites.length === 0) {
@@ -4657,7 +4141,7 @@ async function handleTaskSave(event) {
   setTaskFormDisabled(true);
   const payload = {
     name: elements.taskName.value,
-    profile_id: elements.taskProfile.value,
+    items,
     output_format: elements.taskOutputFormat.value,
     umos: collectTaskUmos(),
   };
@@ -4743,7 +4227,7 @@ function taskPowerPreflight(task, mode) {
     return "任务 UMO 白名单为空，不能启用。";
   }
   // 站点可用性不在这里拦截：候选站点全停用时执行会发送安全异常提示，
-  // 与后端规则保持一致；组合原站点停用也不再阻止启用。
+  // 与后端规则保持一致；候选站点此前停用也不再阻止启用。
   return null;
 }
 
@@ -4774,7 +4258,7 @@ function openTaskPower(task, mode) {
     ? "确认启用" : "确认停用";
   elements.taskPowerInfo.replaceChildren();
   appendPowerLine("任务", task.name);
-  appendPowerLine("内容组合", task.profile_name || "未知组合");
+  appendPowerLine("内容栏目", taskItemsSummary(task));
   appendPowerLine("输出方式", task.output_label || task.output_format);
   appendPowerLine("目标", Array.isArray(task.umos) && task.umos.length
     ? task.umos.join("\n") : "无");
@@ -4904,7 +4388,7 @@ function openTaskDelete(task) {
   clearTaskPendingPanels();
   state.taskDeleteTarget = task;
   elements.taskDeleteMessage.textContent =
-    `确定删除“${task.name}”吗？删除任务不会删除其内容组合或站点。`;
+    `确定删除“${task.name}”吗？删除任务不会删除它的候选站点。`;
   elements.taskDeleteError.textContent = "";
   elements.taskDeleteError.hidden = true;
   elements.taskDeleteCancelButton.disabled = false;
@@ -5450,9 +4934,10 @@ function renderDeliveryPreview(data, token) {
   }
   elements.deliveryConfirmInfo.replaceChildren();
   for (const [label, value] of [
-    ["任务", data.task_name], ["组合", data.profile_name],
+    ["任务", data.task_name],
     ["输出方式", data.output_label],
-    ["配置版本", `任务 ${data.task_revision} · 组合 ${data.profile_revision}`],
+    ["配置版本", `任务 ${data.task_revision}`],
+    ["内容栏目", itemsSummary(data.items)],
     ["内容来源", "按候选顺序选择第一个同时满足全部栏目与条数的站点；不会混用多个站点"],
     ["失败处理", "若没有任何候选站点能满足配置（含上游失败或条数不足），将改为向下列白名单发送一条文字异常提示"],
     ["内容策略", "重新准备内容，不复用页面旧预览；可能命中内容缓存（默认 300 秒），不保证重新请求上游"],
@@ -5665,7 +5150,6 @@ async function submitDelivery(event) {
       {
         execution_id: executionId,
         expected_task_revision: preview.task_revision,
-        expected_profile_revision: preview.profile_revision,
         // 锁定确认时看到的候选顺序与 alert_only 语义：提交前状态变化
         // 必须重新审阅，不能改发未经确认的内容。
         expected_candidates: preview.candidate_snapshot,
@@ -5847,7 +5331,7 @@ function renderDeliveries(executions, append = false) {
     time.textContent = execution.created_at;
     meta.append(id, counts, time);
     const actions = document.createElement("div");
-    actions.className = "profile-card-actions";
+    actions.className = "task-card-actions";
     actions.append(makeButton("查看详情", "button button-secondary",
       () => openDeliveryHistory(execution), `查看执行 ${execution.id}`));
     card.append(head, meta, actions);
@@ -5870,7 +5354,7 @@ const SCHEDULE_SKIP_LABELS = {
   schedule_invalid: "计划无效",
   config_unavailable: "配置读取失败",
   site_disabled: "站点已停用",
-  profile_invalid: "内容组合无效",
+  items_invalid: "内容栏目无效",
   umos_invalid: "白名单或发送目标无效",
 };
 
@@ -6014,12 +5498,11 @@ async function loadDeliveries(reset = true) {
   }
 }
 async function refreshAll() {
-  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadScheduleRuns(true), loadDeliveries(true)]);
+  await Promise.all([loadSites(), loadTasks(), loadScheduleRuns(true), loadDeliveries(true)]);
 }
 
 function bindEvents() {
   elements.taskSiteAddButton.addEventListener("click", addTaskSite);
-  elements.taskProfile.addEventListener("change", updateTaskCapabilityGate);
   elements.taskCapabilityTestButton.addEventListener(
     "click", runTaskCapabilityTest,
   );
@@ -6211,97 +5694,39 @@ function bindEvents() {
       state.taskDeleteTarget = null;
     }
   });
-  elements.createProfileButton.addEventListener("click", openCreateProfile);
-  elements.profileRetryButton.addEventListener("click", loadProfiles);
-  elements.profilePreviewButton.addEventListener(
+  elements.taskItemAddButton.addEventListener("click", addTaskItem);
+  elements.taskPreviewFormButton.addEventListener("click", previewSavedTask);
+  elements.taskPreviewRefreshButton.addEventListener(
     "click",
-    () => previewProfile(false),
+    () => requestTaskPreview(true),
   );
-  elements.profilePreviewRefreshButton.addEventListener(
-    "click",
-    () => previewProfile(true),
-  );
-  elements.profilePreviewResult.addEventListener("change", (event) => {
-    if (
-      event.target instanceof HTMLInputElement &&
-      event.target.name === "profile-output-format"
-    ) {
-      state.profilePreviewFormat =
-        event.target.value === "markdown" ? "markdown" : "text";
-      renderProfileOutput();
-    }
-  });
-  elements.profileCopyButton.addEventListener("click", copyProfileOutput);
-  elements.profileImageButton.addEventListener("click", generateProfileImage);
-  elements.profileDownloadButton.addEventListener(
-    "click",
-    downloadProfileOutput,
-  );
-  elements.profilePreviewSelect.addEventListener("change", () => {
-    state.profilePreviewId = elements.profilePreviewSelect.value;
-    resetProfilePreview();
-    setProfilePreviewBusy(false);
-  });
-  elements.profilePreviewSite.addEventListener("change", () => {
-    state.profilePreviewSiteId = elements.profilePreviewSite.value;
-    // 结果绑定到具体站点：换站点后旧结果和长图都不能继续使用。
-    resetProfilePreview();
-    resetProfileImages();
-    setProfilePreviewBusy(false);
-  });
-  elements.profileForm.addEventListener("submit", handleProfileSave);
-  elements.profileRecheckButton.addEventListener(
-    "click",
-    recheckProfilePending,
-  );
-  elements.profileReviewCloseButton.addEventListener(
-    "click",
-    finishProfilePendingReview,
-  );
-  elements.profileDeleteRecheckButton.addEventListener(
-    "click",
-    recheckProfilePending,
-  );
-  elements.profileDeleteReviewCloseButton.addEventListener(
-    "click",
-    finishProfilePendingReview,
-  );
-  elements.profileCloseDialogButton.addEventListener("click", () => {
-    if (!state.profileSaving && !state.profilePending) {
-      requestCloseFormDialog(elements.profileDialog);
-    }
-  });
-  elements.profileCancelButton.addEventListener("click", () => {
-    if (!state.profileSaving && !state.profilePending) {
-      requestCloseFormDialog(elements.profileDialog);
-    }
-  });
-  elements.profileDialog.addEventListener("cancel", (event) => {
+  elements.taskPreviewDoneButton.addEventListener("click", closeTaskPreview);
+  elements.taskPreviewCloseButton.addEventListener("click", closeTaskPreview);
+  elements.taskPreviewDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    if (state.profileSaving || state.profilePending) {
-      return;
-    }
-    requestCloseFormDialog(elements.profileDialog);
+    closeTaskPreview();
   });
-  elements.profileDeleteCancelButton.addEventListener("click", () => {
-    if (!state.profileDeleting && !state.profilePending) {
-      closeDialog(elements.profileDeleteDialog);
+  elements.taskPreviewDialog.addEventListener("close", () => {
+    state.taskPreviewRequestId += 1;
+    state.taskPreviewTaskId = null;
+    closePreviewImageViewer(true);
+  });
+  elements.taskPreviewRoot.addEventListener("change", (event) => {
+    if (
+      event.target instanceof HTMLInputElement
+      && event.target.name === "task-preview-output-format"
+    ) {
+      state.taskPreviewFormat =
+        event.target.value === "markdown" ? "markdown" : "text";
+      renderPreviewOutput();
     }
   });
-  elements.profileDeleteConfirmButton.addEventListener(
+  elements.taskPreviewCopyButton.addEventListener("click", copyPreviewOutput);
+  elements.taskPreviewDownloadButton.addEventListener(
     "click",
-    confirmProfileDelete,
+    downloadPreviewOutput,
   );
-  elements.profileDeleteDialog.addEventListener("cancel", (event) => {
-    if (state.profileDeleting || state.profilePending) {
-      event.preventDefault();
-    }
-  });
-  elements.profileDeleteDialog.addEventListener("close", () => {
-    if (!state.profilePending) {
-      state.profileDeleteTarget = null;
-    }
-  });
+  elements.taskPreviewImageButton.addEventListener("click", generatePreviewImage);
   elements.refreshButton.addEventListener("click", refreshAll);
   elements.retryButton.addEventListener("click", refreshAll);
   elements.createButton.addEventListener("click", openCreate);
@@ -6394,7 +5819,6 @@ function bindEvents() {
 const NAV_VIEW_DEFINITIONS = [
   { view: "sites", label: "站点管理" },
   { view: "preview", label: "内容预览" },
-  { view: "profiles", label: "内容组合" },
   { view: "tasks", label: "推送任务" },
   { view: "executions", label: "执行记录" },
 ];
@@ -6737,7 +6161,7 @@ async function init() {
   }
 
   bindEvents();
-  await Promise.all([loadSites(), loadProfiles(), loadTasks(), loadScheduleRuns(true), loadDeliveries(true)]);
+  await Promise.all([loadSites(), loadTasks(), loadScheduleRuns(true), loadDeliveries(true)]);
   syncDeliveryPendingPanel();
 }
 

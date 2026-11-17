@@ -1,12 +1,10 @@
 /*
- * 组合与站点职责分离的页面回归。
+ * 任务与站点职责分离的页面回归。
  *
- * 真实 Chromium 加载 views/sites/index.html + app.js，只替换宿主 bridge。
- * 验证：组合表单不再选择站点、保存载荷不带站点；预览必须显式选站并随站点失效；
- * 任务候选为空时不能保存；候选顺序保存后重开仍保持；没有站点也能建组合；
- * 390px 下候选与长名称不横向溢出。
+ * 验证：任务只按站点 id 选择候选站点、排序与保存往返一致；站点管理仍是唯一创建/
+ * 编辑站点的地方；停用或已删除的站点在候选里显式标注且不阻止保存；候选为空时拦下保存。
  *
- * 这是桩 bridge 的页面逻辑验证，不代表真实 AstrBot 后台/数据库往返。
+ * 桩 bridge 的页面逻辑验证，不代表真实宿主或上游。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -37,57 +35,24 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
 };
 
-const SITES = [
-  { id: "site-a", name: "站点A", base_url: "https://a.example.test/n",
-    enabled: true, timeout_seconds: 10, source_kind: "public",
-    has_bearer_token: false, revision: 3, updated_at: "" },
-  { id: "site-b", name: "站点B", base_url: "https://b.example.test/n",
-    enabled: true, timeout_seconds: 10, source_kind: "public",
-    has_bearer_token: false, revision: 4, updated_at: "" },
-  { id: "site-c", name: "站点C", base_url: "https://c.example.test/n",
-    enabled: false, timeout_seconds: 10, source_kind: "self_built",
-    has_bearer_token: true, revision: 1, updated_at: "" },
-];
-
-const LONG_NAME = "超长站点名称用于检查候选行在窄屏下是否会撑破容器边界";
-const LONG_SITES = [
-  { id: "site-long-a", name: LONG_NAME + "甲", base_url: "https://long.example.test/n",
-    enabled: true, timeout_seconds: 10, source_kind: "public",
-    has_bearer_token: false, revision: 1, updated_at: "" },
-  { id: "site-long-b", name: LONG_NAME + "乙", base_url: "https://long.example.test/m",
-    enabled: true, timeout_seconds: 10, source_kind: "public",
-    has_bearer_token: false, revision: 1, updated_at: "" },
-];
-
-const PROFILES = [{
-  id: "profile-1", name: "组合一", revision: 1,
-  items: [{ content_type: "daily_news", params: {}, limit: 2 }],
-  created_at: "", updated_at: "",
-}];
-
-const TASKS = [{
-  id: "task-1", name: "任务一", profile_id: "profile-1", profile_name: "组合一",
-  site_id: null, site_enabled: true, output_format: "text",
-  output_label: "纯文字", umos: ["aiocqhttp:GroupMessage:g:1"],
-  enabled: false, revision: 2, created_at: "", updated_at: "",
-  schedule: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
-  schedule_raw: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
-  sites: [{ id: "site-a", name: "站点A", enabled: true }],
-}];
-
-const server = http.createServer((request, response) => {
-  const url = new URL(request.url, "http://127.0.0.1");
-  const relative = url.pathname === "/" ? "/index.html" : url.pathname;
-  const target = path.join(VIEWS_DIR, relative);
-  if (!target.startsWith(VIEWS_DIR) || !fs.existsSync(target)) {
-    response.writeHead(404).end("not found");
-    return;
-  }
-  response.writeHead(200, {
-    "Content-Type": MIME[path.extname(target)] || "application/octet-stream",
+function serve() {
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    const relative = url.pathname === "/" ? "/index.html" : url.pathname;
+    const target = path.join(VIEWS_DIR, relative);
+    if (!target.startsWith(VIEWS_DIR) || !fs.existsSync(target)) {
+      response.writeHead(404).end("not found");
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": MIME[path.extname(target)] || "application/octet-stream",
+    });
+    response.end(fs.readFileSync(target));
   });
-  response.end(fs.readFileSync(target));
-});
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port }));
+  });
+}
 
 let assertions = 0;
 function check(condition, message) {
@@ -95,278 +60,188 @@ function check(condition, message) {
   assert.ok(condition, message);
 }
 
-async function openPage(browser, port, options = {}) {
-  const fixtures = {
-    sites: options.sites || SITES,
-    profiles: options.profiles || PROFILES,
-    tasks: options.tasks || TASKS,
-    taskSites: options.taskSites || ["site-a", "site-b"],
-  };
-  const page = await browser.newPage({
-    viewport: options.viewport || { width: 1440, height: 900 },
-  });
-  await page.addInitScript((data) => {
+const SITES = [
+  { id: "site-a", name: "站点A", base_url: "https://a.example.test/n", enabled: true,
+    timeout_seconds: 10, source_kind: "public", has_bearer_token: false, revision: 2,
+    updated_at: "" },
+  { id: "site-b", name: "站点B", base_url: "https://b.example.test/n", enabled: true,
+    timeout_seconds: 10, source_kind: "public", has_bearer_token: false, revision: 1,
+    updated_at: "" },
+  { id: "site-c", name: "站点C", base_url: "https://c.example.test/n", enabled: false,
+    timeout_seconds: 10, source_kind: "self_built", has_bearer_token: true, revision: 5,
+    updated_at: "" },
+];
+
+const TASKS = [
+  {
+    id: "task-a", name: "任务A",
+    items: [{ content_type: "daily_news", label: "每日新闻", limit: 2 }],
+    output_format: "text", output_label: "纯文字",
+    umos: ["aiocqhttp:GroupMessage:g:1"], enabled: true, revision: 3,
+    created_at: "", updated_at: "",
+    schedule: null, schedule_raw: null, schedule_error: null,
+    sites: [{ id: "site-a", name: "站点A", enabled: true },
+      { id: "site-c", name: "站点C", enabled: false }],
+  },
+  {
+    id: "task-x", name: "任务X",
+    items: [{ content_type: "zhihu_hot", label: "知乎热榜", limit: null }],
+    output_format: "text", output_label: "纯文字",
+    umos: [], enabled: false, revision: 1, created_at: "", updated_at: "",
+    schedule: null, schedule_raw: null, schedule_error: null,
+    sites: [{ id: "site-gone", name: "已删站点", enabled: false }],
+  },
+];
+
+const seal = (value) => JSON.parse(JSON.stringify(value));
+
+async function openPage(browser, port) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.addInitScript((fixtures) => {
+    window.__calls = [];
     window.__state = {
-      calls: [],
-      sites: data.sites,
-      profiles: data.profiles.slice(),
-      tasks: data.tasks,
-      taskSites: data.taskSites.slice(),
+      sites: JSON.parse(JSON.stringify(fixtures.sites)),
+      tasks: JSON.parse(JSON.stringify(fixtures.tasks)),
     };
     window.AstrBotPluginView = {
       ready: async () => ({ pageTitle: "60sAPI Hub" }),
       apiGet: async (endpoint) => {
         if (endpoint === "sites") return { sites: window.__state.sites };
-        if (endpoint === "profiles") {
-          return { profiles: window.__state.profiles };
-        }
-        if (endpoint === "tasks") {
-          const task = { ...window.__state.tasks[0] };
-          task.sites = window.__state.taskSites.map((id) => {
-            const site = window.__state.sites.find((item) => item.id === id);
-            return { id, name: site ? site.name : id, enabled: site ? site.enabled : true };
-          });
-          return { tasks: [task] };
-        }
+        if (endpoint === "tasks") return { tasks: window.__state.tasks };
         if (endpoint === "schedule-runs") return { claims: [], skips: [] };
         if (endpoint === "executions") return { executions: [], total: 0 };
         return {};
       },
       apiPost: async (endpoint, payload) => {
-        window.__state.calls.push({ endpoint, payload });
-        if (endpoint === "profiles") {
-          const created = {
-            id: "profile-new", name: payload.name, revision: 1,
-            items: payload.items, created_at: "", updated_at: "",
-          };
-          window.__state.profiles.push(created);
-          return created;
-        }
-        if (endpoint.endsWith("/preview")) {
-          const site = window.__state.sites.find(
-            (item) => item.id === payload.site_id);
-          return {
-            profile_id: "profile-1", profile_revision: 1, profile_name: "组合一",
-            site_id: payload.site_id, site_name: site ? site.name : "未知站点",
-            status: "complete", success_count: 1, failure_count: 0,
-            sections: [{
-              content_type: "daily_news", status: "ok", label: "每日60秒",
-              endpoint: "/60s", limit: 2, total_item_count: 1, displayed_count: 1,
-              items: [{ title: "标题一", description: "摘要一" }],
-              source_url: "https://a.example.test/n/60s", source_kind: "public",
-            }],
-            outputs: { text: "组合正文", markdown: "**组合正文**" },
-            image_snapshot: null,
-          };
-        }
-        if (endpoint.endsWith("/update") && Array.isArray(payload && payload.sites)) {
-          window.__state.taskSites = payload.sites.slice();
-          return { task_id: "task-1", revision: 3, enabled: false };
+        window.__calls.push({ endpoint, payload });
+        if (endpoint.endsWith("/update")) {
+          const id = endpoint.split("/")[1];
+          const task = window.__state.tasks.find((entry) => entry.id === id);
+          if (!task) throw new Error("任务不存在");
+          task.items = (payload.items || []).map((item) => ({
+            content_type: item.content_type,
+            limit: item.limit === undefined ? null : item.limit,
+          }));
+          task.sites = (payload.sites || []).map((siteId) => {
+            const site = window.__state.sites.find((entry) => entry.id === siteId);
+            return { id: siteId, name: site ? site.name : siteId,
+              enabled: Boolean(site && site.enabled) };
+          });
+          task.revision += 1;
+          return { task };
         }
         if (endpoint === "tasks") {
-          return { task_id: "task-new", revision: 1, enabled: false };
+          throw new Error("本套件不覆盖新增任务");
         }
         return {};
       },
     };
-  }, fixtures);
-  await page.goto("http://127.0.0.1:" + port + "/index.html", {
-    waitUntil: "domcontentloaded",
-  });
+  }, { sites: SITES, tasks: TASKS });
+  await page.goto("http://127.0.0.1:" + port + "/index.html", { waitUntil: "domcontentloaded" });
   return page;
 }
 
 (async () => {
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = server.address().port;
+  const { server, port } = await serve();
   const browser = await chromium.launch({ executablePath: CHROME, headless: true });
   try {
     const page = await openPage(browser, port);
-    await page.click('.nav-item[data-view="profiles"]');
-    await page.waitForSelector("#profiles-list li");
-
-    check(await page.locator("#profile-site").count() === 0,
-      "组合表单不应再包含站点选择");
-    const previewSite = await page.$eval("#profile-preview-site", (node) => ({
-      value: node.value,
-      disabled: node.disabled,
-      options: Array.from(node.options).map((option) => option.value),
-    }));
-    check(previewSite.options.join(",") === "site-a,site-b,site-c",
-      "预览站点下拉应列出全部站点：" + JSON.stringify(previewSite.options));
-    check(previewSite.value === "site-a",
-      "预览站点默认选中第一个启用站点：" + previewSite.value);
-    check(previewSite.disabled === false, "有站点时预览站点下拉应可用");
-
-    // 组合不再绑定站点：只填名称即可保存，载荷不含 site_id。
-    await page.click("#create-profile-button");
-    await page.waitForFunction(() => document.getElementById("profile-dialog").open);
-    check(await page.isEnabled("#profile-save-button"),
-      "没有站点选择也能保存组合");
-    check(await page.locator("#profile-form #profile-site").count() === 0,
-      "组合对话框内不应有站点字段");
-    const limitHelp = await page.textContent(".profile-items-fieldset .help");
-    check(limitHelp.includes("推送和聊天查询选择站点时")
-      && limitHelp.includes("必须达到的条数"),
-      "组合对话框说明条数在推送时是必须达到的条数：" + limitHelp.trim());
-    await page.fill("#profile-name", "新组合");
-    await page.click("#profile-save-button");
-    await page.waitForFunction(() => window.__state.calls.some(
-      (call) => call.endpoint === "profiles"));
-    const createCall = await page.evaluate(() => window.__state.calls
-      .find((call) => call.endpoint === "profiles"));
-    check(Object.keys(createCall.payload).sort().join(",") === "items,name",
-      "组合保存载荷只应包含 name/items：" + JSON.stringify(createCall.payload));
-
-    // 预览必须显式站点，并把站点带进请求。
-    await page.selectOption("#profile-preview-select", "profile-1");
-    await page.waitForSelector("#profile-preview-button:not([disabled])");
-    await page.click("#profile-preview-button");
-    await page.waitForSelector("#profile-preview-result:not([hidden])");
-    const firstPreview = await page.evaluate(() => window.__state.calls
-      .filter((call) => call.endpoint === "profiles/profile-1/preview").at(-1));
-    check(firstPreview.payload.site_id === "site-a",
-      "预览请求应带所选站点：" + JSON.stringify(firstPreview.payload));
-    check(await page.textContent("#profile-preview-source") === "站点A",
-      "预览结果应显示实际使用的站点");
-
-    // 换站点使旧结果失效，下一次预览用新站点。
-    await page.selectOption("#profile-preview-site", "site-b");
-    await page.waitForFunction(
-      () => document.getElementById("profile-preview-result").hidden);
-    check(true, "切换预览站点后旧结果应被清空");
-    await page.click("#profile-preview-button");
-    await page.waitForFunction(() => window.__state.calls
-      .filter((call) => call.endpoint === "profiles/profile-1/preview").length === 2);
-    await page.waitForSelector("#profile-preview-result:not([hidden])");
-    const secondPreview = await page.evaluate(() => window.__state.calls
-      .filter((call) => call.endpoint === "profiles/profile-1/preview").at(-1));
-    check(secondPreview.payload.site_id === "site-b",
-      "切换后预览应使用新站点：" + JSON.stringify(secondPreview.payload));
-    check(await page.textContent("#profile-preview-source") === "站点B",
-      "切换后预览结果应显示新站点");
-
-    // 任务：组合选项不再携带站点说明。
+    page.on("pageerror", (error) => console.error("PAGEERROR", error.message));
     await page.click('.nav-item[data-view="tasks"]');
     await page.waitForSelector("#tasks-list li");
-    await page.getByRole("button", { name: "编辑" }).first().click();
-    await page.waitForFunction(() => document.getElementById("task-dialog").open);
-    check(await page.$eval("#task-profile option", (node) => node.textContent) === "组合一",
-      "任务组合选项只显示组合名");
-    const candidateHint = await page.textContent("#task-site-list ~ small");
-    check(candidateHint.includes("必须达到的下限"),
-      "任务候选说明条数下限语义：" + candidateHint.trim());
 
-    // 清空候选：保存被拦，且不发请求。
-    while (await page.locator("#task-site-list .task-site-row").count() > 0) {
-      await page.locator("#task-site-list button", { hasText: "移除" }).first().click();
-    }
-    check(await page.locator("#task-site-list .task-site-empty").count() === 1,
-      "清空候选后应提示至少添加一个");
-    const updatesBefore = await page.evaluate(() => window.__state.calls
-      .filter((call) => call.endpoint.endsWith("/update")).length);
-    await page.click("#task-save-button");
-    await page.waitForFunction(() => {
-      const node = document.getElementById("task-form-error");
-      return node.hidden === false;
-    });
-    check((await page.textContent("#task-form-error"))
-      .includes("请至少添加一个候选站点后再保存。"), "空候选应给出明确错误");
-    check(await page.evaluate(() => window.__state.calls
-      .filter((call) => call.endpoint.endsWith("/update")).length) === updatesBefore,
-      "空候选不应发出保存请求");
+    // 站点创建仍只在站点管理里。
+    check(await page.locator("#site-dialog").count() === 1, "站点对话框只存在于站点管理");
+    await page.click('.nav-item[data-view="sites"]');
+    await page.waitForSelector("#sites-list li");
+    check((await page.textContent("#create-button")).trim() === "新增站点",
+      "站点视图的主动作是新增站点");
 
-    // 候选添加与排序进入载荷，保存后重开保持顺序。
+    await page.click('.nav-item[data-view="tasks"]');
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    check(await page.locator("#task-form #task-profile").count() === 0,
+      "任务表单不再选择内容组合");
+    check(await page.locator("#task-form input[name=\"base_url\"]").count() === 0,
+      "任务表单内没有站点地址字段");
+    check(await page.locator("#task-form #site-form").count() === 0,
+      "任务表单内没有站点表单");
+
+    const rowNames = await page.$$eval("#task-site-list .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent));
+    check(rowNames.length === 2 && rowNames[0] === "站点A" &&
+      rowNames[1] === "站点C（已停用）",
+      "候选站点按保存顺序展示并标注停用：" + rowNames.join(" | "));
+    const pickerOptions = await page.$$eval("#task-site-picker option",
+      (nodes) => nodes.map((node) => node.textContent));
+    check(pickerOptions.length === 1 && pickerOptions[0] === "站点B",
+      "下拉只列未添加的站点：" + pickerOptions.join(" | "));
+
+    // 顺序：上移/下移只改候选顺序，不改站点本身。
     await page.selectOption("#task-site-picker", "site-b");
     await page.click("#task-site-add-button");
-    await page.selectOption("#task-site-picker", "site-a");
-    await page.click("#task-site-add-button");
-    const addedOrder = await page.$$eval(
-      "#task-site-list .task-site-row .task-site-name",
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#task-site-list .task-site-row").length === 3);
+    await page.locator("#task-site-list button", { hasText: "上移" }).nth(2).click();
+    await page.locator("#task-site-list button", { hasText: "下移" }).nth(0).click();
+    const reordered = await page.$$eval("#task-site-list .task-site-name",
       (nodes) => nodes.map((node) => node.textContent));
-    check(addedOrder.join(",") === "站点B,站点A",
-      "按添加顺序渲染候选：" + JSON.stringify(addedOrder));
-    await page.locator("#task-site-list .task-site-row").nth(1)
-      .locator("button", { hasText: "上移" }).click();
-    const movedOrder = await page.$$eval(
-      "#task-site-list .task-site-row .task-site-name",
-      (nodes) => nodes.map((node) => node.textContent));
-    check(movedOrder.join(",") === "站点A,站点B",
-      "上移应改变候选顺序：" + JSON.stringify(movedOrder));
+    check(reordered.join(",") === "站点B,站点A,站点C（已停用）",
+      "候选顺序随上移/下移改变：" + reordered.join(","));
+
+    const sitesBefore = await page.evaluate(() => JSON.stringify(window.__state.sites));
     await page.click("#task-save-button");
-    await page.waitForFunction(() => window.__state.calls.some(
-      (call) => call.endpoint.endsWith("/update") && Array.isArray(call.payload.sites)));
-    const updateCall = await page.evaluate(() => window.__state.calls
-      .filter((call) => call.endpoint.endsWith("/update")).at(-1));
-    check(updateCall.payload.sites.join(",") === "site-a,site-b",
-      "保存载荷按界面顺序提交候选：" + JSON.stringify(updateCall.payload.sites));
-    await page.waitForFunction(() => document.getElementById("task-dialog").open === false);
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/update")));
+    const update = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/update")).pop());
+    check(JSON.stringify(update.payload.sites) ===
+      JSON.stringify(["site-b", "site-a", "site-c"]),
+      "保存载荷只带站点 id 且保持顺序：" + JSON.stringify(update.payload.sites));
+    check(update.payload.sites.every((entry) => typeof entry === "string"),
+      "候选站点载荷是 id 字符串数组");
+    check(!("profile_id" in update.payload), "保存载荷不再带 profile_id");
+    const sitesAfter = await page.evaluate(() => JSON.stringify(window.__state.sites));
+    check(sitesBefore === sitesAfter, "保存任务不会改写站点数据");
+    const siteWrites = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.startsWith("sites/")).length);
+    check(siteWrites === 0, "保存任务不发任何站点写请求");
+
     await page.waitForSelector("#tasks-list li");
-    await page.getByRole("button", { name: "编辑" }).first().click();
-    await page.waitForFunction(() => document.getElementById("task-dialog").open);
-    const reopened = await page.$$eval(
-      "#task-site-list .task-site-row .task-site-name",
+    const card = await page.textContent('li[data-task-id="task-a"] .task-card-sites');
+    check(card.includes("1. 站点B") && card.includes("3. 站点C（已停用）"),
+      "卡片按顺序显示候选站点并标注停用：" + card);
+
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const reopened = await page.$$eval("#task-site-list .task-site-name",
       (nodes) => nodes.map((node) => node.textContent));
-    check(reopened.join(",") === "站点A,站点B",
-      "保存后重开应保持候选顺序：" + JSON.stringify(reopened));
-    await page.close();
+    check(reopened.join(",") === "站点B,站点A,站点C（已停用）",
+      "重开后候选顺序一致：" + reopened.join(","));
+    await page.click("#task-cancel-button");
+    if (await page.$("#discard-dialog[open]")) {
+      await page.click("#discard-confirm-button");
+    }
 
-    // 一个站点都没有时：仍可建组合，预览明确提示先选站点。
-    const empty = await openPage(browser, port, { sites: [], taskSites: [] });
-    await empty.click('.nav-item[data-view="profiles"]');
-    await empty.waitForSelector("#profiles-list li");
-    check(await empty.$eval("#profile-preview-site", (node) => node.disabled),
-      "没有站点时预览站点下拉应禁用");
-    await empty.selectOption("#profile-preview-select", "profile-1");
-    await empty.click("#profile-preview-button");
-    await empty.waitForFunction(() => {
-      const node = document.getElementById("profile-preview-status");
-      return node.hidden === false && node.textContent.includes("请先选择本次预览使用的站点");
-    });
-    check(true, "没有站点时预览应提示先选站点");
-    check(await empty.evaluate(() => window.__state.calls
-      .every((call) => !call.endpoint.endsWith("/preview"))),
-      "没有站点时不应发出预览请求");
-    await empty.click("#create-profile-button");
-    await empty.waitForFunction(() => document.getElementById("profile-dialog").open);
-    await empty.fill("#profile-name", "无站点组合");
-    await empty.click("#profile-save-button");
-    await empty.waitForFunction(() => window.__state.calls.some(
-      (call) => call.endpoint === "profiles"));
-    check(true, "一个站点都没有时仍可保存组合");
-    await empty.close();
+    // 引用了已删除站点：显式标注，仍可移除后保存。
+    await page.locator('li[data-task-id="task-x"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const gone = await page.textContent("#task-site-list .task-site-name");
+    check(gone.endsWith("（已删除）"), "已删除站点在候选里标注：" + gone);
+    await page.locator("#task-site-list button", { hasText: "移除" }).click();
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#task-site-list .task-site-row").length === 0);
+    const beforeEmpty = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/update")).length);
+    await page.click("#task-save-button");
+    await page.waitForSelector("#task-form-error:not([hidden])");
+    const emptyError = await page.textContent("#task-form-error");
+    check(emptyError.includes("请至少添加一个候选站点"), "候选为空时保存被拦：" + emptyError);
+    const afterEmpty = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/update")).length);
+    check(afterEmpty === beforeEmpty, "候选为空时没有保存请求");
 
-    // 390px：长名称候选行与页面都不横向溢出。
-    const narrow = await openPage(browser, port, {
-      viewport: { width: 390, height: 844 },
-      sites: LONG_SITES,
-      taskSites: ["site-long-a", "site-long-b"],
-    });
-    await narrow.click('.nav-item[data-view="tasks"]');
-    await narrow.waitForSelector("#tasks-list li");
-    const pageOverflow = await narrow.evaluate(
-      () => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    check(pageOverflow <= 1, "390px 下页面不应横向溢出：" + pageOverflow);
-    await narrow.getByRole("button", { name: "编辑" }).first().click();
-    await narrow.waitForFunction(() => document.getElementById("task-dialog").open);
-    const rowOverflow = await narrow.evaluate(() => {
-      const list = document.getElementById("task-site-list");
-      const rows = Array.from(list.querySelectorAll(".task-site-row"));
-      return {
-        list: list.scrollWidth - list.clientWidth,
-        rows: rows.map((row) => row.scrollWidth - row.clientWidth),
-        count: rows.length,
-      };
-    });
-    check(rowOverflow.count === 2,
-      "窄屏应渲染两条候选：" + JSON.stringify(rowOverflow));
-    check(rowOverflow.list <= 1,
-      "390px 下候选列表不应横向溢出：" + rowOverflow.list);
-    check(rowOverflow.rows.every((value) => value <= 1),
-      "390px 下长名称候选行不应溢出：" + JSON.stringify(rowOverflow.rows));
-    await narrow.close();
-
-    console.log("PROFILE SITE DECOUPLING UI PASS", { assertions });
+    console.log("TASK SITE DECOUPLING PASS " + JSON.stringify({ assertions }));
   } finally {
     await browser.close();
     server.close();

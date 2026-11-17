@@ -306,6 +306,35 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     check(firstRow.url === "https://a.example.test/60s/api", "行内显示站点地址");
     check(firstRow.urlTitle === "https://a.example.test/60s/api",
       "地址 title 保留完整值");
+
+    // 名称与地址同一行，两者都有宽度上限并在超出时省略，行高随之变矮。
+    const inline = await page.evaluate(() => {
+      const row = document.querySelector('#sites-list > li[data-site-id="site-ok"]');
+      const line = row.querySelector(".site-title-line");
+      const url = row.querySelector(".site-url");
+      const name = row.querySelector(".site-name");
+      const nameStyle = getComputedStyle(name);
+      const urlStyle = getComputedStyle(url);
+      return {
+        urlInTitleLine: url.parentElement === line && url.tagName === "SPAN",
+        mainChildren: Array.from(row.querySelector(".site-main").children)
+          .map((node) => node.className),
+        nameOverflow: nameStyle.textOverflow,
+        nameNowrap: nameStyle.whiteSpace,
+        nameMaxWidth: nameStyle.maxWidth,
+        urlOverflow: urlStyle.textOverflow,
+        urlNowrap: urlStyle.whiteSpace,
+      };
+    });
+    check(inline.urlInTitleLine, "地址与名称在同一行");
+    check(JSON.stringify(inline.mainChildren) === JSON.stringify(["site-title-line", "site-test-block"]),
+      "站点行只剩标题行与五类状态两块：" + inline.mainChildren.join(","));
+    check(inline.nameOverflow === "ellipsis" && inline.nameNowrap === "nowrap",
+      "名称单行省略");
+    check(inline.nameMaxWidth !== "none" && inline.nameMaxWidth !== "100%",
+      "名称有宽度上限：" + inline.nameMaxWidth);
+    check(inline.urlOverflow === "ellipsis" && inline.urlNowrap === "nowrap",
+      "地址单行省略：超出部分显示省略号");
     check(firstRow.disabledBadge === false, "启用站点不显示已停用");
     check(firstRow.selectLabel === "选择站点 公开站点甲", "勾选框有可读名称");
     check(firstRow.actions.length === 3, "每行三个操作按钮");
@@ -821,7 +850,29 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     await narrow.click('#sites-list > li[data-site-id="site-partial"] .site-select');
     check((await narrow.textContent("#site-selection-count")).trim() === "已选 1 个",
       "390px 可勾选站点");
+    const narrowInline = await narrow.evaluate(() => {
+      const row = document.querySelector('#sites-list > li[data-site-id="site-ok"]');
+      const url = row.querySelector(".site-url");
+      const name = row.querySelector(".site-name");
+      return {
+        urlStyle: getComputedStyle(url).textOverflow,
+        nameMaxWidth: getComputedStyle(name).maxWidth,
+        rowHeight: row.getBoundingClientRect().height,
+      };
+    });
+    check(narrowInline.urlStyle === "ellipsis", "390px 地址仍是省略号收尾");
+    check(narrowInline.nameMaxWidth !== "none", "390px 名称仍有宽度上限");
     await narrow.close();
+
+    // 站点名称在设置时就有长度上限，输入框与提示一起说明。
+    const dialog = await openPage(browser, port);
+    await dialog.click("#create-button");
+    check(await dialog.isVisible("#site-dialog"), "新增站点对话框打开");
+    check(await dialog.getAttribute("#name", "maxlength") === "40",
+      "名称输入框上限为 40 个字符");
+    const nameHint = (await dialog.textContent("#name ~ small")).trim();
+    check(nameHint.includes("最多 40 个字符"), "名称下方说明上限：" + nameHint);
+    await dialog.close();
 
     console.log("\n站点列表：全部断言通过");
   } finally {

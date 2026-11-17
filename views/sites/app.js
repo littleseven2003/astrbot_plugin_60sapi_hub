@@ -1101,7 +1101,10 @@ async function runSiteTests(siteIds) {
 const SITE_ACTION_ICONS = {
   test: "M6.6 18.2a4.4 4.4 0 0 1-.7-8.74 5 5 0 0 1 9.6-.9 3.9 3.9 0 0 1 1 7.64M12 12.2v7.2M9.2 16.6 12 19.4l2.8-2.8",
   edit: "M4.5 19.5h4L19 9l-4-4L4.5 15.5v4ZM13.8 6.2l4 4",
-  delete: "M5 7h14M10 4.8h4M8 7l1 12.2h6L16 7M10.4 10.4v6M13.6 10.4v6",
+  delete:
+    "M4.6 7.2h14.8M9.5 7.2V5.5a1.3 1.3 0 0 1 1.3-1.3h2.4a1.3 1.3 0 0 1 1.3 1.3v1.7"
+    + "M6.7 7.2l.66 11.1a1.7 1.7 0 0 0 1.7 1.6h5.88a1.7 1.7 0 0 0 1.7-1.6l.66-11.1"
+    + "M10.4 10.7v5.9M13.6 10.7v5.9",
 };
 
 function siteActionIcon(kind) {
@@ -1179,12 +1182,14 @@ function renderSite(site) {
     titleLine.append(badge);
   }
 
-  const url = document.createElement("p");
+  // 名称与地址同一行：名称按输入上限截断，地址过长时省略号收尾，完整值在编辑界面可见。
+  const url = document.createElement("span");
   url.className = "site-url";
   url.textContent = site.base_url;
   url.title = site.base_url;
+  titleLine.append(url);
 
-  main.append(titleLine, url, renderSiteTestBlock(site));
+  main.append(titleLine, renderSiteTestBlock(site));
 
   const actions = document.createElement("div");
   actions.className = "site-actions";
@@ -1976,7 +1981,7 @@ function renderProfile(profile) {
     ),
     makeButton(
       "删除",
-      "button button-danger",
+      "button button-quiet-danger",
       () => openProfileDelete(profile),
       `删除内容组合 ${profile.name}`,
     ),
@@ -4280,7 +4285,7 @@ function renderTasks() {
     );
     const test = makeButton("测试投递", "button button-primary", () =>
       openDelivery(task), `手动测试投递 ${task.name}`);
-    const remove = makeButton("删除", "button button-danger", () =>
+    const remove = makeButton("删除", "button button-quiet-danger", () =>
       openTaskDelete(task), `删除推送任务 ${task.name}`);
     power.dataset.taskPower = "1";
     power.disabled = state.taskPowerSaving;
@@ -4427,7 +4432,7 @@ function renderTaskSites() {
     up.disabled = index === 0;
     down.disabled = index === state.taskSites.length - 1;
     actions.append(up, down,
-      makeButton("移除", "button button-danger", () => removeTaskSite(index),
+      makeButton("移除", "button button-quiet-danger", () => removeTaskSite(index),
         "移除候选站点"),
     );
     row.append(order, name, actions);

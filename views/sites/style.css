@@ -365,6 +365,23 @@ code {
   background: var(--danger-soft);
 }
 
+.button-quiet-danger {
+  border-color: var(--line);
+  background: var(--white);
+  color: var(--danger);
+}
+
+.button-quiet-danger:hover:not(:disabled) {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.button-quiet-danger:focus-visible {
+  outline: 2px solid var(--danger-line);
+  outline-offset: 1px;
+}
+
 .button-quiet {
   border-style: dashed;
   border-color: var(--line);
@@ -1041,6 +1058,32 @@ textarea:focus-visible {
   font-family: var(--mono);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+/* 站点行：名称与地址同一行；两者各有宽度上限，超出用省略号收尾。 */
+#sites-list .site-title-line {
+  flex-wrap: nowrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+#sites-list .site-name {
+  /* 名称不参与压缩：空间不足时先截断地址，名称只在超过宽度上限时省略。 */
+  flex: 0 0 auto;
+  max-width: 48%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#sites-list .site-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
 }
 
 .site-meta {
@@ -2484,6 +2527,19 @@ dialog.dialog button {
   .sites-list .site-icon-button {
     width: 40px;
     height: 40px;
+  }
+
+  /* 窄屏允许地址换到下一行，仍然单行省略，不挤掉操作按钮。 */
+  #sites-list .site-title-line {
+    flex-wrap: wrap;
+  }
+
+  #sites-list .site-name {
+    max-width: 100%;
+  }
+
+  #sites-list .site-url {
+    flex-basis: 100%;
   }
 
   .site-batch-actions {

@@ -14,6 +14,10 @@ const BASE = process.env.ASTRBOT_URL || "http://127.0.0.1:16192";
 const PASSWORD = process.env.ASTRBOT_PASSWORD || "";
 const PLUGIN = process.env.ASTRBOT_PLUGIN || "astrbot_plugin_60sapi_hub";
 const CHROME = process.env.CHROME_PATH;
+if (!process.env.ASTRBOT_URL || !PASSWORD || !CHROME) {
+  console.error("ASTRBOT_URL, ASTRBOT_PASSWORD and CHROME_PATH are required");
+  process.exit(2);
+}
 
 const TASK_1 = {
   id: "fixture-task-1", name: "夹具任务一",

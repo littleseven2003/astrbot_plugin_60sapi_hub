@@ -147,6 +147,22 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         # 记录反映实际使用的站点。
         self.assertEqual(record.site_id, self.b.id)
 
+    async def test_limit_is_a_required_count_not_only_a_display_cap(self) -> None:
+        # 站点 B 有 3 条新闻、2 条热榜：条数 2 满足，条数 4 就一个站点都不满足。
+        profile = await self._profile(self.a.id, limit=2)
+        task = await self._task(profile.id, [self.b.id])
+        record = await self.delivery.execute(task.id, "exec-limit-ok")
+        self.assertIn("B新闻", self.sender.messages[0].text or "")
+        self.assertNotEqual(record.status, "failed")
+
+        strict = await self._profile(self.a.id, limit=4)
+        strict_task = await self._task(strict.id, [self.b.id])
+        self.sender.messages.clear()
+        blocked = await self.delivery.execute(strict_task.id, "exec-limit-strict")
+        text = self.sender.messages[0].text or ""
+        self.assertTrue(text.startswith("60sAPI推送服务异常："), text)
+        self.assertEqual(blocked.content_status, "failed")
+
     async def test_only_candidate_b_is_used_even_if_profile_binds_a(self) -> None:
         profile = await self._profile(self.a.id, limit=2)
         task = await self._task(profile.id, [self.b.id])

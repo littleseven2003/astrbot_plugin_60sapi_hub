@@ -205,6 +205,10 @@ async function openPage(browser, port, options = {}) {
       "没有站点选择也能保存组合");
     check(await page.locator("#profile-form #profile-site").count() === 0,
       "组合对话框内不应有站点字段");
+    const limitHelp = await page.textContent(".profile-items-fieldset .help");
+    check(limitHelp.includes("推送和聊天查询选择站点时")
+      && limitHelp.includes("必须达到的条数"),
+      "组合对话框说明条数在推送时是必须达到的条数：" + limitHelp.trim());
     await page.fill("#profile-name", "新组合");
     await page.click("#profile-save-button");
     await page.waitForFunction(() => window.__state.calls.some(
@@ -249,6 +253,9 @@ async function openPage(browser, port, options = {}) {
     await page.waitForFunction(() => document.getElementById("task-dialog").open);
     check(await page.$eval("#task-profile option", (node) => node.textContent) === "组合一",
       "任务组合选项只显示组合名");
+    const candidateHint = await page.textContent("#task-site-list ~ small");
+    check(candidateHint.includes("必须达到的下限"),
+      "任务候选说明条数下限语义：" + candidateHint.trim());
 
     // 清空候选：保存被拦，且不发请求。
     while (await page.locator("#task-site-list .task-site-row").count() > 0) {

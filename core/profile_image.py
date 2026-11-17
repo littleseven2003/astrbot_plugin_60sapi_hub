@@ -141,6 +141,8 @@ _FOOTER_COLUMN_GAP = 40
 
 _MAX_CONTENT_CHARS = 200_000
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+|.", re.UNICODE)
+# 行尾可整体下移的单元：ASCII 单词或数字不能被拆开，换行调整时整体搬。
+_ASCII_TAIL_RE = re.compile(r"[A-Za-z0-9]+$")
 _CLOSING_PUNCT = set("，。、；：！？）》】”’…")
 _DATE_RE = re.compile(r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?")
 _WEEKDAY_RE = re.compile(r"(星期[一二三四五六日天]|周[一二三四五六日天])")
@@ -793,19 +795,25 @@ class ProfileImageRenderer:
         def usable(index: int) -> float:
             return (head_width if index == 0 else width) - padding
 
+        tokens = _TOKEN_RE.findall(clean)
         lines: list[str] = []
         current = ""
-        for token in _TOKEN_RE.findall(clean):
+        for position, token in enumerate(tokens):
             self._check_cancelled()
             if not token:
                 continue
             if not current and token.isspace():
                 continue
             if not current and token in _CLOSING_PUNCT and lines:
-                # 行首不出现收尾标点：余标点跟随上一行，最多超出一个标点宽。
-                lines[-1] = lines[-1] + token
+                # 行首不出现收尾标点：先按可用宽度并回上一行，放不下就把上一
+                # 行末尾的字或整词带下来与标点同行，任何情况下都不越界。
+                current = self._attach_punct(lines, token, measure, usable)
                 continue
-            limit = usable(len(lines))
+            # 首行右侧并排热度列时，给紧随其后的收尾标点预留位置：否则标点
+            # 要么悬挂越过首行可用宽度、侵入热度文字，要么落到次行行首。
+            follower = tokens[position + 1] if position + 1 < len(tokens) else ""
+            reserve = measure(follower) if follower in _CLOSING_PUNCT and not lines else 0.0
+            limit = usable(len(lines)) - reserve
             if measure(token) > limit:
                 if current:
                     lines.append(current.rstrip())
@@ -825,9 +833,10 @@ class ProfileImageRenderer:
                     current = ""
                     continue
                 if token in _CLOSING_PUNCT:
-                    # 收尾标点不另起一行，跟随上一行并允许最多超出一个标点。
-                    lines.append((current + token).rstrip())
-                    current = ""
+                    # 收尾标点不另起一行：按宽度并回本行，放不下就把本行末尾
+                    # 的字或整词连同标点一起带到下一行，避免越过可用宽度。
+                    lines.append(current.rstrip())
+                    current = self._attach_punct(lines, token, measure, usable)
                     continue
                 lines.append(current.rstrip())
                 current = token
@@ -835,11 +844,78 @@ class ProfileImageRenderer:
                 current = candidate
         if current.strip():
             lines.append(current.rstrip())
-        if len(lines) >= 2 and len(lines[-1]) == 1 and len(lines[-2]) > 2:
-            # 末行只剩一个字时把上一行末尾字符带下来，避免孤字成行。
-            lines[-1] = lines[-2][-1] + lines[-1]
-            lines[-2] = lines[-2][:-1]
+        self._tidy_tail(lines, measure, usable)
         return lines or [clean]
+
+    def _attach_punct(
+        self,
+        lines: list[str],
+        token: str,
+        measure: Any,
+        limit: Any,
+    ) -> str:
+        """把收尾标点并回上一行，返回本行继续承接的内容。
+
+        上一行按自身可用宽度判断（首行可能因并排热度列更窄），放不下时把上一
+        行末尾的字或整词带到新行与标点同行：标点既不起行，也不越过可用宽度。
+        """
+        line = lines[-1]
+        if measure(line + token) <= limit(len(lines) - 1):
+            lines[-1] = (line + token).rstrip()
+            return ""
+        tail = self._pullable_tail(line)
+        if 0 < len(tail) < len(line) and measure(tail + token) <= limit(len(lines)):
+            lines[-1] = line[: -len(tail)].rstrip()
+            return tail + token
+        # 整行已是一个不可拆分的单元：既不能让标点起行，也不能拆词，
+        # 只能让它悬挂在该行行尾（最多超出一个标点宽，仍在卡片内边距内）。
+        lines[-1] = (line + token).rstrip()
+        return ""
+
+    def _trailing_unit(self, line: str) -> str:
+        """行尾能整体下移的最小单元：ASCII 单词或数字整体下移，避免拆词。"""
+        match = _ASCII_TAIL_RE.search(line)
+        return match.group(0) if match else line[-1:]
+
+    def _pullable_tail(self, line: str) -> str:
+        """行尾可整体下移的片段：收尾标点串连同行末的字或整词。
+
+        标点串必须跟着前面的内容一起下移，否则它自己落到新行行首。
+        """
+        cut = len(line)
+        while cut > 0 and line[cut - 1] in _CLOSING_PUNCT:
+            cut -= 1
+        if not cut:
+            return line
+        return line[cut - len(self._trailing_unit(line[:cut])):]
+
+    def _tidy_tail(self, lines: list[str], measure: Any, limit: Any) -> None:
+        """末行调整：收尾标点不单独成行、不落行首，也不拆开 ASCII 单词。"""
+        if len(lines) < 2:
+            return
+        head, last = lines[-2], lines[-1]
+        if len(last) == 1 and last in _CLOSING_PUNCT:
+            # 末行只剩一个收尾标点时并回上一行；放不下就把上一行末尾的字或
+            # 整词带下来，标点仍在行尾而不落到末行行首。
+            if measure(head + last) <= limit(len(lines) - 2):
+                lines[-2] = head + last
+                lines.pop()
+                return
+            tail = self._pullable_tail(head)
+            if 0 < len(tail) < len(head) and measure(tail + last) <= limit(len(lines) - 1):
+                lines[-2] = head[: -len(tail)].rstrip()
+                lines[-1] = tail + last
+            return
+        if len(last) != 1 or len(head) <= 2:
+            return
+        unit = self._trailing_unit(head)
+        if unit in _CLOSING_PUNCT or not 0 < len(unit) < len(head):
+            # 下移收尾标点会把它顶到末行行首；整行是一个不可拆分的词时也
+            # 不能拆字，两种情况都保持原样。
+            return
+        if measure(unit + last) <= limit(len(lines) - 1):
+            lines[-2] = head[: -len(unit)].rstrip()
+            lines[-1] = unit + last
 
     def _split_token(
         self,

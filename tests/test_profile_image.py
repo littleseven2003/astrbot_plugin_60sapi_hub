@@ -334,6 +334,59 @@ class ProfileImageRendererTest(unittest.TestCase):
         assert long.png is not None
         self.assertEqual(png_size(long.png), (900, long.height))
 
+    def test_widow_adjust_keeps_closing_punct_at_line_end(self) -> None:
+        # 修复前：末行孤字调整会把上一行末尾的「。」搬到末行行首，渲染成「。末」。
+        text = "字" * 11 + "。末"
+        lines = self.renderer._wrap(text, image_module._TITLE_SIZE, 300)
+        self.assertEqual(lines, ["字" * 11 + "。", "末"])
+        self.assertEqual("".join(lines), text)
+        for line in lines[1:]:
+            self.assertNotIn(line[0], image_module._CLOSING_PUNCT)
+
+    def test_widow_adjust_does_not_split_ascii_word(self) -> None:
+        # 修复前：末行只剩「末」时把 "Preview" 的末字母带下去，得到 "Previe" + "w末"。
+        text = "字" * 4 + "Preview末"
+        lines = self.renderer._wrap(text, image_module._TITLE_SIZE, 200)
+        self.assertEqual(lines, ["字" * 4, "Preview末"])
+        self.assertEqual("".join(lines), text)
+        self.assertIn("Preview", lines[-1])
+
+    def test_closing_punct_stays_out_of_inline_hot_column(self) -> None:
+        # 修复前：首行写满 25 字（625px）后「。」被并回首行，右边缘 650px 越过
+        # 并排热度列前可用的 630px，压到右侧热度文字上。
+        text = "字" * 25 + "。"
+        width = 770
+        first_width = 630
+        lines = self.renderer._wrap(
+            text,
+            image_module._TITLE_SIZE,
+            width,
+            first_width=first_width,
+        )
+        font = self.renderer._font(image_module._TITLE_SIZE)
+        self.assertLessEqual(font.getlength(lines[0]), first_width)
+        self.assertEqual("".join(lines), text)
+        for line in lines[1:]:
+            self.assertNotIn(line[0], image_module._CLOSING_PUNCT)
+
+    def test_lone_closing_punct_last_line_merges_into_previous_line(self) -> None:
+        font = self.renderer._font(image_module._TITLE_SIZE)
+
+        def fits(_index: int) -> int:
+            return 770
+
+        lines = ["标题内容说明文字", "。"]
+        self.renderer._tidy_tail(lines, font.getlength, fits)
+        self.assertEqual(lines, ["标题内容说明文字。"])
+
+        # 上一行放不下时把行尾的字带下来，标点仍留在行尾、不落到下一行行首。
+        def narrow(_index: int) -> int:
+            return 630
+
+        lines = ["字" * 25, "。"]
+        self.renderer._tidy_tail(lines, font.getlength, narrow)
+        self.assertEqual(lines, ["字" * 24, "字。"])
+
     def test_long_latin_token_is_split_without_loss(self) -> None:
         width = 300
         token = "httpsexampletest" + "a" * 400

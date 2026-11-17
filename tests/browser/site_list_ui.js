@@ -328,8 +328,16 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     check(allState(initial, "idle"), "初始状态都是未测试");
     check(initial.every((chip, index) => chip.text === FIVE_LABELS[index] + " 未测试"),
       "每格同时有类型名与状态文字：" + initial[0].text);
-    const iconText = await page.textContent('#sites-list > li[data-site-id="site-ok"] .site-test-chip .site-test-icon');
-    check(iconText === "○", "未测试状态有图标：" + iconText);
+    const iconInfo = await page.$eval(
+      '#sites-list > li[data-site-id="site-ok"] .site-test-chip .site-test-icon',
+      (node) => ({
+        shapes: Array.from(node.querySelectorAll("svg *")).map((el) => el.tagName),
+        text: node.textContent.trim(),
+        hidden: node.getAttribute("aria-hidden"),
+      }),
+    );
+    check(iconInfo.shapes.length > 0 && iconInfo.text === "" && iconInfo.hidden === "true",
+      "未测试状态用不带字形的描边图标：" + iconInfo.shapes.join(","));
 
     // 全选 / 全不选 / 反选只影响勾选，不改启用状态。
     await page.click("#site-select-all");

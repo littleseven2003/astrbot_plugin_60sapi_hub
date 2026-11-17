@@ -705,14 +705,42 @@ const SITE_TEST_STATE_TEXT = {
   // 结果对应的站点版本与当前列表不同：既不当作成功，也不当作失败。
   stale: "需重新测试",
 };
+// 状态图标用同一套描边图形，不依赖字体里的符号：字号被放大或替换字体时也能对齐。
 const SITE_TEST_STATE_ICON = {
-  idle: "○",
-  running: "…",
-  success: "✓",
-  empty: "◌",
-  error: "✕",
-  stale: "↻",
+  idle: [["circle", { cx: 12, cy: 12, r: 6.4 }]],
+  running: [["circle", { cx: 12, cy: 12, r: 6.4, "stroke-dasharray": "9 31", "stroke-linecap": "round" }]],
+  success: [["path", { d: "M5.4 12.4 9.8 16.8 18.6 7.2" }]],
+  empty: [["circle", { cx: 12, cy: 12, r: 6.4 }], ["path", { d: "M8.9 12h6.2" }]],
+  error: [["path", { d: "M7.6 7.6 16.4 16.4" }], ["path", { d: "M16.4 7.6 7.6 16.4" }]],
+  stale: [["path", { d: "M18.4 12a6.4 6.4 0 1 1-1.9-4.5" }], ["path", { d: "M18.4 4.4v4.2h-4.2" }]],
 };
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** 用描边几何生成小图标：形状写成 [标签, 属性] 列表，便于按状态复用。 */
+function createSvgIcon(shape, options) {
+  const settings = options || {};
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", settings.strokeWidth || "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  if (settings.size) {
+    svg.setAttribute("width", String(settings.size));
+    svg.setAttribute("height", String(settings.size));
+  }
+  for (const entry of shape) {
+    const node = document.createElementNS(SVG_NS, entry[0]);
+    Object.entries(entry[1]).forEach((pair) => {
+      node.setAttribute(pair[0], String(pair[1]));
+    });
+    svg.append(node);
+  }
+  return svg;
+}
 const SITE_TEST_STALE_TEXT = "站点配置已变化，请刷新后重新测试。";
 const SAFE_TEST_ERRORS = new Map([
   ["站点配置已变化，请刷新后重试。", ["站点配置已变化，请刷新列表后重试。", "warning"]],
@@ -808,8 +836,12 @@ function renderSiteTestBlock(site) {
     item.dataset.state = cell.state;
     const icon = document.createElement("span");
     icon.className = "site-test-icon";
+    icon.dataset.state = cell.state;
     icon.setAttribute("aria-hidden", "true");
-    icon.textContent = SITE_TEST_STATE_ICON[cell.state];
+    icon.append(createSvgIcon(
+      SITE_TEST_STATE_ICON[cell.state] || SITE_TEST_STATE_ICON.idle,
+      { strokeWidth: "1.9" },
+    ));
     const text = document.createElement("span");
     text.className = "site-test-text";
     text.textContent = label + " " + SITE_TEST_STATE_TEXT[cell.state];
@@ -1073,22 +1105,10 @@ const SITE_ACTION_ICONS = {
 };
 
 function siteActionIcon(kind) {
-  const namespace = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(namespace, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", "18");
-  svg.setAttribute("height", "18");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.7");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("focusable", "false");
-  const path = document.createElementNS(namespace, "path");
-  path.setAttribute("d", SITE_ACTION_ICONS[kind] || SITE_ACTION_ICONS.test);
-  svg.append(path);
-  return svg;
+  return createSvgIcon(
+    [["path", { d: SITE_ACTION_ICONS[kind] || SITE_ACTION_ICONS.test }]],
+    { size: 18 },
+  );
 }
 
 function siteIconButton(kind, ariaLabel, onClick, extraClass) {

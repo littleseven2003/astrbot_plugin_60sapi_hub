@@ -517,6 +517,41 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
       "分块后汇总按全部站点计数");
     await bulk.close();
 
+    // 键盘：图标按钮有可读名称、键盘焦点可见，回车可触发测试。
+    const keyboard = await openPage(browser, port);
+    await keyboard.focus('#sites-list > li[data-site-id="site-ok"] .site-select');
+    await keyboard.keyboard.press("Tab");
+    const kbTest = await keyboard.evaluate(() => {
+      const node = document.activeElement;
+      const style = window.getComputedStyle(node);
+      return {
+        label: node.getAttribute("aria-label"),
+        focusVisible: node.matches(":focus-visible"),
+        outlineStyle: style.outlineStyle,
+        outlineWidth: parseFloat(style.outlineWidth),
+      };
+    });
+    check(kbTest.label === "测试站点 公开站点甲 的五类接口",
+      "Tab 进入测试按钮：" + kbTest.label);
+    check(kbTest.focusVisible && kbTest.outlineStyle !== "none"
+      && kbTest.outlineWidth >= 2,
+      "键盘焦点有可见描边：" + kbTest.outlineStyle + " " + kbTest.outlineWidth);
+    await keyboard.keyboard.press("Tab");
+    const kbEdit = await keyboard.evaluate(() => document.activeElement.getAttribute("aria-label"));
+    await keyboard.keyboard.press("Tab");
+    const kbDelete = await keyboard.evaluate(() => document.activeElement.getAttribute("aria-label"));
+    check(kbEdit === "编辑站点 公开站点甲" && kbDelete === "删除站点 公开站点甲",
+      "三个图标按钮依次可获得焦点：" + kbEdit + " / " + kbDelete);
+    await keyboard.keyboard.press("Shift+Tab");
+    await keyboard.keyboard.press("Shift+Tab");
+    await keyboard.keyboard.press("Enter");
+    await keyboard.waitForFunction(() => document.getElementById("site-test-summary")
+      .textContent.includes("测试完成：1 个站点"), null, { timeout: 20000 });
+    const kbCalls = await calls(keyboard, "sites/test-batch");
+    check(kbCalls.length === 1 && kbCalls[0].payload.site_ids.length === 1
+      && kbCalls[0].payload.site_ids[0] === "site-ok", "回车触发单站测试");
+    await keyboard.close();
+
     // 390px：不横向溢出，图标按钮与五类状态仍可用。
     const narrow = await openPage(browser, port, { viewport: { width: 390, height: 844 } });
     const metrics = await narrow.evaluate(() => {

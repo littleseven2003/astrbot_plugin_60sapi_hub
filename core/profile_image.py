@@ -100,7 +100,9 @@ _PAD_X = 40
 _ACCENT_BAR_W = 44
 _ACCENT_BAR_H = 5
 
-_HEADER_TOP_PAD = 26
+# 强调条是页眉的第一行：上方留出与外框的距离，下方紧接品牌行。
+_HEADER_TOP_PAD = 22
+_ACCENT_BAR_GAP = 10
 _BRAND_SIZE = 18
 _BRAND_LEADING = 26
 _BRAND_GAP = 12
@@ -175,6 +177,7 @@ class _Line:
     parts: tuple[_Part, ...] = ()
     rule: bool = False
     strong: bool = False
+    bar: bool = False
     gap_before: int = 0
     gap_after: int = 0
     leading: int = 0
@@ -299,11 +302,10 @@ class ProfileImageRenderer:
         footer = self._footer_lines(
             section, site_name, created_at, limits.width,
         )
-        # 外框与上内边距之后是标题区；标题区最后一行是整幅宽度的分隔线，
-        # 正文分隔线与页脚上边线都由各自的 _Line 计入高度。
+        # 外框之后是页眉区；页眉的强调条、上内边距与末尾整幅宽度分隔线都是
+        # 页眉自身的 _Line，正文分隔线与页脚上边线同样各自计入高度。
         height = (
             _CARD_BORDER
-            + _HEADER_TOP_PAD
             + self._lines_height(header)
             + self._lines_height(body)
             + self._lines_height(footer)
@@ -360,6 +362,13 @@ class ProfileImageRenderer:
         content_width = self._content_width(width)
         brand_width = self._text_width("60s", _BRAND_SIZE)
         lines: list[_Line] = [
+            # 强调条是页眉的第一行，与品牌行一起参与排版和高度计算，
+            # 不再用绝对坐标贴在卡片外框上。
+            _Line(
+                bar=True,
+                gap_before=_HEADER_TOP_PAD,
+                gap_after=_ACCENT_BAR_GAP,
+            ),
             _Line(
                 parts=(
                     _Part("60s", _BRAND_SIZE, _ACCENT, False, 0),
@@ -464,16 +473,25 @@ class ProfileImageRenderer:
             inline_hot = bool(hot) and (
                 self._text_width(hot, _HEAT_SIZE) <= _HEAT_COL
             )
-            text_width = full_text_width
+            first_width = full_text_width
             if inline_hot:
-                text_width = full_text_width - _HEAT_COL - _HEAT_GAP
+                first_width = full_text_width - _HEAT_COL - _HEAT_GAP
             for offset, part in enumerate(
-                self._wrap(title, _TITLE_SIZE, text_width),
+                self._wrap(
+                    title, _TITLE_SIZE, full_text_width, first_width=first_width,
+                ),
             ):
                 parts: list[_Part] = []
                 if offset == 0:
                     parts.append(
-                        _Part(f"{position:02d}", _NUM_SIZE, num_color, False, 0),
+                        _Part(
+                            f"{position:02d}",
+                            _NUM_SIZE,
+                            num_color,
+                            False,
+                            0,
+                            baseline=True,
+                        ),
                     )
                 parts.append(
                     _Part(part, _TITLE_SIZE, _INK, False, text_x),
@@ -622,21 +640,7 @@ class ProfileImageRenderer:
                 outline=_BORDER,
                 width=_CARD_BORDER,
             )
-            bar_x = _CARD_BORDER + _PAD_X
-            draw.rounded_rectangle(
-                (
-                    bar_x,
-                    _CARD_BORDER,
-                    bar_x + _ACCENT_BAR_W - 1,
-                    _CARD_BORDER + _ACCENT_BAR_H - 1,
-                ),
-                radius=3,
-                fill=_ACCENT,
-                corners=(False, False, True, True),
-            )
-            y = self._draw_lines(
-                draw, header, _CARD_BORDER + _HEADER_TOP_PAD, width,
-            )
+            y = self._draw_lines(draw, header, _CARD_BORDER, width)
             y = self._draw_lines(draw, body, y, width)
             self._draw_lines(draw, footer, y, width)
             buffer = io.BytesIO()
@@ -658,6 +662,14 @@ class ProfileImageRenderer:
         for line in lines:
             self._check_cancelled()
             y += line.gap_before
+            if line.bar:
+                draw.rounded_rectangle(
+                    (left, y, left + _ACCENT_BAR_W - 1, y + _ACCENT_BAR_H - 1),
+                    radius=_ACCENT_BAR_H // 2,
+                    fill=_ACCENT,
+                )
+                y += _ACCENT_BAR_H + line.gap_after
+                continue
             if line.rule:
                 draw.line(
                     (left, y, right, y),
@@ -710,6 +722,8 @@ class ProfileImageRenderer:
         return sum(self._line_height(line) for line in lines)
 
     def _line_height(self, line: _Line) -> int:
+        if line.bar:
+            return line.gap_before + _ACCENT_BAR_H + line.gap_after
         if line.rule:
             return line.gap_before + 1 + line.gap_after
         return (
@@ -751,16 +765,22 @@ class ProfileImageRenderer:
         width: int,
         *,
         bold: bool = False,
+        first_width: int | None = None,
     ) -> list[str]:
         clean = _clean(text)
         if not clean or width <= 0:
             return []
         font = self._font(size)
         padding = 2 if bold else 0
-        usable = width - padding
+        # 首行可以窄于其余行（例如右侧并排热度列），续行回到整行宽度，
+        # 否则长标题每一行都会在右边留出大段空白。
+        head_width = width if first_width is None else min(first_width, width)
 
         def measure(value: str) -> float:
             return font.getlength(value) + padding
+
+        def usable(index: int) -> float:
+            return (head_width if index == 0 else width) - padding
 
         lines: list[str] = []
         current = ""
@@ -774,16 +794,21 @@ class ProfileImageRenderer:
                 # 行首不出现收尾标点：余标点跟随上一行，最多超出一个标点宽。
                 lines[-1] = lines[-1] + token
                 continue
-            if measure(token) > usable:
+            limit = usable(len(lines))
+            if measure(token) > limit:
                 if current:
                     lines.append(current.rstrip())
                     current = ""
-                chunks = self._split_token(token, measure, usable)
+                    limit = usable(len(lines))
+                    if measure(token) <= limit:
+                        current = token
+                        continue
+                chunks = self._split_token(token, measure, limit)
                 lines.extend(chunks[:-1])
                 current = chunks[-1] if chunks else ""
                 continue
             candidate = current + token
-            if current and measure(candidate) > usable:
+            if current and measure(candidate) > limit:
                 if token.isspace():
                     lines.append(current.rstrip())
                     current = ""

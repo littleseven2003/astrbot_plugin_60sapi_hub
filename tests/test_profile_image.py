@@ -851,8 +851,97 @@ class ProfileImageRendererTest(unittest.TestCase):
             self.assertEqual(pixels[0, 0], image_module._PAGE_BG)
             self.assertEqual(pixels[0, height // 2], image_module._BORDER)
             self.assertEqual(pixels[20, 20], image_module._WHITE)
-            self.assertEqual(pixels[60, 3], image_module._ACCENT)
+            # 强调条是页眉的第一行，落在上内边距之后，不再贴着 1px 外框。
+            bar_top = image_module._CARD_BORDER + image_module._HEADER_TOP_PAD
+            bar_bottom = bar_top + image_module._ACCENT_BAR_H - 1
+            self.assertGreaterEqual(bar_top - image_module._CARD_BORDER, 8)
+            self.assertEqual(pixels[60, bar_top - 1], image_module._WHITE)
+            for y in range(bar_top, bar_bottom + 1):
+                self.assertEqual(pixels[60, y], image_module._ACCENT)
+            self.assertEqual(pixels[60, bar_bottom + 1], image_module._WHITE)
             self.assertEqual(pixels[width // 2, 120], image_module._WHITE)
+
+    def test_section_height_counts_every_header_line(self) -> None:
+        """页眉强调条必须计入高度：高度只由 _Line 相加，不再有绝对坐标外挂。"""
+        data = section("daily_news", "每日新闻", [item("第一条新闻")])
+        captured: dict[str, object] = {}
+        original = self.renderer._draw
+
+        def spy(header, body, footer, height, width):
+            captured["lines"] = (header, body, footer)
+            captured["height"] = height
+            return original(header, body, footer, height, width)
+
+        with patch.object(self.renderer, "_draw", side_effect=spy):
+            image = self.renderer.render(profile([data]))[0]
+        assert image.png is not None
+        header, body, footer = captured["lines"]
+        self.assertTrue(header[0].bar)
+        self.assertEqual(
+            self.renderer._line_height(header[0]),
+            image_module._HEADER_TOP_PAD
+            + image_module._ACCENT_BAR_H
+            + image_module._ACCENT_BAR_GAP,
+        )
+        expected = (
+            image_module._CARD_BORDER
+            + self.renderer._lines_height(header)
+            + self.renderer._lines_height(body)
+            + self.renderer._lines_height(footer)
+            + image_module._FOOTER_BOTTOM_PAD
+            + image_module._CARD_BORDER
+        )
+        self.assertEqual(captured["height"], expected)
+        self.assertEqual(image.height, expected)
+
+    def test_index_and_title_share_one_baseline(self) -> None:
+        """序号与标题首行共用一条基线，不能一个居中一个基线。"""
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(
+            image_module._items(section("daily_news", "每日新闻", [item("第一条")])),
+            width,
+        )
+        first = lines[0]
+        index = [part for part in first.parts if part.size == image_module._NUM_SIZE]
+        title = [part for part in first.parts if part.size == image_module._TITLE_SIZE]
+        self.assertEqual(len(index), 1)
+        self.assertEqual(len(title), 1)
+        self.assertTrue(index[0].baseline)
+        line_h = self.renderer._line_text_height(first)
+        half_leading = (line_h - self.renderer._line_content_height(first)) // 2
+        max_ascent = max(self.renderer._ascent(part.size) for part in first.parts)
+        baselines = {
+            half_leading + max_ascent
+            if part.baseline
+            else (line_h - self.renderer._text_height(part.size)) // 2
+            + self.renderer._ascent(part.size)
+            for part in first.parts
+        }
+        self.assertEqual(baselines, {half_leading + max_ascent})
+
+    def test_inline_hot_narrows_only_the_first_title_line(self) -> None:
+        """并排热度只挤压标题首行；续行回到整行宽度，右侧不留大片空白。"""
+        width = self.renderer.limits.width
+        data = section(
+            "zhihu_hot", "知乎热榜", [item("超长标题" * 24, hot_value=12345)],
+        )
+        lines = self.renderer._body_lines(image_module._items(data), width)
+        full_text_width = (
+            self.renderer._content_width(width)
+            - image_module._NUM_COL
+            - image_module._NUM_GAP
+        )
+        first_width = full_text_width - image_module._HEAT_COL - image_module._HEAT_GAP
+        widths = [
+            self.renderer._text_width(part.text, image_module._TITLE_SIZE)
+            for line in lines
+            for part in line.parts
+            if part.size == image_module._TITLE_SIZE
+        ]
+        self.assertGreater(len(widths), 2)
+        self.assertLessEqual(widths[0], first_width)
+        self.assertLessEqual(max(widths[1:]), full_text_width)
+        self.assertGreater(max(widths[1:]), first_width)
 
     def test_row_rhythm_is_compact_and_uniform(self) -> None:
         """单行条目固定 57px（10 上留白 + 36 行高 + 10 下留白 + 1 分隔线）。"""

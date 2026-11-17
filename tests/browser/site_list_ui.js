@@ -98,13 +98,18 @@ async function openPage(browser, port, options) {
     window.__batchReject = false;
     window.__deleteFails = {};
     window.__deleteDrops = {};
+    window.__deleteBumps = {};
     window.__sitesReject = false;
+    window.__sitesGate = null;
     window.__staleSites = {};
     window.__driftSites = {};
     window.AstrBotPluginView = {
       ready: async () => ({ pageTitle: "60sAPI Hub" }),
       apiGet: async (endpoint) => {
         if (endpoint === "sites") {
+          if (window.__sitesGate) {
+            await window.__sitesGate;
+          }
           if (window.__sitesReject) {
             throw new Error("站点存储不可用。");
           }
@@ -143,6 +148,17 @@ async function openPage(browser, port, options) {
         const match = /^sites\/(.+)\/delete$/.exec(endpoint);
         if (match) {
           const siteId = decodeURIComponent(match[1]);
+          const bumped = window.__deleteBumps[siteId];
+          if (bumped) {
+            // 冲突：站点的版本已经变了，重读列表会看到新的 revision。
+            delete window.__deleteBumps[siteId];
+            window.__siteFixtures = window.__siteFixtures.map(
+              (site) => (site.id === siteId ? { ...site, revision: bumped } : site),
+            );
+            const error = new Error("站点已被其他操作修改，请刷新后重试。");
+            error.status = 409;
+            throw error;
+          }
           const failure = window.__deleteFails[siteId];
           if (failure) {
             const error = new Error(failure);
@@ -659,7 +675,65 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     check(blindMessage.includes("结果待确认"), "无法确认时明确提示：" + blindMessage.trim());
     check(await blindPage.locator("#delete-selection li").count() === 0,
       "结果待确认的站点被移出重试目标");
+    check(!blindMessage.includes("仍保留在列表中"),
+      "列表读不到时不声称待确认站点仍在：" + blindMessage.trim());
+    check(await blindPage.isDisabled("#delete-confirm-button"),
+      "没有可重试项时删除按钮不会留着可点");
     await blindPage.close();
+
+    // 列表核对完成前按钮保持禁用：核对期间不会再提交上一轮目标。
+    const gatePage = await openPage(browser, port, { sites: SITES.map((site) => ({ ...site })) });
+    await gatePage.click('#sites-list > li[data-site-id="site-ok"] .site-select');
+    await gatePage.evaluate(() => {
+      window.__sitesGate = new Promise((resolve) => {
+        window.__releaseSitesGate = resolve;
+      });
+    });
+    await gatePage.click("#site-delete-selected");
+    await gatePage.waitForSelector("#delete-dialog[open]");
+    await gatePage.click("#delete-confirm-button");
+    await gatePage.waitForFunction(() => window.__calls
+      .filter((call) => call.endpoint.endsWith("/delete")).length === 1,
+    null, { timeout: 10000 });
+    check(await gatePage.isDisabled("#delete-confirm-button")
+      && await gatePage.isDisabled("#delete-cancel-button"),
+      "列表核对完成前两个按钮都保持禁用");
+    await gatePage.evaluate(() => { window.__releaseSitesGate(); });
+    await gatePage.waitForFunction(() => !document.getElementById("delete-dialog").open,
+      null, { timeout: 10000 });
+    const gateCalls = await gatePage.evaluate(() => window.__calls
+      .filter((call) => call.endpoint.endsWith("/delete")).length);
+    check(gateCalls === 1, "核对期间没有重复提交删除：" + gateCalls);
+    check((await gatePage.textContent("#status")).includes("已删除 1/1 个站点"),
+      "核对完成后按结论收场：" + (await gatePage.textContent("#status")).trim());
+    await gatePage.close();
+
+    // 版本冲突：重读列表取最新状态，重试提交新 revision 而不是旧 revision。
+    const conflictPage = await openPage(browser, port, { sites: SITES.map((site) => ({ ...site })) });
+    await conflictPage.click('#sites-list > li[data-site-id="site-partial"] .site-select');
+    await conflictPage.evaluate(() => {
+      window.__deleteBumps = { "site-partial": 9 };
+    });
+    await conflictPage.click("#site-delete-selected");
+    await conflictPage.waitForSelector("#delete-dialog[open]");
+    await conflictPage.click("#delete-confirm-button");
+    await conflictPage.waitForFunction(
+      () => document.querySelectorAll("#delete-results li.delete-result").length === 1,
+      null, { timeout: 10000 },
+    );
+    const conflictText = await conflictPage.textContent('#delete-results li.delete-result[data-state="changed"]');
+    check(conflictText.includes("站点已被其他操作修改"), "冲突项说明真实原因：" + conflictText);
+    check(await conflictPage.locator("#delete-selection li").count() === 1,
+      "冲突项保留为可重新确认的目标");
+    await conflictPage.click("#delete-confirm-button");
+    await conflictPage.waitForFunction(() => !document.getElementById("delete-dialog").open,
+      null, { timeout: 10000 });
+    const conflictPayloads = await conflictPage.evaluate(() => window.__calls
+      .filter((call) => call.endpoint.endsWith("/delete"))
+      .map((call) => call.payload.expected_revision));
+    check(conflictPayloads.length === 2 && conflictPayloads[1] === 9,
+      "重新确认提交最新 revision：" + JSON.stringify(conflictPayloads));
+    await conflictPage.close();
 
     // 超过后端单次上限（20）时按块顺序请求。
     const many = [];

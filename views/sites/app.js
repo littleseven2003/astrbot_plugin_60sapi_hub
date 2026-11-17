@@ -3795,20 +3795,25 @@ async function confirmBatchDelete() {
       }
       renderDeleteResults(results, targets.length);
     }
+    // 列表核对也算“删除中”：核对结束前按钮保持禁用，避免重复提交上一轮目标。
+    const reloaded = await loadSites();
+    if (reloaded) {
+      reconcileDeletedSites(results);
+    }
+    renderDeleteResults(results, targets.length);
+    finishBatchDelete(results, targets, reloaded);
   } finally {
     state.deleting = false;
     elements.deleteCancelButton.disabled = false;
-    elements.deleteConfirmButton.disabled = false;
+    // 没有待处理项时不留下一个可点的“删除选中站点”。
+    elements.deleteConfirmButton.disabled = state.deleteTargets.length === 0;
   }
+}
 
-  const reloaded = await loadSites();
-  // 响应无法确认的站点：重读列表后按“站点是否还在、版本是否变化”给出结论。
-  if (reloaded) {
-    for (const item of results) {
-      if (item.state !== "unknown") {
-        continue;
-      }
-      const current = findSite(item.site.id);
+function reconcileDeletedSites(results) {
+  for (const item of results) {
+    const current = findSite(item.site.id);
+    if (item.state === "unknown") {
       if (!current) {
         item.state = "deleted";
         item.message = "";
@@ -3817,14 +3822,20 @@ async function confirmBatchDelete() {
       } else if (Number(current.revision) === Number(item.site.revision)) {
         item.state = "kept";
         item.message = "列表确认该站点仍在，未执行删除。";
+        item.site = current;
       } else {
         item.state = "changed";
-        item.message = "列表中的站点版本已变化，请按最新内容重新确认。";
+        item.message = "列表中的站点版本已变化，已更新为最新状态，请重新确认后再删除。";
+        item.site = current;
       }
+    } else if (current && (item.state === "changed" || item.state === "kept")) {
+      // 换成最新站点对象，重试时不会再提交旧 revision。
+      item.site = current;
     }
-    renderDeleteResults(results, targets.length);
   }
+}
 
+function finishBatchDelete(results, targets, reloaded) {
   const deleted = results.filter((item) => item.state === "deleted");
   const failed = results.filter((item) => item.state !== "deleted");
   const unconfirmed = results.filter((item) => item.state === "unknown");
@@ -3844,13 +3855,23 @@ async function confirmBatchDelete() {
     .filter((item) => item.state !== "unknown")
     .map((item) => item.site);
   renderDeleteSelection(state.deleteTargets);
-  let detail = summary + "未删除的 " + failed.length + " 个站点仍保留在列表中";
-  if (unconfirmed.length > 0) {
-    detail += "；其中 " + unconfirmed.length + " 个结果待确认，已移出重试目标，请刷新列表确认。";
-  } else if (!reloaded) {
-    detail += "；列表刷新失败，请点击“刷新”确认后再重试。";
+  let detail = summary;
+  if (reloaded) {
+    const presentIds = new Set(state.sites.map((site) => site.id));
+    const present = failed.filter((item) => presentIds.has(item.site.id)).length;
+    const missing = failed.length - present;
+    if (present > 0) {
+      detail += "未删除的 " + present + " 个站点仍保留在列表中";
+    }
+    if (missing > 0) {
+      detail += (present > 0 ? "；" : "") + missing + " 个站点已不在列表中";
+    }
+    detail += unconfirmed.length > 0
+      ? "；" + unconfirmed.length + " 个站点的结果待确认，已移出重试目标。"
+      : "，可修正后重试。";
   } else {
-    detail += "，可修正后重试。";
+    detail += failed.length + " 个站点未删除或结果待确认；列表刷新失败，"
+      + "请点击“刷新”确认后再处理，待确认的站点不会自动重试。";
   }
   elements.deleteMessage.textContent = detail;
   showStatus(

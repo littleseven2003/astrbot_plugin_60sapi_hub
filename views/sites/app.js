@@ -377,6 +377,10 @@ const state = {
   editingTaskScheduleError: null,
   editingTaskScheduleDirty: false,
   taskFormDisabled: false,
+  // 任务表单的完整签名与请求序号：在途能力测试/预览只认当前这一代。
+  taskFormEpoch: 0,
+  taskFormHintText: "",
+  taskCapabilityTestRequestId: 0,
   deliveryTask: null,
   deliveryPreview: null,
   deliveryBusy: false,
@@ -2531,13 +2535,6 @@ function taskItemLimitText(limit) {
   return Number.isInteger(limit) ? String(limit) : "";
 }
 
-function taskItemsSignature(items) {
-  return (Array.isArray(items) ? items : []).map((item) => {
-    const limit = Number.isInteger(item.limit) ? item.limit : "";
-    return item.content_type + ":" + limit;
-  }).join(",");
-}
-
 function savedTaskItems(task) {
   const list = task && Array.isArray(task.items) ? task.items : [];
   return list
@@ -2603,9 +2600,10 @@ function renderTaskItems() {
     limitInput.dataset.itemIndex = String(index);
     limitInput.setAttribute("aria-label", taskItemLabel(item.content_type) + "条数");
     limitInput.addEventListener("input", () => {
+      // 不改写用户输入：1.5 / 1e2 / abc 原样留在框里，交给共用判断报「需修正」。
       state.taskItems[index].limitText = limitInput.value;
-      updateTaskCapabilityGate();
-      updateTaskPreviewGate();
+      invalidateTaskFormRequests();
+      updateTaskFormGates();
     });
     const limitText = document.createElement("span");
     limitText.className = "task-item-limit-text";
@@ -2627,8 +2625,8 @@ function renderTaskItems() {
     elements.taskItemList.append(row);
   });
   taskItemOptions();
-  updateTaskCapabilityGate();
-  updateTaskPreviewGate();
+  invalidateTaskFormRequests();
+  updateTaskFormGates();
 }
 
 function addTaskItem() {
@@ -2657,24 +2655,21 @@ function removeTaskItem(index) {
 function collectTaskItems() {
   const seen = new Set();
   const items = [];
-  for (const item of state.taskItems) {
-    if (seen.has(item.content_type)) {
+  for (const entry of currentTaskItemEntries()) {
+    if (seen.has(entry.content_type)) {
       throw new Error("同一栏目只能添加一次。");
     }
-    seen.add(item.content_type);
-    const raw = String(item.limitText == null ? "" : item.limitText).trim();
-    if (!raw) {
-      items.push({ content_type: item.content_type, limit: null });
-      continue;
-    }
-    const limit = Number(raw);
-    if (!Number.isInteger(limit) || limit < 1 || limit > TASK_ITEM_LIMIT_MAX) {
+    seen.add(entry.content_type);
+    if (entry.kind === "invalid") {
       throw new Error(
-        taskItemLabel(item.content_type) + "的条数需为 1-" +
+        taskItemLabel(entry.content_type) + "的条数需为 1-" +
         TASK_ITEM_LIMIT_MAX + " 的整数，留空表示不限。",
       );
     }
-    items.push({ content_type: item.content_type, limit });
+    items.push({
+      content_type: entry.content_type,
+      limit: entry.kind === "limit" ? entry.limit : null,
+    });
   }
   return items;
 }
@@ -2843,6 +2838,20 @@ async function requestTaskPreview(force) {
     return false;
   }
   const requestId = ++state.taskPreviewRequestId;
+  // 预览请求的始终是已保存版本；若预览的正是正在编辑的任务，
+  // 响应还要能对上发起时的表单签名，避免旧响应落到改过的表单上。
+  const formSignature = state.editingTask && state.editingTask.id === taskId
+    ? taskFormSignatureKey()
+    : null;
+  const stillCurrent = () => {
+    if (requestId !== state.taskPreviewRequestId || taskId !== state.taskPreviewTaskId) {
+      return false;
+    }
+    if (formSignature === null) return true;
+    return Boolean(state.editingTask)
+      && state.editingTask.id === taskId
+      && taskFormSignatureKey() === formSignature;
+  };
   clearTaskPreviewResults();
   setTaskPreviewBusy(true);
   showTaskPreviewStatus("正在获取内容…", "info");
@@ -2852,15 +2861,12 @@ async function requestTaskPreview(force) {
       "tasks/" + encodeURIComponent(taskId) + "/preview",
       { force_refresh: force === true },
     );
-    if (requestId !== state.taskPreviewRequestId || taskId !== state.taskPreviewTaskId) {
-      return false;
-    }
+    if (!stillCurrent()) return false;
     renderTaskPreview(data && data.data ? data.data : data);
     return true;
   } catch (error) {
-    if (requestId !== state.taskPreviewRequestId) {
-      return false;
-    }
+    // 失败响应同样可能过期，不能覆盖当前弹窗的提示。
+    if (!stillCurrent()) return false;
     clearTaskPreviewResults();
     showTaskPreviewStatus(taskPreviewErrorText(error), "error");
     return false;
@@ -2890,21 +2896,16 @@ function closeTaskPreview() {
   clearTaskPreviewPanels();
 }
 
-function updateTaskPreviewGate() {
-  const button = elements.taskPreviewFormButton;
-  if (!button) return;
-  button.disabled = state.taskFormDisabled || state.taskMode !== "edit" ||
-    !state.editingTask || state.taskSaving;
-}
-
 function previewSavedTask() {
   if (state.taskMode !== "edit" || !state.editingTask) {
     showTaskFormError("请先保存任务后再预览。");
     return;
   }
-  if (!taskFormMatchesSaved()) {
-    // 未保存的修改不能预览：预览只读取已保存的任务配置。
-    showTaskFormError("请先保存任务修改后再预览。");
+  const hint = taskFormGateHintText();
+  if (hint) {
+    // 兜底：按钮正常时已被置灰，这里保证入口语义与共用提示完全一致。
+    showTaskFormError(hint);
+    updateTaskFormGates();
     return;
   }
   openTaskPreview(state.editingTask);
@@ -3590,6 +3591,8 @@ function markTaskScheduleDirty() {
   elements.taskScheduleSaved.hidden = false;
   elements.taskScheduleSaved.textContent =
     "计划已修改，保存后更新理论时间；保存前不显示旧计划预览。";
+  invalidateTaskFormRequests();
+  updateTaskFormGates();
 }
 
 function collectTaskSchedule() {
@@ -3901,7 +3904,8 @@ function renderTaskSites() {
     elements.taskSiteList.append(row);
   });
   taskSiteOptions();
-  updateTaskCapabilityGate();
+  invalidateTaskFormRequests();
+  updateTaskFormGates();
 }
 
 function addTaskSite() {
@@ -3943,45 +3947,182 @@ function savedTaskSites(task) {
   return task.sites.map((item) => (typeof item === "string" ? item : item.id));
 }
 
-function currentTaskItems() {
+/* ---------- 任务表单「未保存修改」：预览/能力测试/保存共用同一份判断 ---------- */
+
+// 条数三态：空=不限，1..TASK_ITEM_LIMIT_MAX=该值，其余一律「非法」。
+// 非法值既不归一化成「不限」，也不能和任何已保存状态判等，且不改写用户输入。
+function taskItemLimitState(raw) {
+  const text = String(raw == null ? "" : raw).trim();
+  if (!text) return { kind: "unlimited", limit: null };
+  if (!/^[0-9]+$/.test(text)) return { kind: "invalid", limit: null };
+  const value = Number(text);
+  if (!Number.isInteger(value) || value < 1 || value > TASK_ITEM_LIMIT_MAX) {
+    return { kind: "invalid", limit: null };
+  }
+  return { kind: "limit", limit: value };
+}
+
+function currentTaskItemEntries() {
   return state.taskItems.map((item) => {
-    const raw = String(item.limitText == null ? "" : item.limitText).trim();
-    return {
-      content_type: item.content_type,
-      limit: /^[0-9]+$/.test(raw) ? Number(raw) : null,
-    };
+    const parsed = taskItemLimitState(item.limitText);
+    return { content_type: item.content_type, kind: parsed.kind, limit: parsed.limit };
   });
+}
+
+function taskItemEntriesSignature(entries) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => {
+    // 非法输入用独立标记：既不是「不限」的空串，也不是任何已保存条数。
+    const value = entry.kind === "limit"
+      ? entry.limit
+      : (entry.kind === "unlimited" ? "" : entry.kind);
+    return entry.content_type + ":" + value;
+  }).join(",");
+}
+
+function savedTaskItemEntries(task) {
+  return savedTaskItems(task).map((item) => ({
+    content_type: item.content_type,
+    kind: Number.isInteger(item.limit) ? "limit" : "unlimited",
+    limit: item.limit,
+  }));
+}
+
+// 计划按同一种归一化形状比较：周几排序去重、Cron 空白折叠、间隔起点去掉秒。
+function taskScheduleSignature(schedule) {
+  if (!schedule || typeof schedule !== "object") return { kind: "none" };
+  const kind = String(schedule.kind || "");
+  const timezone = String(schedule.timezone == null ? "" : schedule.timezone).trim();
+  if (kind === "daily") {
+    return { kind, timezone, time: String(schedule.time || "").trim() };
+  }
+  if (kind === "weekly") {
+    const weekdays = Array.isArray(schedule.weekdays)
+      ? [...new Set(schedule.weekdays.map(Number).filter(Number.isInteger))]
+        .sort((a, b) => a - b)
+      : String(schedule.weekdays == null ? "" : schedule.weekdays);
+    return { kind, timezone, time: String(schedule.time || "").trim(), weekdays };
+  }
+  if (kind === "interval") {
+    const startAt = String(schedule.start_at == null ? "" : schedule.start_at).trim()
+      .replace(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}):00$/, "$1");
+    return { kind, timezone, start_at: startAt, interval_minutes: Number(schedule.interval_minutes) };
+  }
+  if (kind === "cron") {
+    return {
+      kind, timezone,
+      expression: String(schedule.expression == null ? "" : schedule.expression)
+        .trim().replace(/\s+/g, " "),
+    };
+  }
+  return { kind };
+}
+
+function savedTaskSchedule(task) {
+  if (!task) return null;
+  return task.schedule || task.schedule_raw || null;
+}
+
+function currentTaskScheduleSignature() {
+  if (!state.editingTaskScheduleDirty) {
+    // 未改计划时表单就是已保存计划：普通编辑不会凭空造出计划改动。
+    return taskScheduleSignature(savedTaskSchedule(state.editingTask));
+  }
+  try {
+    return taskScheduleSignature(collectTaskSchedule());
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+function currentTaskFormSignature() {
+  return {
+    name: String(elements.taskName.value == null ? "" : elements.taskName.value).trim(),
+    items: taskItemEntriesSignature(currentTaskItemEntries()),
+    sites: state.taskSites.slice().join(","),
+    output_format: String(elements.taskOutputFormat.value || ""),
+    schedule: currentTaskScheduleSignature(),
+    umos: collectTaskUmos().join("\n"),
+  };
+}
+
+function savedTaskFormSignature(task) {
+  const umos = task && Array.isArray(task.umos) ? task.umos : [];
+  return {
+    name: String(task && task.name != null ? task.name : "").trim(),
+    items: taskItemEntriesSignature(savedTaskItemEntries(task)),
+    sites: savedTaskSites(task).join(","),
+    output_format: String(task && task.output_format != null ? task.output_format : ""),
+    schedule: taskScheduleSignature(savedTaskSchedule(task)),
+    umos: umos.map((umo) => String(umo).trim()).filter((umo) => umo.length > 0).join("\n"),
+  };
+}
+
+function taskFormSignatureKey() {
+  return JSON.stringify(currentTaskFormSignature());
+}
+
+function invalidTaskItemLabels() {
+  return currentTaskItemEntries()
+    .filter((entry) => entry.kind === "invalid")
+    .map((entry) => taskItemLabel(entry.content_type));
 }
 
 function taskFormMatchesSaved() {
   if (state.taskMode !== "edit" || !state.editingTask) return false;
-  if (taskItemsSignature(currentTaskItems())
-      !== taskItemsSignature(savedTaskItems(state.editingTask))) {
-    return false;
+  return taskFormSignatureKey() ===
+    JSON.stringify(savedTaskFormSignature(state.editingTask));
+}
+
+// 三处共用这一条提示：条数非法必须修正；其余未保存改动必须先保存。
+function taskFormGateHintText() {
+  const invalid = invalidTaskItemLabels();
+  if (invalid.length > 0) {
+    return "栏目条数不合法：" + invalid.join("、") + "。条数需为 1-" +
+      TASK_ITEM_LIMIT_MAX + " 的整数，留空表示不限；修正后才能预览或进行能力测试。";
   }
-  const saved = savedTaskSites(state.editingTask);
-  // 候选完全由任务自己决定，空候选也是一种已保存状态。
-  return saved.join(",") === state.taskSites.join(",");
+  if (!taskFormMatchesSaved()) {
+    return "当前修改尚未保存；预览与能力测试都使用已保存的任务配置，请先保存后再试。";
+  }
+  return "";
+}
+
+function updateTaskFormGates() {
+  const blocked = state.taskFormDisabled || state.taskMode !== "edit" ||
+    !state.editingTask || state.taskSaving;
+  const hint = blocked ? "" : taskFormGateHintText();
+  const locked = blocked || hint.length > 0;
+  elements.taskCapabilityTestButton.disabled = locked;
+  const preview = elements.taskPreviewFormButton;
+  if (preview) {
+    preview.disabled = locked;
+    // 展开说明：按钮置灰时把原因挂到同一条提示上。
+    if (hint) preview.setAttribute("aria-describedby", "task-capability-result");
+    else preview.removeAttribute("aria-describedby");
+  }
+  if (hint) {
+    state.taskFormHintText = hint;
+    setTaskCapabilityResult(hint, "warning");
+  } else if (state.taskFormHintText) {
+    // 只收回这里写下的提示，不覆盖能力测试自己的结果。
+    state.taskFormHintText = "";
+    setTaskCapabilityResult("", null);
+  }
 }
 
 function updateTaskCapabilityGate() {
-  const button = elements.taskCapabilityTestButton;
-  if (state.taskMode !== "edit" || !state.editingTask) {
-    button.disabled = true;
-    return;
-  }
-  const matches = taskFormMatchesSaved();
-  button.disabled = !matches;
-  if (!matches) {
-    state.taskCapabilityGateWarning = true;
-    setTaskCapabilityResult(
-      "当前修改尚未保存；能力测试针对已保存配置，请先保存再测试。",
-      "warning",
-    );
-  } else if (state.taskCapabilityGateWarning) {
-    // 撤销修改后不再残留警告。
-    state.taskCapabilityGateWarning = false;
-    setTaskCapabilityResult("", null);
+  updateTaskFormGates();
+}
+
+function updateTaskPreviewGate() {
+  updateTaskFormGates();
+}
+
+// 表单任一字段变化后，在途的能力测试与预览都作废，避免旧响应落到当前弹窗。
+function invalidateTaskFormRequests() {
+  state.taskCapabilityTestRequestId += 1;
+  if (state.taskPreviewLoading && state.taskPreviewTaskId === state.editingTaskId) {
+    clearTaskPreviewPanels();
+    showTaskPreviewStatus("任务表单已修改，本次预览已作废；保存后可重新预览。", "info");
   }
 }
 
@@ -3992,16 +4133,19 @@ async function runTaskCapabilityTest() {
   }
   const taskId = state.editingTaskId;
   const revision = state.editingTaskRevision;
-  const sitesSnapshot = state.taskSites.slice().join(",");
-  const itemsSnapshot = taskItemsSignature(currentTaskItems());
+  const epoch = state.taskFormEpoch;
+  const formSignature = taskFormSignatureKey();
+  const requestId = ++state.taskCapabilityTestRequestId;
   elements.taskCapabilityTestButton.disabled = true;
   setTaskCapabilityResult("正在检查候选站点…", "info");
-  // 切换任务、关闭弹窗或改了候选/栏目后，旧请求（成功或失败）都作废。
-  const stillCurrent = () => state.taskMode === "edit"
+  // 切换任务、关闭弹窗或改动任一表单字段后，旧请求（成功或失败）都作废：
+  // 序号认请求世代，epoch 认弹窗世代，签名认表单内容。
+  const stillCurrent = () => requestId === state.taskCapabilityTestRequestId
+    && epoch === state.taskFormEpoch
+    && state.taskMode === "edit"
     && state.editingTaskId === taskId
     && state.editingTaskRevision === revision
-    && state.taskSites.slice().join(",") === sitesSnapshot
-    && taskItemsSignature(currentTaskItems()) === itemsSnapshot;
+    && taskFormSignatureKey() === formSignature;
   try {
     const data = await bridge.apiPost(
       `tasks/${encodeURIComponent(taskId)}/capability-test`, {},
@@ -4029,7 +4173,6 @@ async function runTaskCapabilityTest() {
   }
 }
 
-
 function openCreateTask() {
   if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
     return;
@@ -4038,6 +4181,9 @@ function openCreateTask() {
     return;
   }
   clearTaskPendingPanels();
+  // 每次打开表单都是一代新表单：上一代的在途请求全部作废。
+  state.taskFormEpoch += 1;
+  state.taskFormHintText = "";
   state.taskMode = "create";
   state.editingTask = null;
   state.editingTaskId = null;
@@ -4066,6 +4212,8 @@ function openTaskEditor(task) {
     return;
   }
   clearTaskPendingPanels();
+  state.taskFormEpoch += 1;
+  state.taskFormHintText = "";
   state.taskMode = "edit";
   state.editingTaskId = task.id;
   state.editingTaskRevision = task.revision;
@@ -5679,6 +5827,15 @@ function bindEvents() {
     }
     requestCloseFormDialog(elements.taskDialog);
   });
+  elements.taskDialog.addEventListener("close", () => {
+    // 关闭编辑弹窗即换代：在途的能力测试/预览响应不得再落到任何界面。
+    state.taskFormEpoch += 1;
+    state.taskCapabilityTestRequestId += 1;
+    state.taskFormHintText = "";
+    if (state.taskPreviewLoading && state.taskPreviewTaskId === state.editingTaskId) {
+      closeTaskPreview();
+    }
+  });
   elements.taskDeleteCancelButton.addEventListener("click", () => {
     if (!state.taskDeleting && !state.taskPending) {
       closeDialog(elements.taskDeleteDialog);
@@ -5695,6 +5852,14 @@ function bindEvents() {
     }
   });
   elements.taskItemAddButton.addEventListener("click", addTaskItem);
+  // 名称、输出方式、UMO 此前没有任何监听：改动它们同样要算「未保存修改」。
+  [elements.taskName, elements.taskOutputFormat, elements.taskUmos].forEach((field) => {
+    if (!field) return;
+    field.addEventListener("input", () => {
+      invalidateTaskFormRequests();
+      updateTaskFormGates();
+    });
+  });
   elements.taskPreviewFormButton.addEventListener("click", previewSavedTask);
   elements.taskPreviewRefreshButton.addEventListener(
     "click",

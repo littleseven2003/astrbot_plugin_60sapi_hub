@@ -464,19 +464,45 @@ async function cancelTaskDialog(page) {
     await page.click("#task-preview-done-button");
     await page.waitForFunction(() => !document.getElementById("task-preview-dialog").open);
 
-    // ⑦ 有未保存改动时点预览只提示保存，零请求。
+    // ⑦ 有未保存改动时预览与能力测试入口一起置灰并给出共用提示，零请求；撤销后恢复。
     const previewCount = await page.evaluate(() =>
       window.__calls.filter((call) => call.endpoint.endsWith("/preview")).length);
+    const testCount = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/capability-test")).length);
     await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
     await page.waitForSelector("#task-dialog[open]");
+    const cleanGate = await page.evaluate(() => ({
+      preview: document.getElementById("task-preview-form-button").disabled,
+      test: document.getElementById("task-capability-test-button").disabled,
+      hintHidden: document.getElementById("task-capability-result").hidden,
+    }));
+    check(!cleanGate.preview && !cleanGate.test && cleanGate.hintHidden,
+      "未改动时两个入口都可用且没有提示：" + JSON.stringify(cleanGate));
     await page.fill("#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "9");
-    await page.click("#task-preview-form-button");
-    await page.waitForSelector("#task-form-error:not([hidden])");
-    const gateError = await page.textContent("#task-form-error");
-    check(gateError.includes("请先保存任务修改后再预览"), "未保存预览提示：" + gateError);
+    const dirtyGate = await page.evaluate(() => ({
+      preview: document.getElementById("task-preview-form-button").disabled,
+      test: document.getElementById("task-capability-test-button").disabled,
+      hint: document.getElementById("task-capability-result").textContent,
+      hintHidden: document.getElementById("task-capability-result").hidden,
+    }));
+    check(dirtyGate.preview && dirtyGate.test,
+      "未保存改动时预览与能力测试都置灰：" + JSON.stringify(dirtyGate));
+    check(!dirtyGate.hintHidden && dirtyGate.hint.includes("预览与能力测试都使用已保存的任务配置"),
+      "未保存改动时给出共用提示：" + dirtyGate.hint);
     const previewAfter = await page.evaluate(() =>
       window.__calls.filter((call) => call.endpoint.endsWith("/preview")).length);
     check(previewAfter === previewCount, "未保存改动时不发预览请求");
+    const testAfter = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/capability-test")).length);
+    check(testAfter === testCount, "未保存改动时不发能力测试请求");
+    await page.fill("#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "2");
+    const restoredGate = await page.evaluate(() => ({
+      preview: document.getElementById("task-preview-form-button").disabled,
+      test: document.getElementById("task-capability-test-button").disabled,
+      hintHidden: document.getElementById("task-capability-result").hidden,
+    }));
+    check(!restoredGate.preview && !restoredGate.test && restoredGate.hintHidden,
+      "撤销修改后入口恢复且提示消失：" + JSON.stringify(restoredGate));
     await cancelTaskDialog(page);
 
     // ⑧ 两种预览错误各有可读文案。

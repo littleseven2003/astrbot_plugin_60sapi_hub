@@ -357,7 +357,7 @@ code {
 .button-danger {
   border-color: var(--danger-line);
   background: var(--white);
-  color: var(--accent);
+  color: var(--danger);
 }
 
 .button-danger:hover:not(:disabled) {
@@ -392,6 +392,25 @@ code {
 .button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* 危险按钮禁用时不保留淡粉描边，改为普通灰色的不可用外观，避免像坏掉的按钮。 */
+.button-danger:disabled {
+  border-color: var(--line);
+  background: var(--white);
+  color: var(--muted);
+  opacity: 1;
+}
+
+.button svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .icon-button {
@@ -1130,7 +1149,7 @@ textarea:focus-visible {
 .site-actions .button-danger {
   border-color: var(--danger-line);
   background: var(--white);
-  color: var(--accent);
+  color: var(--danger);
 }
 
 .site-actions .button-danger:hover:not(:disabled) {
@@ -2222,7 +2241,7 @@ dialog.dialog button {
 .sites-list .site-icon-danger:hover:not(:disabled) {
   border-color: var(--danger-line);
   background: var(--danger-soft);
-  color: var(--accent);
+  color: var(--danger);
 }
 
 .sites-list .site-icon-button:focus-visible {

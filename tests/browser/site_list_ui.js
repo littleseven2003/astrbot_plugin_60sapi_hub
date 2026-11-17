@@ -283,6 +283,24 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     check(await page.isDisabled("#site-test-selected"), "未选站点时批量测试禁用");
     check(await page.isDisabled("#site-delete-selected"), "未选站点时批量删除禁用");
 
+    // 批量删除：危险红只用于可用状态，禁用时退成普通灰色并保留装饰图标。
+    const deleteButton = await page.evaluate(() => {
+      const button = document.getElementById("site-delete-selected");
+      const style = getComputedStyle(button);
+      return {
+        color: style.color,
+        opacity: style.opacity,
+        icon: Boolean(button.querySelector("svg")),
+        iconHidden: button.querySelector("svg")?.getAttribute("aria-hidden"),
+        label: button.textContent.trim(),
+      };
+    });
+    check(deleteButton.opacity === "1", "禁用的批量删除不靠整体透明变淡");
+    check(!deleteButton.color.includes("180, 35, 24"), "禁用时不用危险红：" + deleteButton.color);
+    check(deleteButton.icon && deleteButton.iconHidden === "true",
+      "批量删除带装饰图标且对读屏隐藏");
+    check(deleteButton.label === "批量删除", "批量删除按钮名称不含图标文字：" + deleteButton.label);
+
     // 页面说明保持一句话；站点备注只留在站点管理视图里。
     const copy = await page.evaluate(() => ({
       ledes: Array.from(document.querySelectorAll(".view-lede, .preview-lede"))
@@ -387,6 +405,21 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
       "全选后已选 3 个");
     check(await page.isEnabled("#site-test-selected"), "全选后批量测试可用");
     check(await page.isEnabled("#site-delete-selected"), "全选后批量删除可用");
+    // 颜色有 0.15s 过渡，且选择后工具栏会短暂重绘：轮询到最终危险红为止。
+    const beforeColor = await page.evaluate(
+      () => getComputedStyle(document.getElementById("site-delete-selected")).color);
+    let settledColor = beforeColor;
+    try {
+      await page.waitForFunction(() => getComputedStyle(document.getElementById("site-delete-selected")).color
+        === "rgb(180, 35, 24)", null, { timeout: 5000 });
+    } catch (error) {
+      settledColor = await page.evaluate(
+        () => getComputedStyle(document.getElementById("site-delete-selected")).color);
+    }
+    settledColor = await page.evaluate(
+      () => getComputedStyle(document.getElementById("site-delete-selected")).color);
+    check(settledColor.includes("180, 35, 24"),
+      `可用时批量删除显示危险红：${beforeColor} → ${settledColor}`);
     check(await page.$$eval("#sites-list .site-select", (nodes) => nodes.every((node) => node.checked)),
       "全选后勾选框都选中");
     check(await page.$$eval("#sites-list > li", (nodes) => nodes.every((node) => node.dataset.selected === "true")),

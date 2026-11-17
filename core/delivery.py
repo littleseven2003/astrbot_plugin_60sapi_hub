@@ -291,6 +291,7 @@ class DeliveryService:
                     expected_profile_revision,
                     expected_candidates,
                     expected_alert_only,
+                    deadline=deadline,
                 ),
                 timeout=remaining,
             )
@@ -314,6 +315,7 @@ class DeliveryService:
         expected_profile_revision: int | None = None,
         expected_candidates: list | None = None,
         expected_alert_only: bool | None = None,
+        deadline: float | None = None,
     ) -> StoredDeliveryExecution:
         async with self._admission():
             existing = await self._existing_for_task(execution_key, task_key)
@@ -360,6 +362,7 @@ class DeliveryService:
             return await self._run(
                 execution_key, task, profile, primary,
                 expected_candidates, expected_alert_only,
+                deadline=deadline,
             )
 
     @asynccontextmanager
@@ -448,6 +451,7 @@ class DeliveryService:
         primary: object,
         expected_candidates: list | None = None,
         expected_alert_only: bool | None = None,
+        deadline: float | None = None,
     ) -> StoredDeliveryExecution:
         if task.target_count == 0:
             await self._finish(execution_id, "no_targets", None)
@@ -469,6 +473,7 @@ class DeliveryService:
         try:
             prepared = await self._prepare(
                 execution_id, task, profile, candidates,
+                deadline=deadline,
             )
         except DeliveryConfirmationStaleError:
             # 确认后候选状态变了：不发送，记录为明确失败并附安全错误码。
@@ -600,10 +605,12 @@ class DeliveryService:
         task: PushTask,
         profile: object,
         candidates: list[object],
+        *,
+        deadline: float | None = None,
     ) -> "_Prepared":
         """按顺序寻找同一个站点同时满足全部类别与条数。"""
         prepared = await self._prepare_with_failover(
-            execution_id, task, profile, candidates,
+            execution_id, task, profile, candidates, deadline=deadline,
         )
         if prepared is not None:
             return prepared
@@ -616,6 +623,8 @@ class DeliveryService:
         task: PushTask,
         profile: object,
         candidates: list[object],
+        *,
+        deadline: float | None = None,
     ) -> "_Prepared | None":
         """按任务保存的顺序，寻找同一个站点满足全部类别与条数。"""
         requirements = requirements_from_items(profile.items)
@@ -626,6 +635,8 @@ class DeliveryService:
             requirements=requirements,
             site_ids=[candidate.id for candidate in candidates],
             owner=execution_id,
+            # 每站只用剩余时间的一份：慢的首选站点不会吃满总时限。
+            deadline=deadline,
         )
         if found is None:
             return None

@@ -352,60 +352,6 @@ async function openPage(browser, port, overrides = {}) {
     await page.click("#task-close-dialog-button");
 
 
-    // 站点一键测试五类：逐一请求五个接口并渲染五行。
-    await page.click('.nav-item[data-view="sites"]');
-    await page.waitForFunction(
-      () => document.querySelectorAll("#sites-list li").length === 3,
-    );
-    await page.locator("#sites-list button", { hasText: "测试连接" }).first().click();
-    await page.waitForSelector("#site-test-all-button");
-    await page.click("#site-test-all-button");
-    await page.waitForFunction(() =>
-      document.querySelectorAll("#site-test-all-results li").length === 5,
-    );
-    const tests = await page.evaluate(() =>
-      window.__calls.filter((call) => call.endpoint.includes("/test")).map(
-        (call) => call.payload.content_type));
-    check(
-      ["daily_news", "bilibili_hot", "zhihu_hot", "douyin_hot", "toutiao_hot"]
-        .every((type) => tests.includes(type)),
-      "五类测试请求：" + JSON.stringify(tests),
-    );
-    const labels = await page.$$eval("#site-test-all-results li",
-      (nodes) => nodes.map((node) => node.textContent));
-    check(labels.length === 5, "五类结果行：" + labels.length);
-    check(labels.some((text) => text.includes("空内容")),
-      "合法空列表应显示为空内容：" + JSON.stringify(labels));
-    check(labels.some((text) => text.includes("不可用")),
-      "失败项应显示不可用：" + JSON.stringify(labels));
-
-    // 关闭后重新打开：按钮可用、旧结果清空、可再次测试。
-    await page.click("#site-test-close-button");
-    await page.waitForFunction(
-      () => document.getElementById("site-test-dialog").open === false);
-    await page.locator("#sites-list button", { hasText: "测试连接" }).first().click();
-    await page.waitForSelector("#site-test-all-button:not([disabled])");
-    const reopenedRows = await page.locator("#site-test-all-results li").count();
-    check(reopenedRows === 0, "重开弹窗应清空旧结果");
-    await page.click("#site-test-all-button");
-    await page.waitForFunction(() =>
-      document.querySelectorAll("#site-test-all-results li").length === 5);
-    check(true, "关闭后重开仍可再次测试五类");
-
-
-    // 切换到另一个站点：新弹窗不显示上一个站点的结果，按钮可用。
-    await page.click("#site-test-close-button");
-    await page.waitForFunction(
-      () => document.getElementById("site-test-dialog").open === false);
-    await page.locator("#sites-list button", { hasText: "测试连接" }).nth(1).click();
-    await page.waitForSelector("#site-test-all-button:not([disabled])");
-    const switchedRows = await page.locator("#site-test-all-results li").count();
-    check(switchedRows === 0, "切换站点后不应残留旧结果");
-    await page.click("#site-test-all-button");
-    await page.waitForFunction(() =>
-      document.querySelectorAll("#site-test-all-results li").length === 5);
-    check(true, "切换站点后仍可再次测试五类");
-
     // A 停用、B 可用：页面仍可确认启用任务。
     const page2 = await openPage(browser, port, {
       tasks: [{

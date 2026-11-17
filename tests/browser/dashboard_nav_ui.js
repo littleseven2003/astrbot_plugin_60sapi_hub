@@ -417,7 +417,7 @@ async function runPreviewPersistence(page, frame, label) {
     fetchedAt: (document.getElementById("preview-fetched-at") || {}).textContent || "",
     itemCount: (document.getElementById("preview-item-count") || {}).textContent || "",
     source: (document.getElementById("preview-source") || {}).textContent || "",
-    sitesList: [...document.querySelectorAll("#sites-list li")]
+    sitesList: [...document.querySelectorAll("#sites-list > li")]
       .map((item) => item.textContent.replace(/\s+/g, " ").trim()),
   }));
   const upstreamAfterPreview = upstreamCalls.length;
@@ -434,7 +434,7 @@ async function runPreviewPersistence(page, frame, label) {
       fetchedAt: (document.getElementById("preview-fetched-at") || {}).textContent || "",
       itemCount: (document.getElementById("preview-item-count") || {}).textContent || "",
       source: (document.getElementById("preview-source") || {}).textContent || "",
-      sitesList: [...document.querySelectorAll("#sites-list li")]
+      sitesList: [...document.querySelectorAll("#sites-list > li")]
         .map((item) => item.textContent.replace(/\s+/g, " ").trim()),
     };
   });
@@ -467,7 +467,7 @@ async function dialogStates(frame) {
       siteDialogOpen: read("site-dialog"),
       discardDialogOpen: read("discard-dialog"),
       nameValue: (document.getElementById("name") || {}).value ?? null,
-      sitesList: [...document.querySelectorAll("#sites-list li")]
+      sitesList: [...document.querySelectorAll("#sites-list > li")]
         .map((item) => item.textContent.replace(/\s+/g, " ").trim()),
     };
   });

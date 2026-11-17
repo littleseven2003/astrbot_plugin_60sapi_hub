@@ -140,7 +140,7 @@ async function openPage(browser, port) {
   });
   await page.waitForFunction(
     () => document.getElementById("sites-list")?.getAttribute("aria-busy") === "false"
-      && document.querySelectorAll("#sites-list li").length === 5,
+      && document.querySelectorAll("#sites-list > li").length === 5,
     null, { timeout: 30000 },
   );
   return page;
@@ -192,17 +192,21 @@ async function submitAndCapture(page, endpoint) {
   try {
     const page = await openPage(browser, port);
 
-    // 列表展示：缺失/未知类型不能被显示成“公开服务”。
-    const metas = await page.$$eval("#sites-list li .site-meta", (nodes) =>
-      nodes.map((node) => node.textContent));
-    check(metas[0].includes("公开服务"), "公开站点显示公开服务");
-    check(metas[1].includes("公开服务"), "带凭据站点同为公开服务");
-    check(metas[2].includes("自建服务"), "自建站点显示自建服务");
-    check(metas[3].includes("来源类型未知"), "缺失类型显示未知");
-    check(!metas[3].includes("公开服务"), "缺失类型不得显示公开服务");
-    check(!metas[3].includes("自建服务"), "缺失类型不得显示自建服务");
-    check(metas[4].includes("来源类型未知"), "未知类型显示未知");
-    check(!metas[4].includes("公开服务"), "未知类型不得显示公开服务");
+    // 列表展示：缺失/未知类型不能被显示成公开来源。
+    const badges = await page.$$eval("#sites-list > li .badge-source", (nodes) =>
+      nodes.map((node) => ({
+        text: node.textContent.trim(), kind: node.dataset.kind,
+      })));
+    check(badges[0].text === "公开" && badges[0].kind === "public",
+      "公开站点显示公开标签");
+    check(badges[1].text === "公开" && badges[1].kind === "public",
+      "带凭据站点同为公开标签");
+    check(badges[2].text === "自建" && badges[2].kind === "self_built",
+      "自建站点显示自建标签");
+    check(badges[3].text === "来源未知" && badges[3].kind === "unknown",
+      "缺失类型显示来源未知");
+    check(badges[4].text === "来源未知" && badges[4].kind === "unknown",
+      "未知类型显示来源未知");
 
     // 新建默认公开。
     await page.click("#create-button");

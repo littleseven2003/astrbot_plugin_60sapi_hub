@@ -46,7 +46,7 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
 
     上游用 httpx.MockTransport 模拟：slow.* 主机的请求长时间不返回，
     站点超时填 5 秒（真实站点的默认量级），投递总时限压到 2 秒来复现
-    “总时限提前结束”。不需要等真实的 60 秒。
+    “总时限提前结束”；delays 让站点慢但仍可用。不需要等真实的 60 秒。
     """
 
     BUDGET = 2.0
@@ -57,6 +57,8 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self._tmp.name) / "slow.sqlite3"
         self.hosts: list[str] = []
         self.slow_sites: set[str] = set()
+        # 主机 -> 该站每次上游请求的耗时（秒）：模拟“慢但最终可用”的站点。
+        self.delays: dict[str, float] = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
             host = request.url.host
@@ -64,6 +66,8 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
             if host in self.slow_sites:
                 await asyncio.sleep(self.SLOW_SECONDS)
                 return httpx.Response(504)
+            if host in self.delays:
+                await asyncio.sleep(self.delays[host])
             if request.url.path.endswith("/v2/60s"):
                 return httpx.Response(200, content=json.dumps({
                     "code": 200, "message": "ok",
@@ -92,15 +96,7 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
             image_snapshots=self.snapshots, image_service=self.images,
         )
         self.sender = RecordingSender()
-        self.delivery = DeliveryService(
-            tasks=self.tasks,
-            profiles=self.profiles,
-            sites=self.sites,
-            profile_api=self.api,
-            store=self.sites.store,
-            sender=self.sender,
-            limits=DeliveryLimits(max_execution_seconds=self.BUDGET),
-        )
+        self.delivery = self._make_delivery(self.BUDGET)
         self.slow = await self.sites.create_site(SiteCreate(
             name="慢站点", base_url="https://slow.example.test/api",
             enabled=True, timeout_seconds=5, source_kind="public",
@@ -118,6 +114,26 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         await self.content.close()
         await self.sites.close()
         self._tmp.cleanup()
+
+    def _make_delivery(self, budget: float) -> DeliveryService:
+        return DeliveryService(
+            tasks=self.tasks,
+            profiles=self.profiles,
+            sites=self.sites,
+            profile_api=self.api,
+            store=self.sites.store,
+            sender=self.sender,
+            limits=DeliveryLimits(max_execution_seconds=budget),
+        )
+
+    async def _news_profile(self, limit: int = 2):
+        # 单栏目组合：一次上游请求耗时就是整次预览耗时，便于按秒数验证预算。
+        return await self.profiles.create_profile(ProfileCreate(
+            name="单栏目组合",
+            items=[
+                {"content_type": "daily_news", "params": {}, "limit": limit},
+            ],
+        ))
 
     async def _profile(self, limit: int = 2):
         return await self.profiles.create_profile(ProfileCreate(
@@ -173,6 +189,38 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sender.messages, [])
         self.assertEqual(record.status, "no_targets")
 
+    async def test_single_candidate_may_use_almost_all_remaining_time(self) -> None:
+        # 复现：总预算 1 秒、唯一站点 0.65 秒就返回满足条件的内容，不能被
+        # “固定对半（0.5 秒）”提前判为不可用。
+        self.delays = {"fast.example.test": 0.65}
+        self.delivery = self._make_delivery(1.0)
+        profile = await self._news_profile()
+        task = await self._task(profile.id, [self.fast.id])
+        started = time.monotonic()
+        record = await self.delivery.execute(task.id, "single-budget")
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.0, "仍要给发送留出时间")
+        self.assertEqual(len(self.sender.messages), 1)
+        self.assertIn("快新闻一", self.sender.messages[0].text or "")
+        self.assertEqual(record.site_id, self.fast.id)
+        self.assertNotEqual(record.status, "failed")
+
+    async def test_first_candidate_slower_than_half_budget_is_still_used(self) -> None:
+        # 总预算 2 秒、两个候选：首站 1.2 秒返回也属于正常可用，不应被
+        # 固定对半（1.0 秒）跳过而落到后面的候选。
+        self.delays = {"fast.example.test": 1.2}
+        profile = await self._news_profile()
+        task = await self._task(profile.id, [self.fast.id, self.slow.id])
+        started = time.monotonic()
+        record = await self.delivery.execute(task.id, "half-budget")
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, self.BUDGET)
+        self.assertEqual(record.site_id, self.fast.id)
+        self.assertEqual(len(self.sender.messages), 1)
+        self.assertIn("快新闻一", self.sender.messages[0].text or "")
+
     async def test_candidate_order_prefers_first_satisfying_site(self) -> None:
         profile = await self._profile()
         task = await self._task(profile.id, [self.fast.id, self.slow.id])
@@ -182,20 +230,23 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
 
 
 class PreviewAttemptTimeoutTest(unittest.TestCase):
-    """单站尝试预算：只看剩余时间的一半，且永不超过剩余时间。"""
+    """单站尝试预算：只预留发送与后续候选的底线，且永不越过剩余时间。"""
 
-    def test_half_of_remaining_time_is_granted(self) -> None:
-        self.assertEqual(attempt_timeout_for(60.0, 0.0), 30.0)
-        self.assertEqual(attempt_timeout_for(30.0, 0.0), 15.0)
+    def test_single_candidate_uses_almost_all_remaining_time(self) -> None:
+        self.assertEqual(attempt_timeout_for(60.0, 0.0), 59.75)
+        # 1 秒总预算留 0.25 秒发送：0.65 秒返回的站点仍可用。
+        self.assertEqual(attempt_timeout_for(1.0, 0.0), 0.75)
 
-    def test_short_remaining_time_keeps_no_floor(self) -> None:
-        # 剩余不足两个最小尝试时长：不再保底 1 秒，否则第二个候选就无预算。
-        self.assertEqual(attempt_timeout_for(1.0, 0.0), 0.5)
-        self.assertLessEqual(attempt_timeout_for(0.4, 0.0), 0.4)
+    def test_later_candidates_keep_their_share(self) -> None:
+        # 两个候选：给首站留下发送预留 + 后续候选的底线。
+        self.assertEqual(attempt_timeout_for(2.0, 0.0, remaining_candidates=2), 1.25)
+        # 预留最多占剩余时间的一半，候选再多也不把首站压到一半以下。
+        self.assertEqual(attempt_timeout_for(2.0, 0.0, remaining_candidates=3), 1.0)
+        self.assertEqual(attempt_timeout_for(1.0, 0.0, remaining_candidates=2), 0.5)
 
-    def test_floor_keeps_slow_site_meaningful_while_budget_allows(self) -> None:
-        self.assertEqual(attempt_timeout_for(2.0, 0.0), 1.0)
-        self.assertEqual(attempt_timeout_for(1.99, 0.0), 0.995)
+    def test_attempt_never_exceeds_remaining_time(self) -> None:
+        self.assertEqual(attempt_timeout_for(0.4, 0.0), 0.2)
+        self.assertLess(attempt_timeout_for(0.05, 0.0), 0.05)
 
     def test_expired_deadline_yields_no_wait(self) -> None:
         self.assertEqual(attempt_timeout_for(1.0, 5.0), 0.0)

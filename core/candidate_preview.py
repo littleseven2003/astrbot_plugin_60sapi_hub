@@ -12,22 +12,24 @@ from typing import Any
 
 from .site_requirements import Requirement, evaluate_sections
 
-# 单个候选站点的尝试最多占用剩余投递时间的这一份，其余留给后续候选与发送。
-PREVIEW_BUDGET_SHARE = 0.5
-MIN_PREVIEW_ATTEMPT_SECONDS = 1.0
+# 发送本身要占的时间：任何一次预览尝试都不吃掉这部分。
+SEND_RESERVE_SECONDS = 0.25
+# 每个还没试过的候选至少要留下的一次尝试时长。
+MIN_CANDIDATE_SECONDS = 0.5
 
 
 def attempt_timeout_for(
     deadline: float | None,
     now: float | None = None,
     *,
-    share: float = PREVIEW_BUDGET_SHARE,
+    remaining_candidates: int = 1,
 ) -> float | None:
     """按投递截止时间算出这一次预览尝试的时长上限。
 
-    每次只看“还剩多少时间”，所以第一名候选超时后，后面的候选自然
-    拿到更大的份额；上限始终不超过剩余时间，余量留给后续候选与发送。
-    剩余时间不足两个最小尝试时长时不再保留下限，避免一次尝试就吃光预算。
+    只给这一次尝试留下“剩余时间减去发送预留和后续候选底线”的部分，因此
+    正常可用的站点能用掉几乎全部剩余时间，慢站点也吃不完后面候选的机会。
+    预留最多只占剩余时间的一半：候选再多，也不能让一次本可成功的尝试被
+    悲观预留提前判失败。
     """
     if deadline is None:
         return None
@@ -36,12 +38,9 @@ def attempt_timeout_for(
     remaining = deadline - now
     if remaining <= 0:
         return 0.0
-    floor = (
-        MIN_PREVIEW_ATTEMPT_SECONDS
-        if remaining >= 2 * MIN_PREVIEW_ATTEMPT_SECONDS
-        else 0.0
-    )
-    return max(0.01, min(remaining, max(floor, remaining * share)))
+    later = max(0, remaining_candidates - 1)
+    reserved = min(remaining * 0.5, SEND_RESERVE_SECONDS + later * MIN_CANDIDATE_SECONDS)
+    return max(0.01, remaining - reserved)
 
 
 async def satisfied_previews(
@@ -59,11 +58,13 @@ async def satisfied_previews(
 
     catch_errors 为真时跳过单个站点抛出的异常（聊天查询不能让一次
     预览失败中断整条链路），为假时继续向上传播（投递保留原有语义）。
-    attempt_timeout 限制单个候选站点的尝试时长：慢站点只占用自己的份额，
-    超时视作该站不满足并继续下一个候选，不必等它把所有时间用完。
-    给出 deadline 时按剩余时间逐次计算上限（投递用），否则用固定值。
+    attempt_timeout 限制单个候选站点的尝试时长：超时视作该站不满足并继续
+    下一个候选，不必等它把所有时间用完。
+    给出 deadline 时按剩余时间和“还有几个候选没试”逐次计算上限（投递用），
+    否则用固定值。
     """
-    for site_id in site_ids:
+    pending = list(site_ids)
+    for index, site_id in enumerate(pending):
         payload: dict[str, Any] = {
             "profile_id": profile_id,
             "force_refresh": False,
@@ -74,7 +75,11 @@ async def satisfied_previews(
         if owner is not None:
             kwargs["owner"] = owner
         timeout = (
-            attempt_timeout if deadline is None else attempt_timeout_for(deadline)
+            attempt_timeout
+            if deadline is None
+            else attempt_timeout_for(
+                deadline, remaining_candidates=len(pending) - index
+            )
         )
         try:
             if timeout is None:
@@ -132,7 +137,8 @@ async def first_satisfying_preview(
 
 
 __all__ = [
-    "PREVIEW_BUDGET_SHARE",
+    "MIN_CANDIDATE_SECONDS",
+    "SEND_RESERVE_SECONDS",
     "attempt_timeout_for",
     "first_satisfying_preview",
     "satisfied_previews",

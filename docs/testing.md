@@ -1,6 +1,6 @@
 # 测试与验收手册
 
-当前已实现站点/组合/任务配置、五类内容获取与缓存、图文预览、aiocqhttp 适配层、后台手动投递/执行记录，以及聊天帮助/当前会话任务列表。M4 后台范围已完成隔离验收，详见下文；真实账号群聊/私聊发送尚未验证，聊天图片查询已完成 PR #19 隔离验收；每日/每周计划配置、显式启停和单循环调度后端已实现，任务页启停与调度记录已通过 PR #23 隔离验收。测试使用临时 SQLite、虚构 UMO、本地模拟上游、真实宿主源码与假机器人；浏览器投递请求均拦截。
+当前任务直接配置栏目与候选站点，支持五类内容预览、图文输出、aiocqhttp 投递、执行记录、聊天查询和计划调度。下文记录各阶段的历史验收及其代码基线；旧版内容组合页面和接口已移除，这些历史结果不能替代当前任务流程的宿主验证。当前版本已用临时 SQLite、模拟上游、假发送器和模拟 bridge 做离线回归；真实 AstrBot Dashboard、真实上游和真实账号发送尚未完成本版验证。部分旧宿主浏览器脚本仍依赖已移除的组合接口或页面，需更新后再用于当前版本。
 
 ## M2 验收基线
 
@@ -237,7 +237,9 @@ node tests/browser/manual_delivery_query.js
 
 21 条以上 UI 翻页仍由服务端分页测试覆盖，未在浏览器脚本中构造；延迟旧响应测试使用完整 deferred 对象；从父页面捕获旧历史查询的 bridge `requestId`（匹配 `channel`、`api:get` 和 `executions/<id>` endpoint），释放前断言 iframe 尚未收到该 requestId 的 response（新 preview 响应不能替代），释放后等待路由完成及同一 requestId 的 response 到达，再断言新弹窗状态。成功和失败 response 分别覆盖；不使用固定 100ms 或仅父页面动画帧。静态语法检查不作为浏览器通过。
 
-## 当前检查
+## 历史检查清单
+
+以下清单记录旧版本的检查方法，其中组合管理相关路径与页面不适用于当前任务内栏目模型。
 
 - 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。
 - 接口回归：`tests/test_site_api.py` 覆盖站点列表、新增、读取、编辑、删除，非法请求体、字段校验、未找到、revision 冲突且不覆盖、删除冲突、凭据保留/替换/清除与脱敏、存储不可用和未预期错误的通用响应。接口业务测试不替代真实宿主鉴权和页面验收。
@@ -302,10 +304,10 @@ AstrBot 4.29.1 的视图 bridge 只把失败转换为带一条 `message` 的 `Er
 
 ## 图片：每栏目一张长图
 
-以下为当前模型。上文 M3、M4 基线小节描述的是当时的固定尺寸分页，保留为历史记录，不代表当前行为。
+以下保留长图模型的历史验证说明。任务内栏目模型仍使用每栏目一张长图；旧组合图片接口已移除，当前任务预览接口参见配置说明。
 
 - 一个栏目一张独立长图，高度随内容增长；多栏目按组合配置顺序返回多张，不再有固定高度分页，也不再把整份组合切成固定页。
-- `POST /<插件名>/profiles/<id>/image` 成功时 `data` 为 `{"images": [...], "failed_sections": [...], "snapshot_id": "..."}`：`images` 每条对应一个栏目，含 `index`、`content_type`、`label`、`status`（`success` / `empty` / `failed`）、`width`、`height`，出图时附 `png_base64`，失败时附安全 `error`；不再返回 `pages` / `page_count`。`empty` 是合法空栏目，仍有图并展示空状态；`failed` 没有图片字节。
+- 旧版 `POST /<插件名>/profiles/<id>/image` 成功时 `data` 为 `{"images": [...], "failed_sections": [...], "snapshot_id": "..."}`：`images` 每条对应一个栏目，含 `index`、`content_type`、`label`、`status`（`success` / `empty` / `failed`）、`width`、`height`，出图时附 `png_base64`，失败时附安全 `error`；不再返回 `pages` / `page_count`。`empty` 是合法空栏目，仍有图并展示空状态；`failed` 没有图片字节。
 - 全部栏目失败返回 422 `image_render_failed`，响应仍带 `images` 与 `failed_sections`，但不含 `png_base64`；文字/Markdown 保持可用。
 - 资源上限：宽度固定 900px，单张最大高度 8000px、单张 PNG 最大 2 MiB、一次渲染合计最多 8 MiB、栏目最多 5 个、单栏文本最多 200,000 字符。逐栏失败码：`section_too_long` / `section_too_tall` / `section_too_large`；累计字节将超 8 MiB 时，触发超限的栏目及其后各栏目记 `total_bytes_exceeded`；预览阶段已失败的栏目记 `section_failed`（或透传其安全错误码）；渲染器返回成功却无 PNG 记 `render_failed`。栏目数超过 5 个整体 422 `image_limit_exceeded`（接口侧另有同值 8 MiB 合计兜底）；全部栏目无图整体 422 `image_render_failed`。都不截断、不拆图、不伪造成功。
 - 执行记录投影字段为 `image_index`（第几张栏目图）与 `image_count`（共几张），数据库表名仍为 `delivery_pages`。投递按栏目顺序逐张发送；某栏目未出图时该槽位记 `skipped` + `section_image_failed`，`unknown` 仍不自动重发。
@@ -459,7 +461,7 @@ node tests/browser/site_connection_ui.js
 ### 操作前提
 
 - 插件已在目标 AstrBot v4.29.1 中加载，安装目录为 `<ASTRBOT_ROOT>/data/plugins/astrbot_plugin_60sapi_hub`（占位符，替换为实际路径）。推荐使用真实目录副本；若用符号链接，宿主校验的是解析后路径是否仍在 `data/plugins` 边界内，指向边界之外的链接会导致后台视图不出现。
-- 数据目录为 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`，在插件目录之外，由宿主 `StarTools.get_data_dir()` 提供；当前 schema 版本 15、12 张业务表，受支持的 v1～v14 旧库在同一事务内迁移，失败回滚并保留旧数据。测试前先停用插件并备份该文件。
+- 数据目录为 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`，在插件目录之外，由宿主 `StarTools.get_data_dir()` 提供；当前 schema 版本为 16，受支持的旧库在同一事务内迁移，失败回滚并保留旧数据。测试前先停用插件并备份该文件。
 - 测试目标必须已有明确授权：由测试群群主或账号所有者同意本轮测试，使用专用测试账号与专用测试群；不与生产群、日常群或他人账号混用。
 - 管理员明确知道“测试投递”会真的把消息发到任务白名单内的目标，发出后无法撤回；测试期间同一账号只跑测试任务，避免定时任务与测试投递混在一起。
 - 记录测试环境：宿主版本、插件 `metadata.yaml` 的 `version`、Python 版本、平台适配器与实例 ID（脱敏）、测试时间与时区。依赖由 `requirements.txt` 声明（aiosqlite、httpx、Pillow、croniter），AstrBot 本体由宿主提供，不在插件内安装。
@@ -469,7 +471,7 @@ node tests/browser/site_connection_ui.js
 ### 手动测试观察方法
 
 1. 在站点管理点“测试连接”，确认本轮要用的接口可用（判断标准见上）。
-2. 在任务卡片点“测试投递”。确认页只读取最新配置，不获取上游内容、不发送；核对目标 UMO 与实际路由、组合、站点和输出格式是否与本轮测试计划一致。
+2. 在任务卡片点“测试投递”。确认页只读取最新配置，不获取上游内容、不发送；核对目标 UMO 与实际路由、任务栏目、候选站点和输出格式是否与本轮测试计划一致。
 3. 确认后按下面顺序核对：
    - 执行记录状态：`preparing`、`running` 是过程态，终态为 `success`、`partial`、`failed`、`unknown`、`no_targets`、`stopped`。只有 `success` 表示服务端认为全部目标明确成功；`partial` 表示部分目标或部分栏目图成功，必须逐目标、逐栏目图查看；`failed` 是明确失败；`unknown` 既不是成功也不是失败。
    - 逐目标与逐栏目图：每个目标有独立状态，每张栏目图也有独立状态（`success`、`failed`、`unknown`、`skipped`）。核对张数和顺序是否符合输出格式（文字、Markdown 是单条逻辑消息，图片是按组合栏目顺序的多张长图；未出图栏目为 `skipped` + `section_image_failed`），并记录失败或 unknown 后同一目标剩余图被停止、其他目标是否继续。
@@ -502,7 +504,7 @@ node tests/browser/site_connection_ui.js
 - 任务启停（任务卡片“启用/停用定时调度”，带 revision 校验）：停用后该任务不再进入未来调度，停用期间错过的时刻不补发。启停会提升任务 revision，而投递在**每个目标开始前、每张栏目图开始前以及紧邻外部发送前**都会重新校验配置；因此在途执行的下一个校验点会读到配置已变化，**尚未开始的目标和该目标后续栏目图会被跳过并记为 `config_changed`**。已经发出的消息无法撤回。
 - 计划启停（编辑任务计划或改为“无计划”）：保存会自动停用该任务，计划为空即没有调度；需要继续测试时必须重新配置并显式启用。删除任务同样会触发上述校验失败——在途执行的后续校验点会读到任务已不存在，尚未开始的目标与后续页被跳过；已经发出的消息无法撤回，历史执行记录保留。
 - 停用插件：结束调度循环，并按投递、图片、内容、存储的顺序关闭资源；旧 Web 处理器随后返回 503，停用期间没有新的调度和发送。重新启用后配置保留，错过的时刻同样不补发。
-- 建议停止顺序：先停用测试任务，等待在途执行结束并记录终态；必要时再停用插件；执行记录与调度记录保留供复核。测试结束后删除测试用站点、组合和任务，或恢复到测试前的备份，不要把生产数据库直接用于测试。
+- 建议停止顺序：先停用测试任务，等待在途执行结束并记录终态；必要时再停用插件；执行记录与调度记录保留供复核。测试结束后删除测试用站点和任务，或恢复到测试前的备份，不要把生产数据库直接用于测试。
 
 ### 凭据保护
 

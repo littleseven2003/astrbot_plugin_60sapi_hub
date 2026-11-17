@@ -124,84 +124,36 @@
 
 上游 HTTP 错误只显示程序生成的安全提示和数字状态码；HTTP 200 业务错误只显示业务 code。上游错误正文不会进入后台响应或日志，避免其回显 Bearer 凭据或其他敏感文本。每日新闻、Bilibili 热搜、知乎热榜、抖音热搜和今日头条热榜各自实际使用的站点凭据隔离发送。
 
-## 内容组合
+## 任务栏目与预览
 
-一个组合选择 1～5 个现有内容类型，不绑定站点；栏目数组顺序就是展示顺序，不维护另一份排序值。每个栏目包含固定内容类型、`params` 和 `limit`：当前接口没有用户参数，`params` 只接受空对象；`limit=null` 表示全部，正整数表示每栏最多展示 1～1000 条。拒绝布尔值、零、负数、小数、数字字符串、未知类型、重复类型、非空参数和任意 URL。
+栏目直接保存在各推送任务中，后台不再提供独立内容组合页面，也不注册旧的 `/profiles` CRUD、预览或图片接口。任务的 `items` 按展示顺序配置 1～5 个不同的内容类型；每项 `params` 只接受空对象，`limit=null` 表示不限条数，正整数为 1～1000。任务之间互不共享可变栏目，保存任务不请求上游或发送消息。
 
-组合保存不需要站点；预览请求显式提供已启用的站点 ID。组合使用稳定 ID、名称、栏目数组、revision、创建/修改时间。
+任务卡片的“预览内容”使用已保存配置，按候选顺序选择首个能同时满足所有栏目和条数的启用站点，不混合不同站点。可选严格布尔值 `force_refresh` 控制刷新；所有候选均不满足时返回 502 `content_unavailable`，任务获取期间 revision 改变返回 409 `preview_revision_changed`。预览不投递，返回同源文字、Markdown 和可用时的短期图片快照；页面可复制、下载及显式生成图片。
 
-### 后台 API
+图片请求使用预览返回的 `image_snapshot.id`，以 `{"snapshot_id":"..."}` 提交至任务图片接口；服务端按快照生成，每栏目一张 PNG，不重新请求上游。图片快照有归属、过期和配置版本检查；任务或站点变更需重新预览。空栏目有空状态图片，失败栏目无图片。宽 900px，单图高度上限 8000px、2 MiB，单次合计上限 8 MiB；栏目最多 5 个，单栏文本最多 200,000 字符。后台支持逐张查看、下载和适应宽度/原始尺寸切换；图片不加载远程资源，依赖宿主 CJK 字体。
 
-| 方法与路径 | 用途 |
-|---|---|
-| `GET /<插件名>/profiles` | 列出组合及栏目配置 |
-| `POST /<插件名>/profiles` | 新增组合 |
-| `GET /<插件名>/profiles/<id>` | 读取单个组合 |
-| `POST /<插件名>/profiles/<id>/update` | 按期望 revision 编辑组合 |
-| `POST /<插件名>/profiles/<id>/delete` | 按期望 revision 删除组合 |
-| `POST /<插件名>/profiles/<id>/preview` | 获取或刷新组合预览，并返回短期图片快照标识 |
-| `POST /<插件名>/profiles/<id>/image` | 用已接受快照按栏目生成长图 PNG（每栏目一张） |
-
-编辑和删除使用与站点一致的 revision 冲突保护。删除被任务候选引用的站点返回 409 `site_referenced` 和引用任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。
-
-组合预览接受已保存组合 ID 和本次选择的站点 ID，由服务端读取组合和站点，不接受客户端任意 URL。它按配置顺序逐栏调用现有统一预览服务，复用共享 HTTP 客户端、全局并发预算和内容缓存；只请求选中的内容类型，按栏目 `limit` 截取返回条目，不修改缓存中的完整不可变快照。每栏保留来源、`fetched_at`、缓存元信息、条数和每日新闻日期语义。一次预览的所有栏目、文字/Markdown 和图片快照使用同一组组合/站点 revision：栏目收齐后重新读取配置，发现变化则丢弃整轮结果并按最新配置重做一次；仍不一致返回 409 `preview_revision_changed`，不携带 `sections`，不返回混合来源的成功结果。获取期间站点被停用会返回 409 `site_disabled`，组合被删除会返回 404，均不保留已收集栏目。修复前，中途停用可能返回 200 部分成功，中途删除组合可能仍返回 200；站点仍启用时的单栏上游失败仍是 200 部分成功，不误判为版本冲突。
-
-预览请求支持严格布尔 `force_refresh`。响应按栏目返回 `status`：
-- `complete`：全部栏目成功，合法空列表仍算成功。
-- `partial`：至少一栏成功、至少一栏失败；成功栏目保留，失败栏目返回安全 `code/message`。
-- `failed`：全部栏目失败，HTTP 502，绝不显示成空内容成功。
-
-失败栏目不会暴露堆栈、凭据或原始上游错误正文；HTTP 状态和业务 code 只以数字形式出现。
-
-成功或部分成功的组合预览响应增加独立 `outputs`：
-
-```json
-"outputs": {
-  "text": "组合：...",
-  "markdown": "# ..."
-}
-```
-
-- 两种格式由同一份预览数据纯函数生成，共享组合版本、栏目顺序、截取后的条目、来源、`fetched_at`、限制和缓存/日期信息；不会再次请求上游，也不写入领域快照或缓存。
-- 文字包含组合名、站点、完整/部分成功状态、栏目、获取时间、展示条数和限制、每日新闻日期/提示、真实标题/摘要/热度/链接；空栏目明确显示空。
-- Markdown 只由渲染器生成结构；上游组合名、站点名、标题、摘要、热度文本均做 HTML 和 Markdown 转义，换行折叠，不能插入标题、链接、图片或 HTML。链接只使用已有校验后的 HTTP(S) 地址，并对括号/空格等百分号编码；无法安全生成时降级为文本。封面不输出。
-- 全部失败响应没有 `outputs`；页面清除旧输出并禁用复制/下载。
-- 后台提供纯文字/Markdown 源码切换、复制和 UTF-8 下载。文件名固定为 `60sapi-profile-<组合 ID>.txt` 或 `.md`，不拼接组合名称。格式切换、复制和下载只使用当前已接受的响应，不访问上游。
-- 复制开始时保存格式、文本、输出 epoch 和操作序号；完成提示或降级选区前重新检查这些身份。格式切换、预览刷新/失效、组合切换、编辑、下载或更新的一次复制都会使旧回调失效，旧回调不能修改提示、焦点、选区或按钮状态，也不使用全局锁阻塞预览。
-- 预览成功/部分成功时，服务端额外保存短期图片快照，并返回不透明 `image_snapshot`：
-  ```json
-  "image_snapshot": {"id": "opaque-token", "expires_at": "ISO-8601"}
-  ```
-  快照只保存该次预览已经验证、截取的组合名、站点名、状态、计数和 `sections`；不保存输出文本、HTML、任意前端 URL、文件路径或原始上游正文。
-- 图片生成请求只接受 `{"snapshot_id": "opaque-token"}`，组合 ID 来自已保存路由；服务端根据快照渲染，不接受前端传入内容、页面尺寸、文件路径或图片 URL。
-- 图片快照默认有效期 300 秒、最多 32 个、总大小 8 MiB，单快照最多 2 MiB；超出单快照限制时预览仍成功返回文字/Markdown，但不返回 `image_snapshot`，页面禁用图片生成。容量满时按未使用时间 evict；访问过期/淘汰快照返回 410 `snapshot_expired`，插件关闭时清空。
-- 图片接口沿用 Dashboard 鉴权；快照保存请求用户，生成时校验归属（不匹配 403 `forbidden`）。同时重新读取组合和站点并比较预览时的 `profile_revision`、`site_id`、`site_revision` 和启用状态；组合/站点修改、删除或停用返回 409 `snapshot_stale`，提示重新预览，不自动取新缓存或请求上游。版本复核发生在栏目收齐之后，属于事后边界检查而非原子事务；若复核完成到响应返回之间又修改了站点，预览仍可能返回 200，文字/Markdown 与图片快照保持复核时认可的同一版本，但可能已不是数据库最新配置，随后图片生成会因 `snapshot_stale` 要求重新预览。它不会混用不同版本的来源；需要最新内容时应重新预览。
-- `POST /profiles/<id>/image` 成功时 `data` 为 `{"images": [...], "failed_sections": [...], "snapshot_id": "..."}`：`images` 按组合配置顺序每个栏目一条，字段为 `index`、`content_type`、`label`、`status`（`success` / `empty` / `failed`）、`width`、`height`，出图时附 `png_base64`，`failed` 时附安全 `error`；`empty` 是合法空栏目，仍返回一张展示空状态的图；`failed` 没有图片字节。不再返回 `pages` / `page_count`。图片只从快照生成；宽度固定 900px，单张高度上限 8000px、单张 PNG 上限 2 MiB、栏目最多 5 个、单栏文本最多 200,000 字符，一次渲染累计 PNG 合计上限 8 MiB。失败栏目仍出现在 `images` 中，只是没有 `png_base64`；逐栏失败码为：单栏高度超限 `section_too_tall`、单栏 PNG 超限 `section_too_large`、单栏文本超过 200,000 字符 `section_too_long`；累计字节将超 8 MiB 时，触发超限的栏目及其后各栏目都记 `total_bytes_exceeded`；预览快照中已失败的栏目不渲染，记 `failed` 并沿用其安全错误码（无可透传时 `section_failed`）；渲染器返回成功却没有图片时记 `render_failed`。栏目数超过 5 个时整次请求返回 422 `image_limit_exceeded` 并提示减少栏目或条数；接口侧对累计 PNG 字节另有同值 8 MiB 兜底检查，超限同样返回 422 `image_limit_exceeded`；都不静默截断、不拆图。全部栏目都没有出图时返回 422 `image_render_failed`，响应仍带 `images` 与 `failed_sections` 但不含 `png_base64`；渲染器抛异常时也返回 422 `image_render_failed`，但该路径不带 `images`。文字/Markdown 保持可用。
-- 渲染在受限线程池执行，最多 2 个实际执行、4 个排队（准入 6 个）；20 秒总超时覆盖排队和执行。超时或取消后后台线程仍占用名额直至真正结束，避免连续超时造成线程池无界积压；准入清理完成前不会提前移交名额，清理期间取消仍会归还且不会重复释放；超时返回 504 `image_timeout`，插件关闭会拒绝排队请求并关闭线程池。字体缺失返回 503 `font_unavailable`；渲染器抛异常返回 422 `image_render_failed`（不带 `images`），不会影响已返回的文字/Markdown。
-- 图片是固定中文样式，由 Pillow 直接绘制，不使用 HTML 模板；上游文本按普通文本绘制并折叠控制字符，不加载封面、远程字体、CDN、内容链接或公共图片渲染服务，图上也不绘制任何链接、URL 或二维码（纯文字与 Markdown 的链接行为不变）。页面通过 data URL 逐张展示栏目长图，按栏目单独下载，文件名固定为 `60sapi-profile-<组合 ID>-<内容类型>-<栏目序号>.png`，不暴露绝对路径。
-- 图片输出依赖 Pillow 和宿主 CJK 字体；字体按系统候选路径发现（macOS 验证使用 Hiragino Sans GB，Linux 支持 Noto Sans CJK/WenQuanYi 等），也可用 `ASTRBOT_60SAPI_FONT` 指向字体文件。字体随宿主提供，不随插件分发。自动发现和显式字体都会验证常见中文字符的实际字形；只有可加载但中文缺字的字体（例如 Arial）不会被采用，无法找到合格字体时明确失败。
-- 剪贴板不可用时页面选中文本并提示手动复制；只有 `writeText` 实际成功后才提示复制成功。隔离宿主 iframe 会拒绝自动剪贴板权限，实际验证覆盖该降级路径；成功回调分支使用可控 Promise 验证，不描述为真实系统剪贴板写入成功。
-
-组合列表成功刷新后，前端比较当前组合的 revision、名称和栏目签名；变化或删除时清除当前预览，不自动获取。组合编辑/删除成功或冲突时也立即使旧预览失效。预览响应必须同时匹配当前请求令牌、当前组合 ID 和当前已知 revision，旧 revision 响应被丢弃；旧请求的 finally 不得清除新请求的忙状态。
+旧数据库升级到 schema v16 时，为每个已有任务复制其原组合栏目，生成与任务同 ID 的内部方案并更新任务引用；原组合记录仍保留，多个任务不再共享栏目修改。旧组合并不会自动变成新任务，且旧 `profile_id` 不能替代新任务请求中的 `items`。
 
 ## 推送任务
 
 任务配置和 UMO 白名单已实现，保存操作不发送、不请求上游。任务可以选择保存每日计划；保存后仍保持未启用。管理员可通过受鉴权 API 显式启用/停用，启用后才进入每日单循环；页面任务卡片根据服务端 enabled 显示启用/停用按钮；鉴权的后台手动测试使用独立投递接口，见下文。
 
-任务字段：稳定 ID、名称（最多 80 字符）、已保存内容组合 ID、有序候选站点、输出方式（`text`、`markdown`、`image`）、独立 UMO 白名单、revision、创建/修改时间。页面最多选择五个候选，新建任务必须指定至少一个。旧客户端更新任务时省略 `sites` 会保留原候选顺序；新建请求须显式提供候选。允许空白名单及停用候选；必须引用实际存在的内容组合。
+任务字段：稳定 ID、名称（最多 80 字符）、有序栏目 `items`、有序候选站点、输出方式（`text`、`markdown`、`image`）、独立 UMO 白名单、revision、创建/修改时间。页面最多选择五个候选，新建任务必须指定至少一个。旧客户端更新任务时省略 `sites` 会保留原候选顺序；新建请求须显式提供候选。允许空白名单及停用候选；栏目独立保存于任务。
 
 执行按候选顺序选取首个能同时满足所有栏目及条数的启用站点；不混用站点。正数 `limit` 既是栏目需要的条数，也限制展示条数；`null` 沿用不限条数语义，合法空列表可满足该栏。所有候选不满足时，只向任务的非空白名单发送文字异常提示。任务能力测试只读且不发送消息，最多检查前五个候选，可能使用内容缓存，返回是否截断及缓存时效。
 
 | 方法与路径 | 用途 |
 |---|---|
-| `GET /<插件名>/tasks` | 列出任务及组合名称、站点启用状态、目标数量 |
+| `GET /<插件名>/tasks` | 列出任务栏目、站点启用状态和目标数量 |
 | `POST /<插件名>/tasks` | 新增任务 |
 | `GET /<插件名>/tasks/<id>` | 读取任务 |
 | `POST /<插件名>/tasks/<id>/update` | 按 expected_revision 编辑任务 |
 | `POST /<插件名>/tasks/<id>/delete` | 按 expected_revision 删除任务 |
 | `POST /<插件名>/tasks/<id>/capability-test` | 测试已保存的候选站点是否满足任务，不发送消息 |
+| `POST /<插件名>/tasks/<id>/preview` | 按已保存栏目和候选顺序预览内容 |
+| `POST /<插件名>/tasks/<id>/image` | 使用任务预览快照生成栏目长图 |
 
-`schedule` 是可选的每日/每周计划配置；普通任务 CRUD 请求中出现 `enabled`、`next_run`、`next_run_at`、`schedule_preview` 或运行状态字段返回 400 `unsupported_enable_request`，不会写入。启停使用独立接口。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应返回真实 `enabled`（由启停接口维护，见下文“每日调度启停”）和与它同值的 `can_send`；后台显式测试是否可投递仍由确认接口的 `can_deliver` 单独判定。删除被任务引用的内容组合返回 409 `profile_referenced` 和任务名称；数据库外键同时使用 `ON DELETE RESTRICT`。删除任务不会删除组合或站点。
+`schedule` 是可选的每日/每周计划配置；普通任务 CRUD 请求中出现 `enabled`、`next_run`、`next_run_at`、`schedule_preview` 或运行状态字段返回 400 `unsupported_enable_request`，不会写入。启停使用独立接口。`expected_revision` 缺失、null、布尔值、零、负数、小数或字符串返回 400 `validation_error`（字段 `expected_revision`），不会写入；合法但过期的整数 revision 返回 409 `revision_conflict`。任务响应返回真实 `enabled`（由启停接口维护，见下文“每日调度启停”）和与它同值的 `can_send`；后台显式测试是否可投递仍由确认接口的 `can_deliver` 单独判定。删除任务不会删除站点。
 
 ### 定时计划配置与预览
 
@@ -224,7 +176,7 @@
 
 - 页面任务卡片根据服务端 `enabled` 显示启用/停用；确认框展示任务、组合、输出、实际 UMO、每日时间和时区。
 - `POST /<插件名>/tasks/<id>/enable`、`POST /<插件名>/tasks/<id>/disable`，请求只接受 `expected_revision`。
-- 启用前校验计划、IANA 时区、组合存在、UMO 非空和发送适配器支持目标；站点全部停用不会阻止启用，到期时按异常提示规则处理。成功只安排严格晚于当前时刻的下一次执行，不立即获取或发送。
+- 启用前校验计划、IANA 时区、任务栏目、UMO 非空和发送适配器支持目标；站点全部停用不会阻止启用，到期时按异常提示规则处理。成功只安排严格晚于当前时刻的下一次执行，不立即获取或发送。
 - 启用/停用成功各增加一次任务 revision；过期 revision 返回 409。
 - 普通任务编辑成功会自动停用并删除未来计划，必须重新启用。
 - 迟到窗口固定 60 秒；运行中到期且迟到不超过窗口执行一次，超过则跳过并安排下一次，不补发多天。
@@ -310,8 +262,8 @@
 
 ## 数据与升级
 
-站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 15，包含 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库创建当前结构；受支持的旧 v1～v14 数据库通过同一事务补齐或迁移至 `user_version=15`，迁移取得 SQLite 写锁后重新读取版本，避免并发打开时重复执行迁移。失败回滚，保留旧站点、凭据、组合、任务、白名单及历史。未带来源类型的站点迁移为公开；已带来源类型的记录保持原值，包括旧版迁移留下的自建类型。
+站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 16，包含 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库创建当前结构；受支持的旧 v1～v15 数据库通过同一事务补齐或迁移至 `user_version=16`，迁移取得 SQLite 写锁后重新读取版本，避免并发打开时重复执行迁移。失败回滚，保留旧站点、凭据、组合、任务、白名单及历史。未带来源类型的站点迁移为公开；已带来源类型的记录保持原值，包括旧版迁移留下的自建类型。
 
-任务、投递记录与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；删除组合在事务中检查任务引用并由外键兜底；删除任务不级联删除组合。写入失败回滚，取消后下一次正常操作不受影响。
+任务、投递记录与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；任务内部方案随任务管理，站点引用受保护。写入失败回滚，取消后下一次正常操作不受影响。
 
 运行依赖 `aiosqlite`、`httpx`、`Pillow` 和 `croniter>=6.2.4,<7` 声明在 [requirements.txt](../requirements.txt)，不依赖宿主碰巧安装的版本，也不安装 AstrBot 本体。内容快照仍只在进程内缓存；任务配置、UMO、执行/发送状态和调度历史均已持久化。

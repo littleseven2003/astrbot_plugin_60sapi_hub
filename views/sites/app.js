@@ -702,6 +702,8 @@ const SITE_TEST_STATE_TEXT = {
   success: "成功",
   empty: "合法空内容",
   error: "失败",
+  // 结果对应的站点版本与当前列表不同：既不当作成功，也不当作失败。
+  stale: "需重新测试",
 };
 const SITE_TEST_STATE_ICON = {
   idle: "○",
@@ -709,9 +711,12 @@ const SITE_TEST_STATE_ICON = {
   success: "✓",
   empty: "◌",
   error: "✕",
+  stale: "↻",
 };
+const SITE_TEST_STALE_TEXT = "站点配置已变化，请刷新后重新测试。";
 const SAFE_TEST_ERRORS = new Map([
   ["站点配置已变化，请刷新后重试。", ["站点配置已变化，请刷新列表后重试。", "warning"]],
+  ["站点配置已变化，请刷新后重新测试。", ["站点配置已变化，请刷新列表后重新测试。", "warning"]],
   ["同时进行的连接测试过多，请稍后重试。", ["同时进行的连接测试过多，请稍后手动重试。", "warning"]],
   ["测试连接超时。", ["连接上游超时，请稍后手动重试。", "danger"]],
   ["插件当前不可用。", ["插件当前不可用，请关闭后重新打开页面。", "danger"]],
@@ -811,16 +816,30 @@ function renderSiteTestBlock(site) {
     item.title = siteTestCellTitle(label, cell);
     item.append(icon, text);
     chips.append(item);
-    if ((cell.state === "error" || cell.state === "empty") && cell.message) {
-      notes.push(label + "：" + cell.message);
+    if (cell.state === "error" || cell.state === "empty" || cell.state === "stale") {
+      const detail = cell.message || SITE_TEST_STATE_TEXT[cell.state];
+      const elapsed = Number.isFinite(cell.elapsed)
+        ? "（耗时 " + cell.elapsed + " ms）"
+        : "";
+      notes.push(label + "：" + detail + elapsed);
     }
   }
   block.append(chips);
   if (notes.length > 0) {
-    const note = document.createElement("p");
-    note.className = "site-test-note";
-    note.textContent = notes.slice(0, 2).join("；") + (notes.length > 2 ? "；…" : "");
-    block.append(note);
+    // 用 details 展开说明：手机点按与键盘聚焦都能看到，不依赖悬停提示。
+    const details = document.createElement("details");
+    details.className = "site-test-note site-test-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "查看说明（" + notes.length + " 项）";
+    const list = document.createElement("ul");
+    list.className = "site-test-detail-list";
+    for (const text of notes) {
+      const item = document.createElement("li");
+      item.textContent = text;
+      list.append(item);
+    }
+    details.append(summary, list);
+    block.append(details);
   }
   return block;
 }
@@ -833,7 +852,17 @@ function updateSiteTestBlock(siteId) {
   }
   const block = row.querySelector(".site-test-block");
   if (block) {
-    block.replaceWith(renderSiteTestBlock(site));
+    // 重绘期间保留用户已展开的说明，避免每次结果落回都收起。
+    const previous = block.querySelector(".site-test-details");
+    const wasOpen = Boolean(previous && previous.open);
+    const next = renderSiteTestBlock(site);
+    if (wasOpen) {
+      const details = next.querySelector(".site-test-details");
+      if (details) {
+        details.open = true;
+      }
+    }
+    block.replaceWith(next);
   }
 }
 
@@ -852,7 +881,7 @@ function siteTestIsRunning(record) {
   return false;
 }
 
-function applySiteTestResult(site, record, type, result, message, elapsed) {
+function applySiteTestResult(site, record, type, result, message, elapsed, revision) {
   // 站点在测试期间被修改、删除或重新测试时，旧结果一律丢弃。
   if (state.siteTest.get(site.id) !== record) {
     return null;
@@ -864,13 +893,22 @@ function applySiteTestResult(site, record, type, result, message, elapsed) {
   if (!cell) {
     return null;
   }
-  const stateName = result === "success" ? "success"
-    : result === "empty" ? "empty"
-      : "error";
+  // 后端按类型分别读版本：结果带的版本不是列表里的版本时，只标注需重新测试。
+  const versionUnknown = revision === null || revision === undefined;
+  const versionMatches = !versionUnknown && Number(revision) === Number(site.revision);
+  const stateName = result === "stale" || (!versionUnknown && !versionMatches)
+    ? "stale"
+    : result === "success" ? "success"
+      : result === "empty" ? "empty"
+        : "error";
   cell.state = stateName;
-  cell.message = typeof message === "string"
-    ? (stateName === "error" ? safeSiteTestMessage(message) : message.trim())
-    : "";
+  if (stateName === "stale") {
+    cell.message = SITE_TEST_STALE_TEXT;
+  } else {
+    cell.message = typeof message === "string"
+      ? (stateName === "error" ? safeSiteTestMessage(message) : message.trim())
+      : "";
+  }
   cell.elapsed = Number.isFinite(Number(elapsed)) ? Number(elapsed) : null;
   updateSiteTestBlock(site.id);
   return stateName;
@@ -923,6 +961,7 @@ async function runSiteTests(siteIds) {
     for (let start = 0; start < targets.length; start += SITE_TEST_CHUNK) {
       const chunk = targets.slice(start, start + SITE_TEST_CHUNK);
       const chunkIds = [];
+      const expected = {};
       for (const site of chunk) {
         const record = records.get(site.id);
         const current = findSite(site.id);
@@ -932,6 +971,8 @@ async function runSiteTests(siteIds) {
           continue;
         }
         chunkIds.push(site.id);
+        // 把发起时看到的版本一起提交，后端据此判定结果是否还属于当前配置。
+        expected[site.id] = Number(current.revision);
       }
       if (chunkIds.length === 0) {
         continue;
@@ -941,6 +982,7 @@ async function runSiteTests(siteIds) {
         const data = await bridge.apiPost("sites/test-batch", {
           site_ids: chunkIds,
           content_types: SITE_TEST_TYPES.map((entry) => entry[0]),
+          expected_revisions: expected,
         });
         const payload = data && data.data ? data.data : (data || {});
         results = Array.isArray(payload.results) ? payload.results : [];
@@ -971,7 +1013,8 @@ async function runSiteTests(siteIds) {
         }
         seen.add(String(item.site_id) + "|" + String(item.content_type));
         applySiteTestResult(
-          site, record, item.content_type, item.result, item.message, item.elapsed_ms,
+          site, record, item.content_type, item.result, item.message,
+          item.elapsed_ms, item.site_revision,
         );
       }
       // 后端没有返回的类型也要收尾，不能一直停在“测试中”。
@@ -998,7 +1041,7 @@ async function runSiteTests(siteIds) {
     }
   }
 
-  const tally = { success: 0, empty: 0, error: 0 };
+  const tally = { success: 0, empty: 0, error: 0, stale: 0 };
   for (const site of targets) {
     const record = records.get(site.id);
     if (!record) {
@@ -1012,7 +1055,11 @@ async function runSiteTests(siteIds) {
   }
   let summary = "测试完成：" + targets.length + " 个站点 × "
     + SITE_TEST_TYPES.length + " 类；成功 " + tally.success + " 项，"
-    + "合法空内容 " + tally.empty + " 项，失败 " + tally.error + " 项。";
+    + "合法空内容 " + tally.empty + " 项，失败 " + tally.error + " 项";
+  if (tally.stale > 0) {
+    summary += "；另有 " + tally.stale + " 项因站点配置已变化未采用，请刷新后重新测试";
+  }
+  summary += "。";
   if (skipped > 0) {
     summary += "另有 " + skipped + " 个站点在测试期间配置变化，结果已作废，请重新测试。";
   }

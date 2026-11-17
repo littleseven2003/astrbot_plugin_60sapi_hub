@@ -97,10 +97,17 @@ async function openPage(browser, port, options) {
     window.__batchGate = null;
     window.__batchReject = false;
     window.__deleteFails = {};
+    window.__deleteDrops = {};
+    window.__sitesReject = false;
+    window.__staleSites = {};
+    window.__driftSites = {};
     window.AstrBotPluginView = {
       ready: async () => ({ pageTitle: "60sAPI Hub" }),
       apiGet: async (endpoint) => {
         if (endpoint === "sites") {
+          if (window.__sitesReject) {
+            throw new Error("站点存储不可用。");
+          }
           return { sites: window.__siteFixtures.map((site) => ({ ...site })) };
         }
         if (endpoint === "profiles") {
@@ -160,6 +167,10 @@ async function openPage(browser, port, options) {
     sites.length, { timeout: 30000 },
   );
   await page.evaluate(() => {
+    window.__fixtureRevision = (siteId) => {
+      const site = window.__siteFixtures.find((item) => item.id === siteId);
+      return site ? site.revision : 0;
+    };
     window.__makeResults = (payload) => {
       const results = [];
       for (const siteId of payload.site_ids) {
@@ -181,8 +192,20 @@ async function openPage(browser, port, options) {
             result = "error";
             message = "上游把 token=abc 回显了";
           }
+          const expected = payload.expected_revisions || {};
+          let siteRevision = Object.prototype.hasOwnProperty.call(expected, siteId)
+            ? expected[siteId]
+            : window.__fixtureRevision(siteId);
+          if (window.__staleSites[siteId]) {
+            result = "stale";
+            message = "站点配置已变化，请刷新后重新测试。";
+          }
+          if (window.__driftSites[siteId]) {
+            siteRevision = siteRevision + 1;
+          }
           results.push({
-            site_id: siteId, content_type: contentType, result, message, elapsed_ms: 12,
+            site_id: siteId, content_type: contentType, result, message,
+            elapsed_ms: 12, site_revision: siteRevision,
           });
         }
       }
@@ -369,6 +392,37 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     check((await page.textContent("#site-test-summary")).includes("成功 13 项，合法空内容 1 项，失败 1 项"),
       "批量汇总逐项计数：" + (await page.textContent("#site-test-summary")).trim());
 
+    // 失败说明可展开：不依赖悬停，手机点按与键盘都能读全。
+    const detailBox = await page.evaluate(() => {
+      const node = document.querySelector(
+        '#sites-list > li[data-site-id="site-partial"] .site-test-details');
+      if (!node) {
+        return null;
+      }
+      return {
+        tag: node.tagName,
+        open: node.open,
+        summary: node.querySelector("summary")?.textContent || "",
+        items: Array.from(node.querySelectorAll(".site-test-detail-list li"))
+          .map((item) => item.textContent),
+      };
+    });
+    check(detailBox !== null && detailBox.tag === "DETAILS" && detailBox.open === false,
+      "失败说明默认收起且可展开");
+    check(detailBox.summary === "查看说明（1 项）",
+      "展开入口标明说明条数：" + detailBox.summary);
+    check(detailBox.items.length === 1
+      && detailBox.items[0].includes("知乎热榜：上游返回了失败状态。"),
+      "展开内容逐项写明接口与原因：" + JSON.stringify(detailBox.items));
+    const partialSummary = '#sites-list > li[data-site-id="site-partial"] .site-test-details > summary';
+    await page.click(partialSummary);
+    check(await page.locator('#sites-list > li[data-site-id="site-partial"] .site-test-details')
+      .evaluate((node) => node.open), "点按可展开说明");
+    await page.focus(partialSummary);
+    await page.keyboard.press("Enter");
+    check(!(await page.locator('#sites-list > li[data-site-id="site-partial"] .site-test-details')
+      .evaluate((node) => node.open)), "键盘回车可收起说明");
+
     // 未知失败文案不回显上游正文或凭据。
     await page.evaluate(() => { window.__batchMode = "unsafe"; });
     await page.click("#site-select-none");
@@ -380,6 +434,41 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     const unsafeNote = await page.textContent('#sites-list > li[data-site-id="site-ok"] .site-test-note');
     check(unsafeNote.includes("测试失败，无法完成连接验证。"), "未知失败回落安全文案：" + unsafeNote);
     check(!unsafeNote.includes("token"), "不回显上游正文或凭据");
+
+    // 结果对应的站点版本与列表不同：标注需重新测试，不当作成功或失败。
+    await page.evaluate(() => {
+      window.__batchMode = "ok";
+      window.__driftSites = { "site-ok": true };
+    });
+    await page.click("#site-select-none");
+    await page.click('#sites-list > li[data-site-id="site-ok"] .site-select');
+    await page.click("#site-test-selected");
+    await page.waitForFunction(() => document
+      .querySelector('#sites-list > li[data-site-id="site-ok"] .site-test-chip[data-type="daily_news"]')
+      ?.dataset.state === "stale", null, { timeout: 10000 });
+    const drifted = await chips(page, "site-ok");
+    check(allState(drifted, "stale"), "版本不符的五类都标注需重新测试");
+    check(drifted[0].text === "每日新闻 需重新测试", "版本不符状态文字：" + drifted[0].text);
+    const driftCalls = await calls(page, "sites/test-batch");
+    const driftPayload = driftCalls[driftCalls.length - 1].payload;
+    check(JSON.stringify(driftPayload.expected_revisions) === JSON.stringify({ "site-ok": 1 }),
+      "测试请求带上发起时看到的版本：" + JSON.stringify(driftPayload.expected_revisions));
+    check((await page.textContent("#site-test-summary")).includes("因站点配置已变化未采用"),
+      "汇总提示版本不符需重新测试：" + (await page.textContent("#site-test-summary")).trim());
+    check((await page.textContent('#sites-list > li[data-site-id="site-ok"] .site-test-note'))
+      .includes("站点配置已变化，请刷新后重新测试。"), "版本不符给出可操作说明");
+
+    // 后端直接判为 stale（配置在测试中被改动）时行为一致。
+    await page.evaluate(() => {
+      window.__driftSites = {};
+      window.__staleSites = { "site-ok": true };
+    });
+    await page.click("#site-test-selected");
+    await page.waitForFunction(() => document
+      .querySelector('#sites-list > li[data-site-id="site-ok"] .site-test-chip[data-type="toutiao_hot"]')
+      ?.dataset.state === "stale", null, { timeout: 10000 });
+    check(allState(await chips(page, "site-ok"), "stale"), "后端 stale 结果同样标注");
+    await page.evaluate(() => { window.__staleSites = {}; });
 
     // 在途状态：按钮禁用并显示测试中，五类状态为测试中。
     await page.evaluate(() => {

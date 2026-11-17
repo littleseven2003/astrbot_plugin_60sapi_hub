@@ -2303,6 +2303,10 @@ dialog.dialog button {
   color: #a4362c;
 }
 
+.site-test-chip[data-state="stale"] {
+  color: #85601a;
+}
+
 .site-test-icon {
   display: inline-grid;
   place-items: center;
@@ -2314,16 +2318,52 @@ dialog.dialog button {
   line-height: 1;
 }
 
-.site-test-note {
-  display: -webkit-box;
+/* 失败与合法空内容的说明可以展开查看：手机点按、键盘聚焦都能读全 */
+.site-test-details {
   margin: 0;
-  overflow: hidden;
   color: var(--sub);
   font-size: 11.5px;
   line-height: 1.45;
+}
+
+.site-test-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 3px;
+  border-radius: 6px;
+  color: var(--blue-ink);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.site-test-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.site-test-details > summary::before {
+  content: "▸";
+  font-size: 10px;
+}
+
+.site-test-details[open] > summary::before {
+  content: "▾";
+}
+
+.site-test-details > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.site-test-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 3px 0 0;
+  padding-left: 16px;
   overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 @keyframes site-test-pulse {

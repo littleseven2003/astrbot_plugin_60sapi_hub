@@ -16,8 +16,10 @@ const PLUGIN = process.env.ASTRBOT_PLUGIN || "astrbot_plugin_60sapi_hub";
 const CHROME = process.env.CHROME_PATH;
 
 const TASK_1 = {
-  id: "fixture-task-1", name: "夹具任务一", profile_id: "fixture-profile",
-  profile_name: "夹具组合", site_id: "fixture-site", site_enabled: true,
+  id: "fixture-task-1", name: "夹具任务一",
+  items: [{ content_type: "daily_news", label: "每日新闻", limit: null }],
+  sites: [{ id: "fixture-site", name: "夹具站点", enabled: true, revision: 1 }],
+  site_id: "fixture-site", site_enabled: true,
   output_format: "text", output_label: "纯文字", target_count: 1,
   enabled: false, can_send: false, revision: 1,
   created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
@@ -55,8 +57,8 @@ async function frameOf(page) {
 function previewBody(task) {
   return JSON.stringify({ status: "ok", data: {
     task_id: task.id, task_name: task.name, task_revision: 1,
-    profile_id: "fixture-profile", profile_name: "夹具组合",
-    profile_revision: 1, site_id: "fixture-site", site_name: "夹具站点",
+    items: [{ content_type: "daily_news", label: "每日新闻", limit: null }],
+    site_id: "fixture-site", site_name: "夹具站点",
     site_revision: 1, site_enabled: true, output_format: "text",
     output_label: "纯文字", targets: [{
       umo: "fake:GroupMessage:123", platform_id: "fake",

@@ -1,6 +1,6 @@
 /*
  * 后台图片预览与逐张下载的可持久浏览器回归。
- * 站点/组合走真实 API；preview 与 image 接口用 route fixture 返回构造好的
+ * 站点/任务走真实 API；preview 与 image 接口用 route fixture 返回构造好的
  * images（一个栏目一张长图），不请求真实上游、不连真实群聊/私聊。
  *
  * ASTRBOT_URL=... ASTRBOT_PASSWORD=... ASTRBOT_PLUGIN=... \
@@ -25,7 +25,7 @@ const WAIT = 20000;
 const stamp = Date.now();
 let token;
 const siteId = { value: null };
-const profileIds = { first: null, second: null };
+const taskIds = { first: null, second: null };
 const upstreamCalls = [];
 
 /* ---------- 构造真实的 900×H PNG（不引入额外依赖） ---------- */
@@ -111,17 +111,18 @@ const routeState = {
   imageCalls: 0,
 };
 
-function previewPayload(profileId, profileName, revision) {
+function previewPayload(taskId, taskName, revision) {
   return {
-    profile_id: profileId,
-    profile_revision: revision,
-    profile_name: profileName,
+    task_id: taskId,
+    task_revision: revision,
+    task_name: taskName,
+    items: [{ content_type: "daily_news", label: "每日新闻", limit: null }],
     site_name: "图片回归站点",
     status: "complete",
     success_count: 1,
     failure_count: 0,
     sections: [],
-    outputs: { text: "组合正文", markdown: "# 组合正文" },
+    outputs: { text: "任务正文", markdown: "# 任务正文" },
     image_snapshot: { id: "snapshot-" + stamp },
     failed_sections: [],
   };
@@ -135,7 +136,7 @@ function imagesPayload(sections, failedLabels) {
   };
 }
 
-/* ---------- 真实 API：站点与组合 ---------- */
+/* ---------- 真实 API：站点与任务 ---------- */
 async function api(method, path, data) {
   const response = await fetch(BASE + path, {
     method,
@@ -164,19 +165,19 @@ async function frameOf(page) {
   return frame;
 }
 
-async function showProfiles(frame) {
+async function showTasks(frame) {
   await frame.waitForFunction(
     () => document.getElementById("sites-list")?.getAttribute("aria-busy") === "false",
     null, { timeout: WAIT },
   );
   // 宿主 iframe 内合成点击偶发被 Dashboard 覆盖层吞掉，这里走同一套 hash 路由。
   await frame.evaluate(() => {
-    if (document.getElementById("view-profiles")?.hidden !== false) {
-      window.location.hash = "#profiles";
+    if (document.getElementById("view-tasks")?.hidden !== false) {
+      window.location.hash = "#tasks";
     }
   });
   await frame.waitForFunction(
-    () => document.getElementById("view-profiles")?.hidden === false,
+    () => document.getElementById("view-tasks")?.hidden === false,
     null, { timeout: WAIT },
   );
 }
@@ -203,32 +204,32 @@ async function openPage(browser, width) {
     }
   });
   const frame = await frameOf(page);
-  await showProfiles(frame);
+  await showTasks(frame);
   return { page, frame };
 }
 
-async function selectProfile(frame, profileId) {
-  await frame.waitForFunction((id) =>
-    [...document.querySelectorAll("#profile-preview-select option")]
-      .some((option) => option.value === id), profileId, { timeout: WAIT });
-  await frame.selectOption("#profile-preview-select", profileId);
-}
-
-async function runPreview(frame) {
-  await frame.evaluate(() => document.getElementById("profile-preview-button").click());
+// 打开任务卡片上的“预览内容”：预览按已保存的任务配置发起，拿到快照后才能生成长图。
+async function openTask(frame, taskId) {
+  await frame.waitForFunction((id) => [...document.querySelectorAll("#tasks-list .task-card")]
+    .some((node) => node.dataset.taskId === id), taskId, { timeout: WAIT });
+  await frame.evaluate((id) => {
+    const card = [...document.querySelectorAll("#tasks-list .task-card")]
+      .find((node) => node.dataset.taskId === id);
+    card.querySelector(".task-card-actions button").click();
+  }, taskId);
   await frame.waitForFunction(
-    () => !document.getElementById("profile-image-button").disabled,
+    () => !document.getElementById("task-preview-image-button").disabled,
     null, { timeout: WAIT },
   );
 }
 
 async function runImage(frame) {
-  await frame.evaluate(() => document.getElementById("profile-image-button").click());
+  await frame.evaluate(() => document.getElementById("task-preview-image-button").click());
 }
 
 async function figures(frame) {
   return frame.evaluate(() => {
-    const host = document.getElementById("profile-image-pages");
+    const host = document.getElementById("task-preview-image-pages");
     return [...host.querySelectorAll("figure")].map((figure) => {
       const image = figure.querySelector("img");
       const captions = [...figure.querySelectorAll("figcaption")].map((node) => node.textContent);
@@ -247,10 +248,10 @@ async function figures(frame) {
 
 async function stateText(frame) {
   return frame.evaluate(() => ({
-    state: document.getElementById("profile-image-state").textContent,
-    hint: document.getElementById("profile-image-hint").textContent,
-    hintHidden: document.getElementById("profile-image-hint").hidden,
-    panel: document.querySelector(".profile-image-panel").innerText,
+    state: document.getElementById("task-preview-image-state").textContent,
+    hint: document.getElementById("task-preview-image-hint").textContent,
+    hintHidden: document.getElementById("task-preview-image-hint").hidden,
+    panel: document.querySelector(".preview-image-panel").innerText,
   }));
 }
 
@@ -262,26 +263,32 @@ async function stateText(frame) {
     enabled: true, timeout_seconds: 5,
   });
   siteId.value = site.body.data.id;
-  const firstProfile = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/profiles", {
-    name: "图片回归组合A" + stamp, site_id: siteId.value,
+  const firstTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
+    name: "图片回归任务A" + stamp,
     items: [
-      { content_type: "daily_news", params: {}, limit: 20 },
-      { content_type: "zhihu_hot", params: {}, limit: 20 },
-      { content_type: "bilibili_hot", params: {}, limit: 20 },
+      { content_type: "daily_news", limit: 20 },
+      { content_type: "zhihu_hot", limit: 20 },
+      { content_type: "bilibili_hot", limit: 20 },
     ],
+    sites: [siteId.value],
+    output_format: "text",
+    umos: [],
   });
-  assert.ok([200, 201].includes(firstProfile.status), JSON.stringify(firstProfile.body));
-  profileIds.first = firstProfile.body.data.id;
-  const firstRevision = firstProfile.body.data.revision;
-  const secondProfile = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/profiles", {
-    name: "图片回归组合B" + stamp, site_id: siteId.value,
-    items: [{ content_type: "douyin_hot", params: {}, limit: 20 }],
+  assert.ok([200, 201].includes(firstTask.status), JSON.stringify(firstTask.body));
+  taskIds.first = firstTask.body.data.id;
+  const firstRevision = firstTask.body.data.revision;
+  const secondTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
+    name: "图片回归任务B" + stamp,
+    items: [{ content_type: "douyin_hot", limit: 20 }],
+    sites: [siteId.value],
+    output_format: "text",
+    umos: [],
   });
-  assert.ok([200, 201].includes(secondProfile.status), JSON.stringify(secondProfile.body));
-  profileIds.second = secondProfile.body.data.id;
-  const secondRevision = secondProfile.body.data.revision;
+  assert.ok([200, 201].includes(secondTask.status), JSON.stringify(secondTask.body));
+  taskIds.second = secondTask.body.data.id;
+  const secondRevision = secondTask.body.data.revision;
 
-  routeState.previewData = previewPayload(profileIds.first, "图片回归组合A" + stamp, firstRevision);
+  routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
   routeState.imageData = imagesPayload(SECTIONS, []);
 
   const browser = await chromium.launch({
@@ -297,16 +304,16 @@ async function stateText(frame) {
       routeState.imageGate = null;
       routeState.imageStatus = 200;
       routeState.imageData = imagesPayload(SECTIONS, []);
-      routeState.previewData = previewPayload(profileIds.first, '图片回归组合A' + stamp, firstRevision);
+      routeState.previewData = previewPayload(taskIds.first, '图片回归任务A' + stamp, firstRevision);
       const { page, frame } = await openPage(browser, width);
       try {
-        await page.route("**/profiles/*/preview", async (route) => {
+        await page.route("**/tasks/*/preview", async (route) => {
           await route.fulfill({
             status: 200, contentType: "application/json",
             body: JSON.stringify({ status: "ok", data: routeState.previewData }),
           });
         });
-        await page.route("**/profiles/*/image", async (route) => {
+        await page.route("**/tasks/*/image", async (route) => {
           routeState.imageCalls += 1;
           if (routeState.imageGate) await routeState.imageGate.promise;
           await route.fulfill({
@@ -318,13 +325,12 @@ async function stateText(frame) {
         });
 
         /* 1) 多栏目顺序：每个成功栏目恰好一张，高度取自接口实际值 */
-        await selectProfile(frame, profileIds.first);
-        routeState.previewData = previewPayload(profileIds.first, "图片回归组合A" + stamp, firstRevision);
-        await runPreview(frame);
+        routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
+        await openTask(frame, taskIds.first);
         await runImage(frame);
         try {
           await frame.waitForFunction(
-            () => document.querySelectorAll("#profile-image-pages figure").length === 3,
+            () => document.querySelectorAll("#task-preview-image-pages figure").length === 3,
             null, { timeout: WAIT },
           );
         } catch (error) {
@@ -333,7 +339,7 @@ async function stateText(frame) {
             figures: await figures(frame),
             state: await stateText(frame),
             button: await frame.evaluate(() =>
-              document.getElementById("profile-image-button").textContent),
+              document.getElementById("task-preview-image-button").textContent),
           }));
         }
         const happy = await figures(frame);
@@ -362,7 +368,7 @@ async function stateText(frame) {
 
         /* 2) 逐张下载：文件名含 content_type 与序号，内容为 PNG */
         const downloadPromise = page.waitForEvent("download", { timeout: WAIT });
-        await frame.evaluate(() => document.querySelector("#profile-image-pages figure button").click());
+        await frame.evaluate(() => document.querySelector("#task-preview-image-pages figure button").click());
         const download = await downloadPromise;
         const filename = download.suggestedFilename();
         check(filename.includes("daily_news"), "文件名必须含 content_type: " + filename);
@@ -385,8 +391,8 @@ async function stateText(frame) {
         routeState.imageData.failed_sections = ["今日头条热榜"];
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 3
-            && document.querySelector('#profile-image-pages figure[data-status="failed"]') !== null,
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 3
+            && document.querySelector('#task-preview-image-pages figure[data-status="failed"]') !== null,
           null, { timeout: WAIT },
         );
         const partial = await figures(frame);
@@ -404,7 +410,7 @@ async function stateText(frame) {
         routeState.imageStatus = 422;
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.getElementById("profile-image-hint")?.hidden === false,
+          () => document.getElementById("task-preview-image-hint")?.hidden === false,
           null, { timeout: WAIT },
         );
         const allFailed = await stateText(frame);
@@ -413,48 +419,47 @@ async function stateText(frame) {
         routeState.imageStatus = 200;
         routeState.imageData = imagesPayload(SECTIONS, []);
 
-        /* 4) 旧响应隔离：延迟旧请求，切换组合后旧响应不得覆盖 */
+        /* 4) 旧响应隔离：延迟旧请求，切换到另一个任务后旧响应不得覆盖 */
         routeState.imageGate = deferred();
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.getElementById("profile-image-state").textContent.includes("正在生成图片"),
+          () => document.getElementById("task-preview-image-state").textContent.includes("正在生成图片"),
           null, { timeout: WAIT },
         );
-        await selectProfile(frame, profileIds.second);
-        routeState.previewData = previewPayload(profileIds.second, "图片回归组合B" + stamp, secondRevision);
+        routeState.previewData = previewPayload(taskIds.second, "图片回归任务B" + stamp, secondRevision);
+        await openTask(frame, taskIds.second);
         await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 0,
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,
           null, { timeout: WAIT },
         );
         routeState.imageGate.resolve();
         routeState.imageGate = null;
         await page.waitForTimeout(400);
         const afterStale = await figures(frame);
-        check(afterStale.length === 0, "切换组合后旧响应不得写入: " + JSON.stringify(afterStale));
+        check(afterStale.length === 0, "切换任务后旧响应不得写入: " + JSON.stringify(afterStale));
         check((await stateText(frame)).state === "", "旧响应不得恢复已清空的状态行");
 
-        /* 切换回第一个组合后重新请求，必须拿到新结果（旧响应已失效） */
+        /* 切换回第一个任务后重新请求，必须拿到新结果（旧响应已失效） */
         routeState.imageData = imagesPayload([SECTIONS[0]], []);
-        routeState.previewData = previewPayload("图片回归组合A" + stamp, [SECTIONS[0]]);
-        await selectProfile(frame, profileIds.first);
-        routeState.previewData = previewPayload(profileIds.first, "图片回归组合A" + stamp, firstRevision);
-        await runPreview(frame);
+        routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
+        await openTask(frame, taskIds.first);
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 1,
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 1,
           null, { timeout: WAIT },
         );
         const fresh = await figures(frame);
         check(fresh.length === 1 && fresh[0].height === SECTIONS[0].height,
           "重新请求必须展示最新结果");
 
-        /* 5) 关闭/失效：切走组合后预览结果清空，不再展示旧图 */
-        await selectProfile(frame, profileIds.second);
+        /* 5) 关闭/失效：切走任务后预览结果清空，不再展示旧图 */
+        routeState.previewData = previewPayload(taskIds.second, "图片回归任务B" + stamp, secondRevision);
+        await openTask(frame, taskIds.second);
         await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 0,
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,
           null, { timeout: WAIT },
         );
-        check(true, "切换组合后图片区必须清空");
+        check(true, "切换任务后图片区必须清空");
 
         if (width === 390) {
           const layout = await page.evaluate(() => ({
@@ -484,7 +489,7 @@ async function stateText(frame) {
   } finally {
     await browser.close();
     for (const [id, kind] of [
-      [profileIds.first, "profiles"], [profileIds.second, "profiles"], [siteId.value, "sites"],
+      [taskIds.first, "tasks"], [taskIds.second, "tasks"], [siteId.value, "sites"],
     ]) {
       if (!id) continue;
       const current = await api("GET", "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id);

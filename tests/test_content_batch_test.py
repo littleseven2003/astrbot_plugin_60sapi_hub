@@ -18,10 +18,10 @@ from pathlib import Path
 
 import httpx
 
-from core.content_api import ContentApi
+from core.content_api import BATCH_STALE_MESSAGE, ContentApi, ContentApiResult
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
-from core.sites import SiteCreate, SiteService
+from core.sites import SiteCreate, SiteService, SiteUpdate
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 TEST_PACKAGE = "_content_batch_test_pkg"
@@ -274,6 +274,89 @@ class BatchTestRunnerTest(BatchTestBase):
                 result = await self.web.test_sites_batch()
                 self.assertEqual(result.status_code, 400, result.body)
                 self.assertEqual(result.body["data"]["code"], code)
+        self.assertEqual(self.upstream.seen, [])
+
+    async def test_each_site_reports_the_revision_used(self) -> None:
+        site = await self._site("版本站点")
+        self._post({"site_ids": [site.id], "content_types": list(FIVE_TYPES)})
+        result = await self.web.test_sites_batch()
+        self.assertEqual(result.status_code, 200, result.body)
+        revisions = {item["site_revision"] for item in result.body["results"]}
+        self.assertEqual(revisions, {site.revision})
+        self.assertEqual(result.body["stale"], 0)
+
+    async def test_expected_revision_mismatch_marks_every_type_stale(self) -> None:
+        site = await self._site("已改动站点")
+        seen_revision = site.revision
+        updated = await self.sites.update_site(
+            site.id,
+            SiteUpdate(
+                name="已改动站点", base_url="http://upstream.test/proxy2",
+                enabled=True, timeout_seconds=5,
+                expected_revision=seen_revision,
+            ),
+        )
+        self.assertGreater(updated.revision, seen_revision)
+        before = len(self.upstream.seen)
+
+        self._post({
+            "site_ids": [site.id],
+            "content_types": list(FIVE_TYPES),
+            "expected_revisions": {site.id: seen_revision},
+        })
+        result = await self.web.test_sites_batch()
+
+        self.assertEqual(result.status_code, 200, result.body)
+        results = result.body["results"]
+        self.assertEqual(len(results), 5)
+        self.assertEqual({item["result"] for item in results}, {"stale"})
+        self.assertEqual(
+            {item["message"] for item in results}, {BATCH_STALE_MESSAGE},
+        )
+        self.assertEqual(
+            {item["site_revision"] for item in results}, {updated.revision},
+        )
+        self.assertEqual(result.body["stale"], 5)
+        self.assertEqual(result.body["failed"], 0)
+        self.assertEqual(len(self.upstream.seen), before, "版本变化后不得请求上游")
+
+    async def test_conflict_during_test_is_reported_as_stale(self) -> None:
+        site = await self._site("中途改动站点")
+        async def conflicting(site_id, payload, *, inflight_limit=2):
+            return ContentApiResult(
+                409, {"message": "站点配置已变化，请刷新后重试。"},
+            )
+        self.api.test_connection = conflicting
+        # 预检读到的仍是当前版本，因此每类都会进入测试并拿到 409。
+        self._post({
+            "site_ids": [site.id],
+            "content_types": list(FIVE_TYPES),
+            "expected_revisions": {site.id: site.revision},
+        })
+        result = await self.web.test_sites_batch()
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertEqual({item["result"] for item in result.body["results"]},
+                         {"stale"})
+        self.assertEqual(result.body["stale"], 5)
+
+    async def test_expected_revisions_are_validated(self) -> None:
+        site = await self._site("版本校验站点")
+        cases = (
+            {"site_ids": [site.id], "content_types": ["daily_news"],
+             "expected_revisions": []},
+            {"site_ids": [site.id], "content_types": ["daily_news"],
+             "expected_revisions": {site.id: "1"}},
+            {"site_ids": [site.id], "content_types": ["daily_news"],
+             "expected_revisions": {site.id: 0}},
+            {"site_ids": [site.id], "content_types": ["daily_news"],
+             "expected_revisions": {"other-site": 1}},
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                self._post(payload)
+                result = await self.web.test_sites_batch()
+                self.assertEqual(result.status_code, 400, result.body)
+                self.assertEqual(result.body["data"]["code"], "validation_error")
         self.assertEqual(self.upstream.seen, [])
 
     async def test_missing_login_and_deleted_site(self) -> None:

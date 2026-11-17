@@ -49,6 +49,29 @@ from .content_types import (
 # 测试共享同一个在途计数，避免页面连点时打爆上游。
 BATCH_INFLIGHT_LIMIT = 6
 
+# 批量测试按“用户发起时看到的版本”执行：版本已变化时不再请求上游，
+# 逐行返回 stale，由页面提示刷新后重新测试。
+BATCH_STALE_MESSAGE = "站点配置已变化，请刷新后重新测试。"
+
+
+def _batch_row(
+    site_id: str,
+    content_type: str,
+    result: str,
+    message: str,
+    elapsed_ms: int,
+    revision: int | None,
+) -> dict[str, Any]:
+    """一行批量测试结果；revision 标明该结果对应哪一份站点配置。"""
+    return {
+        "site_id": site_id,
+        "content_type": content_type,
+        "result": result,
+        "message": message,
+        "elapsed_ms": elapsed_ms,
+        "site_revision": revision,
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class ContentApiResult:
@@ -122,7 +145,7 @@ class ContentApi:
 
         if not isinstance(payload, dict):
             return _error(400, "请求体必须是 JSON 对象。", "invalid_body")
-        if set(payload) - {"site_ids", "content_types"}:
+        if set(payload) - {"site_ids", "content_types", "expected_revisions"}:
             return _error(400, "请求字段无效。", "validation_error")
         site_ids = payload.get("site_ids")
         content_types = payload.get("content_types")
@@ -134,23 +157,50 @@ class ContentApi:
                 or len(content_types) > len(KNOWN_CONTENT_TYPES)
                 or any(item not in KNOWN_CONTENT_TYPES for item in content_types)):
             return _error(400, "内容类型无效。", "validation_error")
+        expected = payload.get("expected_revisions")
+        if expected is not None and (
+            not isinstance(expected, dict)
+            or any(
+                not isinstance(key, str) or key not in site_ids
+                or type(value) is not int or value < 1
+                for key, value in expected.items()
+            )
+        ):
+            return _error(400, "站点版本无效。", "validation_error")
+
+        # 每个站点这里只读一次版本：同一站点的五类结果都对应同一份配置。
+        # expected_revisions 给出用户发起测试时看到的版本，不一致就不请求上游。
+        revisions: dict[str, int] = {}
+        missing: set[str] = set()
+        stale: set[str] = set()
+        for site_id in dict.fromkeys(site_ids):
+            try:
+                site = await self._service.sites.get_site(site_id)
+            except Exception:
+                missing.add(site_id)
+                continue
+            revisions[site_id] = site.revision
+            wanted = expected.get(site_id) if expected is not None else None
+            if wanted is not None and wanted != site.revision:
+                stale.add(site_id)
 
         semaphore = asyncio.Semaphore(BATCH_INFLIGHT_LIMIT)
 
         async def run_one(site_id: str, content_type: str) -> dict:
+            revision = revisions.get(site_id)
+            if site_id in missing:
+                return _batch_row(
+                    site_id, content_type, "error", "站点不存在或不可用", 0, None,
+                )
+            if site_id in stale:
+                return _batch_row(
+                    site_id, content_type, "stale", BATCH_STALE_MESSAGE, 0, revision,
+                )
             async with semaphore:
                 started = time.monotonic()
-                try:
-                    site = await self._service.sites.get_site(site_id)
-                except Exception:
-                    return {
-                        "site_id": site_id, "content_type": content_type,
-                        "result": "error", "message": "站点不存在或不可用",
-                        "elapsed_ms": 0,
-                    }
                 outcome = await self.test_connection(
                     site_id,
-                    {"expected_revision": site.revision,
+                    {"expected_revision": revision,
                      "content_type": content_type},
                     inflight_limit=BATCH_INFLIGHT_LIMIT,
                 )
@@ -159,14 +209,15 @@ class ContentApi:
                     data = outcome.body.get("data") or {}
                     result = "empty" if data.get("result") == "empty" else "success"
                     message = data.get("message") or ""
+                elif outcome.status_code == 409:
+                    result = "stale"
+                    message = BATCH_STALE_MESSAGE
                 else:
                     result = "error"
                     message = outcome.body.get("message") or "测试失败"
-                return {
-                    "site_id": site_id, "content_type": content_type,
-                    "result": result, "message": message,
-                    "elapsed_ms": elapsed,
-                }
+                return _batch_row(
+                    site_id, content_type, result, message, elapsed, revision,
+                )
 
         tasks = [
             run_one(site_id, content_type)
@@ -177,6 +228,7 @@ class ContentApi:
         return ContentApiResult(200, {
             "results": list(results),
             "failed": sum(1 for item in results if item["result"] == "error"),
+            "stale": sum(1 for item in results if item["result"] == "stale"),
         })
 
     async def preview(self, payload: object) -> ContentApiResult:

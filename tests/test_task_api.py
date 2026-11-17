@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -380,6 +381,69 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(previews.calls, [(task["id"], self.site.id)])
         self.assertEqual(previews.payloads[0]["force_refresh"], True)
+
+    async def test_saving_preview_and_capability_test_create_no_delivery(self) -> None:
+        """保存、预览、能力测试都只读配置，不写入任何投递记录。"""
+        created = await self.api.create_task(self.payload)
+        self.assertEqual(created.status_code, 201, created.body)
+        task = created.body["data"]
+        updated = await self.api.update_task(
+            task["id"],
+            {
+                **self.payload,
+                "items": [item(), {"content_type": "zhihu_hot", "params": {}, "limit": 3}],
+                "expected_revision": task["revision"],
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.body)
+
+        await self.sites.update_site(
+            self.site.id,
+            SiteUpdate(
+                name=self.site.name,
+                base_url=self.site.base_url,
+                enabled=True,
+                timeout_seconds=self.site.timeout_seconds,
+                expected_revision=self.site.revision,
+            ),
+        )
+        previews = _StubPlanPreview(
+            sections=[
+                {"content_type": "daily_news", "status": "ok", "items": ["a"]},
+                {"content_type": "zhihu_hot", "status": "ok", "items": ["a", "b", "c"]},
+            ],
+        )
+        self.api = TaskApi(
+            self.tasks,
+            self.sites,
+            content=_StubContent(),
+            plan_preview=previews,
+        )
+        preview = await self.api.preview_task(task["id"], {})
+        self.assertEqual(preview.status_code, 200, preview.body)
+        capability = await self.api.test_task(task["id"])
+        self.assertEqual(capability.status_code, 200, capability.body)
+        self.assertEqual(previews.calls[0][0], task["id"])
+
+        with sqlite3.connect(self.db) as connection:
+            executions = connection.execute(
+                "SELECT COUNT(*) FROM delivery_executions",
+            ).fetchone()[0]
+            pages = connection.execute(
+                "SELECT COUNT(*) FROM delivery_pages",
+            ).fetchone()[0]
+        self.assertEqual(executions, 0)
+        self.assertEqual(pages, 0)
+
+
+class _StubContent:
+    async def preview_cached(self, content_type, site_id, *args, **kwargs):
+        cached = type(
+            "Cached",
+            (),
+            {"snapshot": {"items": [f"{content_type}-1"], "title": content_type}},
+        )
+        return cached()
 
 
 class _StubPlanPreview:

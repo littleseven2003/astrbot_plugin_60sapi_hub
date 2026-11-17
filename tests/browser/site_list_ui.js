@@ -149,6 +149,16 @@ async function openPage(browser, port, options) {
             error.status = 409;
             throw error;
           }
+          // 响应丢失：页面拿不到结论，只能靠重读列表判断结果。
+          const drop = window.__deleteDrops[siteId];
+          if (drop) {
+            if (drop === "removed") {
+              window.__siteFixtures = window.__siteFixtures.filter(
+                (site) => site.id !== siteId,
+              );
+            }
+            throw new Error("网络连接中断。");
+          }
           window.__siteFixtures = window.__siteFixtures.filter(
             (site) => site.id !== siteId,
           );
@@ -580,6 +590,76 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
     check((await page.textContent("#status")).includes("1 个未删除"),
       "状态栏提示未删除数量：" + (await page.textContent("#status")).trim());
     await page.click("#delete-cancel-button");
+
+    // 删除响应丢失：重读列表能确认站点仍在 → 如实标注未删除，可修正后重试。
+    const keptPage = await openPage(browser, port, { sites: SITES.map((site) => ({ ...site })) });
+    await keptPage.click("#site-select-all");
+    await keptPage.evaluate(() => {
+      window.__deleteDrops = { "site-partial": "kept" };
+    });
+    await keptPage.click("#site-delete-selected");
+    await keptPage.waitForSelector("#delete-dialog[open]");
+    await keptPage.click("#delete-confirm-button");
+    await keptPage.waitForFunction(
+      () => document.querySelectorAll("#delete-results li.delete-result").length === 3,
+      null, { timeout: 10000 },
+    );
+    const keptStates = await keptPage.$$eval("#delete-results li.delete-result",
+      (nodes) => nodes.map((node) => ({ state: node.dataset.state, text: node.textContent })));
+    const keptItem = keptStates.find((item) => item.state === "kept");
+    check(Boolean(keptItem), "响应丢失后重读列表给出结论："
+      + JSON.stringify(keptStates.map((item) => item.state)));
+    check(keptItem.text.includes("列表确认该站点仍在，未执行删除。"),
+      "确认仍在时如实标注未删除：" + keptItem.text);
+    check(await keptPage.locator("#delete-selection li").count() === 1,
+      "确认未删除的站点保留为可重试项");
+    const keptCalls = await keptPage.evaluate(() => window.__calls
+      .filter((call) => call.endpoint.endsWith("/delete")).length);
+    check(keptCalls === 3, "响应丢失的站点没有被重复提交：" + keptCalls);
+    await keptPage.click("#delete-cancel-button");
+    await keptPage.close();
+
+    // 删除响应丢失但站点确实已删除：重读列表后按已删除计数，不留在待处理项。
+    const gonePage = await openPage(browser, port, { sites: SITES.map((site) => ({ ...site })) });
+    await gonePage.click("#site-select-all");
+    await gonePage.evaluate(() => {
+      window.__deleteDrops = { "site-ok": "removed" };
+    });
+    await gonePage.click("#site-delete-selected");
+    await gonePage.waitForSelector("#delete-dialog[open]");
+    await gonePage.click("#delete-confirm-button");
+    await gonePage.waitForFunction(
+      () => !document.getElementById("delete-dialog").open, null, { timeout: 10000 },
+    );
+    check((await gonePage.textContent("#status")).includes("已删除 3/3 个站点"),
+      "确认已删除后按成功收场：" + (await gonePage.textContent("#status")).trim());
+    await gonePage.waitForFunction(
+      () => document.querySelectorAll("#delete-results li.delete-result").length === 0,
+      null, { timeout: 5000 },
+    );
+    check(true, "全部确认成功后对话框关闭并清空逐站结果");
+    await gonePage.close();
+
+    // 列表刷新失败时保持“结果待确认”，移出重试目标并提示刷新。
+    const blindPage = await openPage(browser, port, { sites: SITES.map((site) => ({ ...site })) });
+    await blindPage.click('#sites-list > li[data-site-id="site-ok"] .site-select');
+    await blindPage.evaluate(() => {
+      window.__deleteDrops = { "site-ok": "kept" };
+      // 响应丢失的同时列表也无法重读：无法确认时不能猜结果。
+      window.__sitesReject = true;
+    });
+    await blindPage.click("#site-delete-selected");
+    await blindPage.waitForSelector("#delete-dialog[open]");
+    await blindPage.click("#delete-confirm-button");
+    await blindPage.waitForFunction(
+      () => document.getElementById("delete-message").textContent.includes("结果待确认"),
+      null, { timeout: 10000 },
+    );
+    const blindMessage = await blindPage.textContent("#delete-message");
+    check(blindMessage.includes("结果待确认"), "无法确认时明确提示：" + blindMessage.trim());
+    check(await blindPage.locator("#delete-selection li").count() === 0,
+      "结果待确认的站点被移出重试目标");
+    await blindPage.close();
 
     // 超过后端单次上限（20）时按块顺序请求。
     const many = [];

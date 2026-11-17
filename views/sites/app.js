@@ -3679,20 +3679,25 @@ function resetDeleteResults() {
 
 const DELETE_RESULT_TEXT = {
   deleted: "已删除",
+  kept: "未删除",
   changed: "未删除：列表已变化或站点已不在",
-  rejected: "未删除：后台拒绝",
-  unknown: "结果未知：请刷新列表确认，不会自动重试",
+  unknown: "结果待确认：请刷新列表确认，不会自动重试",
 };
 
 function renderDeleteResults(results, total) {
   elements.deleteResults.replaceChildren();
   const deleted = results.filter((item) => item.state === "deleted").length;
+  const unknown = results.filter((item) => item.state === "unknown").length;
   const summary = document.createElement("li");
   summary.className = "delete-result-summary";
-  summary.textContent = results.length < total
-    ? "正在删除 " + results.length + "/" + total + " 个，已成功 " + deleted + " 个…"
-    : "共 " + total + " 个：已删除 " + deleted + " 个，未删除 "
-      + (total - deleted) + " 个。";
+  if (results.length < total) {
+    summary.textContent = "正在删除 " + results.length + "/" + total
+      + " 个，已成功 " + deleted + " 个…";
+  } else {
+    summary.textContent = "共 " + total + " 个：已删除 " + deleted + " 个，未删除 "
+      + (total - deleted - unknown) + " 个"
+      + (unknown > 0 ? "，结果待确认 " + unknown + " 个。" : "。");
+  }
   elements.deleteResults.append(summary);
   for (const item of results) {
     const row = document.createElement("li");
@@ -3781,7 +3786,7 @@ async function confirmBatchDelete() {
         const message = friendlyErrorMessage(error);
         const stateName = isConflictMessage(message) || isMissingMessage(message)
           ? "changed"
-          : isExplicitWriteRejection(message) ? "rejected" : "unknown";
+          : isExplicitWriteRejection(message) ? "kept" : "unknown";
         results.push({
           site,
           state: stateName,
@@ -3796,9 +3801,33 @@ async function confirmBatchDelete() {
     elements.deleteConfirmButton.disabled = false;
   }
 
+  const reloaded = await loadSites();
+  // 响应无法确认的站点：重读列表后按“站点是否还在、版本是否变化”给出结论。
+  if (reloaded) {
+    for (const item of results) {
+      if (item.state !== "unknown") {
+        continue;
+      }
+      const current = findSite(item.site.id);
+      if (!current) {
+        item.state = "deleted";
+        item.message = "";
+        state.siteSelection.delete(item.site.id);
+        state.siteTest.delete(item.site.id);
+      } else if (Number(current.revision) === Number(item.site.revision)) {
+        item.state = "kept";
+        item.message = "列表确认该站点仍在，未执行删除。";
+      } else {
+        item.state = "changed";
+        item.message = "列表中的站点版本已变化，请按最新内容重新确认。";
+      }
+    }
+    renderDeleteResults(results, targets.length);
+  }
+
   const deleted = results.filter((item) => item.state === "deleted");
   const failed = results.filter((item) => item.state !== "deleted");
-  const reloaded = await loadSites();
+  const unconfirmed = results.filter((item) => item.state === "unknown");
   const summary = "已删除 " + deleted.length + "/" + targets.length + " 个站点。";
   if (failed.length === 0) {
     closeDialog(elements.deleteDialog);
@@ -3810,15 +3839,25 @@ async function confirmBatchDelete() {
     );
     return;
   }
-  state.deleteTargets = failed.map((item) => item.site);
+  // 结果待确认的站点不放进重试目标，避免对未知结果重复提交。
+  state.deleteTargets = failed
+    .filter((item) => item.state !== "unknown")
+    .map((item) => item.site);
   renderDeleteSelection(state.deleteTargets);
-  const unknown = failed.some((item) => item.state === "unknown");
-  elements.deleteMessage.textContent = summary + "未删除的 " + failed.length
-    + " 个站点仍保留在列表中"
-    + (unknown ? "；结果未知的站点请刷新列表确认。" : "，可修正后重试。");
+  let detail = summary + "未删除的 " + failed.length + " 个站点仍保留在列表中";
+  if (unconfirmed.length > 0) {
+    detail += "；其中 " + unconfirmed.length + " 个结果待确认，已移出重试目标，请刷新列表确认。";
+  } else if (!reloaded) {
+    detail += "；列表刷新失败，请点击“刷新”确认后再重试。";
+  } else {
+    detail += "，可修正后重试。";
+  }
+  elements.deleteMessage.textContent = detail;
   showStatus(
     reloaded
-      ? summary + failed.length + " 个未删除，见对话框中的逐站结果。"
+      ? summary + failed.length + " 个未删除"
+        + (unconfirmed.length > 0 ? "（" + unconfirmed.length + " 个结果待确认）" : "")
+        + "，见对话框中的逐站结果。"
       : summary + "列表刷新失败，请点击“刷新”重试。",
     "error",
   );

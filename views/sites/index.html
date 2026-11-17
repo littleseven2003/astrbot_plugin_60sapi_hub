@@ -50,7 +50,7 @@
         <section class="view" id="view-sites" data-view="sites">
           <div class="view-head">
             <h1>站点管理</h1>
-            <p class="view-lede">维护 60s API 的基础地址、超时和访问凭据；每张站点卡片可以单独测试五种内容接口的连接。打开页面、切回本视图都不会请求上游。</p>
+            <p class="view-lede">维护 60s API 的基础地址、超时和访问凭据。每行可以单独或批量测试全部五类内容接口；测试只发起主动请求，不修改配置、不启用站点、不发送消息，打开页面和勾选站点都不会请求上游。</p>
           </div>
 
           <section class="list-section" aria-labelledby="sites-heading">
@@ -74,36 +74,25 @@
               </button>
             </div>
 
-            <ul id="sites-list" class="sites-list" aria-busy="true"></ul>
-          </section>
+            <div id="site-selection" class="site-selection" hidden>
+              <div class="site-selection-links">
+                <button id="site-select-all" class="link-button" type="button">全选</button>
+                <button id="site-select-none" class="link-button" type="button">全不选</button>
+                <button id="site-select-invert" class="link-button" type="button">反选</button>
+                <span id="site-selection-count" class="site-selection-count">已选 0 个</span>
+              </div>
+              <div class="site-batch-actions">
+                <button id="site-test-selected" class="button button-secondary" type="button" disabled>
+                  批量测试
+                </button>
+                <button id="site-delete-selected" class="button button-danger" type="button" disabled>
+                  批量删除
+                </button>
+              </div>
+            </div>
+            <p id="site-test-summary" class="help site-test-summary" role="status" hidden></p>
 
-          <section class="sites-section batch-test" aria-labelledby="batch-test-heading">
-            <div class="section-head">
-              <h2 id="batch-test-heading">批量连接测试</h2>
-            </div>
-            <p class="preview-lede">
-              只做主动连接和结构检查：不会修改站点配置、不会启用站点、不会发送消息。打开页面或切换选项不会请求上游。
-            </p>
-            <div class="batch-test-controls">
-              <label class="field">
-                <span>测试类别</span>
-                <select id="batch-test-type">
-                  <option value="all" selected>全部五类</option>
-                  <option value="daily_news">每日新闻</option>
-                  <option value="bilibili_hot">Bilibili 热搜</option>
-                  <option value="zhihu_hot">知乎热榜</option>
-                  <option value="douyin_hot">抖音热搜</option>
-                  <option value="toutiao_hot">今日头条热榜</option>
-                </select>
-              </label>
-              <button id="batch-test-run" class="button button-primary" type="button">
-                运行所选测试
-              </button>
-            </div>
-            <div id="batch-test-sites" class="batch-test-sites" role="group"
-                 aria-label="选择要测试的站点"></div>
-            <p id="batch-test-state" class="help" role="status" hidden></p>
-            <ul id="batch-test-results" class="batch-test-results" hidden></ul>
+            <ul id="sites-list" class="sites-list" aria-busy="true"></ul>
           </section>
         </section>
 
@@ -770,6 +759,8 @@
             <h2 id="delete-title">删除站点</h2>
           </header>
           <p id="delete-message"></p>
+          <ul id="delete-selection" class="delete-selection" aria-label="待删除站点" hidden></ul>
+          <ul id="delete-results" class="delete-results" role="status" hidden></ul>
           <div id="delete-error" class="form-error" role="alert" hidden></div>
           <div id="delete-uncertain" class="uncertain" role="alert" hidden>
             <h3>删除结果未确认</h3>
@@ -790,30 +781,6 @@
             <button id="delete-confirm-button" class="button button-danger" type="button">
               删除
             </button>
-          </footer>
-        </div>
-      </dialog>
-
-      <dialog id="site-test-dialog" class="dialog dialog-small" aria-labelledby="site-test-title">
-        <div class="form">
-          <header class="dialog-head"><h2 id="site-test-title">测试连接</h2></header>
-          <p id="site-test-site"></p>
-          <label class="field"><span>内容接口</span>
-            <select id="site-test-content-type">
-              <option value="daily_news">每日新闻</option>
-              <option value="bilibili_hot">Bilibili 热搜</option>
-              <option value="zhihu_hot">知乎热榜</option>
-              <option value="douyin_hot">抖音热搜</option>
-              <option value="toutiao_hot">今日头条热搜</option>
-            </select>
-          </label>
-          <p class="help">会主动请求上游，只验证所选接口本次连接和数据格式；不修改配置、不启用站点、不发送消息。</p>
-          <div id="site-test-result" class="site-test-result" role="status" hidden></div>
-          <ul id="site-test-all-results" class="site-test-all" hidden></ul>
-          <footer class="dialog-actions">
-            <button id="site-test-close-button" class="button button-secondary" type="button">关闭</button>
-            <button id="site-test-all-button" class="button button-secondary" type="button">测试全部五类</button>
-            <button id="site-test-run-button" class="button button-primary" type="button">开始测试</button>
           </footer>
         </div>
       </dialog>

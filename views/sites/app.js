@@ -162,6 +162,9 @@ const elements = {
   cancelButton: document.getElementById("cancel-button"),
   saveButton: document.getElementById("save-button"),
   deleteDialog: document.getElementById("delete-dialog"),
+  deleteTitle: document.getElementById("delete-title"),
+  deleteSelection: document.getElementById("delete-selection"),
+  deleteResults: document.getElementById("delete-results"),
   deleteMessage: document.getElementById("delete-message"),
   deleteError: document.getElementById("delete-error"),
   deleteUncertain: document.getElementById("delete-uncertain"),
@@ -246,13 +249,14 @@ const elements = {
   taskSiteList: document.getElementById("task-site-list"),
   taskCapabilityTestButton: document.getElementById("task-capability-test-button"),
   taskCapabilityResult: document.getElementById("task-capability-result"),
-  siteTestAllButton: document.getElementById("site-test-all-button"),
-  siteTestAllResults: document.getElementById("site-test-all-results"),
-  batchTestType: document.getElementById("batch-test-type"),
-  batchTestRun: document.getElementById("batch-test-run"),
-  batchTestSites: document.getElementById("batch-test-sites"),
-  batchTestState: document.getElementById("batch-test-state"),
-  batchTestResults: document.getElementById("batch-test-results"),
+  siteSelection: document.getElementById("site-selection"),
+  siteSelectionCount: document.getElementById("site-selection-count"),
+  siteSelectAll: document.getElementById("site-select-all"),
+  siteSelectNone: document.getElementById("site-select-none"),
+  siteSelectInvert: document.getElementById("site-select-invert"),
+  siteTestSelected: document.getElementById("site-test-selected"),
+  siteDeleteSelected: document.getElementById("site-delete-selected"),
+  siteTestSummary: document.getElementById("site-test-summary"),
   taskOutputFormat: document.getElementById("task-output-format"),
   taskUmos: document.getElementById("task-umos"),
   taskScheduleNone: document.getElementById("task-schedule-none"),
@@ -338,12 +342,16 @@ const elements = {
 };
 
 const state = {
-  batchTestRequestId: 0,
+  siteSelection: new Set(),
+  siteTest: new Map(),
+  siteTestBusy: false,
   sites: [],
   mode: "create",
   editingId: null,
   editingRevision: null,
   deleteTarget: null,
+  deleteTargets: [],
+  deleteMode: "single",
   loading: false,
   saving: false,
   deleting: false,
@@ -679,13 +687,33 @@ function addMeta(container, label, value) {
   container.append(item);
 }
 
-let siteTestDisplayToken = 0;
-let siteTestSite = null;
-const siteTestPending = new Map();
+const SITE_TEST_TYPES = [
+  ["daily_news", "每日新闻"],
+  ["bilibili_hot", "Bilibili 热榜"],
+  ["zhihu_hot", "知乎热榜"],
+  ["douyin_hot", "抖音热搜"],
+  ["toutiao_hot", "今日头条"],
+];
+// 后端单次最多接受 20 个站点：超过时按块顺序请求，避免整批失败。
+const SITE_TEST_CHUNK = 20;
+const SITE_TEST_STATE_TEXT = {
+  idle: "未测试",
+  running: "测试中",
+  success: "成功",
+  empty: "合法空内容",
+  error: "失败",
+};
+const SITE_TEST_STATE_ICON = {
+  idle: "○",
+  running: "…",
+  success: "✓",
+  empty: "◌",
+  error: "✕",
+};
 const SAFE_TEST_ERRORS = new Map([
-  ["站点配置已变化，请刷新后重试。", ["站点配置已变化，请关闭后刷新列表再重试。", "warning"]],
+  ["站点配置已变化，请刷新后重试。", ["站点配置已变化，请刷新列表后重试。", "warning"]],
   ["同时进行的连接测试过多，请稍后重试。", ["同时进行的连接测试过多，请稍后手动重试。", "warning"]],
-  ["测试连接超时。", ["所选接口连接超时，请稍后手动重试。", "danger"]],
+  ["测试连接超时。", ["连接上游超时，请稍后手动重试。", "danger"]],
   ["插件当前不可用。", ["插件当前不可用，请关闭后重新打开页面。", "danger"]],
   ["插件当前不可用，请重新打开页面后重试。", ["插件当前不可用，请重新打开页面后重试。", "danger"]],
   ["内容客户端当前不可用。", ["内容客户端当前不可用，请稍后手动重试。", "danger"]],
@@ -695,116 +723,377 @@ const SAFE_TEST_ERRORS = new Map([
   ["网络传输失败。", ["网络传输失败，请检查站点地址后手动重试。", "danger"]],
   ["上游返回了失败状态。", ["上游返回了失败状态。", "danger"]],
   ["插件当前未启用。", ["插件当前未启用，请启用插件后重新打开页面。", "danger"]],
-  ["插件当前不可用。", ["插件当前不可用，请关闭后重新打开页面。", "danger"]],
-  ["插件当前不可用，请重新打开页面后重试。", ["插件当前不可用，请重新打开页面后重试。", "danger"]],
   ["站点不存在。", ["站点不存在或已被删除，请刷新列表。", "danger"]],
   ["站点不存在或已被删除。", ["站点不存在或已被删除，请刷新列表。", "danger"]],
-  ["内容类型无效。", ["所选内容类型无效。", "danger"]],
+  ["内容类型无效。", ["所请求的内容类型无效。", "danger"]],
   ["revision 无效。", ["站点版本无效，请刷新列表。", "danger"]],
   ["测试参数无效。", ["测试参数无效，请刷新列表后重试。", "danger"]],
   ["请求体必须是 JSON 对象。", ["请求格式无效。", "danger"]],
-  ["需要登录后才能获取内容预览。", ["登录状态无效，请重新登录 Dashboard。", "danger"]],
   ["上游发生不允许的重定向。", ["上游返回了不允许的重定向。", "danger"]],
   ["上游响应过大。", ["上游响应超过大小限制。", "danger"]],
   ["上游返回非 JSON。", ["上游返回的内容不是有效 JSON。", "danger"]],
   ["上游业务状态无效。", ["上游业务状态无效。", "danger"]],
   ["上游内容结构无效。", ["上游内容结构不符合所选接口约定。", "danger"]],
-  ["测试失败，无法完成连接验证。", ["测试失败，请稍后手动重试。", "danger"]],
+  ["测试失败，无法完成连接验证。", ["测试失败，无法完成连接验证。", "danger"]],
 ]);
-function setSiteTestResult(text, tone) {
-  const result = document.getElementById("site-test-result");
-  result.hidden = !text;
-  result.textContent = text || "";
-  result.dataset.tone = tone || "info";
+
+function safeSiteTestMessage(message) {
+  const text = typeof message === "string" ? message.trim() : "";
+  const safe = SAFE_TEST_ERRORS.get(text);
+  if (safe) {
+    return safe[0];
+  }
+  // 上游正文和凭据不回显：只给安全的通用说明。
+  return "测试失败，无法完成连接验证。";
 }
-function siteTestRunning(site, run) {
-  const pending = site ? siteTestPending.get(site.id) : null;
-  run.disabled = Boolean(pending);
-  run.textContent = pending ? "测试中…" : "开始测试";
+
+// 站点版本与启用状态一起决定一份测试结果是否还能贴到当前配置上。
+function siteTestSignature(site) {
+  return String(site.revision) + ":" + String(site.enabled);
 }
-function openSiteTest(site) {
-  siteTestSite = site;
-  siteTestDisplayToken += 1;
-  document.getElementById("site-test-site").textContent =
-    `站点：${site.name}`;
-  document.getElementById("site-test-content-type").value = "daily_news";
-  elements.siteTestAllResults.hidden = true;
-  elements.siteTestAllButton.disabled = false;
-  elements.siteTestAllResults.replaceChildren();
-  const run = document.getElementById("site-test-run-button");
-  siteTestRunning(site, run);
-  setSiteTestResult(siteTestPending.has(site.id) ? "正在请求所选接口…" : "",
-    siteTestPending.has(site.id) ? "info" : null);
-  document.getElementById("site-test-dialog").showModal();
+
+function siteRowElement(siteId) {
+  for (const row of Array.from(elements.sitesList.children)) {
+    if (row.dataset.siteId === siteId) {
+      return row;
+    }
+  }
+  return null;
 }
-async function runSiteTest() {
-  const site = siteTestSite;
-  if (!site || siteTestPending.has(site.id)) return;
-  const content = document.getElementById("site-test-content-type").value;
-  const displayToken = siteTestDisplayToken;
-  const record = { contentType: content, displayToken };
-  siteTestPending.set(site.id, record);
-  const run = document.getElementById("site-test-run-button");
-  run.disabled = true;
-  run.textContent = "测试中…";
-  setSiteTestResult("正在请求所选接口…", "info");
+
+function currentSiteTest(site) {
+  const record = state.siteTest.get(site.id);
+  if (!record || record.signature !== siteTestSignature(site)) {
+    return null;
+  }
+  return record;
+}
+
+function siteTestCell(site, type) {
+  const record = currentSiteTest(site);
+  const cell = record ? record.cells.get(type) : null;
+  return cell && SITE_TEST_STATE_TEXT[cell.state] ? cell : { state: "idle" };
+}
+
+function siteTestCellTitle(label, cell) {
+  const base = label + "：" + (SITE_TEST_STATE_TEXT[cell.state] || "未测试");
+  if (typeof cell.message === "string" && cell.message) {
+    const elapsed = Number.isFinite(cell.elapsed)
+      ? "，耗时 " + cell.elapsed + " ms"
+      : "";
+    return base + "（" + cell.message + elapsed + "）";
+  }
+  return base;
+}
+
+function renderSiteTestBlock(site) {
+  const block = document.createElement("div");
+  block.className = "site-test-block";
+  const chips = document.createElement("ul");
+  chips.className = "site-test-chips";
+  chips.setAttribute("aria-label", "五类内容接口测试状态");
+  const notes = [];
+  for (const entry of SITE_TEST_TYPES) {
+    const type = entry[0];
+    const label = entry[1];
+    const cell = siteTestCell(site, type);
+    const item = document.createElement("li");
+    item.className = "site-test-chip";
+    item.dataset.type = type;
+    item.dataset.state = cell.state;
+    const icon = document.createElement("span");
+    icon.className = "site-test-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = SITE_TEST_STATE_ICON[cell.state];
+    const text = document.createElement("span");
+    text.className = "site-test-text";
+    text.textContent = label + " " + SITE_TEST_STATE_TEXT[cell.state];
+    item.title = siteTestCellTitle(label, cell);
+    item.append(icon, text);
+    chips.append(item);
+    if ((cell.state === "error" || cell.state === "empty") && cell.message) {
+      notes.push(label + "：" + cell.message);
+    }
+  }
+  block.append(chips);
+  if (notes.length > 0) {
+    const note = document.createElement("p");
+    note.className = "site-test-note";
+    note.textContent = notes.slice(0, 2).join("；") + (notes.length > 2 ? "；…" : "");
+    block.append(note);
+  }
+  return block;
+}
+
+function updateSiteTestBlock(siteId) {
+  const row = siteRowElement(siteId);
+  const site = state.sites.find((item) => item.id === siteId);
+  if (!row || !site) {
+    return;
+  }
+  const block = row.querySelector(".site-test-block");
+  if (block) {
+    block.replaceWith(renderSiteTestBlock(site));
+  }
+}
+
+function setSiteTestSummary(text) {
+  const value = typeof text === "string" ? text.trim() : "";
+  elements.siteTestSummary.textContent = value;
+  elements.siteTestSummary.hidden = !value;
+}
+
+function siteTestIsRunning(record) {
+  for (const cell of record.cells.values()) {
+    if (cell.state === "running") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function applySiteTestResult(site, record, type, result, message, elapsed) {
+  // 站点在测试期间被修改、删除或重新测试时，旧结果一律丢弃。
+  if (state.siteTest.get(site.id) !== record) {
+    return null;
+  }
+  if (record.signature !== siteTestSignature(site)) {
+    return null;
+  }
+  const cell = record.cells.get(type);
+  if (!cell) {
+    return null;
+  }
+  const stateName = result === "success" ? "success"
+    : result === "empty" ? "empty"
+      : "error";
+  cell.state = stateName;
+  cell.message = typeof message === "string"
+    ? (stateName === "error" ? safeSiteTestMessage(message) : message.trim())
+    : "";
+  cell.elapsed = Number.isFinite(Number(elapsed)) ? Number(elapsed) : null;
+  updateSiteTestBlock(site.id);
+  return stateName;
+}
+
+function findSite(siteId) {
+  return state.sites.find((item) => item.id === siteId) || null;
+}
+
+async function runSiteTests(siteIds) {
+  const targets = [];
+  for (const id of siteIds) {
+    const site = findSite(id);
+    if (!site) {
+      continue;
+    }
+    const record = currentSiteTest(site);
+    if (record && siteTestIsRunning(record)) {
+      continue;
+    }
+    targets.push(site);
+  }
+  if (targets.length === 0 || !bridge) {
+    return;
+  }
+
+  const records = new Map();
+  for (const site of targets) {
+    const cells = new Map();
+    for (const entry of SITE_TEST_TYPES) {
+      cells.set(entry[0], { state: "running", message: "", elapsed: null });
+    }
+    const record = { signature: siteTestSignature(site), cells };
+    state.siteTest.set(site.id, record);
+    records.set(site.id, record);
+    updateSiteTestBlock(site.id);
+  }
+
+  const batched = targets.length > 1;
+  if (batched) {
+    state.siteTestBusy = true;
+    refreshSiteToolbar();
+  }
+  setSiteTestSummary(
+    "正在测试 " + targets.length + " 个站点 × " + SITE_TEST_TYPES.length + " 类接口…",
+  );
+
+  let skipped = 0;
   try {
-    const data = await bridge.apiPost(`sites/${site.id}/test`, {
-      expected_revision: site.revision,
-      content_type: content,
-    });
-    if (!siteTestPending.has(site.id) ||
-        siteTestPending.get(site.id) !== record ||
-        document.getElementById("site-test-dialog").open !== true ||
-        siteTestSite !== site ||
-        siteTestDisplayToken !== displayToken ||
-        document.getElementById("site-test-content-type").value !== content) return;
-    const value = data && data.data ? data.data : data;
-    setSiteTestResult(value.result === "empty"
-      ? `${value.message} 耗时 ${value.elapsed_ms} ms。`
-      : `连接成功：${value.message} 耗时 ${value.elapsed_ms} ms。`, "success");
-  } catch (error) {
-    if (!siteTestPending.has(site.id) ||
-        siteTestPending.get(site.id) !== record ||
-        document.getElementById("site-test-dialog").open !== true ||
-        siteTestSite !== site ||
-        siteTestDisplayToken !== displayToken ||
-        document.getElementById("site-test-content-type").value !== content) return;
-    const message = error && typeof error.message === "string"
-      ? error.message.trim() : "";
-    const safe = SAFE_TEST_ERRORS.get(message);
-    if (safe) {
-      setSiteTestResult(safe[0], safe[1]);
-    } else {
-      setSiteTestResult("测试失败，请手动重试；未修改站点配置。", "danger");
+    for (let start = 0; start < targets.length; start += SITE_TEST_CHUNK) {
+      const chunk = targets.slice(start, start + SITE_TEST_CHUNK);
+      const chunkIds = [];
+      for (const site of chunk) {
+        const record = records.get(site.id);
+        const current = findSite(site.id);
+        if (!current || !record || state.siteTest.get(site.id) !== record ||
+            record.signature !== siteTestSignature(current)) {
+          skipped += 1;
+          continue;
+        }
+        chunkIds.push(site.id);
+      }
+      if (chunkIds.length === 0) {
+        continue;
+      }
+      let results = [];
+      try {
+        const data = await bridge.apiPost("sites/test-batch", {
+          site_ids: chunkIds,
+          content_types: SITE_TEST_TYPES.map((entry) => entry[0]),
+        });
+        const payload = data && data.data ? data.data : (data || {});
+        results = Array.isArray(payload.results) ? payload.results : [];
+      } catch (error) {
+        // 这一块整体失败时逐站标注，后面的块继续测试。
+        const message = friendlyErrorMessage(error);
+        for (const id of chunkIds) {
+          const site = findSite(id);
+          const record = records.get(id);
+          if (!site || !record) {
+            continue;
+          }
+          for (const entry of SITE_TEST_TYPES) {
+            applySiteTestResult(site, record, entry[0], "error", message, null);
+          }
+        }
+        continue;
+      }
+      const seen = new Set();
+      for (const item of results) {
+        if (!item || typeof item !== "object") {
+          continue;
+        }
+        const site = findSite(item.site_id);
+        const record = records.get(item.site_id);
+        if (!site || !record) {
+          continue;
+        }
+        seen.add(String(item.site_id) + "|" + String(item.content_type));
+        applySiteTestResult(
+          site, record, item.content_type, item.result, item.message, item.elapsed_ms,
+        );
+      }
+      // 后端没有返回的类型也要收尾，不能一直停在“测试中”。
+      for (const id of chunkIds) {
+        const site = findSite(id);
+        const record = records.get(id);
+        if (!site || !record) {
+          continue;
+        }
+        for (const entry of SITE_TEST_TYPES) {
+          if (seen.has(id + "|" + entry[0])) {
+            continue;
+          }
+          applySiteTestResult(
+            site, record, entry[0], "error", "没有收到该接口的测试结果。", null,
+          );
+        }
+      }
     }
   } finally {
-    if (siteTestPending.get(site.id) === record) siteTestPending.delete(site.id);
-    if (document.getElementById("site-test-dialog").open === true) {
-      siteTestRunning(siteTestSite, document.getElementById("site-test-run-button"));
-      const result = document.getElementById("site-test-result");
-      const currentPending = siteTestSite
-        ? siteTestPending.get(siteTestSite.id) : null;
-      if (!currentPending && siteTestDisplayToken !== displayToken &&
-          result.textContent === "正在请求所选接口…") {
-        setSiteTestResult(
-          "本次测试已结束，但结果未在当前弹窗展示；请手动重新测试。",
-          "warning",
-        );
+    if (batched) {
+      state.siteTestBusy = false;
+      refreshSiteToolbar();
+    }
+  }
+
+  const tally = { success: 0, empty: 0, error: 0 };
+  for (const site of targets) {
+    const record = records.get(site.id);
+    if (!record) {
+      continue;
+    }
+    for (const cell of record.cells.values()) {
+      if (tally[cell.state] !== undefined) {
+        tally[cell.state] += 1;
       }
     }
   }
+  let summary = "测试完成：" + targets.length + " 个站点 × "
+    + SITE_TEST_TYPES.length + " 类；成功 " + tally.success + " 项，"
+    + "合法空内容 " + tally.empty + " 项，失败 " + tally.error + " 项。";
+  if (skipped > 0) {
+    summary += "另有 " + skipped + " 个站点在测试期间配置变化，结果已作废，请重新测试。";
+  }
+  setSiteTestSummary(summary);
 }
-function closeSiteTest() {
-  siteTestDisplayToken += 1;
-  siteTestSite = null;
-  document.getElementById("site-test-dialog").close();
+
+const SITE_ACTION_ICONS = {
+  test: "M6.6 18.2a4.4 4.4 0 0 1-.7-8.74 5 5 0 0 1 9.6-.9 3.9 3.9 0 0 1 1 7.64M12 12.2v7.2M9.2 16.6 12 19.4l2.8-2.8",
+  edit: "M4.5 19.5h4L19 9l-4-4L4.5 15.5v4ZM13.8 6.2l4 4",
+  delete: "M5 7h14M10 4.8h4M8 7l1 12.2h6L16 7M10.4 10.4v6M13.6 10.4v6",
+};
+
+function siteActionIcon(kind) {
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS(namespace, "path");
+  path.setAttribute("d", SITE_ACTION_ICONS[kind] || SITE_ACTION_ICONS.test);
+  svg.append(path);
+  return svg;
+}
+
+function siteIconButton(kind, ariaLabel, onClick, extraClass) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = extraClass
+    ? "icon-button site-icon-button " + extraClass
+    : "icon-button site-icon-button";
+  button.setAttribute("aria-label", ariaLabel);
+  button.title = ariaLabel;
+  button.append(siteActionIcon(kind));
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function siteSourcePill(site) {
+  const pill = document.createElement("span");
+  pill.className = "badge badge-source";
+  if (site.source_kind === SOURCE_KIND_PUBLIC) {
+    pill.dataset.kind = "public";
+    pill.textContent = "公开";
+  } else if (site.source_kind === SOURCE_KIND_SELF_BUILT) {
+    pill.dataset.kind = "self_built";
+    pill.textContent = "自建";
+  } else {
+    pill.dataset.kind = "unknown";
+    pill.textContent = "来源未知";
+  }
+  return pill;
 }
 
 function renderSite(site) {
   const row = document.createElement("li");
   row.className = "site-row";
+  row.dataset.siteId = site.id;
   row.dataset.enabled = String(site.enabled);
+  row.dataset.selected = String(state.siteSelection.has(site.id));
+
+  const select = document.createElement("input");
+  select.type = "checkbox";
+  select.className = "site-select";
+  select.checked = row.dataset.selected === "true";
+  select.setAttribute("aria-label", "选择站点 " + site.name);
+  select.addEventListener("change", () => {
+    if (select.checked) {
+      state.siteSelection.add(site.id);
+    } else {
+      state.siteSelection.delete(site.id);
+    }
+    row.dataset.selected = String(select.checked);
+    refreshSiteToolbar();
+  });
 
   const main = document.createElement("div");
   main.className = "site-main";
@@ -814,62 +1103,132 @@ function renderSite(site) {
   const name = document.createElement("h3");
   name.className = "site-name";
   name.textContent = site.name;
-  const badge = document.createElement("span");
-  badge.className = "badge";
-  badge.textContent = site.enabled ? "已启用" : "已停用";
-  titleLine.append(name, badge);
+  name.title = site.name;
+  titleLine.append(siteSourcePill(site), name);
+  if (!site.enabled) {
+    const badge = document.createElement("span");
+    badge.className = "badge badge-disabled";
+    badge.textContent = "已停用";
+    titleLine.append(badge);
+  }
 
   const url = document.createElement("p");
   url.className = "site-url";
   url.textContent = site.base_url;
+  url.title = site.base_url;
 
-  const meta = document.createElement("p");
-  meta.className = "site-meta";
-  addMeta(meta, "超时", `${formatTimeout(site.timeout_seconds)} 秒`);
-  addMeta(meta, "来源", sourceKindLabel(site.source_kind));
-  addMeta(meta, "凭据", site.has_bearer_token ? "已设置" : "未设置");
-  const updated = formatUpdatedAt(site.updated_at);
-  if (updated) {
-    addMeta(meta, "最近更新", updated);
-  }
-
-  main.append(titleLine, url, meta);
+  main.append(titleLine, url, renderSiteTestBlock(site));
 
   const actions = document.createElement("div");
   actions.className = "site-actions";
   actions.append(
-    makeButton(
-      "测试连接",
-      "button button-secondary",
-      () => openSiteTest(site),
-      `测试站点 ${site.name} 连接`,
+    siteIconButton(
+      "test",
+      "测试站点 " + site.name + " 的五类接口",
+      () => runSiteTests([site.id]),
     ),
-    makeButton(
-      "编辑",
-      "button button-secondary",
-      () => openEdit(site),
-      `编辑站点 ${site.name}`,
-    ),
-    makeButton(
-      "删除",
-      "button button-danger",
+    siteIconButton("edit", "编辑站点 " + site.name, () => openEdit(site)),
+    siteIconButton(
+      "delete",
+      "删除站点 " + site.name,
       () => openDelete(site),
-      `删除站点 ${site.name}`,
+      "site-icon-danger",
     ),
   );
 
-  row.append(main, actions);
+  row.append(select, main, actions);
   return row;
 }
 
+function pruneSiteSelection() {
+  const alive = new Set(state.sites.map((site) => site.id));
+  for (const id of Array.from(state.siteSelection)) {
+    if (!alive.has(id)) {
+      state.siteSelection.delete(id);
+    }
+  }
+}
+
+function syncSiteCheckboxes() {
+  for (const row of Array.from(elements.sitesList.children)) {
+    const box = row.querySelector(".site-select");
+    if (!box) {
+      continue;
+    }
+    box.checked = state.siteSelection.has(row.dataset.siteId);
+    row.dataset.selected = String(box.checked);
+  }
+}
+
+function refreshSiteToolbar() {
+  const hasSites = state.sites.length > 0;
+  const count = state.sites.filter(
+    (site) => state.siteSelection.has(site.id),
+  ).length;
+  elements.siteSelection.hidden = !hasSites;
+  elements.siteSelectionCount.textContent = "已选 " + count + " 个";
+  elements.siteSelectAll.disabled = !hasSites;
+  elements.siteSelectNone.disabled = !hasSites;
+  elements.siteSelectInvert.disabled = !hasSites;
+  elements.siteTestSelected.disabled = count === 0 || state.siteTestBusy;
+  elements.siteDeleteSelected.disabled = count === 0 || state.deleting;
+  elements.siteTestSelected.textContent = state.siteTestBusy ? "测试中…" : "批量测试";
+}
+
+function selectAllSites() {
+  for (const site of state.sites) {
+    state.siteSelection.add(site.id);
+  }
+  syncSiteCheckboxes();
+  refreshSiteToolbar();
+}
+
+function clearSiteSelection() {
+  state.siteSelection.clear();
+  syncSiteCheckboxes();
+  refreshSiteToolbar();
+}
+
+function invertSiteSelection() {
+  for (const site of state.sites) {
+    if (state.siteSelection.has(site.id)) {
+      state.siteSelection.delete(site.id);
+    } else {
+      state.siteSelection.add(site.id);
+    }
+  }
+  syncSiteCheckboxes();
+  refreshSiteToolbar();
+}
+
+function selectedSiteIds() {
+  return state.sites
+    .filter((site) => state.siteSelection.has(site.id))
+    .map((site) => site.id);
+}
+
 function renderSites() {
-  elements.siteCount.textContent = `${state.sites.length} 个`;
+  elements.siteCount.textContent = state.sites.length + " 个";
   elements.sitesList.replaceChildren();
+  const alive = new Set(state.sites.map((site) => site.id));
+  for (const id of Array.from(state.siteTest.keys())) {
+    if (!alive.has(id)) {
+      state.siteTest.delete(id);
+    }
+  }
+  for (const site of state.sites) {
+    const record = state.siteTest.get(site.id);
+    if (record && record.signature !== siteTestSignature(site)) {
+      state.siteTest.delete(site.id);
+    }
+  }
 
   if (state.sites.length === 0) {
     elements.sitesList.hidden = true;
     elements.emptyState.hidden = false;
     clearListState();
+    setSiteTestSummary("");
+    refreshSiteToolbar();
     return;
   }
 
@@ -879,6 +1238,7 @@ function renderSites() {
   for (const site of state.sites) {
     elements.sitesList.append(renderSite(site));
   }
+  refreshSiteToolbar();
 }
 
 async function loadSites() {
@@ -900,7 +1260,6 @@ async function loadSites() {
     const rawSites = result && Array.isArray(result.sites) ? result.sites : [];
     state.sites = rawSites.map(normalizeSite).filter(Boolean);
     renderSites();
-    renderBatchTestSites();
     syncPreviewSites();
     profilePreviewSiteOptions();
     succeeded = true;
@@ -3054,6 +3413,7 @@ function finishPendingReview() {
   clearPendingPanels();
   if (isDelete) {
     state.deleteTarget = null;
+    state.deleteTargets = [];
   } else {
     setFormDisabled(false);
     elements.saveButton.textContent =
@@ -3243,44 +3603,206 @@ async function handleSave(event) {
   }
 }
 
+function setDeleteMode(mode) {
+  state.deleteMode = mode;
+  elements.deleteTitle.textContent = mode === "batch" ? "批量删除站点" : "删除站点";
+  elements.deleteConfirmButton.textContent = mode === "batch"
+    ? "删除选中站点"
+    : "删除";
+}
+
+function renderDeleteSelection(targets) {
+  elements.deleteSelection.replaceChildren();
+  if (!targets || targets.length === 0) {
+    elements.deleteSelection.hidden = true;
+    return;
+  }
+  for (const site of targets) {
+    const item = document.createElement("li");
+    item.textContent = site.name + "（" + site.base_url + "）";
+    elements.deleteSelection.append(item);
+  }
+  elements.deleteSelection.hidden = false;
+}
+
+function resetDeleteResults() {
+  elements.deleteResults.replaceChildren();
+  elements.deleteResults.hidden = true;
+}
+
+const DELETE_RESULT_TEXT = {
+  deleted: "已删除",
+  changed: "未删除：列表已变化或站点已不在",
+  rejected: "未删除：后台拒绝",
+  unknown: "结果未知：请刷新列表确认，不会自动重试",
+};
+
+function renderDeleteResults(results, total) {
+  elements.deleteResults.replaceChildren();
+  const deleted = results.filter((item) => item.state === "deleted").length;
+  const summary = document.createElement("li");
+  summary.className = "delete-result-summary";
+  summary.textContent = results.length < total
+    ? "正在删除 " + results.length + "/" + total + " 个，已成功 " + deleted + " 个…"
+    : "共 " + total + " 个：已删除 " + deleted + " 个，未删除 "
+      + (total - deleted) + " 个。";
+  elements.deleteResults.append(summary);
+  for (const item of results) {
+    const row = document.createElement("li");
+    row.className = "delete-result";
+    row.dataset.state = item.state;
+    const name = document.createElement("strong");
+    name.textContent = item.site.name;
+    const text = document.createElement("span");
+    const label = DELETE_RESULT_TEXT[item.state] || "未删除";
+    text.textContent = item.message ? label + "（" + item.message + "）" : label;
+    row.append(name, text);
+    elements.deleteResults.append(row);
+  }
+  elements.deleteResults.hidden = false;
+}
+
 function openDelete(site) {
+  openDeleteTargets([site], "single");
+}
+
+function openBatchDelete() {
+  const targets = state.sites.filter(
+    (site) => state.siteSelection.has(site.id),
+  );
+  if (targets.length === 0) {
+    return;
+  }
+  openDeleteTargets(targets, "batch");
+}
+
+function openDeleteTargets(targets, mode) {
   if (blockIfPendingWrite()) {
     return;
   }
+  if (targets.length === 0) {
+    return;
+  }
   clearPendingPanels();
-  state.deleteTarget = site;
-  elements.deleteMessage.textContent = `确定删除“${site.name}”吗？删除后无法从此页面恢复。`;
+  resetDeleteResults();
+  setDeleteMode(mode);
+  state.deleteTarget = mode === "single" ? targets[0] : null;
+  state.deleteTargets = targets.slice();
   elements.deleteError.textContent = "";
   elements.deleteError.hidden = true;
   elements.deleteCancelButton.disabled = false;
   elements.deleteConfirmButton.disabled = false;
-  elements.deleteConfirmButton.textContent = "删除";
+  if (mode === "batch") {
+    elements.deleteMessage.textContent = "确定删除选中的 " + targets.length
+      + " 个站点吗？删除后无法从此页面恢复；仍是任务候选站点的会被保留。";
+    renderDeleteSelection(targets);
+  } else {
+    elements.deleteMessage.textContent = "确定删除“" + targets[0].name
+      + "”吗？删除后无法从此页面恢复。";
+    renderDeleteSelection([]);
+  }
   openDialog(elements.deleteDialog);
   elements.deleteCancelButton.focus();
 }
 
-async function confirmDelete() {
-  if (state.deleting || state.pendingWrite || !state.deleteTarget) {
+async function requestDeleteSite(site) {
+  await bridge.apiPost(
+    "sites/" + encodeURIComponent(site.id) + "/delete",
+    { expected_revision: site.revision },
+  );
+}
+
+async function confirmBatchDelete() {
+  const targets = state.deleteTargets.slice();
+  state.deleting = true;
+  resetDeleteResults();
+  elements.deleteError.hidden = true;
+  elements.deleteCancelButton.disabled = true;
+  elements.deleteConfirmButton.disabled = true;
+  const results = [];
+  try {
+    for (let index = 0; index < targets.length; index += 1) {
+      const site = targets[index];
+      elements.deleteConfirmButton.textContent = "删除中…（"
+        + (index + 1) + "/" + targets.length + "）";
+      try {
+        await requestDeleteSite(site);
+        results.push({ site, state: "deleted" });
+        state.siteSelection.delete(site.id);
+        state.siteTest.delete(site.id);
+      } catch (error) {
+        const message = friendlyErrorMessage(error);
+        const stateName = isConflictMessage(message) || isMissingMessage(message)
+          ? "changed"
+          : isExplicitWriteRejection(message) ? "rejected" : "unknown";
+        results.push({
+          site,
+          state: stateName,
+          message: stateName === "unknown" ? writeFailureDetail(error) : message,
+        });
+      }
+      renderDeleteResults(results, targets.length);
+    }
+  } finally {
+    state.deleting = false;
+    elements.deleteCancelButton.disabled = false;
+    elements.deleteConfirmButton.disabled = false;
+  }
+
+  const deleted = results.filter((item) => item.state === "deleted");
+  const failed = results.filter((item) => item.state !== "deleted");
+  const reloaded = await loadSites();
+  const summary = "已删除 " + deleted.length + "/" + targets.length + " 个站点。";
+  if (failed.length === 0) {
+    closeDialog(elements.deleteDialog);
+    state.deleteTarget = null;
+    state.deleteTargets = [];
+    showStatus(
+      reloaded ? summary : summary + "列表刷新失败，请点击“刷新”重试。",
+      reloaded ? "success" : "error",
+    );
     return;
   }
-  const target = state.deleteTarget;
+  state.deleteTargets = failed.map((item) => item.site);
+  renderDeleteSelection(state.deleteTargets);
+  const unknown = failed.some((item) => item.state === "unknown");
+  elements.deleteMessage.textContent = summary + "未删除的 " + failed.length
+    + " 个站点仍保留在列表中"
+    + (unknown ? "；结果未知的站点请刷新列表确认。" : "，可修正后重试。");
+  showStatus(
+    reloaded
+      ? summary + failed.length + " 个未删除，见对话框中的逐站结果。"
+      : summary + "列表刷新失败，请点击“刷新”重试。",
+    "error",
+  );
+}
+
+async function confirmDelete() {
+  if (state.deleting || state.pendingWrite || state.deleteTargets.length === 0) {
+    return;
+  }
+  if (state.deleteMode === "batch") {
+    await confirmBatchDelete();
+    return;
+  }
+  const target = state.deleteTargets[0];
   state.deleting = true;
   elements.deleteCancelButton.disabled = true;
   elements.deleteConfirmButton.disabled = true;
   elements.deleteConfirmButton.textContent = "删除中…";
 
   try {
-    await bridge.apiPost(
-      `sites/${encodeURIComponent(target.id)}/delete`,
-      { expected_revision: target.revision },
-    );
+    await requestDeleteSite(target);
     closeDialog(elements.deleteDialog);
     state.deleteTarget = null;
+    state.deleteTargets = [];
+    state.siteSelection.delete(target.id);
+    state.siteTest.delete(target.id);
     const reloaded = await loadSites();
     showStatus(
       reloaded
-        ? `已删除“${target.name}”。`
-        : `已删除“${target.name}”，但列表刷新失败，请点击“刷新”重试。`,
+        ? "已删除“" + target.name + "”。"
+        : "已删除“" + target.name + "”，但列表刷新失败，请点击“刷新”重试。",
       reloaded ? "success" : "error",
     );
   } catch (error) {
@@ -3288,6 +3810,7 @@ async function confirmDelete() {
     if (isConflictMessage(message) || isMissingMessage(message)) {
       closeDialog(elements.deleteDialog);
       state.deleteTarget = null;
+      state.deleteTargets = [];
       const reloaded = await loadSites();
       showStatus(
         reloaded
@@ -3737,113 +4260,6 @@ function taskSiteOptions() {
 }
 
 
-const BATCH_TEST_TYPES = [
-  "daily_news", "bilibili_hot", "zhihu_hot", "douyin_hot", "toutiao_hot",
-];
-const BATCH_RESULT_LABELS = {
-  success: "可用", empty: "可用（空内容）", error: "不可用",
-};
-
-function batchTestSignature() {
-  // 站点配置或所选站点变化都让在途结果失效，避免结果对不上当前选择。
-  const sites = state.sites.map(
-    (site) => `${site.id}:${site.revision}:${site.enabled}`,
-  ).join(",");
-  return `${sites}|${batchTestSelected().join(",")}`;
-}
-
-function renderBatchTestSites() {
-  const box = elements.batchTestSites;
-  if (!box) return;
-  box.replaceChildren();
-  if (state.sites.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "help";
-    empty.textContent = "还没有已保存站点。";
-    box.append(empty);
-    elements.batchTestRun.disabled = true;
-    return;
-  }
-  for (const site of state.sites) {
-    const label = document.createElement("label");
-    label.className = "batch-test-site";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.value = site.id;
-    input.checked = Boolean(site.enabled);
-    const text = document.createElement("span");
-    text.textContent = site.enabled ? site.name : `${site.name}（已停用）`;
-    label.append(input, text);
-    box.append(label);
-  }
-}
-
-function batchTestSelected() {
-  return Array.from(
-    elements.batchTestSites.querySelectorAll("input[type=checkbox]:checked"),
-  ).map((input) => input.value);
-}
-
-function renderBatchTestResults(results) {
-  const list = elements.batchTestResults;
-  list.replaceChildren();
-  list.hidden = false;
-  const names = new Map(state.sites.map((site) => [site.id, site.name]));
-  for (const item of results) {
-    const row = document.createElement("li");
-    row.className = "batch-test-result";
-    row.dataset.result = item.result;
-    const head = document.createElement("strong");
-    head.textContent = `${names.get(item.site_id) || item.site_id} · ${item.content_type}`;
-    const status = document.createElement("span");
-    status.className = "batch-test-status";
-    status.textContent = BATCH_RESULT_LABELS[item.result] || "未知";
-    const detail = document.createElement("span");
-    detail.className = "batch-test-detail";
-    detail.textContent = item.message || "";
-    row.append(head, status, detail);
-    list.append(row);
-  }
-}
-
-async function runBatchTest() {
-  const siteIds = batchTestSelected();
-  if (siteIds.length === 0) {
-    elements.batchTestState.hidden = false;
-    elements.batchTestState.textContent = "请至少选择一个站点。";
-    return;
-  }
-  const type = elements.batchTestType.value;
-  const contentTypes = type === "all" ? BATCH_TEST_TYPES.slice() : [type];
-  const requestId = ++state.batchTestRequestId;
-  const signature = batchTestSignature();
-  elements.batchTestRun.disabled = true;
-  elements.batchTestState.hidden = false;
-  elements.batchTestState.textContent = "正在测试所选站点…";
-  elements.batchTestResults.hidden = true;
-  try {
-    const data = await bridge.apiPost("sites/test-batch", {
-      site_ids: siteIds, content_types: contentTypes,
-    });
-    if (requestId !== state.batchTestRequestId || signature !== batchTestSignature()) {
-      return;
-    }
-    const payload = data && data.data ? data.data : (data || {});
-    const results = Array.isArray(payload.results) ? payload.results : [];
-    renderBatchTestResults(results);
-    const failed = results.filter((item) => item.result === "error").length;
-    elements.batchTestState.textContent = results.length === 0
-      ? "没有收到测试结果。"
-      : `完成 ${results.length} 项，${failed} 项不可用。`;
-  } catch (error) {
-    if (requestId !== state.batchTestRequestId) return;
-    elements.batchTestState.textContent = friendlyErrorMessage(error);
-  } finally {
-    if (requestId === state.batchTestRequestId) {
-      elements.batchTestRun.disabled = false;
-    }
-  }
-}
 function renderTaskSites() {
   elements.taskSiteList.replaceChildren();
   if (state.taskSites.length === 0) {
@@ -4000,79 +4416,6 @@ async function runTaskCapabilityTest() {
   }
 }
 
-const SITE_TEST_TYPES = [
-  ["daily_news", "每日新闻"],
-  ["bilibili_hot", "Bilibili 热搜"],
-  ["zhihu_hot", "知乎热榜"],
-  ["douyin_hot", "抖音热搜"],
-  ["toutiao_hot", "今日头条热搜"],
-];
-
-function renderSiteTestAll(rows) {
-  const list = elements.siteTestAllResults;
-  list.replaceChildren();
-  list.hidden = false;
-  for (const row of rows) {
-    const item = document.createElement("li");
-    item.className = `site-test-all-row site-test-${row.ok ? "success" : "error"}`;
-    const label = document.createElement("span");
-    label.textContent = row.label;
-    const stateText = document.createElement("span");
-    stateText.textContent = row.text;
-    item.append(label, stateText);
-    list.append(item);
-  }
-}
-
-async function runSiteTestAll() {
-  const site = siteTestSite;
-  if (!site) return;
-  const displayToken = ++siteTestDisplayToken;
-  const alive = () => (
-    siteTestDisplayToken === displayToken
-    && siteTestSite === site
-    && document.getElementById("site-test-dialog").open === true
-  );
-  elements.siteTestAllButton.disabled = true;
-  const rows = SITE_TEST_TYPES.map(([, label]) => ({
-    label, ok: false, text: "等待测试…",
-  }));
-  renderSiteTestAll(rows);
-  for (let index = 0; index < SITE_TEST_TYPES.length; index += 1) {
-    const [contentType, label] = SITE_TEST_TYPES[index];
-    rows[index] = { label, ok: false, text: "测试中…" };
-    renderSiteTestAll(rows);
-    try {
-      const data = await bridge.apiPost(
-        `sites/${encodeURIComponent(site.id)}/test`,
-        { content_type: contentType, expected_revision: site.revision },
-      );
-      if (!alive()) return;
-      const value = data && data.data ? data.data : data;
-      const empty = value.result === "empty";
-      rows[index] = {
-        label,
-        ok: true,
-        text: empty
-          ? `可用（返回合法空内容）· ${value.elapsed_ms} ms`
-          : `可用 · ${value.elapsed_ms} ms`,
-      };
-    } catch (error) {
-      if (!alive()) return;
-      const message = error && typeof error.message === "string"
-        ? error.message.trim() : "";
-      const safe = SAFE_TEST_ERRORS.get(message);
-      rows[index] = {
-        label,
-        ok: false,
-        text: `不可用（${safe ? safe[0] : "测试失败，请手动重试"}）`,
-      };
-    }
-    renderSiteTestAll(rows);
-  }
-  if (!alive()) return;
-  elements.siteTestAllButton.disabled = false;
-}
 
 function openCreateTask() {
   if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
@@ -5542,7 +5885,13 @@ function bindEvents() {
   elements.taskCapabilityTestButton.addEventListener(
     "click", runTaskCapabilityTest,
   );
-  elements.siteTestAllButton.addEventListener("click", runSiteTestAll);
+  elements.siteSelectAll.addEventListener("click", selectAllSites);
+  elements.siteSelectNone.addEventListener("click", clearSiteSelection);
+  elements.siteSelectInvert.addEventListener("click", invertSiteSelection);
+  elements.siteTestSelected.addEventListener("click", () => {
+    runSiteTests(selectedSiteIds());
+  });
+  elements.siteDeleteSelected.addEventListener("click", openBatchDelete);
   // 管理员明确选择来源类型后，未知提示应立即消失，避免继续误导。
   elements.sourceKind.addEventListener("change", () => {
     setSourceKindHint(!isKnownSourceKind(elements.sourceKind.value));
@@ -5553,7 +5902,6 @@ function bindEvents() {
     option.textContent = preset.label;
     elements.instancePreset.append(option);
   }
-  elements.batchTestRun?.addEventListener("click", runBatchTest);
   elements.instanceTypePublic.addEventListener("change", () => {
     if (elements.instanceTypePublic.checked) selectInstanceType(SOURCE_KIND_PUBLIC);
   });
@@ -5894,6 +6242,11 @@ function bindEvents() {
   elements.deleteDialog.addEventListener("close", () => {
     if (!state.pendingWrite) {
       state.deleteTarget = null;
+      state.deleteTargets = [];
+      state.deleteMode = "single";
+      resetDeleteResults();
+      renderDeleteSelection([]);
+      refreshSiteToolbar();
     }
   });
 }
@@ -6252,16 +6605,3 @@ async function init() {
 
 bindNavigation();
 init();
-
-document.getElementById("site-test-close-button")?.addEventListener("click", closeSiteTest);
-document.getElementById("site-test-run-button")?.addEventListener("click", runSiteTest);
-
-document.getElementById("site-test-content-type")?.addEventListener("change", () => {
-  siteTestDisplayToken += 1;
-  setSiteTestResult("", null);
-  siteTestRunning(siteTestSite, document.getElementById("site-test-run-button"));
-});
-document.getElementById("site-test-dialog")?.addEventListener("cancel", (event) => {
-  event.preventDefault();
-  closeSiteTest();
-});

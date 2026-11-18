@@ -116,7 +116,8 @@ const routeState = {
   previewData: null,
   imageData: null,
   imageStatus: 200,
-  imageGate: null,
+  // 按请求顺序排队的放行门闩：每次图片请求取走队首，没有门闩就立刻放行。
+  imageGates: [],
   imageCalls: 0,
   // 被拦截的图片响应真正交回浏览器的次数（route.fulfill 完成后自增）。
   imageFulfilled: 0,
@@ -184,7 +185,7 @@ async function waitForImageFulfilled(before) {
       imageFulfilled: routeState.imageFulfilled,
       imageCalls: routeState.imageCalls,
       settledInPage: routeState.imageSettledInPage,
-      gated: Boolean(routeState.imageGate),
+      gated: routeState.imageGates.length > 0,
     }));
   }
 }
@@ -227,8 +228,15 @@ async function waitForFrameDrain(frame) {
   }
 }
 
-// 放行门闩，并按上面的三步等页面真正处理完这次旧响应。
-async function releaseStaleImageRequest(frame) {
+// 挂一个门闩，拦住下一张发往 /image 的请求。
+function holdImageRequest() {
+  const gate = deferred();
+  routeState.imageGates.push(gate);
+  return gate;
+}
+
+// 放行门闩，并按上面的三步等页面真正处理完这次响应。
+async function releaseImageRequest(frame, gate) {
   const before = {
     fulfilled: routeState.imageFulfilled,
     settled: await pageImageSettled(frame),
@@ -237,8 +245,7 @@ async function releaseStaleImageRequest(frame) {
     throw new Error("页面未处理完：页面里没有图片请求探针"
       + "（window.AstrBotPluginView.__hubImageProbe）");
   }
-  routeState.imageGate.resolve();
-  routeState.imageGate = null;
+  gate.resolve();
   await waitForImageFulfilled(before.fulfilled);
   await waitForPageImageHandled(frame, before.settled);
   await waitForFrameDrain(frame);
@@ -343,13 +350,9 @@ async function openPage(browser, width) {
 
 // 打开任务卡片上的“预览内容”：预览按已保存的任务配置发起，拿到快照后才能生成长图。
 async function openTask(frame, taskId) {
-  await frame.waitForFunction((id) => [...document.querySelectorAll("#tasks-list .task-card")]
-    .some((node) => node.dataset.taskId === id), taskId, { timeout: WAIT });
-  await frame.evaluate((id) => {
-    const card = [...document.querySelectorAll("#tasks-list .task-card")]
-      .find((node) => node.dataset.taskId === id);
-    card.querySelector(".task-card-actions button").click();
-  }, taskId);
+  const card = frame.locator(`#tasks-list .task-card[data-task-id="${taskId}"]`).first();
+  await card.waitFor({ state: "visible", timeout: WAIT });
+  await card.locator(".task-card-actions button").first().click({ timeout: WAIT });
   await frame.waitForFunction(
     () => !document.getElementById("task-preview-image-button").disabled,
     null, { timeout: WAIT },
@@ -357,7 +360,31 @@ async function openTask(frame, taskId) {
 }
 
 async function runImage(frame) {
-  await frame.evaluate(() => document.getElementById("task-preview-image-button").click());
+  // 真实 locator 点击：按钮 disabled 时 Playwright 会等它可用，不做 DOM click 绕过。
+  await frame.locator("#task-preview-image-button").click({ timeout: WAIT });
+}
+
+// 用真实 locator 点应用里的关闭按钮，并等对话框确实关闭（关闭后的 <dialog> 是 display:none）。
+async function closePreview(frame) {
+  await frame.locator("#task-preview-close-button").click({ timeout: WAIT });
+  await frame.locator("#task-preview-dialog").waitFor({ state: "hidden", timeout: WAIT });
+  await frame.waitForFunction(
+    () => !document.getElementById("task-preview-dialog")?.open,
+    null, { timeout: WAIT },
+  );
+}
+
+// 读图片区的忙状态：状态行文案 + 图片按钮可用性，用来判断“旧响应有没有清掉当前忙状态”。
+async function imageBusy(frame) {
+  return frame.evaluate(() => {
+    const button = document.getElementById("task-preview-image-button");
+    return {
+      state: document.getElementById("task-preview-image-state").textContent,
+      buttonText: button ? button.textContent : null,
+      buttonDisabled: button ? button.disabled : null,
+      figures: document.querySelectorAll("#task-preview-image-pages figure").length,
+    };
+  });
 }
 
 async function figures(frame) {
@@ -434,7 +461,7 @@ async function stateText(frame) {
   };
   try {
     for (const width of [1440, 390]) {
-      routeState.imageGate = null;
+      for (const gate of routeState.imageGates.splice(0)) gate.resolve();
       routeState.imageStatus = 200;
       routeState.imageData = imagesPayload(SECTIONS, []);
       routeState.previewData = previewPayload(taskIds.first, '图片回归任务A' + stamp, firstRevision);
@@ -449,7 +476,8 @@ async function stateText(frame) {
         });
         await page.route("**/tasks/*/image", async (route) => {
           routeState.imageCalls += 1;
-          if (routeState.imageGate) await routeState.imageGate.promise;
+          const gate = routeState.imageGates.shift();
+          if (gate) await gate.promise;
           await route.fulfill({
             status: routeState.imageStatus, contentType: "application/json",
             body: JSON.stringify(routeState.imageStatus === 200
@@ -555,8 +583,12 @@ async function stateText(frame) {
         routeState.imageStatus = 200;
         routeState.imageData = imagesPayload(SECTIONS, []);
 
-        /* 4) 旧响应隔离：旧图片请求在途时用真实关闭按钮关闭预览，再打开另一个任务 */
-        routeState.imageGate = deferred();
+        /*
+         * 4) 旧响应隔离：任务 A 的图片请求在途时，用 Playwright locator 点真实关闭按钮关预览，
+         *    再打开任务 B；B 自己的图片请求也在途时放行 A 的旧响应——
+         *    旧响应既不得写入结果区，也不得清掉任务 B 当前的“正在生成图片…”忙状态。
+         */
+        const staleGate = holdImageRequest();
         const staleCallsBefore = routeState.imageCalls;
         await runImage(frame);
         await frame.waitForFunction(
@@ -566,13 +598,12 @@ async function stateText(frame) {
         await waitUntil(() => routeState.imageCalls > staleCallsBefore,
           "旧图片请求未在关闭预览前发出");
         check(routeState.imageCalls > staleCallsBefore, "关闭预览前旧图片请求必须已发出");
+        const staleBusy = await imageBusy(frame);
+        check(staleBusy.buttonDisabled === true && staleBusy.buttonText.includes("正在生成"),
+          "旧请求在途时图片按钮必须处于忙状态: " + JSON.stringify(staleBusy));
 
-        /* 走应用里真实的关闭控件：关闭对话框并清空图片面板，此时旧请求仍在途 */
-        await frame.evaluate(() => document.getElementById("task-preview-close-button").click());
-        await frame.waitForFunction(
-          () => !document.getElementById("task-preview-dialog")?.open,
-          null, { timeout: WAIT },
-        );
+        /* 走应用里真实的关闭控件（locator 点击，走可操作性检查）：关闭对话框并清空图片面板，此时旧请求仍在途 */
+        await closePreview(frame);
         const closedPreview = await frame.evaluate(() => ({
           dialogOpen: Boolean(document.getElementById("task-preview-dialog")?.open),
           figures: document.querySelectorAll("#task-preview-image-pages figure").length,
@@ -604,14 +635,45 @@ async function stateText(frame) {
           () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,
           null, { timeout: WAIT },
         );
-        await releaseStaleImageRequest(frame);
+        /* 任务 B 自己的图片请求也进门闩：此刻的忙状态属于 B，不属于 A */
+        const freshGate = holdImageRequest();
+        const freshCallsBefore = routeState.imageCalls;
+        await runImage(frame);
+        await frame.waitForFunction(
+          () => document.getElementById("task-preview-image-state").textContent.includes("正在生成图片"),
+          null, { timeout: WAIT },
+        );
+        await waitUntil(() => routeState.imageCalls > freshCallsBefore, "任务 B 的图片请求未发出");
+        check(routeState.imageCalls > freshCallsBefore, "任务 B 的图片请求必须已发出");
+
+        /* 放行 A 的旧响应：页面必须把它当废响应丢掉，既不写结果也不清忙状态 */
+        await releaseImageRequest(frame, staleGate);
         const afterStale = await figures(frame);
         check(afterStale.length === 0, "切换任务后旧响应不得写入: " + JSON.stringify(afterStale));
-        check((await stateText(frame)).state === "", "旧响应不得恢复已清空的状态行");
+        const busyAfterStale = await imageBusy(frame);
+        check(busyAfterStale.state.includes("正在生成图片"),
+          "旧响应的 finally 不得清掉任务 B 的忙状态行: " + JSON.stringify(busyAfterStale));
+        check(busyAfterStale.buttonDisabled === true,
+          "旧响应结算后任务 B 的图片按钮必须仍然禁用: " + JSON.stringify(busyAfterStale));
         const staleImagePanel = await frame.evaluate(() =>
           document.querySelector(".preview-image-panel").innerText);
         check(!staleImagePanel.includes("每日新闻") && !staleImagePanel.includes("Bilibili 热搜"),
           "旧任务 A 的长图不得出现在任务 B 的预览里: " + staleImagePanel.slice(0, 300));
+
+        /* 放行 B 自己的请求：必须正常写入结果并结束忙状态 */
+        await releaseImageRequest(frame, freshGate);
+        await frame.waitForFunction(
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 3,
+          null, { timeout: WAIT },
+        );
+        const freshB = await figures(frame);
+        check(freshB.length === 3,
+          "任务 B 自己的响应必须正常写入: " + JSON.stringify(freshB.map((item) => item.status)));
+        const freshBState = await imageBusy(frame);
+        check(freshBState.state.includes("已生成 3 张栏目长图"),
+          "任务 B 完成后状态行必须按张计数: " + JSON.stringify(freshBState));
+        check(freshBState.buttonDisabled === false,
+          "任务 B 完成后图片按钮必须恢复可用: " + JSON.stringify(freshBState));
 
         /* 切换回第一个任务后重新请求，必须拿到新结果（旧响应已失效） */
         routeState.imageData = imagesPayload([SECTIONS[0]], []);

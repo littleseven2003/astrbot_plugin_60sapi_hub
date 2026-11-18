@@ -416,50 +416,116 @@ async function stateText(frame) {
 }
 
 (async () => {
-  await login();
-  const site = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/sites", {
-    name: "图片回归站点" + stamp,
-    base_url: "http://127.0.0.1:9/mock-upstream",
-    enabled: true, timeout_seconds: 5,
-  });
-  siteId.value = site.body.data.id;
-  const firstTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
-    name: "图片回归任务A" + stamp,
-    items: [
-      { content_type: "daily_news", limit: 20 },
-      { content_type: "zhihu_hot", limit: 20 },
-      { content_type: "bilibili_hot", limit: 20 },
-    ],
-    sites: [siteId.value],
-    output_format: "text",
-    umos: [],
-  });
-  assert.ok([200, 201].includes(firstTask.status), JSON.stringify(firstTask.body));
-  taskIds.first = firstTask.body.data.id;
-  const firstRevision = firstTask.body.data.revision;
-  const secondTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
-    name: "图片回归任务B" + stamp,
-    items: [{ content_type: "douyin_hot", limit: 20 }],
-    sites: [siteId.value],
-    output_format: "text",
-    umos: [],
-  });
-  assert.ok([200, 201].includes(secondTask.status), JSON.stringify(secondTask.body));
-  taskIds.second = secondTask.body.data.id;
-  const secondRevision = secondTask.body.data.revision;
-
-  routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
-  routeState.imageData = imagesPayload(SECTIONS, []);
-
-  const browser = await chromium.launch({
-    headless: true, executablePath: CHROME, args: ["--no-sandbox"],
-  });
   let assertions = 0;
   const check = (condition, message) => {
     assertions += 1;
     assert.ok(condition, message);
   };
+  // 夹具 id 在每条创建成功的瞬间记录，后续断言失败也能按 id 清掉已建资源。
+  const created = [];
+  let browser = null;
+  let firstRevision = null;
+  let secondRevision = null;
+  let passReport = null;
+  let workError = null;
+  let cleanupProblems = [];
+
+  const briefBody = (body) => {
+    const text = JSON.stringify(body === undefined ? null : body);
+    return text.length > 300 ? text.slice(0, 300) + "…" : text;
+  };
+
+  // 清理逐条核对：POST delete 必须 200 且 body.status==='ok'，删除后 GET 必须 404。
+  // 已不存在的资源不算失败，但要留下可诊断的记录。
+  const reapFixtures = async () => {
+    const problems = [];
+    for (const { kind, id, label } of created.slice().reverse()) {
+      const path = "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id;
+      try {
+        const live = await api("GET", path);
+        if (live.status === 404) {
+          console.log("  · 夹具" + label + "（" + kind + "/" + id + "）已不存在，无需删除");
+          continue;
+        }
+        if (live.status !== 200) {
+          problems.push({
+            step: "删除前读取夹具" + label, kind, id,
+            status: live.status, body: briefBody(live.body),
+          });
+          continue;
+        }
+        const removed = await api("POST", path + "/delete", {
+          expected_revision: live.body && live.body.data ? live.body.data.revision : undefined,
+        });
+        if (removed.status !== 200 || !removed.body || removed.body.status !== "ok") {
+          problems.push({
+            step: "删除夹具" + label, kind, id,
+            status: removed.status, body: briefBody(removed.body),
+          });
+          continue;
+        }
+        const gone = await api("GET", path);
+        if (gone.status !== 404) {
+          problems.push({
+            step: "删除后复核夹具" + label, kind, id,
+            expect: 404, status: gone.status, body: briefBody(gone.body),
+          });
+        }
+      } catch (error) {
+        problems.push({
+          step: "清理夹具" + label, kind, id,
+          error: String(error && error.message || error),
+        });
+      }
+    }
+    return problems;
+  };
+
   try {
+    await login();
+    const site = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/sites", {
+      name: "图片回归站点" + stamp,
+      base_url: "http://127.0.0.1:9/mock-upstream",
+      enabled: true, timeout_seconds: 5,
+    });
+    check((site.status === 200 || site.status === 201)
+      && Boolean(site.body && site.body.data && site.body.data.id),
+    "站点创建失败: " + JSON.stringify({ status: site.status, body: site.body }));
+    siteId.value = site.body.data.id;
+    created.push({ kind: "sites", id: siteId.value, label: "站点" });
+    const firstTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
+      name: "图片回归任务A" + stamp,
+      items: [
+        { content_type: "daily_news", limit: 20 },
+        { content_type: "zhihu_hot", limit: 20 },
+        { content_type: "bilibili_hot", limit: 20 },
+      ],
+      sites: [siteId.value],
+      output_format: "text",
+      umos: [],
+    });
+    assert.ok([200, 201].includes(firstTask.status), JSON.stringify(firstTask.body));
+    taskIds.first = firstTask.body.data.id;
+    firstRevision = firstTask.body.data.revision;
+    created.push({ kind: "tasks", id: taskIds.first, label: "任务A" });
+    const secondTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
+      name: "图片回归任务B" + stamp,
+      items: [{ content_type: "douyin_hot", limit: 20 }],
+      sites: [siteId.value],
+      output_format: "text",
+      umos: [],
+    });
+    assert.ok([200, 201].includes(secondTask.status), JSON.stringify(secondTask.body));
+    taskIds.second = secondTask.body.data.id;
+    secondRevision = secondTask.body.data.revision;
+    created.push({ kind: "tasks", id: taskIds.second, label: "任务B" });
+
+    routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
+    routeState.imageData = imagesPayload(SECTIONS, []);
+
+    browser = await chromium.launch({
+      headless: true, executablePath: CHROME, args: ["--no-sandbox"],
+    });
     for (const width of [1440, 390]) {
       for (const gate of routeState.imageGates.splice(0)) gate.resolve();
       routeState.imageStatus = 200;
@@ -719,25 +785,44 @@ async function stateText(frame) {
     check(external.length === 0, "不得请求外部地址: " + JSON.stringify(external));
     const upstreamHits = upstreamCalls.filter((url) => url.includes("127.0.0.1:9"));
     check(upstreamHits.length === 0, "不得请求真实上游: " + JSON.stringify(upstreamHits));
-    console.log("PROFILE IMAGE UI PASS", {
+    passReport = {
       assertions,
       imageCalls: routeState.imageCalls,
       imageFulfilled: routeState.imageFulfilled,
       imageSettledInPage: routeState.imageSettledInPage,
-    });
+    };
+  } catch (error) {
+    workError = error;
   } finally {
-    await browser.close();
-    for (const [id, kind] of [
-      [taskIds.first, "tasks"], [taskIds.second, "tasks"], [siteId.value, "sites"],
-    ]) {
-      if (!id) continue;
-      const current = await api("GET", "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id);
-      if (current.status === 200) {
-        await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id + "/delete",
-          { expected_revision: current.body.data.revision });
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (error) {
+        cleanupProblems.push({ step: "关闭浏览器", error: String(error && error.message || error) });
       }
     }
+    try {
+      cleanupProblems = cleanupProblems.concat(await reapFixtures());
+    } catch (error) {
+      cleanupProblems.push({ step: "清理夹具", error: String(error && error.message || error) });
+    }
   }
+
+  // PASS 只在夹具删除、DELETE 响应与 404 复核全部通过之后打印。
+  if (workError) {
+    console.error(workError);
+    process.exitCode = 1;
+  }
+  if (cleanupProblems.length > 0) {
+    console.error("CLEANUP FAILED：夹具清理未通过（" + cleanupProblems.length + " 项）");
+    for (const problem of cleanupProblems) console.error("  - " + JSON.stringify(problem));
+    process.exitCode = 1;
+  }
+  if (workError || cleanupProblems.length > 0) return;
+  console.log("PROFILE IMAGE UI PASS", {
+    ...passReport,
+    fixturesCleaned: created.length,
+  });
 })().catch((error) => {
   console.error(error);
   process.exit(1);

@@ -286,6 +286,36 @@ function limitState(page, selector) {
   }, selector);
 }
 
+// 一行条数输入框的完整状态：值、原生校验、placeholder、aria-invalid。
+function rowLimitState(page, rowIndex) {
+  return page.evaluate((index) => {
+    const row = document.querySelectorAll("#task-item-list .task-item-row")[index];
+    if (!row) return null;
+    const input = row.querySelector(".task-item-limit-input");
+    return {
+      type: row.dataset.contentType,
+      value: input.value,
+      badInput: input.validity.badInput,
+      valid: input.validity.valid,
+      ariaInvalid: input.getAttribute("aria-invalid"),
+      placeholder: input.placeholder,
+      message: input.validationMessage,
+    };
+  }, rowIndex);
+}
+
+// 行被重建后必须回到「空 = 不限」：不能带着上一轮元素的 badInput 变灰。
+async function expectBadInputRowCleared(page, label, rowIndex) {
+  const state = await rowLimitState(page, rowIndex);
+  check(state !== null && state.value === "" && state.badInput === false &&
+    state.valid === true && state.ariaInvalid === null && state.placeholder === "不限",
+    label + "：重建后的条数框为空串、原生合法、无 aria-invalid、placeholder 恢复「不限」 " +
+    JSON.stringify(state));
+  const snapshot = await gate(page);
+  check(!snapshot.hintText.includes("栏目条数不合法"),
+    label + "：提示区不再报「栏目条数不合法」 " + snapshot.hintText);
+}
+
 (async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
@@ -691,6 +721,122 @@ function limitState(page, selector) {
     check(afterB2.testDisabled === false && afterB2.hintText === "新请求 B2 的结果",
       "B2 结束后按钮恢复可用且显示 B2 的结果 " + JSON.stringify(afterB2));
     await setHold(page, "test", false);
+
+    // ⑫ 原生 badInput（键入 "1e" 得到 value="" + badInput 真）只属于当前 DOM 元素：
+    // 上移/下移/增删栏目重建行后，新元素不得继承「条数非法」，否则会卡成
+    // 「框里空的、placeholder 写不限、却置灰预览与能力测试、退格也清不掉」。
+    await page.fill("#task-name", "任务A刷");
+    await page.fill("#task-name", "任务A");
+    await expectClean(page, "重建用例前恢复干净表单");
+
+    // 上移：被重建的那一行回到「空 = 不限」。
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "1e");
+    const typedForUp = await rowLimitState(page, 1);
+    check(typedForUp.value === "" && typedForUp.badInput === true,
+      "上移：键入 1e 后字段是空串 + badInput " + JSON.stringify(typedForUp));
+    await page.locator("#task-item-list .task-item-row:nth-child(2) button",
+      { hasText: "上移" }).click();
+    await expectBadInputRowCleared(page, "上移", 0);
+    // 打点的是重建前那个元素（它当时确实处于 badInput）。
+    check(typedForUp.placeholder === "请输入 1-1000 的整数",
+      "上移：badInput 时 placeholder 不再是「不限」 " + typedForUp.placeholder);
+    const movedUpGate = await gate(page);
+    check(movedUpGate.hintText === DIRTY_HINT &&
+      !movedUpGate.hintText.includes("栏目条数不合法"),
+      "上移：重建后只剩「未保存」提示，没有条数非法 " + movedUpGate.hintText);
+    // 上移改变了顺序，按既有规则就是「未保存」；移回去两个入口必须立刻可用。
+    await page.locator("#task-item-list .task-item-row:nth-child(1) button",
+      { hasText: "下移" }).click();
+    await expectClean(page, "上移后移回原位");
+
+    // 下移：同一行被重建，顺序变化后同样不残留条数非法。
+    await typeLimit(page, "#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "1e");
+    const typedForDown = await rowLimitState(page, 0);
+    check(typedForDown.value === "" && typedForDown.badInput === true,
+      "下移：键入 1e 后字段是空串 + badInput " + JSON.stringify(typedForDown));
+    await page.locator("#task-item-list .task-item-row:nth-child(1) button",
+      { hasText: "下移" }).click();
+    await expectBadInputRowCleared(page, "下移", 1);
+    check((await rowLimitState(page, 1)).type === "daily_news",
+      "下移：被重建的是每日新闻行 " + JSON.stringify(await rowLimitState(page, 1)));
+    const movedDownGate = await gate(page);
+    check(!movedDownGate.hintText.includes("栏目条数不合法"),
+      "下移：新元素不继承上一轮的条数非法 " + movedDownGate.hintText);
+    await page.locator("#task-item-list .task-item-row:nth-child(2) button",
+      { hasText: "上移" }).click();
+    await typeLimit(page, "#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "2");
+    await expectClean(page, "下移用例复原为已保存的 2");
+
+    // 新增另一个栏目：坏输入所在行与新增行都必须是「空 = 合法」。
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "1e");
+    await page.selectOption("#task-item-picker", "bilibili_hot");
+    await page.click("#task-item-add-button");
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#task-item-list .task-item-row").length === 3);
+    await expectBadInputRowCleared(page, "新增栏目", 1);
+    const addedRow = await rowLimitState(page, 2);
+    check(addedRow.type === "bilibili_hot" && addedRow.value === "" && addedRow.badInput === false &&
+      addedRow.valid === true && addedRow.ariaInvalid === null && addedRow.placeholder === "不限",
+      "新增栏目：新增行与重建行状态一致 " + JSON.stringify(addedRow));
+    const afterAddGate = await gate(page);
+    check(afterAddGate.hintText === DIRTY_HINT &&
+      !afterAddGate.hintText.includes("栏目条数不合法"),
+      "新增栏目：只剩「未保存」提示 " + afterAddGate.hintText);
+
+    // 删除另一个栏目：再一次重建，坏输入行仍然不得变灰。
+    await page.locator("#task-item-list .task-item-row:nth-child(3) button",
+      { hasText: "移除" }).click();
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#task-item-list .task-item-row").length === 2);
+    await expectBadInputRowCleared(page, "删除栏目", 1);
+    await expectClean(page, "删除新增栏目后两个入口可用");
+
+    // 不移动、直接退格：badInput 必须能被 Backspace 一键清掉，且不发请求。
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "1e");
+    const callsBeforeBackspace = await page.evaluate(() => window.__calls.length);
+    await page.keyboard.press("Backspace");
+    const clearedByBackspace = await rowLimitState(page, 1);
+    check(clearedByBackspace.value === "" && clearedByBackspace.badInput === false &&
+      clearedByBackspace.valid === true && clearedByBackspace.ariaInvalid === null &&
+      clearedByBackspace.placeholder === "不限",
+      "退格：键入 1e 后按一次 Backspace 即复位为合法 " + JSON.stringify(clearedByBackspace));
+    const callsAfterBackspace = await page.evaluate(() => window.__calls.length);
+    check(callsAfterBackspace === callsBeforeBackspace,
+      "退格：清理 badInput 不发任何请求 " + callsBeforeBackspace + "->" + callsAfterBackspace);
+    await expectClean(page, "退格清理后两个入口可用");
+
+    // 合法数字不因上移/下移被误清，并真正进入保存载荷。
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "5");
+    await page.locator("#task-item-list .task-item-row:nth-child(2) button",
+      { hasText: "上移" }).click();
+    const keptAfterUp = await rowLimitState(page, 0);
+    check(keptAfterUp.type === "zhihu_hot" && keptAfterUp.value === "5" &&
+      keptAfterUp.valid === true && keptAfterUp.ariaInvalid === null,
+      "上移：合法数字 5 原样保留 " + JSON.stringify(keptAfterUp));
+    await page.locator("#task-item-list .task-item-row:nth-child(1) button",
+      { hasText: "下移" }).click();
+    const keptAfterDown = await rowLimitState(page, 1);
+    check(keptAfterDown.type === "zhihu_hot" && keptAfterDown.value === "5",
+      "下移：合法数字 5 原样保留 " + JSON.stringify(keptAfterDown));
+
+    await page.click("#task-save-button");
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    const savedPayload = await page.evaluate(() => {
+      const calls = window.__calls.filter((call) => call.endpoint.endsWith("/update"));
+      return calls.length > 0 ? calls[calls.length - 1].payload : null;
+    });
+    check(savedPayload && Array.isArray(savedPayload.items),
+      "保存：载荷带 items " + JSON.stringify(savedPayload));
+    const savedZhihu = savedPayload && savedPayload.items
+      .find((item) => item.content_type === "zhihu_hot");
+    check(savedZhihu && savedZhihu.limit === 5,
+      "保存：真实键入的 5 进入载荷 " + JSON.stringify(savedZhihu));
+
+    // 重新打开任务编辑：从头渲染，条数框仍是「空 = 不限」。
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    await expectClean(page, "重新打开编辑");
+    await expectBadInputRowCleared(page, "重新打开编辑", 1);
 
     console.log("TASK FORM DIRTY UI PASS " + JSON.stringify({ assertions }));
   } finally {

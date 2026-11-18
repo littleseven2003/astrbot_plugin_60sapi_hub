@@ -2581,6 +2581,9 @@ function renderTaskItems() {
     elements.taskItemList.append(empty);
   }
   state.taskItems.forEach((item, index) => {
+    // badInput 只属于被销毁的那个 DOM 元素：重建后新元素没有它，state 也不能留，
+    // 否则会留下「框里空着却判条数非法」的死状态。
+    item.limitBadInput = false;
     const row = document.createElement("li");
     row.className = "task-item-row";
     row.dataset.contentType = item.content_type;
@@ -2600,23 +2603,16 @@ function renderTaskItems() {
     limitInput.inputMode = "numeric";
     limitInput.className = "task-item-limit-input";
     limitInput.value = item.limitText;
-    limitInput.placeholder = "不限";
     limitInput.dataset.itemIndex = String(index);
     limitInput.setAttribute("aria-label", taskItemLabel(item.content_type) + "条数");
-    limitInput.addEventListener("input", () => {
-      // 不改写用户输入：1.5 / 1e2 / abc 原样留在框里，交给共用判断报「需修正」。
-      // number 框里的未完成数字（"1e"、"-"）value 已是空串、badInput 为真，
-      // 必须单独记住，否则会退化成「不限」。
-      const item = state.taskItems[index];
-      item.limitText = limitInput.value;
-      item.limitBadInput = limitInput.validity.badInput;
-      syncTaskItemLimitValidity(limitInput, item);
-      // 改对了就收回自己写下的那条错误，不留过期的红字。
-      if (state.taskLimitErrorShown && invalidTaskItemLabels().length === 0) {
-        clearTaskFormError();
-      }
-      invalidateTaskFormRequests();
-      updateTaskFormGates();
+    limitInput.addEventListener("input", () => applyTaskItemLimitEdit(limitInput, index));
+    // 未完成的数字（"1e"、"-"）在框里是空串、badInput 为真，退格清不掉它。
+    // 退格/删除/Esc 直接把值复位为空，让「空 = 不限」重新成立。
+    limitInput.addEventListener("keydown", (event) => {
+      if (!limitInput.validity.badInput) return;
+      if (event.key !== "Backspace" && event.key !== "Delete" && event.key !== "Escape") return;
+      limitInput.value = "";
+      applyTaskItemLimitEdit(limitInput, index);
     });
     syncTaskItemLimitValidity(limitInput, item);
     const limitText = document.createElement("span");
@@ -3986,11 +3982,33 @@ function taskItemLimitErrorMessage(labels) {
 // 气泡说中文（浏览器对 badInput 只说「请输入一个数字」，看不出该填什么）。
 function syncTaskItemLimitValidity(input, item) {
   const invalid = taskItemLimitState(item.limitText, item.limitBadInput).kind === "invalid";
+  // 元素自身处于 badInput 时 value 是空串：这时写「不限」是骗人的，换成明确要求。
+  input.placeholder = input.validity.badInput
+    ? "请输入 1-" + TASK_ITEM_LIMIT_MAX + " 的整数"
+    : "不限";
   input.setCustomValidity(
     invalid ? taskItemLimitErrorMessage([taskItemLabel(item.content_type)]) : "",
   );
   if (invalid) input.setAttribute("aria-invalid", "true");
   else input.removeAttribute("aria-invalid");
+}
+
+// 一次编辑：元素自己的值/校验态、state、两个入口和过期错误一起跟着走。
+function applyTaskItemLimitEdit(input, index) {
+  const item = state.taskItems[index];
+  if (!item) return;
+  // 不改写用户输入：1.5 / 1e2 / abc 原样留在框里，交给共用判断报「需修正」。
+  // number 框里的未完成数字（"1e"、"-"）value 已是空串、badInput 为真，
+  // 必须单独记住，否则会退化成「不限」。
+  item.limitText = input.value;
+  item.limitBadInput = input.validity.badInput;
+  syncTaskItemLimitValidity(input, item);
+  // 改对了就收回自己写下的那条错误，不留过期的红字。
+  if (state.taskLimitErrorShown && invalidTaskItemLabels().length === 0) {
+    clearTaskFormError();
+  }
+  invalidateTaskFormRequests();
+  updateTaskFormGates();
 }
 
 function currentTaskItemEntries() {

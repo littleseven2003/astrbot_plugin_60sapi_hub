@@ -109,9 +109,130 @@ async function showView(f, view) {
   );
 }
 
+/*
+ * 清理本轮测试数据：先删任务（逐条检查响应），确认没有任务再删本轮自建站点，
+ * 最后复核任务引用与站点是否真的消失。只收集诊断，不抛错，由 finally 汇总输出。
+ */
+async function cleanupRound(authToken, roundNames, roundSiteId) {
+  const problems = [];
+  const note = (step, detail) => problems.push({ step, detail });
+  const brief = (value) => {
+    let text;
+    try { text = JSON.stringify(value); }
+    catch { text = String(value); }
+    return text.length > 500 ? text.slice(0, 500) + '…' : text;
+  };
+  const endpoint = (suffix) => `/api/v1/plugins/extensions/${P}${suffix}`;
+  const matchesName = (name) => roundNames.some((base) =>
+    name === base || name === base + '改' || name === base + '外部改');
+  const referencesSite = (task, siteId) => Array.isArray(task && task.sites)
+    && task.sites.some((entry) => siteId === (typeof entry === 'string' ? entry : entry && entry.id));
+  const isRoundTask = (task) => Boolean(task)
+    && (matchesName(task.name) || (roundSiteId ? referencesSite(task, roundSiteId) : false));
+  if (!authToken) {
+    note('清理登录状态', '缺少 token，无法清理本轮测试数据');
+    return problems;
+  }
+  const listTasks = async () => {
+    try { return await api(authToken, 'GET', endpoint('/tasks')); }
+    catch (error) { return { error }; }
+  };
+  const parseTasks = (result) => {
+    if (!result || result.error) {
+      return { error: '请求异常：' + String(result && result.error && result.error.message
+        || result && result.error || '无响应') };
+    }
+    if (result.status !== 200) return { error: `status=${result.status} body=${brief(result.body)}` };
+    const tasks = result.body && result.body.data && result.body.data.tasks;
+    if (!Array.isArray(tasks)) return { error: '响应缺少 data.tasks：' + brief(result.body) };
+    return { tasks };
+  };
+
+  const first = parseTasks(await listTasks());
+  if (first.error) {
+    note('列出本轮任务（GET /tasks）', first.error);
+    note('删除本轮自建站点（POST /sites/:id/delete）',
+      '已跳过：无法确认引用该站点的任务已经清理');
+    return problems;
+  }
+  for (const task of first.tasks.filter(isRoundTask)) {
+    const request = `删除任务 ${task.name}（POST /tasks/${task.id}/delete）`;
+    try {
+      const res = await api(authToken, 'POST', endpoint(`/tasks/${task.id}/delete`),
+        { expected_revision: task.revision });
+      if (res.status !== 200 || !res.body || res.body.status !== 'ok') {
+        note(request, `status=${res.status} body=${brief(res.body)}`);
+      }
+    } catch (error) {
+      note(request, '请求异常：' + String(error && error.message || error));
+    }
+  }
+
+  const recheck = parseTasks(await listTasks());
+  let tasksCleared = false;
+  if (recheck.error) {
+    note('复核任务清理（GET /tasks）', recheck.error);
+  } else {
+    const left = recheck.tasks.filter(isRoundTask);
+    if (left.length) {
+      note('复核任务清理（GET /tasks）', '仍残留本轮任务：'
+        + brief(left.map((task) => ({ id: task.id, name: task.name, sites: task.sites }))));
+    } else {
+      tasksCleared = true;
+    }
+  }
+  if (!roundSiteId) return problems;
+  if (!tasksCleared) {
+    note('删除本轮自建站点（POST /sites/:id/delete）',
+      '已跳过：任务尚未确认清理，站点被引用时删除会失败');
+    return problems;
+  }
+
+  let current = null;
+  try { current = await api(authToken, 'GET', endpoint(`/sites/${roundSiteId}`)); }
+  catch (error) { note('读取本轮自建站点（GET /sites/:id）', '请求异常：' + String(error && error.message || error)); }
+  if (current) {
+    if (current.status === 200) {
+      const request = `删除本轮自建站点（POST /sites/${roundSiteId}/delete）`;
+      try {
+        const res = await api(authToken, 'POST', endpoint(`/sites/${roundSiteId}/delete`),
+          { expected_revision: current.body && current.body.data && current.body.data.revision });
+        if (res.status !== 200 || !res.body || res.body.status !== 'ok') {
+          note(request, `status=${res.status} body=${brief(res.body)}`);
+        }
+      } catch (error) {
+        note(request, '请求异常：' + String(error && error.message || error));
+      }
+    } else if (current.status !== 404) {
+      note('读取本轮自建站点（GET /sites/:id）', `status=${current.status} body=${brief(current.body)}`);
+      note('删除本轮自建站点（POST /sites/:id/delete）', '已跳过：无法读取站点当前 revision');
+    }
+  }
+
+  try {
+    const site = await api(authToken, 'GET', endpoint(`/sites/${roundSiteId}`));
+    if (site.status !== 404) {
+      note('复核本轮自建站点（GET /sites/:id）', `站点仍然存在：status=${site.status} body=${brief(site.body)}`);
+    }
+  } catch (error) {
+    note('复核本轮自建站点（GET /sites/:id）', '请求异常：' + String(error && error.message || error));
+  }
+  const finalTasks = parseTasks(await listTasks());
+  if (finalTasks.error) {
+    note('复核站点引用（GET /tasks）', finalTasks.error);
+  } else {
+    const holders = finalTasks.tasks.filter((task) => referencesSite(task, roundSiteId));
+    if (holders.length) {
+      note('复核站点引用（GET /tasks）', '仍有任务引用本轮自建站点：'
+        + brief(holders.map((task) => ({ id: task.id, name: task.name }))));
+    }
+  }
+  return problems;
+}
+
 const BASE=process.env.ASTRBOT_URL,PW=process.env.ASTRBOT_PASSWORD,P=process.env.ASTRBOT_PLUGIN||'astrbot_plugin_60sapi_hub',CHROME=process.env.CHROME_PATH;if(!BASE||!PW||!CHROME){console.error('ASTRBOT_URL, ASTRBOT_PASSWORD and CHROME_PATH are required');process.exit(2);}
 async function api(t,m,p,d){const r=await fetch(BASE+p,{method:m,headers:{'Content-Type':'application/json',Authorization:`Bearer ${t}`},body:d?JSON.stringify(d):undefined});return {status:r.status,body:await r.json()};}
-(async()=>{const b=await chromium.launch({headless:true,executablePath:CHROME,args:['--no-sandbox']});const page=await b.newPage({viewport:{width:1400,height:1200}});const names=[];let token,seedSiteId=null;try{const lr=await fetch(`${BASE}/api/v1/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'astrbot',password:PW})});token=(await lr.json()).data.token;const all=await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks`);let sid=null;const knownSites=(await api(token,'GET',`/api/v1/plugins/extensions/${P}/sites`)).body.data.sites||[];const knownIds=new Set(knownSites.map(s=>s&&s.id));const firstTask=all.body.data.tasks[0];if(firstTask&&Array.isArray(firstTask.sites)&&firstTask.sites.length){const candidate=firstTask.sites[0];const candidateId=typeof candidate==='string'?candidate:(candidate&&candidate.id);if(knownIds.has(candidateId))sid=candidateId;}if(!sid&&knownSites.length){sid=knownSites[0].id;}if(!sid){const st=Date.now();const site=await api(token,'POST',`/api/v1/plugins/extensions/${P}/sites`,{name:'任务前置站点'+st,base_url:'http://example.test/proxy',enabled:true,timeout_seconds:5});if(site.status!==201||!site.body.data)throw new Error('无法创建任务前置站点，宿主返回 '+site.status);seedSiteId=site.body.data.id;sid=seedSiteId;}
+(async()=>{const b=await chromium.launch({headless:true,executablePath:CHROME,args:['--no-sandbox']});const page=await b.newPage({viewport:{width:1400,height:1200}});const names=[];let token,seedSiteId=null;let mainOk=false;try{const lr=await fetch(`${BASE}/api/v1/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'astrbot',password:PW})});token=(await lr.json()).data.token;const all=await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks`);let sid=null;const knownSites=(await api(token,'GET',`/api/v1/plugins/extensions/${P}/sites`)).body.data.sites||[];const knownIds=new Set(knownSites.map(s=>s&&s.id));const firstTask=all.body.data.tasks[0];if(firstTask&&Array.isArray(firstTask.sites)&&firstTask.sites.length){const candidate=firstTask.sites[0];const candidateId=typeof candidate==='string'?candidate:(candidate&&candidate.id);if(knownIds.has(candidateId))sid=candidateId;}if(!sid&&knownSites.length){sid=knownSites[0].id;}if(!sid){const st=Date.now();const site=await api(token,'POST',`/api/v1/plugins/extensions/${P}/sites`,{name:'任务前置站点'+st,base_url:'http://example.test/proxy',enabled:true,timeout_seconds:5});if(site.status!==201||!site.body.data)throw new Error('无法创建任务前置站点，宿主返回 '+site.status);seedSiteId=site.body.data.id;sid=seedSiteId;}
 await page.goto(BASE+'/',{waitUntil:'domcontentloaded'});await page.fill('input[name=username]','astrbot');await page.fill('input[name=password]',PW);await Promise.all([page.waitForURL(u=>!u.toString().includes('/auth/login')),page.getByRole('button',{name:'登录',exact:true}).click()]);await closeHostFirstPrompt(page, PW);
 await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'});await page.waitForTimeout(500);const clear=async()=>closeHostPrompts(page);let f=await frameOfPage(page);f=await showView(f,'tasks');await f.waitForFunction(()=>document.getElementById('tasks-list')?.getAttribute('aria-busy')==='false');
 const card=n=>f.locator('#tasks-list li').filter({hasText:n});let lastUpdateBody=null;page.on('request',r=>{if(r.method()==='POST'&&/\/tasks\/[^/]+\/update$/.test(new URL(r.url()).pathname)){try{lastUpdateBody=JSON.parse(r.postData());}catch{lastUpdateBody=null;}}});
@@ -135,5 +256,18 @@ await page.reload({waitUntil:'domcontentloaded'});await page.waitForTimeout(500)
 const n3='校验正常计划'+Date.now();names.push(n3);await openCreate();await f.fill('#task-name',n3);await f.selectOption('#task-item-picker','daily_news');await f.locator('#task-item-add-button').click();await f.selectOption('#task-site-picker',sid);await f.locator('#task-site-add-button').click();await mode('daily');await f.fill('#task-schedule-time','08:00');await f.fill('#task-schedule-timezone','Asia/Shanghai');await save();await f.waitForFunction(n=>document.getElementById('tasks-list')?.innerText.includes(n),n3);await openEdit(n3);await f.fill('#task-schedule-time','09:00');await close();await openEdit(n3);assert.equal(await f.inputValue('#task-schedule-time'),'08:00');await close();
 // 5 revision conflict while modal open: external update bumps revision, then UI save
 await openEdit(n3);
-const curTask=await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks/${(await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks`)).body.data.tasks.find(t=>t.name===n3).id}`);const tid=curTask.body.data.id;await api(token,'POST',`/api/v1/plugins/extensions/${P}/tasks/${tid}/update`,{name:n3+'外部改',items:[{content_type:'daily_news'}],sites:[sid],output_format:'text',umos:[],expected_revision:curTask.body.data.revision});await f.fill('#task-schedule-time','09:30');await clickUntil('保存任务（外部改版本冲突）',()=>f.locator('#task-save-button').click({timeout:5000}),waitTaskDialogClosed,30000);await page.waitForTimeout(300);assert.match(await f.locator('#tasks-list').innerText(),new RegExp(n3+'外部改'));console.log('TASK UI PASS',names);
-}finally{try{if(seedSiteId&&token)await api(token,'POST',`/api/v1/plugins/extensions/${P}/sites/${seedSiteId}/delete`,{expected_revision:1});}catch{}await b.close();if(token){const all=await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks`);for(const t of all.body.data.tasks){if(names.some(n=>t.name===n||t.name===n+'改'||t.name===n+'外部改'))await api(token,'POST',`/api/v1/plugins/extensions/${P}/tasks/${t.id}/delete`,{expected_revision:t.revision});}}}})().catch(e=>{console.error(e);process.exit(1)});
+const curTask=await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks/${(await api(token,'GET',`/api/v1/plugins/extensions/${P}/tasks`)).body.data.tasks.find(t=>t.name===n3).id}`);const tid=curTask.body.data.id;await api(token,'POST',`/api/v1/plugins/extensions/${P}/tasks/${tid}/update`,{name:n3+'外部改',items:[{content_type:'daily_news'}],sites:[sid],output_format:'text',umos:[],expected_revision:curTask.body.data.revision});await f.fill('#task-schedule-time','09:30');await clickUntil('保存任务（外部改版本冲突）',()=>f.locator('#task-save-button').click({timeout:5000}),waitTaskDialogClosed,30000);await page.waitForTimeout(300);assert.match(await f.locator('#tasks-list').innerText(),new RegExp(n3+'外部改'));mainOk=true;
+}finally{
+  let problems=[];
+  try{problems=await cleanupRound(token,names,seedSiteId);}catch(error){problems=[{step:'清理本轮测试数据',detail:'清理过程异常：'+String(error&&error.message||error)}];}
+  try{await b.close();}catch(error){problems.push({step:'关闭浏览器',detail:String(error&&error.message||error)});}
+  if(problems.length){
+    process.exitCode=1;
+    const report='CLEANUP FAILED：本轮测试数据未清理干净（'+problems.length+' 项）\n'+problems.map(p=>'  - '+p.step+'：'+p.detail).join('\n')+'\n';
+    await new Promise(resolve=>process.stderr.write(report,resolve));
+    if(mainOk)process.exit(1);
+  }else if(mainOk){
+    console.log('TASK UI PASS',names);
+  }
+}
+})().catch(e=>{console.error(e);process.exit(1)});

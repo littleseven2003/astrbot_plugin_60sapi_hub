@@ -152,7 +152,10 @@ SAFE_ERROR_CODES = frozenset({
     "sender_invalid_payload", "sender_not_found",
     "sender_not_supported", "sender_route_rejected",
     "sender_invalid_result", "sender_timeout", "site_disabled",
-    "site_not_found", "task_not_found", "too_many_images",
+    "site_not_found",
+    # 发送中断后，同一目标的剩余图片因前一张失败/结果未知而跳过。
+    "skipped_after_send_failed", "skipped_after_send_unknown",
+    "task_not_found", "too_many_images",
     "too_many_targets",
 })
 
@@ -911,9 +914,17 @@ class DeliveryService:
                 else:
                     any_failed = True
                     target_status = "failed"
+                # 目标记录必须能解释自己的终态：已调用后超时/异常与预算
+                # 耗尽（未调用）要能从记录区分，且同样经过白名单。
+                target_error = _safe_error_code(error_code)
                 await self._mark_skipped_remainder(
                     execution_id, position, prepared.slots,
-                    index + 1, "after_" + error_code,
+                    index + 1,
+                    # 剩余图片是因为这一张失败/结果未知才没有尝试：给稳定、
+                    # 可读的原因，不再拼出未登记的错误码被换成 internal_error。
+                    "skipped_after_send_unknown"
+                    if result.status is SendStatus.UNKNOWN
+                    else "skipped_after_send_failed",
                 )
                 break
             if (

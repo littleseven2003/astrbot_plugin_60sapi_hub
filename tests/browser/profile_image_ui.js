@@ -118,7 +118,131 @@ const routeState = {
   imageStatus: 200,
   imageGate: null,
   imageCalls: 0,
+  // 被拦截的图片响应真正交回浏览器的次数（route.fulfill 完成后自增）。
+  imageFulfilled: 0,
+  // 页面里 apiPost 图片请求 promise 已结算的次数（由页面内探针维护）。
+  imageSettledInPage: 0,
 };
+
+/*
+ * ---------- 旧响应的确定性等待 ----------
+ * 页面里的失效判断（views/sites/app.js 的 generatePreviewImage：requestId/snapshotId/taskId
+ * 不一致就 return，且 finally 也被 requestId 拦住）不产生任何 DOM 变化，所以“页面已处理完旧响应”
+ * 只能从执行层取证，分三步：
+ *   1. route.fulfill 完成 → routeState.imageFulfilled 增长（旧请求确实交回了浏览器）；
+ *   2. 页面内 apiPost 的 promise 结算 → __hubImageProbe.settled 增长（页面确实拿到了响应）；
+ *   3. 让出两帧 → 页面的 await 续体（失效判断 + finally）已执行完，再读 DOM。
+ * 任何一步超时都抛带上下文的错误，不用固定毫秒兜底。
+ */
+async function installImageSettleProbe(frame) {
+  const result = await frame.evaluate(() => {
+    const host = window.AstrBotPluginView;
+    if (!host || typeof host.apiPost !== "function") {
+      return "页面没有 window.AstrBotPluginView.apiPost";
+    }
+    if (host.__hubImageProbe) return "ok";
+    const original = host.apiPost;
+    const probe = { settled: 0, endpoint: null };
+    const wrapped = function (endpoint, ...rest) {
+      const call = original.call(this, endpoint, ...rest);
+      if (!/\/image$/.test(String(endpoint || ""))) return call;
+      const mark = () => {
+        probe.settled += 1;
+        probe.endpoint = String(endpoint);
+      };
+      return Promise.resolve(call).then(
+        (value) => { mark(); return value; },
+        (error) => { mark(); throw error; },
+      );
+    };
+    try {
+      host.apiPost = wrapped;
+    } catch (error) {
+      return "apiPost 不可写: " + error.message;
+    }
+    if (host.apiPost !== wrapped) return "apiPost 不可写（赋值被忽略）";
+    host.__hubImageProbe = probe;
+    return "ok";
+  });
+  if (result !== "ok") {
+    throw new Error("无法安装图片响应完成探针: " + result);
+  }
+}
+
+async function pageImageSettled(frame) {
+  return frame.evaluate(() => window.AstrBotPluginView?.__hubImageProbe?.settled ?? -1);
+}
+
+// 1) 旧请求确实完成：route.fulfill 之后计数必须增长。
+async function waitForImageFulfilled(before) {
+  const message = "旧请求未完成：拦住的旧图片请求在 " + WAIT + "ms 内没有走完 route.fulfill";
+  try {
+    await waitUntil(() => routeState.imageFulfilled > before, message);
+  } catch {
+    throw new Error(message + JSON.stringify({
+      before,
+      imageFulfilled: routeState.imageFulfilled,
+      imageCalls: routeState.imageCalls,
+      settledInPage: routeState.imageSettledInPage,
+      gated: Boolean(routeState.imageGate),
+    }));
+  }
+}
+
+// 2) 页面拿到了这次响应：页面内 apiPost 的 promise 已结算。
+async function waitForPageImageHandled(frame, before) {
+  const deadline = Date.now() + WAIT;
+  let settled = null;
+  while (Date.now() < deadline) {
+    settled = await pageImageSettled(frame);
+    if (settled < 0) {
+      throw new Error("页面未处理完：页面里没有图片请求探针"
+        + "（window.AstrBotPluginView.__hubImageProbe）");
+    }
+    if (settled > before) {
+      routeState.imageSettledInPage = settled;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("页面未处理完：旧响应交回后，页面内图片请求 promise 在 " + WAIT
+    + "ms 内没有结算" + JSON.stringify({ before, settled, imageFulfilled: routeState.imageFulfilled }));
+}
+
+// 3) 让出两帧：microtask 队列（页面的 await 续体）已在读 DOM 前跑完。
+async function waitForFrameDrain(frame) {
+  const message = "页面未处理完：旧响应结算后 " + WAIT + "ms 内没有完成两帧渲染";
+  let timer;
+  const drained = frame.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+  }));
+  try {
+    const result = await Promise.race([
+      drained,
+      new Promise((resolve) => { timer = setTimeout(() => resolve("timeout"), WAIT); }),
+    ]);
+    if (result === "timeout") throw new Error(message);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 放行门闩，并按上面的三步等页面真正处理完这次旧响应。
+async function releaseStaleImageRequest(frame) {
+  const before = {
+    fulfilled: routeState.imageFulfilled,
+    settled: await pageImageSettled(frame),
+  };
+  if (before.settled < 0) {
+    throw new Error("页面未处理完：页面里没有图片请求探针"
+      + "（window.AstrBotPluginView.__hubImageProbe）");
+  }
+  routeState.imageGate.resolve();
+  routeState.imageGate = null;
+  await waitForImageFulfilled(before.fulfilled);
+  await waitForPageImageHandled(frame, before.settled);
+  await waitForFrameDrain(frame);
+}
 
 function previewPayload(taskId, taskName, revision) {
   return {
@@ -316,6 +440,7 @@ async function stateText(frame) {
       routeState.previewData = previewPayload(taskIds.first, '图片回归任务A' + stamp, firstRevision);
       const { page, frame } = await openPage(browser, width);
       try {
+        await installImageSettleProbe(frame);
         await page.route("**/tasks/*/preview", async (route) => {
           await route.fulfill({
             status: 200, contentType: "application/json",
@@ -331,6 +456,8 @@ async function stateText(frame) {
               ? { status: "ok", data: routeState.imageData }
               : { status: "error", message: "图片生成失败", data: { code: "image_render_failed" } }),
           });
+          // 响应已交回浏览器，旧请求的完成信号。
+          routeState.imageFulfilled += 1;
         });
 
         /* 1) 多栏目顺序：每个成功栏目恰好一张，高度取自接口实际值 */
@@ -477,9 +604,7 @@ async function stateText(frame) {
           () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,
           null, { timeout: WAIT },
         );
-        routeState.imageGate.resolve();
-        routeState.imageGate = null;
-        await page.waitForTimeout(400);
+        await releaseStaleImageRequest(frame);
         const afterStale = await figures(frame);
         check(afterStale.length === 0, "切换任务后旧响应不得写入: " + JSON.stringify(afterStale));
         check((await stateText(frame)).state === "", "旧响应不得恢复已清空的状态行");
@@ -533,7 +658,10 @@ async function stateText(frame) {
     const upstreamHits = upstreamCalls.filter((url) => url.includes("127.0.0.1:9"));
     check(upstreamHits.length === 0, "不得请求真实上游: " + JSON.stringify(upstreamHits));
     console.log("PROFILE IMAGE UI PASS", {
-      assertions, imageCalls: routeState.imageCalls,
+      assertions,
+      imageCalls: routeState.imageCalls,
+      imageFulfilled: routeState.imageFulfilled,
+      imageSettledInPage: routeState.imageSettledInPage,
     });
   } finally {
     await browser.close();

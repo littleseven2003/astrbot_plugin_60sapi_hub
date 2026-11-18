@@ -381,6 +381,8 @@ const state = {
   taskFormEpoch: 0,
   taskFormHintText: "",
   taskCapabilityTestRequestId: 0,
+  // 表单错误区里是不是我们写的「条数非法」：条数改对后由这里收回。
+  taskLimitErrorShown: false,
   deliveryTask: null,
   deliveryPreview: null,
   deliveryBusy: false,
@@ -2601,10 +2603,20 @@ function renderTaskItems() {
     limitInput.setAttribute("aria-label", taskItemLabel(item.content_type) + "条数");
     limitInput.addEventListener("input", () => {
       // 不改写用户输入：1.5 / 1e2 / abc 原样留在框里，交给共用判断报「需修正」。
-      state.taskItems[index].limitText = limitInput.value;
+      // number 框里的未完成数字（"1e"、"-"）value 已是空串、badInput 为真，
+      // 必须单独记住，否则会退化成「不限」。
+      const item = state.taskItems[index];
+      item.limitText = limitInput.value;
+      item.limitBadInput = limitInput.validity.badInput;
+      syncTaskItemLimitValidity(limitInput, item);
+      // 改对了就收回自己写下的那条错误，不留过期的红字。
+      if (state.taskLimitErrorShown && invalidTaskItemLabels().length === 0) {
+        clearTaskFormError();
+      }
       invalidateTaskFormRequests();
       updateTaskFormGates();
     });
+    syncTaskItemLimitValidity(limitInput, item);
     const limitText = document.createElement("span");
     limitText.className = "task-item-limit-text";
     limitText.textContent = "条";
@@ -2635,7 +2647,7 @@ function addTaskItem() {
   if (state.taskItems.some((item) => item.content_type === contentType)) return;
   if (state.taskItems.length >= TASK_ITEM_MAX) return;
   // 新栏目插到末尾：表单里的顺序就是推送顺序。
-  state.taskItems.push({ content_type: contentType, limitText: "" });
+  state.taskItems.push({ content_type: contentType, limitText: "", limitBadInput: false });
   renderTaskItems();
 }
 
@@ -2661,10 +2673,7 @@ function collectTaskItems() {
     }
     seen.add(entry.content_type);
     if (entry.kind === "invalid") {
-      throw new Error(
-        taskItemLabel(entry.content_type) + "的条数需为 1-" +
-        TASK_ITEM_LIMIT_MAX + " 的整数，留空表示不限。",
-      );
+      throw new Error(taskItemLimitErrorMessage([taskItemLabel(entry.content_type)]));
     }
     items.push({
       content_type: entry.content_type,
@@ -3811,6 +3820,7 @@ async function loadTasks() {
 function clearTaskFormError() {
   elements.taskFormError.textContent = "";
   elements.taskFormError.hidden = true;
+  state.taskLimitErrorShown = false;
 }
 
 function showTaskFormError(message) {
@@ -3951,7 +3961,10 @@ function savedTaskSites(task) {
 
 // 条数三态：空=不限，1..TASK_ITEM_LIMIT_MAX=该值，其余一律「非法」。
 // 非法值既不归一化成「不限」，也不能和任何已保存状态判等，且不改写用户输入。
-function taskItemLimitState(raw) {
+// badInput 是 number 框对未完成数字（"1e"、"-"）的真实状态：此时 value 已经是空串，
+// 只看文本会误判成「不限」。
+function taskItemLimitState(raw, badInput) {
+  if (badInput) return { kind: "invalid", limit: null };
   const text = String(raw == null ? "" : raw).trim();
   if (!text) return { kind: "unlimited", limit: null };
   if (!/^[0-9]+$/.test(text)) return { kind: "invalid", limit: null };
@@ -3962,9 +3975,25 @@ function taskItemLimitState(raw) {
   return { kind: "limit", limit: value };
 }
 
+function taskItemLimitErrorMessage(labels) {
+  return labels.join("、") + "的条数需为 1-" + TASK_ITEM_LIMIT_MAX +
+    " 的整数，留空表示不限。";
+}
+
+// 非法条数同时在输入框上留痕：aria-invalid 给读屏，自定义 validity 让原生校验
+// 气泡说中文（浏览器对 badInput 只说「请输入一个数字」，看不出该填什么）。
+function syncTaskItemLimitValidity(input, item) {
+  const invalid = taskItemLimitState(item.limitText, item.limitBadInput).kind === "invalid";
+  input.setCustomValidity(
+    invalid ? taskItemLimitErrorMessage([taskItemLabel(item.content_type)]) : "",
+  );
+  if (invalid) input.setAttribute("aria-invalid", "true");
+  else input.removeAttribute("aria-invalid");
+}
+
 function currentTaskItemEntries() {
   return state.taskItems.map((item) => {
-    const parsed = taskItemLimitState(item.limitText);
+    const parsed = taskItemLimitState(item.limitText, item.limitBadInput);
     return { content_type: item.content_type, kind: parsed.kind, limit: parsed.limit };
   });
 }
@@ -4168,7 +4197,6 @@ async function runTaskCapabilityTest() {
     if (!stillCurrent()) return;
     setTaskCapabilityResult(friendlyErrorMessage(error), "error");
   } finally {
-    // 按钮状态始终跟随当前表单，而不是无条件启用。
     updateTaskCapabilityGate();
   }
 }
@@ -4225,6 +4253,7 @@ function openTaskEditor(task) {
   state.taskItems = savedTaskItems(task).map((item) => ({
     content_type: item.content_type,
     limitText: Number.isInteger(item.limit) ? String(item.limit) : "",
+    limitBadInput: false,
   }));
   state.taskSites = Array.isArray(task.sites)
     ? task.sites.map((item) => (typeof item === "string" ? item : item.id))
@@ -5743,6 +5772,14 @@ function bindEvents() {
   });
   elements.taskRetryButton.addEventListener("click", loadTasks);
   elements.taskForm.addEventListener("submit", handleTaskSave);
+  // 条数非法（含 number 框的 badInput）时浏览器会直接拦下 submit，handleTaskSave
+  // 根本不会执行；在 invalid 事件上补一条可读的中文错误，不依赖原生气泡。
+  elements.taskForm.addEventListener("invalid", () => {
+    const invalidItems = invalidTaskItemLabels();
+    if (invalidItems.length === 0) return;
+    state.taskLimitErrorShown = true;
+    showTaskFormError(taskItemLimitErrorMessage(invalidItems));
+  }, true);
   elements.taskScheduleNone.addEventListener("change", () => {
     setTaskScheduleMode("none");
     markTaskScheduleDirty();

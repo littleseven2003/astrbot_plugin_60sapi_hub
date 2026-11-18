@@ -256,6 +256,32 @@ async function releaseHold(page, kind) {
   }, kind);
 }
 
+// 已保存为「不限」的那一行：清空后应当回到干净状态，而不是变成未保存的修改。
+const LIMIT_UNLIMITED_ROW =
+  "#task-item-list .task-item-row:nth-child(2) .task-item-limit-input";
+
+// 真实键盘输入：先退格清空，再逐字键入，拿到浏览器自己的值/校验态。
+async function typeLimit(page, selector, keys) {
+  await page.click(selector);
+  for (let index = 0; index < 6; index += 1) {
+    await page.keyboard.press("Backspace");
+  }
+  await page.keyboard.type(keys);
+}
+
+function limitState(page, selector) {
+  return page.evaluate((target) => {
+    const input = document.querySelector(target);
+    return {
+      value: input.value,
+      badInput: input.validity.badInput,
+      valid: input.validity.valid,
+      ariaInvalid: input.getAttribute("aria-invalid"),
+      message: input.validationMessage,
+    };
+  }, selector);
+}
+
 (async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
@@ -524,6 +550,69 @@ async function releaseHold(page, kind) {
     await page.click("#task-preview-done-button");
     await page.waitForFunction(() => !document.getElementById("task-preview-dialog").open);
     await setHold(page, "preview", false);
+
+    // ⑩ 真实键盘输入：number 框里未完成的数字是 badInput（value 为空串），
+    // 不能因此当成「不限」。逐字键入，断言浏览器自己的值与校验态。
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    await expectClean(page, "键盘用例打开编辑");
+    const unlimitedStart = await limitState(page, LIMIT_UNLIMITED_ROW);
+    check(unlimitedStart.value === "" && unlimitedStart.badInput === false,
+      "键盘用例起点是已保存的「不限」 " + JSON.stringify(unlimitedStart));
+    await expectClean(page, "键盘用例起点为已保存的不限");
+
+    for (const keys of ["1e", "-", "e"]) {
+      await typeLimit(page, LIMIT_UNLIMITED_ROW, keys);
+      const typed = await limitState(page, LIMIT_UNLIMITED_ROW);
+      check(typed.value === "" && typed.badInput === true,
+        "键盘键入 " + keys + "：input.value 是空串但 validity.badInput 为真 " + JSON.stringify(typed));
+      check(typed.valid === false && typed.ariaInvalid === "true",
+        "键盘键入 " + keys + "：浏览器判定非法且标了 aria-invalid " + JSON.stringify(typed));
+      check(typed.message.includes("条数需为 1-1000 的整数") && typed.message.includes("知乎热榜"),
+        "键盘键入 " + keys + "：原生校验信息是中文 " + typed.message);
+      await expectInvalid(page, "键盘键入 " + keys, "知乎热榜", 1, "");
+    }
+
+    const postsBeforeBlocked = await page.evaluate(() => window.__calls.length);
+    await page.click("#task-save-button");
+    await page.waitForSelector("#task-form-error:not([hidden])");
+    const blockedKeyboardSave = await page.evaluate((before) => ({
+      requests: window.__calls.length - before,
+      updates: window.__calls.filter((call) => call.endpoint.endsWith("/update")).length,
+      error: document.getElementById("task-form-error").textContent,
+      dialog: document.getElementById("task-dialog").open,
+      value: document.querySelector(
+        "#task-item-list .task-item-row:nth-child(2) .task-item-limit-input").value,
+    }), postsBeforeBlocked);
+    check(blockedKeyboardSave.requests === 0 && blockedKeyboardSave.dialog,
+      "键盘坏输入点保存零请求且弹窗不关 " + JSON.stringify(blockedKeyboardSave));
+    check(blockedKeyboardSave.error.includes("条数需为 1-1000 的整数") &&
+      blockedKeyboardSave.error.includes("知乎热榜"),
+      "键盘坏输入点保存显示中文错误 " + blockedKeyboardSave.error);
+    check(blockedKeyboardSave.value === "",
+      "键盘坏输入点保存不改写输入框 " + JSON.stringify(blockedKeyboardSave.value));
+
+    await page.click(LIMIT_UNLIMITED_ROW);
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Backspace");
+    const clearedByKeyboard = await limitState(page, LIMIT_UNLIMITED_ROW);
+    check(clearedByKeyboard.value === "" && clearedByKeyboard.badInput === false &&
+      clearedByKeyboard.valid && clearedByKeyboard.ariaInvalid === null,
+      "键盘退格清空后字段恢复合法 " + JSON.stringify(clearedByKeyboard));
+    check(await page.evaluate(() => document.getElementById("task-form-error").hidden),
+      "键盘退格清空后中文错误收回");
+    await expectClean(page, "键盘退格清空后");
+
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "0");
+    const typedZero = await limitState(page, LIMIT_UNLIMITED_ROW);
+    check(typedZero.value === "0" && typedZero.badInput === false && typedZero.valid === false,
+      "键盘键入 0 仍是非法值 " + JSON.stringify(typedZero));
+    await expectInvalid(page, "键盘键入 0", "知乎热榜", 1, "0");
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "1001");
+    await expectInvalid(page, "键盘键入 1001", "知乎热榜", 1, "1001");
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "");
+    await expectClean(page, "键盘退格清回已保存的不限");
+
 
     console.log("TASK FORM DIRTY UI PASS " + JSON.stringify({ assertions }));
   } finally {

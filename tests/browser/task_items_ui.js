@@ -585,6 +585,85 @@ async function cancelTaskDialog(page) {
     check(hit.hit, "390px 保存按钮未被遮挡");
     check(hit.top >= 0 && hit.bottom <= 844, "390px 保存按钮在视口内：" + JSON.stringify(hit));
 
+    // ⑩ 真实键盘输入条数：正常键入按数字保存；未完成的数字（badInput，value 为空串）
+    // 不许当成「不限」发出去，也不许改写输入框。
+    // 任务A的第二行是已保存的「不限」（zhihu_hot）。
+    const unlimitedInput = "#task-item-list .task-item-row:nth-child(2) .task-item-limit-input";
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    await page.click(unlimitedInput);
+    for (let index = 0; index < 6; index += 1) {
+      await page.keyboard.press("Backspace");
+    }
+    await page.keyboard.type("6");
+    await page.click("#task-save-button");
+    await page.waitForFunction(() => window.__calls.some((call) =>
+      call.endpoint.endsWith("/update") && call.payload.items.some((item) => item.limit === 6)));
+    const typedUpdate = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/update")).pop());
+    check(JSON.stringify(typedUpdate.payload.items) === JSON.stringify([
+      { content_type: "daily_news", limit: 2 },
+      { content_type: "zhihu_hot", limit: 6 },
+    ]), "键盘键入的条数按数字保存：" + JSON.stringify(typedUpdate.payload.items));
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    await page.click(unlimitedInput);
+    for (let index = 0; index < 6; index += 1) {
+      await page.keyboard.press("Backspace");
+    }
+    await page.keyboard.type("1e");
+    const badTyped = await page.evaluate((selector) => {
+      const input = document.querySelector(selector);
+      return {
+        value: input.value,
+        badInput: input.validity.badInput,
+        valid: input.validity.valid,
+        ariaInvalid: input.getAttribute("aria-invalid"),
+        message: input.validationMessage,
+      };
+    }, unlimitedInput);
+    check(badTyped.value === "" && badTyped.badInput === true,
+      "键盘键入 1e：input.value 为空但 validity.badInput 为真 " + JSON.stringify(badTyped));
+    check(badTyped.valid === false && badTyped.ariaInvalid === "true" &&
+      badTyped.message.includes("知乎热榜的条数需为 1-1000 的整数"),
+      "键盘键入 1e：中文校验信息与 aria-invalid " + JSON.stringify(badTyped));
+    const requestsBeforeBadSave = await page.evaluate(() => window.__calls.length);
+    await page.click("#task-save-button");
+    await page.waitForSelector("#task-form-error:not([hidden])");
+    const badSaveBlocked = await page.evaluate((before) => ({
+      requests: window.__calls.length - before,
+      error: document.getElementById("task-form-error").textContent,
+      dialog: document.getElementById("task-dialog").open,
+      value: document.querySelector(
+        "#task-item-list .task-item-row:nth-child(2) .task-item-limit-input").value,
+    }), requestsBeforeBadSave);
+    check(badSaveBlocked.requests === 0 && badSaveBlocked.dialog,
+      "键盘坏输入不发出任何请求 " + JSON.stringify(badSaveBlocked));
+    check(badSaveBlocked.error.includes("条数需为 1-1000 的整数") &&
+      badSaveBlocked.error.includes("知乎热榜"),
+      "键盘坏输入显示中文错误 " + badSaveBlocked.error);
+    check(badSaveBlocked.value === "", "键盘坏输入不被改写成不限 " + badSaveBlocked.value);
+
+    // 退格清空后按键盘语义恢复成「不限」，保存载荷是 null 而不是坏值。
+    await page.click(unlimitedInput);
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Backspace");
+    await page.click("#task-save-button");
+    await page.waitForFunction(() => window.__calls.some((call) =>
+      call.endpoint.endsWith("/update") && call.payload.items.some((item) => item.limit === null)));
+    const clearedUpdate = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/update")).pop());
+    check(JSON.stringify(clearedUpdate.payload.items) === JSON.stringify([
+      { content_type: "daily_news", limit: 2 },
+      { content_type: "zhihu_hot", limit: null },
+    ]), "退格清空后按不限保存：" + JSON.stringify(clearedUpdate.payload.items));
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    const reopenedLimits = await page.evaluate(() => window.__state.tasks
+      .find((task) => task.id === "task-a").items.map((item) => item.limit).join("|"));
+    check(reopenedLimits === "2|", "任务A保存后桩数据里第二行是不限：" + reopenedLimits);
+
     console.log("TASK ITEMS UI PASS " + JSON.stringify({ assertions }));
   } finally {
     await browser.close();

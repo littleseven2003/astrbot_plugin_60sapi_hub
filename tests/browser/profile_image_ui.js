@@ -103,6 +103,15 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function waitUntil(predicate, message, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || WAIT);
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(message || "等待超时");
+}
+
 const routeState = {
   previewData: null,
   imageData: null,
@@ -419,15 +428,51 @@ async function stateText(frame) {
         routeState.imageStatus = 200;
         routeState.imageData = imagesPayload(SECTIONS, []);
 
-        /* 4) 旧响应隔离：延迟旧请求，切换到另一个任务后旧响应不得覆盖 */
+        /* 4) 旧响应隔离：旧图片请求在途时用真实关闭按钮关闭预览，再打开另一个任务 */
         routeState.imageGate = deferred();
+        const staleCallsBefore = routeState.imageCalls;
         await runImage(frame);
         await frame.waitForFunction(
           () => document.getElementById("task-preview-image-state").textContent.includes("正在生成图片"),
           null, { timeout: WAIT },
         );
+        await waitUntil(() => routeState.imageCalls > staleCallsBefore,
+          "旧图片请求未在关闭预览前发出");
+        check(routeState.imageCalls > staleCallsBefore, "关闭预览前旧图片请求必须已发出");
+
+        /* 走应用里真实的关闭控件：关闭对话框并清空图片面板，此时旧请求仍在途 */
+        await frame.evaluate(() => document.getElementById("task-preview-close-button").click());
+        await frame.waitForFunction(
+          () => !document.getElementById("task-preview-dialog")?.open,
+          null, { timeout: WAIT },
+        );
+        const closedPreview = await frame.evaluate(() => ({
+          dialogOpen: Boolean(document.getElementById("task-preview-dialog")?.open),
+          figures: document.querySelectorAll("#task-preview-image-pages figure").length,
+          images: document.querySelectorAll("#task-preview-image-pages img").length,
+          state: document.getElementById("task-preview-image-state").textContent,
+          stateHidden: document.getElementById("task-preview-image-state").hidden,
+          hintHidden: document.getElementById("task-preview-image-hint").hidden,
+          panel: document.querySelector(".preview-image-panel").innerText,
+        }));
+        check(closedPreview.dialogOpen === false, "关闭预览后对话框必须关闭");
+        check(closedPreview.figures === 0 && closedPreview.images === 0,
+          "关闭预览后图片区必须清空: " + JSON.stringify(closedPreview));
+        check(closedPreview.state === "" && closedPreview.stateHidden,
+          "关闭预览后图片状态行必须清空: " + JSON.stringify(closedPreview));
+        check(closedPreview.hintHidden && !closedPreview.panel.includes("正在生成图片"),
+          "关闭预览后不得残留生成中提示: " + JSON.stringify(closedPreview));
+
+        /* 关闭之后才通过任务卡片的预览按钮打开任务 B */
         routeState.previewData = previewPayload(taskIds.second, "图片回归任务B" + stamp, secondRevision);
         await openTask(frame, taskIds.second);
+        const reopenedPreview = await frame.evaluate(() => ({
+          dialogOpen: Boolean(document.getElementById("task-preview-dialog")?.open),
+          title: document.getElementById("task-preview-title").textContent,
+        }));
+        check(reopenedPreview.dialogOpen === true, "关闭后重新打开预览，对话框必须再次打开");
+        check(reopenedPreview.title.includes("图片回归任务B" + stamp),
+          "重新打开后必须预览任务 B: " + JSON.stringify(reopenedPreview));
         await frame.waitForFunction(
           () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,
           null, { timeout: WAIT },
@@ -438,6 +483,10 @@ async function stateText(frame) {
         const afterStale = await figures(frame);
         check(afterStale.length === 0, "切换任务后旧响应不得写入: " + JSON.stringify(afterStale));
         check((await stateText(frame)).state === "", "旧响应不得恢复已清空的状态行");
+        const staleImagePanel = await frame.evaluate(() =>
+          document.querySelector(".preview-image-panel").innerText);
+        check(!staleImagePanel.includes("每日新闻") && !staleImagePanel.includes("Bilibili 热搜"),
+          "旧任务 A 的长图不得出现在任务 B 的预览里: " + staleImagePanel.slice(0, 300));
 
         /* 切换回第一个任务后重新请求，必须拿到新结果（旧响应已失效） */
         routeState.imageData = imagesPayload([SECTIONS[0]], []);

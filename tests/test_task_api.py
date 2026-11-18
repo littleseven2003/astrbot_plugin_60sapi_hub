@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -425,7 +426,7 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capability.status_code, 200, capability.body)
         self.assertEqual(previews.calls[0][0], task["id"])
 
-        with sqlite3.connect(self.db) as connection:
+        with closing(sqlite3.connect(self.db)) as connection:
             executions = connection.execute(
                 "SELECT COUNT(*) FROM delivery_executions",
             ).fetchone()[0]

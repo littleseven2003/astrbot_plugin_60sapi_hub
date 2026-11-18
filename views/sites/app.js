@@ -2581,9 +2581,6 @@ function renderTaskItems() {
     elements.taskItemList.append(empty);
   }
   state.taskItems.forEach((item, index) => {
-    // badInput 只属于被销毁的那个 DOM 元素：重建后新元素没有它，state 也不能留，
-    // 否则会留下「框里空着却判条数非法」的死状态。
-    item.limitBadInput = false;
     const row = document.createElement("li");
     row.className = "task-item-row";
     row.dataset.contentType = item.content_type;
@@ -2606,18 +2603,20 @@ function renderTaskItems() {
     limitInput.dataset.itemIndex = String(index);
     limitInput.setAttribute("aria-label", taskItemLabel(item.content_type) + "条数");
     limitInput.addEventListener("input", () => applyTaskItemLimitEdit(limitInput, index));
-    // 未完成的数字（"1e"、"-"）在框里是空串、badInput 为真，退格清不掉它。
-    // 退格/删除/Esc 直接把值复位为空，让「空 = 不限」重新成立。
+    // 退格/删除是明确的「清空」：数字框里的未完成数字（"1e"、"-"）浏览器清不掉，
+    // 必须手动复位。Escape 不在此列，它只承担关闭对话框的语义。
     limitInput.addEventListener("keydown", (event) => {
-      if (!limitInput.validity.badInput) return;
-      if (event.key !== "Backspace" && event.key !== "Delete" && event.key !== "Escape") return;
+      if (!limitInput.validity.badInput && !item.limitBadInput) return;
+      if (event.key !== "Backspace" && event.key !== "Delete") return;
       limitInput.value = "";
       applyTaskItemLimitEdit(limitInput, index);
     });
-    syncTaskItemLimitValidity(limitInput, item);
     const limitText = document.createElement("span");
     limitText.className = "task-item-limit-text";
     limitText.textContent = "条";
+    const limitHint = document.createElement("span");
+    limitHint.className = "task-item-limit-hint";
+    limitHint.hidden = true;
     limitField.append(limitInput, limitText);
     const actions = document.createElement("span");
     actions.className = "task-item-actions";
@@ -2631,7 +2630,9 @@ function renderTaskItems() {
       makeButton("移除", "button button-quiet-danger",
         () => removeTaskItem(index), "移除栏目 " + taskItemLabel(item.content_type)),
     );
-    row.append(order, label, limitField, actions);
+    row.append(order, label, limitField, actions, limitHint);
+    // 提示节点要先挂进行里，sync 才找得到它。
+    syncTaskItemLimitValidity(limitInput, item);
     elements.taskItemList.append(row);
   });
   taskItemOptions();
@@ -3828,12 +3829,21 @@ function showTaskFormError(message) {
 
 function setTaskFormDisabled(disabled) {
   state.taskFormDisabled = disabled;
-  elements.taskSaveButton.disabled = disabled;
   for (const control of elements.taskForm.querySelectorAll(
     "input, select, textarea, button",
   )) {
-    control.disabled = disabled;
+    if (control === elements.taskSaveButton) continue;
+    if (disabled) {
+      // 各控件自己有禁用条件（首个栏目的上移、已全部加入时的下拉）。
+      // 一律置真再一律置假会把这些条件抹掉，所以先记下原值。
+      control.dataset.formSuspended = control.disabled ? "1" : "0";
+      control.disabled = true;
+    } else if (control.dataset.formSuspended !== undefined) {
+      control.disabled = control.dataset.formSuspended === "1";
+      delete control.dataset.formSuspended;
+    }
   }
+  elements.taskSaveButton.disabled = disabled;
   applyTaskScheduleEnabled();
   elements.taskForm.setAttribute("aria-busy", String(disabled));
   if (!disabled) updateTaskCapabilityGate();
@@ -3982,8 +3992,10 @@ function taskItemLimitErrorMessage(labels) {
 // 气泡说中文（浏览器对 badInput 只说「请输入一个数字」，看不出该填什么）。
 function syncTaskItemLimitValidity(input, item) {
   const invalid = taskItemLimitState(item.limitText, item.limitBadInput).kind === "invalid";
-  // 元素自身处于 badInput 时 value 是空串：这时写「不限」是骗人的，换成明确要求。
-  input.placeholder = input.validity.badInput
+  // 元素自身处于 badInput 时 value 是空串；重绘出的新元素没有 badInput，但 state 记着它。
+  // 两种都算「键入的数字还没成形」，此时写「不限」是骗人的。
+  const unsettled = Boolean(item.limitBadInput) || input.validity.badInput;
+  input.placeholder = unsettled
     ? "请输入 1-" + TASK_ITEM_LIMIT_MAX + " 的整数"
     : "不限";
   input.setCustomValidity(
@@ -3991,6 +4003,14 @@ function syncTaskItemLimitValidity(input, item) {
   );
   if (invalid) input.setAttribute("aria-invalid", "true");
   else input.removeAttribute("aria-invalid");
+  const row = input.closest(".task-item-row");
+  const hint = row ? row.querySelector(".task-item-limit-hint") : null;
+  if (hint) {
+    hint.textContent = invalid
+      ? "请输入 1-" + TASK_ITEM_LIMIT_MAX + " 的整数，留空表示不限"
+      : "";
+    hint.hidden = !invalid;
+  }
 }
 
 // 一次编辑：元素自己的值/校验态、state、两个入口和过期错误一起跟着走。
@@ -4003,10 +4023,6 @@ function applyTaskItemLimitEdit(input, index) {
   item.limitText = input.value;
   item.limitBadInput = input.validity.badInput;
   syncTaskItemLimitValidity(input, item);
-  // 改对了就收回自己写下的那条错误，不留过期的红字。
-  if (state.taskLimitErrorShown && invalidTaskItemLabels().length === 0) {
-    clearTaskFormError();
-  }
   invalidateTaskFormRequests();
   updateTaskFormGates();
 }
@@ -4136,6 +4152,10 @@ function taskFormGateHintText() {
 }
 
 function updateTaskFormGates() {
+  // 非法行改对或整行删掉后，它留下的红字必须马上收回，不能挂在表单顶部。
+  if (state.taskLimitErrorShown && invalidTaskItemLabels().length === 0) {
+    clearTaskFormError();
+  }
   const blocked = state.taskFormDisabled || state.taskMode !== "edit" ||
     !state.editingTask || state.taskSaving;
   const hint = blocked ? "" : taskFormGateHintText();
@@ -4224,6 +4244,7 @@ async function runTaskCapabilityTest() {
     setTaskCapabilityResult(friendlyErrorMessage(error), "error");
   } finally {
     // 旧请求（成功或失败）既不得解除新请求的忙状态，也不得覆盖它的文案。
+    elements.taskDialog.dataset.capabilitySettled = String(requestId);
     if (state.taskCapabilityTestInflightId === requestId) {
       state.taskCapabilityTestInflightId = 0;
       updateTaskCapabilityGate();
@@ -6216,6 +6237,7 @@ function bindNavigation() {
 const formGuardState = {
   baselines: new WeakMap(),
   pendingDialog: null,
+  taskSignature: "",
 };
 
 function formSnapshot(form) {
@@ -6265,6 +6287,9 @@ function captureFormBaselines(dialog) {
   for (const form of dialog.querySelectorAll("form")) {
     formGuardState.baselines.set(form, formSnapshot(form));
   }
+  if (dialog === elements.taskDialog) {
+    formGuardState.taskSignature = taskFormSignatureKey();
+  }
 }
 
 function formHasUnsavedChanges(form) {
@@ -6283,6 +6308,10 @@ function dialogHasUnsavedChanges(dialog) {
     if (formHasUnsavedChanges(form)) {
       return true;
     }
+  }
+  // 栏目与候选站点的顺序、条数的非法态都不在控件快照里，靠整表签名补上。
+  if (dialog === elements.taskDialog) {
+    return taskFormSignatureKey() !== formGuardState.taskSignature;
   }
   return false;
 }

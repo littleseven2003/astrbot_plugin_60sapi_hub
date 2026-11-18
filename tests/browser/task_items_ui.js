@@ -585,6 +585,31 @@ async function cancelTaskDialog(page) {
     check(hit.hit, "390px 保存按钮未被遮挡");
     check(hit.top >= 0 && hit.bottom <= 844, "390px 保存按钮在视口内：" + JSON.stringify(hit));
 
+    // 非法提示在 390px 也不能把行或页面撑出横向溢出。
+    await narrow.click("#task-item-list .task-item-row:nth-child(1) .task-item-limit-input");
+    for (let index = 0; index < 2; index += 1) {
+      await narrow.keyboard.press("Backspace");
+    }
+    await narrow.keyboard.type("1e");
+    const hintMetrics = await narrow.evaluate(() => {
+      const row = document.querySelector("#task-item-list .task-item-row");
+      const hint = row.querySelector(".task-item-limit-hint");
+      const input = row.querySelector(".task-item-limit-input");
+      return {
+        hidden: hint.hidden,
+        text: hint.textContent.trim(),
+        ariaInvalid: input.getAttribute("aria-invalid"),
+        rowOverflow: row.scrollWidth - row.clientWidth,
+        rowWidth: row.getBoundingClientRect().width,
+        hintWidth: hint.getBoundingClientRect().width,
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    check(hintMetrics.hidden === false && hintMetrics.text.includes("1-1000") &&
+      hintMetrics.ariaInvalid === "true" && hintMetrics.rowOverflow <= 1 &&
+      hintMetrics.doc <= 1 && hintMetrics.hintWidth <= hintMetrics.rowWidth + 1,
+    "390px 非法条数提示可见且不撑破行：" + JSON.stringify(hintMetrics));
+
     // ⑩ 真实键盘输入条数：正常键入按数字保存；未完成的数字（badInput，value 为空串）
     // 不许当成「不限」发出去，也不许改写输入框。
     // 任务A的第二行是已保存的「不限」（zhihu_hot）。
@@ -645,6 +670,102 @@ async function cancelTaskDialog(page) {
       badSaveBlocked.error.includes("知乎热榜"),
       "键盘坏输入显示中文错误 " + badSaveBlocked.error);
     check(badSaveBlocked.value === "", "键盘坏输入不被改写成不限 " + badSaveBlocked.value);
+
+    // ⑪ 坏输入是用户的输入事实，不是某个 DOM 元素的寿命：行被重建之后仍然非法，
+    // 只有显式清空（退格）或键入数字才算解决。
+    const limitRow = (index) => page.evaluate((rowIndex) => {
+      const row = document.querySelectorAll("#task-item-list .task-item-row")[rowIndex];
+      if (!row) return null;
+      const input = row.querySelector(".task-item-limit-input");
+      const hint = row.querySelector(".task-item-limit-hint");
+      return {
+        type: row.dataset.contentType,
+        value: input.value,
+        badInput: input.validity.badInput,
+        valid: input.validity.valid,
+        ariaInvalid: input.getAttribute("aria-invalid"),
+        placeholder: input.placeholder,
+        hint: hint && !hint.hidden ? hint.textContent.trim() : "",
+      };
+    }, index);
+    const badRow = await limitRow(1);
+    check(badRow.hint.includes("1-1000"), "非法行里有可见提示：" + JSON.stringify(badRow));
+    await page.locator("#task-item-list .task-item-row:nth-child(2) button",
+      { hasText: "上移" }).click();
+    const movedBadRow = await limitRow(0);
+    check(movedBadRow.type === "zhihu_hot" && movedBadRow.value === "" &&
+      movedBadRow.badInput === false && movedBadRow.valid === false &&
+      movedBadRow.ariaInvalid === "true" &&
+      movedBadRow.placeholder === "请输入 1-1000 的整数" && movedBadRow.hint.includes("1-1000"),
+    "上移重建后该行仍然非法：" + JSON.stringify(movedBadRow));
+    // 预览请求也会带合法的不限（limit:null），所以只比较点击前后 update 载荷里的不限条数。
+    const nullUpdates = () => page.evaluate(() => window.__calls.filter((call) =>
+      call.endpoint.endsWith("/update") && call.payload && Array.isArray(call.payload.items) &&
+      call.payload.items.some((item) => item.limit === null)).length);
+    const stickyBefore = await page.evaluate(() => window.__calls.length);
+    const nullUpdatesBefore = await nullUpdates();
+    await page.click("#task-save-button");
+    const stickySave = await page.evaluate((before) => ({
+      requests: window.__calls.length - before,
+      error: document.getElementById("task-form-error").textContent,
+      dialog: document.getElementById("task-dialog").open,
+    }), stickyBefore);
+    check(stickySave.requests === 0 && (await nullUpdates()) === nullUpdatesBefore &&
+      stickySave.dialog && stickySave.error.includes("知乎热榜"),
+    "重建后点保存仍被拦且没有 limit:null 载荷：" +
+      JSON.stringify({ ...stickySave, nullUpdatesBefore }));
+
+    // Escape 不承担清空：它只走对话框关闭守卫。
+    await page.click("#task-item-list .task-item-row:nth-child(1) .task-item-limit-input");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector("#discard-dialog[open]");
+    const afterEscape = await page.evaluate(() => {
+      const input = document.querySelector(
+        "#task-item-list .task-item-row:nth-child(1) .task-item-limit-input");
+      return {
+        taskOpen: document.getElementById("task-dialog").open,
+        discardOpen: document.getElementById("discard-dialog").open,
+        value: input.value,
+        badInput: input.validity.badInput,
+        ariaInvalid: input.getAttribute("aria-invalid"),
+      };
+    });
+    check(afterEscape.taskOpen && afterEscape.discardOpen && afterEscape.value === "" &&
+      afterEscape.badInput === false && afterEscape.ariaInvalid === "true",
+    "Escape 不清空条数、只弹放弃确认：" + JSON.stringify(afterEscape));
+    await page.click("#discard-cancel-button");
+    await page.waitForFunction(() => !document.getElementById("discard-dialog").open);
+    const keptEditing = await limitRow(0);
+    check(keptEditing.valid === false && keptEditing.ariaInvalid === "true",
+      "继续编辑后坏输入仍在：" + JSON.stringify(keptEditing));
+
+    // 删掉坏行本身：它的提示与顶部红字立刻消失，其它行的条数不受影响。
+    await page.locator("#task-item-list .task-item-row:nth-child(1) button",
+      { hasText: "移除" }).click();
+    const afterRemove = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("#task-item-list .task-item-row"));
+      return {
+        types: rows.map((row) => row.dataset.contentType),
+        values: rows.map((row) => row.querySelector(".task-item-limit-input").value),
+        hints: rows.filter((row) => {
+          const hint = row.querySelector(".task-item-limit-hint");
+          return hint && !hint.hidden;
+        }).length,
+        errorHidden: document.getElementById("task-form-error").hidden,
+      };
+    });
+    check(JSON.stringify(afterRemove.types) === JSON.stringify(["daily_news"]) &&
+      afterRemove.values[0] === "2" && afterRemove.hints === 0 && afterRemove.errorHidden,
+    "删掉坏行后提示消失、其它行条数不丢：" + JSON.stringify(afterRemove));
+
+    await cancelTaskDialog(page);
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const reopenedValues = await page.evaluate(() => Array.from(document.querySelectorAll(
+      "#task-item-list .task-item-row .task-item-limit-input")).map((input) => input.value));
+    check(JSON.stringify(reopenedValues) === JSON.stringify(["2", "6"]),
+      "放弃删行后重开是已保存的条数：" + JSON.stringify(reopenedValues));
 
     // 退格清空后按键盘语义恢复成「不限」，保存载荷是 null 而不是坏值。
     await page.click(unlimitedInput);

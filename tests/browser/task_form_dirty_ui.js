@@ -85,6 +85,26 @@ const TASKS = [
     schedule: null, schedule_raw: null, schedule_error: null,
     sites: [{ id: "site-b", name: "站点B", enabled: true }],
   },
+  {
+    // 五种栏目 + 三个站点全用上：下拉无项可加，首尾行按钮由渲染期决定。
+    id: "task-c", name: "任务C",
+    items: [
+      { content_type: "daily_news", label: LABELS.daily_news, limit: 1 },
+      { content_type: "bilibili_hot", label: LABELS.bilibili_hot, limit: 2 },
+      { content_type: "zhihu_hot", label: LABELS.zhihu_hot, limit: 3 },
+      { content_type: "douyin_hot", label: LABELS.douyin_hot, limit: null },
+      { content_type: "toutiao_hot", label: LABELS.toutiao_hot, limit: 4 },
+    ],
+    output_format: "text", output_label: "纯文字",
+    umos: [],
+    enabled: false, revision: 2, created_at: "", updated_at: "",
+    schedule: null, schedule_raw: null, schedule_error: null,
+    sites: [
+      { id: "site-a", name: "站点A", enabled: true },
+      { id: "site-b", name: "站点B", enabled: true },
+      { id: "site-c", name: "站点C", enabled: false },
+    ],
+  },
 ];
 
 const server = http.createServer((request, response) => {
@@ -173,7 +193,31 @@ async function openPage(browser, port) {
         if (endpoint.endsWith("/update")) {
           const id = endpoint.split("/")[1];
           const target = window.__state.tasks.find((task) => task.id === id);
-          if (target) target.revision += 1;
+          if (target) {
+            // 把真实载荷写回夹具：重开读到的必须是「已保存」的值，而不是原样。
+            target.name = payload.name;
+            target.items = (payload.items || []).map((item) => ({
+              content_type: item.content_type,
+              label: fixtures.labels[item.content_type],
+              limit: item.limit === undefined ? null : item.limit,
+            }));
+            target.sites = (payload.sites || []).map((siteId) => {
+              const site = fixtures.sites.find((entry) => entry.id === siteId) || {};
+              return {
+                id: siteId,
+                name: site.name || siteId,
+                enabled: Boolean(site.enabled),
+              };
+            });
+            target.output_format = payload.output_format;
+            target.output_label = payload.output_format === "markdown" ? "Markdown" : "纯文字";
+            target.umos = (payload.umos || []).slice();
+            if (payload.schedule !== undefined) {
+              target.schedule = payload.schedule;
+              target.schedule_raw = payload.schedule;
+            }
+            target.revision += 1;
+          }
           return { task: target || null };
         }
         return { host };
@@ -304,16 +348,35 @@ function rowLimitState(page, rowIndex) {
   }, rowIndex);
 }
 
-// 行被重建后必须回到「空 = 不限」：不能带着上一轮元素的 badInput 变灰。
-async function expectBadInputRowCleared(page, label, rowIndex) {
+// 行被重建后仍然是非法：坏的是「用户键入的数字还没成形」，不是那个 DOM 元素。
+async function expectStickyInvalidRow(page, label, rowIndex) {
   const state = await rowLimitState(page, rowIndex);
   check(state !== null && state.value === "" && state.badInput === false &&
-    state.valid === true && state.ariaInvalid === null && state.placeholder === "不限",
-    label + "：重建后的条数框为空串、原生合法、无 aria-invalid、placeholder 恢复「不限」 " +
+    state.valid === false && state.ariaInvalid === "true" &&
+    state.placeholder === "请输入 1-1000 的整数" &&
+    state.message.includes("条数需为 1-1000 的整数"),
+    label + "：重绘后该行仍非法（空值 + aria-invalid + 明确 placeholder） " +
     JSON.stringify(state));
+  const hints = await page.$$eval("#task-item-list .task-item-row .task-item-limit-hint",
+    (nodes) => nodes.filter((node) => !node.hidden).map((node) => node.textContent.trim()));
+  check(hints.length === 1 && hints[0].includes("请输入 1-1000 的整数"),
+    label + "：非法行有一条可见提示 " + JSON.stringify(hints));
   const snapshot = await gate(page);
-  check(!snapshot.hintText.includes("栏目条数不合法"),
-    label + "：提示区不再报「栏目条数不合法」 " + snapshot.hintText);
+  check(snapshot.previewDisabled && snapshot.testDisabled,
+    label + "：预览与能力测试都锁着 " + JSON.stringify(snapshot));
+}
+
+// 能力测试请求自己记的结算序号：等到旧请求的 finally 真跑过，不靠固定时长。
+function capabilitySettled(page) {
+  return page.evaluate(() =>
+    document.getElementById("task-dialog").dataset.capabilitySettled || "");
+}
+
+async function waitCapabilitySettled(page, previous) {
+  await page.waitForFunction((prev) => {
+    const value = document.getElementById("task-dialog").dataset.capabilitySettled;
+    return Boolean(value) && value !== prev;
+  }, previous);
 }
 
 (async () => {
@@ -495,8 +558,9 @@ async function expectBadInputRowCleared(page, label, rowIndex) {
     await page.click("#task-capability-test-button");
     await waitHold(page, "test", 1);
     await page.fill("#task-name", "任务A在途");
+    const settledBeforeStaleOk = await capabilitySettled(page);
     await releaseHold(page, "test");
-    await page.waitForTimeout(300);
+    await waitCapabilitySettled(page, settledBeforeStaleOk);
     const capabilityAfter = await page.evaluate(() => ({
       text: document.getElementById("task-capability-result").textContent,
       hidden: document.getElementById("task-capability-result").hidden,
@@ -550,8 +614,9 @@ async function expectBadInputRowCleared(page, label, rowIndex) {
     await waitHold(page, "test", 1);
     await page.fill("#task-name", "任务A待关闭");
     await cancelTaskDialog(page);
+    const settledBeforeClose = await capabilitySettled(page);
     await releaseHold(page, "test");
-    await page.waitForTimeout(300);
+    await waitCapabilitySettled(page, settledBeforeClose);
     const afterClose = await page.evaluate(() => ({
       text: document.getElementById("task-capability-result").textContent,
       dialog: document.getElementById("task-dialog").open,
@@ -672,8 +737,9 @@ async function expectBadInputRowCleared(page, label, rowIndex) {
     check(busyB.testDisabled && busyB.hintText === busyText,
       "请求 B 在途：按钮置灰且提示检查中 " + JSON.stringify(busyB));
 
+    const settledBeforeA = await capabilitySettled(page);
     await releaseHold(page, "test");
-    await page.waitForTimeout(300);
+    await waitCapabilitySettled(page, settledBeforeA);
     const afterStaleA = await gate(page);
     check(afterStaleA.testDisabled === true,
       "旧请求 A 成功后新请求 B 仍在途，按钮必须保持置灰（忙状态没被提前解除）" +
@@ -706,8 +772,9 @@ async function expectBadInputRowCleared(page, label, rowIndex) {
     await expectClean(page, "作废失败的 A 后表单改回已保存");
     await page.click("#task-capability-test-button");
     await waitHold(page, "test", 2);
+    const settledBeforeFailedA = await capabilitySettled(page);
     await releaseHold(page, "test");
-    await page.waitForTimeout(300);
+    await waitCapabilitySettled(page, settledBeforeFailedA);
     const afterFailedA = await gate(page);
     check(afterFailedA.testDisabled === true,
       "旧请求 A 以失败结束时也不解除 B2 的忙状态 " + JSON.stringify(afterFailedA));
@@ -721,122 +788,301 @@ async function expectBadInputRowCleared(page, label, rowIndex) {
     check(afterB2.testDisabled === false && afterB2.hintText === "新请求 B2 的结果",
       "B2 结束后按钮恢复可用且显示 B2 的结果 " + JSON.stringify(afterB2));
     await setHold(page, "test", false);
-
-    // ⑫ 原生 badInput（键入 "1e" 得到 value="" + badInput 真）只属于当前 DOM 元素：
-    // 上移/下移/增删栏目重建行后，新元素不得继承「条数非法」，否则会卡成
-    // 「框里空的、placeholder 写不限、却置灰预览与能力测试、退格也清不掉」。
+    // ⑫ 原生 badInput（键入 "1e" 得到 value="" + badInput 真）记录的是用户的输入，
+    // 不是某个 DOM 元素的一次寿命：上移/下移/增删栏目重建行之后仍然是非法条数。
+    // 只有「显式清空（Backspace/Delete）」或「键入合法数字」才算解决。
     await page.fill("#task-name", "任务A刷");
     await page.fill("#task-name", "任务A");
     await expectClean(page, "重建用例前恢复干净表单");
 
-    // 上移：被重建的那一行回到「空 = 不限」。
+    // 上移：被重建的知乎热榜行仍然非法，保存入口锁死且不产生请求。
     await typeLimit(page, LIMIT_UNLIMITED_ROW, "1e");
     const typedForUp = await rowLimitState(page, 1);
-    check(typedForUp.value === "" && typedForUp.badInput === true,
-      "上移：键入 1e 后字段是空串 + badInput " + JSON.stringify(typedForUp));
+    check(typedForUp.value === "" && typedForUp.badInput === true &&
+      typedForUp.placeholder === "请输入 1-1000 的整数",
+      "上移：键入 1e 后是空串 + badInput，placeholder 不是「不限」 " + JSON.stringify(typedForUp));
     await page.locator("#task-item-list .task-item-row:nth-child(2) button",
       { hasText: "上移" }).click();
-    await expectBadInputRowCleared(page, "上移", 0);
-    // 打点的是重建前那个元素（它当时确实处于 badInput）。
-    check(typedForUp.placeholder === "请输入 1-1000 的整数",
-      "上移：badInput 时 placeholder 不再是「不限」 " + typedForUp.placeholder);
+    await expectStickyInvalidRow(page, "上移", 0);
     const movedUpGate = await gate(page);
-    check(movedUpGate.hintText === DIRTY_HINT &&
-      !movedUpGate.hintText.includes("栏目条数不合法"),
-      "上移：重建后只剩「未保存」提示，没有条数非法 " + movedUpGate.hintText);
-    // 上移改变了顺序，按既有规则就是「未保存」；移回去两个入口必须立刻可用。
+    check(movedUpGate.hintText.includes("栏目条数不合法：知乎热榜"),
+      "上移：重绘后仍然报条数非法 " + movedUpGate.hintText);
+    await page.click("#task-save-button");
+    await page.waitForSelector("#task-form-error:not([hidden])");
+    const blockedAfterUp = await page.evaluate(() => ({
+      updates: window.__calls.filter((call) => call.endpoint.endsWith("/update")).length,
+      nullLimit: window.__calls.some((call) => call.endpoint.endsWith("/update") &&
+        Array.isArray(call.payload.items) &&
+        call.payload.items.some((item) => item.content_type === "zhihu_hot" && item.limit === null)),
+      dialog: document.getElementById("task-dialog").open,
+      error: document.getElementById("task-form-error").textContent,
+    }));
+    check(blockedAfterUp.updates === 0 && !blockedAfterUp.nullLimit && blockedAfterUp.dialog,
+      "上移：非法条数点保存零请求，且没有任何 limit:null 载荷 " + JSON.stringify(blockedAfterUp));
+    check(blockedAfterUp.error.includes("条数需为 1-1000 的整数") &&
+      blockedAfterUp.error.includes("知乎热榜"),
+      "上移：保存被拦并给出可读提示 " + blockedAfterUp.error);
+    // 退格才是明确的清空；清完顺序仍是被改过的，所以只剩「未保存」。
+    await page.click("#task-item-list .task-item-row:nth-child(1) .task-item-limit-input");
+    await page.keyboard.press("Backspace");
+    const clearedAfterUp = await rowLimitState(page, 0);
+    check(clearedAfterUp.value === "" && clearedAfterUp.badInput === false &&
+      clearedAfterUp.valid === true && clearedAfterUp.ariaInvalid === null &&
+      clearedAfterUp.placeholder === "不限",
+      "上移：Backspace 是明确清空 → 合法不限 " + JSON.stringify(clearedAfterUp));
+    check(await page.evaluate(() => document.getElementById("task-form-error").hidden),
+      "上移：改正后过期红字立刻收回");
+    await expectDirty(page, "上移后顺序仍与已保存不同");
     await page.locator("#task-item-list .task-item-row:nth-child(1) button",
       { hasText: "下移" }).click();
     await expectClean(page, "上移后移回原位");
 
-    // 下移：同一行被重建，顺序变化后同样不残留条数非法。
+    // 下移：换个方向重建，坏状态同样跟着走。
     await typeLimit(page, "#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "1e");
     const typedForDown = await rowLimitState(page, 0);
     check(typedForDown.value === "" && typedForDown.badInput === true,
       "下移：键入 1e 后字段是空串 + badInput " + JSON.stringify(typedForDown));
     await page.locator("#task-item-list .task-item-row:nth-child(1) button",
       { hasText: "下移" }).click();
-    await expectBadInputRowCleared(page, "下移", 1);
+    await expectStickyInvalidRow(page, "下移", 1);
     check((await rowLimitState(page, 1)).type === "daily_news",
       "下移：被重建的是每日新闻行 " + JSON.stringify(await rowLimitState(page, 1)));
-    const movedDownGate = await gate(page);
-    check(!movedDownGate.hintText.includes("栏目条数不合法"),
-      "下移：新元素不继承上一轮的条数非法 " + movedDownGate.hintText);
     await page.locator("#task-item-list .task-item-row:nth-child(2) button",
       { hasText: "上移" }).click();
     await typeLimit(page, "#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "2");
     await expectClean(page, "下移用例复原为已保存的 2");
 
-    // 新增另一个栏目：坏输入所在行与新增行都必须是「空 = 合法」。
+    // 新增另一个栏目：坏输入行与新增行分开判断，坏的那行保持非法。
     await typeLimit(page, LIMIT_UNLIMITED_ROW, "1e");
     await page.selectOption("#task-item-picker", "bilibili_hot");
     await page.click("#task-item-add-button");
     await page.waitForFunction(() =>
       document.querySelectorAll("#task-item-list .task-item-row").length === 3);
-    await expectBadInputRowCleared(page, "新增栏目", 1);
+    await expectStickyInvalidRow(page, "新增栏目", 1);
     const addedRow = await rowLimitState(page, 2);
     check(addedRow.type === "bilibili_hot" && addedRow.value === "" && addedRow.badInput === false &&
       addedRow.valid === true && addedRow.ariaInvalid === null && addedRow.placeholder === "不限",
-      "新增栏目：新增行与重建行状态一致 " + JSON.stringify(addedRow));
-    const afterAddGate = await gate(page);
-    check(afterAddGate.hintText === DIRTY_HINT &&
-      !afterAddGate.hintText.includes("栏目条数不合法"),
-      "新增栏目：只剩「未保存」提示 " + afterAddGate.hintText);
+      "新增栏目：新增行是干净的「空 = 不限」 " + JSON.stringify(addedRow));
 
-    // 删除另一个栏目：再一次重建，坏输入行仍然不得变灰。
+    // 删除另一个栏目：又一次重建，坏行依旧非法。
     await page.locator("#task-item-list .task-item-row:nth-child(3) button",
       { hasText: "移除" }).click();
     await page.waitForFunction(() =>
       document.querySelectorAll("#task-item-list .task-item-row").length === 2);
-    await expectBadInputRowCleared(page, "删除栏目", 1);
-    await expectClean(page, "删除新增栏目后两个入口可用");
+    await expectStickyInvalidRow(page, "删除栏目", 1);
 
-    // 不移动、直接退格：badInput 必须能被 Backspace 一键清掉，且不发请求。
-    await typeLimit(page, LIMIT_UNLIMITED_ROW, "1e");
-    const callsBeforeBackspace = await page.evaluate(() => window.__calls.length);
-    await page.keyboard.press("Backspace");
-    const clearedByBackspace = await rowLimitState(page, 1);
-    check(clearedByBackspace.value === "" && clearedByBackspace.badInput === false &&
-      clearedByBackspace.valid === true && clearedByBackspace.ariaInvalid === null &&
-      clearedByBackspace.placeholder === "不限",
-      "退格：键入 1e 后按一次 Backspace 即复位为合法 " + JSON.stringify(clearedByBackspace));
-    const callsAfterBackspace = await page.evaluate(() => window.__calls.length);
-    check(callsAfterBackspace === callsBeforeBackspace,
-      "退格：清理 badInput 不发任何请求 " + callsBeforeBackspace + "->" + callsAfterBackspace);
-    await expectClean(page, "退格清理后两个入口可用");
-
-    // 合法数字不因上移/下移被误清，并真正进入保存载荷。
-    await typeLimit(page, LIMIT_UNLIMITED_ROW, "5");
+    // 删掉坏行本身：它带来的错误提示必须立刻消失，不能挂在表单顶部。
+    await page.click("#task-save-button");
+    await page.waitForSelector("#task-form-error:not([hidden])");
     await page.locator("#task-item-list .task-item-row:nth-child(2) button",
-      { hasText: "上移" }).click();
-    const keptAfterUp = await rowLimitState(page, 0);
-    check(keptAfterUp.type === "zhihu_hot" && keptAfterUp.value === "5" &&
-      keptAfterUp.valid === true && keptAfterUp.ariaInvalid === null,
-      "上移：合法数字 5 原样保留 " + JSON.stringify(keptAfterUp));
+      { hasText: "移除" }).click();
+    await page.waitForFunction(() =>
+      document.querySelectorAll("#task-item-list .task-item-row").length === 1);
+    check(await page.evaluate(() => document.getElementById("task-form-error").hidden),
+      "删除非法行后顶部红字立刻消失");
+    const afterRemoveGate = await gate(page);
+    check(!afterRemoveGate.hintText.includes("栏目条数不合法"),
+      "删除非法行后不再报条数非法 " + afterRemoveGate.hintText);
+
+    // 放弃这次删行：重开回到已保存的两栏。
+    await page.click("#task-cancel-button");
+    await page.waitForSelector("#discard-dialog[open]");
+    await page.click("#discard-confirm-button");
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const reopenedRows = await page.$$eval("#task-item-list .task-item-row",
+      (nodes) => nodes.map((node) => node.dataset.contentType));
+    check(JSON.stringify(reopenedRows) === JSON.stringify(["daily_news", "zhihu_hot"]),
+      "放弃删行后重开是已保存的两栏 " + JSON.stringify(reopenedRows));
+    await expectClean(page, "放弃后重开");
+
+    // ⑬ Escape 只承担关闭对话框：不清空条数，并按未保存守则弹放弃确认。
+    // 这里的输入框值和已保存的一样都是空串，只有整表签名能看出它其实是非法态。
+    await page.click(LIMIT_UNLIMITED_ROW);
+    await page.keyboard.press("Backspace");
+    await page.keyboard.type("1e");
+    const beforeEscape = await rowLimitState(page, 1);
+    check(beforeEscape.value === "" && beforeEscape.badInput === true,
+      "Escape 用例：键入 1e 后是空串 + badInput " + JSON.stringify(beforeEscape));
+    await page.keyboard.press("Escape");
+    await page.waitForSelector("#discard-dialog[open]");
+    const escaped = await page.evaluate(() => ({
+      taskOpen: document.getElementById("task-dialog").open,
+      discardOpen: document.getElementById("discard-dialog").open,
+    }));
+    check(escaped.taskOpen && escaped.discardOpen,
+      "Escape：只弹出放弃修改确认，任务对话框不关 " + JSON.stringify(escaped));
+    const afterEscape = await rowLimitState(page, 1);
+    check(afterEscape.value === "" && afterEscape.badInput === true &&
+      afterEscape.ariaInvalid === "true" && afterEscape.placeholder === "请输入 1-1000 的整数",
+      "Escape：条数没有被清成合法不限 " + JSON.stringify(afterEscape));
+    await page.click("#discard-cancel-button");
+    await page.waitForFunction(() => !document.getElementById("discard-dialog").open);
+    check(await page.evaluate(() => document.getElementById("task-dialog").open),
+      "放弃确认里选「继续编辑」后仍留在任务表单");
+    const stillInvalid = await rowLimitState(page, 1);
+    check(stillInvalid.ariaInvalid === "true" && stillInvalid.value === "",
+      "继续编辑后坏输入仍在（Escape 没有顺手抹掉它） " + JSON.stringify(stillInvalid));
+    await page.click(LIMIT_UNLIMITED_ROW);
+    await page.keyboard.press("Backspace");
+    await expectClean(page, "退格清空后表单回到已保存状态");
+
+    // ⑭ 只调顺序也必须是未保存修改：候选站点顺序不在任何控件值里，
+    // 只比控件快照会静默丢掉用户的改动。
+    await page.locator("#task-site-list .task-site-row:nth-child(1) button",
+      { hasText: "下移" }).click();
+    await expectDirty(page, "只调候选站点顺序");
+    await page.click("#task-cancel-button");
+    await page.waitForSelector("#discard-dialog[open]");
+    check(await page.evaluate(() => document.getElementById("task-dialog").open),
+      "只调候选顺序：取消关闭先弹放弃确认，任务对话框不关");
+    await page.click("#discard-cancel-button");
+    await page.waitForFunction(() => !document.getElementById("discard-dialog").open);
+    const keptSites = await page.$$eval("#task-site-list .task-site-row .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent.trim().split("（")[0]));
+    check(JSON.stringify(keptSites) === JSON.stringify(["站点C", "站点A"]),
+      "选「继续编辑」保留当前候选顺序 " + JSON.stringify(keptSites));
+    await page.click("#task-cancel-button");
+    await page.waitForSelector("#discard-dialog[open]");
+    await page.click("#discard-confirm-button");
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const restoredSites = await page.$$eval("#task-site-list .task-site-row .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent.trim().split("（")[0]));
+    check(JSON.stringify(restoredSites) === JSON.stringify(["站点A", "站点C"]),
+      "放弃后重开是已保存的候选顺序 " + JSON.stringify(restoredSites));
+    await expectClean(page, "放弃后重开候选顺序干净");
+
+    // 栏目顺序同理。
     await page.locator("#task-item-list .task-item-row:nth-child(1) button",
       { hasText: "下移" }).click();
-    const keptAfterDown = await rowLimitState(page, 1);
-    check(keptAfterDown.type === "zhihu_hot" && keptAfterDown.value === "5",
-      "下移：合法数字 5 原样保留 " + JSON.stringify(keptAfterDown));
+    await expectDirty(page, "只调栏目顺序");
+    await page.click("#task-cancel-button");
+    await page.waitForSelector("#discard-dialog[open]");
+    await page.click("#discard-cancel-button");
+    await page.waitForFunction(() => !document.getElementById("discard-dialog").open);
+    const keptItems = await page.$$eval("#task-item-list .task-item-row",
+      (nodes) => nodes.map((node) => node.dataset.contentType));
+    check(JSON.stringify(keptItems) === JSON.stringify(["zhihu_hot", "daily_news"]),
+      "选「继续编辑」保留当前栏目顺序 " + JSON.stringify(keptItems));
+    await page.click("#task-cancel-button");
+    await page.waitForSelector("#discard-dialog[open]");
+    await page.click("#discard-confirm-button");
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const restoredItems = await page.$$eval("#task-item-list .task-item-row",
+      (nodes) => nodes.map((node) => node.dataset.contentType));
+    check(JSON.stringify(restoredItems) === JSON.stringify(["daily_news", "zhihu_hot"]),
+      "放弃后重开是已保存的栏目顺序 " + JSON.stringify(restoredItems));
 
+    // ⑮ 保存后重开读到的是真实载荷：有限条数、两种顺序。
+    await typeLimit(page, LIMIT_UNLIMITED_ROW, "5");
+    await page.locator("#task-item-list .task-item-row:nth-child(1) button",
+      { hasText: "下移" }).click();
+    await page.locator("#task-site-list .task-site-row:nth-child(1) button",
+      { hasText: "下移" }).click();
     await page.click("#task-save-button");
     await page.waitForFunction(() => !document.getElementById("task-dialog").open);
     const savedPayload = await page.evaluate(() => {
       const calls = window.__calls.filter((call) => call.endpoint.endsWith("/update"));
       return calls.length > 0 ? calls[calls.length - 1].payload : null;
     });
-    check(savedPayload && Array.isArray(savedPayload.items),
-      "保存：载荷带 items " + JSON.stringify(savedPayload));
-    const savedZhihu = savedPayload && savedPayload.items
-      .find((item) => item.content_type === "zhihu_hot");
-    check(savedZhihu && savedZhihu.limit === 5,
-      "保存：真实键入的 5 进入载荷 " + JSON.stringify(savedZhihu));
+    check(savedPayload && Array.isArray(savedPayload.items) &&
+      JSON.stringify(savedPayload.items.map((item) => item.content_type)) ===
+        JSON.stringify(["zhihu_hot", "daily_news"]) &&
+      savedPayload.items[0].limit === 5 && savedPayload.items[1].limit === 2,
+      "保存：载荷带真实栏目顺序与有限条数 " + JSON.stringify(savedPayload.items));
+    check(savedPayload && JSON.stringify(savedPayload.sites) ===
+      JSON.stringify(["site-c", "site-a"]),
+      "保存：载荷带真实候选顺序 " + JSON.stringify(savedPayload.sites));
 
-    // 重新打开任务编辑：从头渲染，条数框仍是「空 = 不限」。
     await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
     await page.waitForSelector("#task-dialog[open]");
-    await expectClean(page, "重新打开编辑");
-    await expectBadInputRowCleared(page, "重新打开编辑", 1);
+    const reopenRows = await page.$$eval("#task-item-list .task-item-row", (nodes) =>
+      nodes.map((node) => ({
+        type: node.dataset.contentType,
+        value: node.querySelector(".task-item-limit-input").value,
+      })));
+    check(JSON.stringify(reopenRows.map((row) => row.type)) ===
+      JSON.stringify(["zhihu_hot", "daily_news"]) &&
+      reopenRows[0].value === "5" && reopenRows[1].value === "2",
+      "重开：栏目顺序与有限条数都来自保存的值 " + JSON.stringify(reopenRows));
+    const reopenSites = await page.$$eval("#task-site-list .task-site-row .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent.trim().split("（")[0]));
+    check(JSON.stringify(reopenSites) === JSON.stringify(["站点C", "站点A"]),
+      "重开：候选顺序来自保存的值 " + JSON.stringify(reopenSites));
+    await expectClean(page, "保存后重开是干净的已保存状态");
+
+    // 显式清空 → 保存 → 重开为「不限」（空值与用户清空是同一件事，但必须真的存下来）。
+    await typeLimit(page, "#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "");
+    await page.click("#task-save-button");
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    const clearedPayload = await page.evaluate(() => {
+      const calls = window.__calls.filter((call) => call.endpoint.endsWith("/update"));
+      return calls.length > 0 ? calls[calls.length - 1].payload : null;
+    });
+    const clearedZhihu = clearedPayload && clearedPayload.items
+      .find((item) => item.content_type === "zhihu_hot");
+    check(clearedZhihu && clearedZhihu.limit === null,
+      "显式清空保存后载荷是不限（limit:null，且是用户主动清空的） " +
+      JSON.stringify(clearedZhihu));
+    await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const unlimitedReopen = await rowLimitState(page, 0);
+    check(unlimitedReopen.type === "zhihu_hot" && unlimitedReopen.value === "" &&
+      unlimitedReopen.valid === true && unlimitedReopen.ariaInvalid === null &&
+      unlimitedReopen.placeholder === "不限",
+      "清空保存后重开是不限 " + JSON.stringify(unlimitedReopen));
+    await expectClean(page, "清空保存后重开干净");
+    await page.click("#task-cancel-button");
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
+    check(!(await page.$("#discard-dialog[open]")),
+      "改回原样并保存后再关闭不提示放弃修改");
+
+    // ⑯ 打开任务后渲染期算出的禁用态不能被整体启停抹掉（真实点击验证）。
+    await page.locator('li[data-task-id="task-c"] button', { hasText: "编辑" }).click();
+    await page.waitForSelector("#task-dialog[open]");
+    const navState = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("#task-item-list .task-item-row"));
+      const siteRows = Array.from(document.querySelectorAll("#task-site-list .task-site-row"));
+      const first = rows[0].querySelectorAll("button");
+      const last = rows[rows.length - 1].querySelectorAll("button");
+      const siteFirst = siteRows[0].querySelectorAll("button");
+      const siteLast = siteRows[siteRows.length - 1].querySelectorAll("button");
+      return {
+        rows: rows.length, sites: siteRows.length,
+        firstUp: first[0].disabled, firstDown: first[1].disabled,
+        lastUp: last[0].disabled, lastDown: last[1].disabled,
+        siteFirstUp: siteFirst[0].disabled, siteFirstDown: siteFirst[1].disabled,
+        siteLastUp: siteLast[0].disabled, siteLastDown: siteLast[1].disabled,
+        itemPicker: document.getElementById("task-item-picker").disabled,
+        itemAdd: document.getElementById("task-item-add-button").disabled,
+        sitePicker: document.getElementById("task-site-picker").disabled,
+        siteAdd: document.getElementById("task-site-add-button").disabled,
+      };
+    });
+    check(navState.rows === 5 && navState.firstUp && !navState.firstDown &&
+      !navState.lastUp && navState.lastDown,
+      "满栏目任务：首行只能下移、末行只能上移 " + JSON.stringify(navState));
+    check(navState.itemPicker && navState.itemAdd,
+      "满栏目任务：没有可添加的栏目时下拉与添加按钮保持禁用 " + JSON.stringify(navState));
+    check(navState.sites === 3 && navState.siteFirstUp && !navState.siteFirstDown &&
+      !navState.siteLastUp && navState.siteLastDown,
+      "满站点任务：首尾候选行的上移/下移按位置禁用 " + JSON.stringify(navState));
+    check(navState.sitePicker && navState.siteAdd,
+      "满站点任务：没有可添加的站点时下拉与添加按钮保持禁用 " + JSON.stringify(navState));
+    // 真点一下被禁用的按钮：顺序不能动。
+    await page.evaluate(() => document.querySelector(
+      "#task-item-list .task-item-row:nth-child(1) .task-item-actions button").click());
+    const afterDisabledClick = await page.$$eval("#task-item-list .task-item-row",
+      (nodes) => nodes.map((node) => node.dataset.contentType));
+    check(afterDisabledClick[0] === "daily_news",
+      "点被禁用的首行上移没有改变顺序 " + JSON.stringify(afterDisabledClick));
+    await page.click("#task-cancel-button");
+    await page.waitForFunction(() => !document.getElementById("task-dialog").open);
 
     console.log("TASK FORM DIRTY UI PASS " + JSON.stringify({ assertions }));
   } finally {

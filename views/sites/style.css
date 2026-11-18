@@ -2632,6 +2632,14 @@ dialog.dialog button {
   white-space: nowrap;
 }
 
+/* 条数非法时除了 aria-invalid 还要看得见：占满一行，不挤动其它列的宽度。 */
+.task-item-limit-hint {
+  flex: 1 0 100%;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .task-item-empty {
   margin: 0;
   padding: 12px;

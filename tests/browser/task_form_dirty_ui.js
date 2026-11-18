@@ -118,6 +118,8 @@ async function openPage(browser, port) {
     window.__state = { tasks: fixtures.tasks.map((task) => JSON.parse(JSON.stringify(task))) };
     window.__holdMode = { preview: false, test: false };
     window.__holds = { preview: [], test: [] };
+    // 每次 capability-test 按调用顺序取一条计划：{kind:"ok"|"fail", message}。
+    window.__capabilityPlan = [];
     window.__awaitHold = (kind) => new Promise((resolve) => {
       window.__holds[kind].push(resolve);
     });
@@ -156,9 +158,11 @@ async function openPage(browser, port) {
       apiPost: async (endpoint, payload) => {
         window.__calls.push({ endpoint, payload });
         if (endpoint.endsWith("/capability-test")) {
+          const plan = window.__capabilityPlan.shift() || { kind: "ok" };
           if (window.__holdMode.test) await window.__awaitHold("test");
+          if (plan.kind === "fail") throw new Error(plan.message || "桩失败");
           return {
-            message: fixtures.capabilityMessage,
+            message: plan.message || fixtures.capabilityMessage,
             satisfied: true, checked_count: 2, truncated: false, cache: null,
           };
         }
@@ -613,6 +617,80 @@ function limitState(page, selector) {
     await typeLimit(page, LIMIT_UNLIMITED_ROW, "");
     await expectClean(page, "键盘退格清回已保存的不限");
 
+    // ⑪ 两道路由门闩：A 在途 → 改字段作废 A → 改回 → 起点 B → 放行 A。
+    // 只有最新一次请求结束才能解除忙状态，旧请求的结果文案也不得落到当前提示。
+    const busyText = "正在检查候选站点…";
+    await page.evaluate(() => {
+      window.__capabilityPlan.push(
+        { kind: "ok", message: "旧请求 A 的结果" },
+        { kind: "ok", message: "新请求 B 的结果" },
+      );
+    });
+    await setHold(page, "test", true);
+    await page.click("#task-capability-test-button");
+    await waitHold(page, "test", 1);
+    const busyA = await gate(page);
+    check(busyA.testDisabled && busyA.hintText === busyText,
+      "请求 A 在途：按钮置灰且提示检查中 " + JSON.stringify(busyA));
+
+    await page.fill("#task-name", "任务A在途B");
+    await page.fill("#task-name", "任务A");
+    await expectClean(page, "作废 A 后表单改回已保存");
+    await page.click("#task-capability-test-button");
+    await waitHold(page, "test", 2);
+    const busyB = await gate(page);
+    check(busyB.testDisabled && busyB.hintText === busyText,
+      "请求 B 在途：按钮置灰且提示检查中 " + JSON.stringify(busyB));
+
+    await releaseHold(page, "test");
+    await page.waitForTimeout(300);
+    const afterStaleA = await gate(page);
+    check(afterStaleA.testDisabled === true,
+      "旧请求 A 成功后新请求 B 仍在途，按钮必须保持置灰（忙状态没被提前解除）" +
+      JSON.stringify(afterStaleA));
+    check(afterStaleA.hintText === busyText,
+      "旧请求 A 的结果文案不得覆盖 B 的检查中提示 " + JSON.stringify(afterStaleA));
+    check(!afterStaleA.hintText.includes("旧请求 A 的结果"),
+      "旧请求 A 的结果文案没有出现 " + afterStaleA.hintText);
+
+    await releaseHold(page, "test");
+    await page.waitForFunction((expected) =>
+      document.getElementById("task-capability-result").textContent === expected,
+    "新请求 B 的结果");
+    const afterB = await gate(page);
+    check(afterB.testDisabled === false && afterB.previewDisabled === false,
+      "B 结束后按钮按表单状态恢复可用 " + JSON.stringify(afterB));
+    check(afterB.hintText === "新请求 B 的结果", "B 的结果文案落地 " + afterB.hintText);
+
+    // 旧请求以失败结束同样不得解除新请求的忙状态。
+    await page.evaluate(() => {
+      window.__capabilityPlan.push(
+        { kind: "fail", message: "旧请求 A 失败" },
+        { kind: "ok", message: "新请求 B2 的结果" },
+      );
+    });
+    await page.click("#task-capability-test-button");
+    await waitHold(page, "test", 1);
+    await page.fill("#task-name", "任务A在途B2");
+    await page.fill("#task-name", "任务A");
+    await expectClean(page, "作废失败的 A 后表单改回已保存");
+    await page.click("#task-capability-test-button");
+    await waitHold(page, "test", 2);
+    await releaseHold(page, "test");
+    await page.waitForTimeout(300);
+    const afterFailedA = await gate(page);
+    check(afterFailedA.testDisabled === true,
+      "旧请求 A 以失败结束时也不解除 B2 的忙状态 " + JSON.stringify(afterFailedA));
+    check(afterFailedA.hintText === busyText && !afterFailedA.hintText.includes("旧请求 A 失败"),
+      "失败的旧请求不得覆盖 B2 的检查中提示 " + afterFailedA.hintText);
+    await releaseHold(page, "test");
+    await page.waitForFunction((expected) =>
+      document.getElementById("task-capability-result").textContent === expected,
+    "新请求 B2 的结果");
+    const afterB2 = await gate(page);
+    check(afterB2.testDisabled === false && afterB2.hintText === "新请求 B2 的结果",
+      "B2 结束后按钮恢复可用且显示 B2 的结果 " + JSON.stringify(afterB2));
+    await setHold(page, "test", false);
 
     console.log("TASK FORM DIRTY UI PASS " + JSON.stringify({ assertions }));
   } finally {

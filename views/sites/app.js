@@ -381,6 +381,8 @@ const state = {
   taskFormEpoch: 0,
   taskFormHintText: "",
   taskCapabilityTestRequestId: 0,
+  // 最新一次在途能力测试的序号（0=空闲）：忙状态不能只按表单推导。
+  taskCapabilityTestInflightId: 0,
   // 表单错误区里是不是我们写的「条数非法」：条数改对后由这里收回。
   taskLimitErrorShown: false,
   deliveryTask: null,
@@ -4120,7 +4122,9 @@ function updateTaskFormGates() {
     !state.editingTask || state.taskSaving;
   const hint = blocked ? "" : taskFormGateHintText();
   const locked = blocked || hint.length > 0;
-  elements.taskCapabilityTestButton.disabled = locked;
+  // 忙状态是表单状态之外的第二个维度：请求在途时按钮保持置灰。
+  elements.taskCapabilityTestButton.disabled =
+    locked || state.taskCapabilityTestInflightId !== 0;
   const preview = elements.taskPreviewFormButton;
   if (preview) {
     preview.disabled = locked;
@@ -4149,6 +4153,8 @@ function updateTaskPreviewGate() {
 // 表单任一字段变化后，在途的能力测试与预览都作废，避免旧响应落到当前弹窗。
 function invalidateTaskFormRequests() {
   state.taskCapabilityTestRequestId += 1;
+  // 作废的请求不再持有忙状态：它结束时（成功或失败）不得再动按钮。
+  state.taskCapabilityTestInflightId = 0;
   if (state.taskPreviewLoading && state.taskPreviewTaskId === state.editingTaskId) {
     clearTaskPreviewPanels();
     showTaskPreviewStatus("任务表单已修改，本次预览已作废；保存后可重新预览。", "info");
@@ -4165,6 +4171,8 @@ async function runTaskCapabilityTest() {
   const epoch = state.taskFormEpoch;
   const formSignature = taskFormSignatureKey();
   const requestId = ++state.taskCapabilityTestRequestId;
+  // 忙状态记在「最新一次请求」的序号上：只有它结束才能解除。
+  state.taskCapabilityTestInflightId = requestId;
   elements.taskCapabilityTestButton.disabled = true;
   setTaskCapabilityResult("正在检查候选站点…", "info");
   // 切换任务、关闭弹窗或改动任一表单字段后，旧请求（成功或失败）都作废：
@@ -4197,7 +4205,11 @@ async function runTaskCapabilityTest() {
     if (!stillCurrent()) return;
     setTaskCapabilityResult(friendlyErrorMessage(error), "error");
   } finally {
-    updateTaskCapabilityGate();
+    // 旧请求（成功或失败）既不得解除新请求的忙状态，也不得覆盖它的文案。
+    if (state.taskCapabilityTestInflightId === requestId) {
+      state.taskCapabilityTestInflightId = 0;
+      updateTaskCapabilityGate();
+    }
   }
 }
 
@@ -5868,6 +5880,7 @@ function bindEvents() {
     // 关闭编辑弹窗即换代：在途的能力测试/预览响应不得再落到任何界面。
     state.taskFormEpoch += 1;
     state.taskCapabilityTestRequestId += 1;
+    state.taskCapabilityTestInflightId = 0;
     state.taskFormHintText = "";
     if (state.taskPreviewLoading && state.taskPreviewTaskId === state.editingTaskId) {
       closeTaskPreview();

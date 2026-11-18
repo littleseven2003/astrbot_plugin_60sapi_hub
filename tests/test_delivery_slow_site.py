@@ -363,9 +363,11 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [page.status for page in record.pages], ["unknown", "unknown"],
         )
+        # 第一个目标真的调用了发送器后超时；第二个目标在预算耗尽后没有
+        # 调用发送器，错误码必须能区分这两种情况。
         self.assertEqual(
             [page.error_code for page in record.pages],
-            ["sender_timeout", "sender_timeout"],
+            ["sender_timeout", "sender_budget_exhausted"],
         )
         self.assertEqual(self.sender.calls, 1, "预算耗尽后不再调用发送器")
 

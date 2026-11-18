@@ -147,7 +147,8 @@ SAFE_ERROR_CODES = frozenset({
     "preview_failed", "preview_invalid", "profile_not_found",
     "record_after_send_failed", "render_failed",
     "section_image_failed", "send_failed",
-    "send_unknown", "sender_cancelled", "sender_exception",
+    "send_unknown", "sender_budget_exhausted", "sender_cancelled",
+    "sender_exception",
     "sender_invalid_payload", "sender_not_found",
     "sender_not_supported", "sender_route_rejected",
     "sender_invalid_result", "sender_timeout", "site_disabled",
@@ -970,7 +971,12 @@ class DeliveryService:
         # 结果未知，按既有 sender timeout 路径处理，绝不重发。
         remaining = send_deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            return DeliverySendResult(SendStatus.UNKNOWN, "sender_timeout")
+            # 发送预算已经用完，这次根本没有调用发送适配器：状态仍是
+            # unknown（可能已发出，绝不自动重发），但错误码要能和“已调用
+            # 后超时”区分开，否则记录无法说明到底发生了什么。
+            return DeliverySendResult(
+                SendStatus.UNKNOWN, "sender_budget_exhausted",
+            )
         try:
             result = await asyncio.wait_for(
                 self._sender.send(message),

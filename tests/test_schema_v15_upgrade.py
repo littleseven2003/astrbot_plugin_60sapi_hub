@@ -19,8 +19,8 @@ from pathlib import Path
 from unittest import mock
 
 import core.site_store as site_store_module
-from core.site_store import SCHEMA_VERSION, SiteStore
-from core.sites import SiteCreate, SiteService
+from core.site_store import SCHEMA_VERSION, SiteStore, SiteStoreError
+from core.sites import SiteCreate, SiteService, SiteStorageError
 from core.tasks import PushTaskService, TaskCreate, TaskUpdate
 
 UMOS = ["bot:GroupMessage:g", "bot:FriendMessage:f"]
@@ -58,6 +58,24 @@ class _MigrationCase(unittest.IsolatedAsyncioTestCase):
             row[0] for row in self._query(
                 "SELECT name FROM sqlite_master WHERE type = 'table'",
             )
+        }
+
+    _SNAPSHOT_TABLES = (
+        "content_profiles",
+        "content_profile_items",
+        "push_tasks",
+        "push_task_umos",
+        "push_task_sites",
+        "delivery_executions",
+        "delivery_targets",
+        "delivery_pages",
+    )
+
+    def _snapshot(self) -> dict[str, list[tuple]]:
+        """整表行集合快照；回滚必须逐行复原，而不只是版本号变回去。"""
+        return {
+            table: sorted(self._query(f"SELECT * FROM {table}"), key=repr)
+            for table in self._SNAPSHOT_TABLES
         }
 
     def _plan_items(self, plan_id: str) -> list[tuple]:
@@ -230,14 +248,22 @@ class SchemaV15UpgradeTest(_MigrationCase):
         site_b = seeded["site_b"]
         self._rewind_to_v14({dropped.id: site_b.id}, drop_candidates=(dropped.id,))
         before = self._plan_items(dropped.id)
+        before_snapshot = self._snapshot()
 
         with mock.patch.object(
             site_store_module, "_CREATE_SCHEDULE_STATE_TABLE", "NOT VALID SQL",
         ):
             sites = SiteService(self.path)
-            with self.assertRaises(Exception):
+            with self.assertRaises(SiteStorageError) as caught:
                 await sites.open()
             await sites.close()
+
+        # 异常链指向注入的 DDL，而不是夹具或无关语句。
+        self.assertIsInstance(caught.exception.__cause__, SiteStoreError)
+        cause = caught.exception.__cause__.__cause__
+        self.assertIsInstance(cause, sqlite3.OperationalError, repr(cause))
+        self.assertIn("syntax error", str(cause), repr(cause))
+        self.assertEqual(self._snapshot(), before_snapshot)
 
         # 提交前失败：旧库结构、版本、候选行都保持原样。
         self.assertIn("site_id", self._columns("content_profiles"))
@@ -293,7 +319,14 @@ class SchemaV16UpgradeTest(_MigrationCase):
                 )
             connection.execute("PRAGMA user_version = 15")
 
-    async def _seed(self, first_items, second_items, *, shared: bool) -> dict:
+    async def _seed(
+        self,
+        first_items,
+        second_items,
+        *,
+        shared: bool,
+        with_history: bool = False,
+    ) -> dict:
         sites = SiteService(self.path)
         await sites.open()
         tasks = PushTaskService(sites.store)
@@ -310,6 +343,22 @@ class SchemaV16UpgradeTest(_MigrationCase):
                 name="旧任务二", items=second_items, sites=[site.id],
                 output_format="markdown", umos=[UMOS[0]],
             ))
+            if with_history:
+                # 历史投递记录在 v15 里按共享组合 id 与当时的版本保存；迁移
+                # 不得改写这两列（执行记录是审计数据，不是活配置）。
+                for task, revision in ((first, 3), (second, 5)):
+                    await sites.store.create_delivery_execution(
+                        execution_id=f"exec-{task.id}",
+                        task_id=task.id,
+                        task_name=task.name,
+                        task_revision=task.revision,
+                        profile_id="legacy-shared",
+                        profile_revision=revision,
+                        site_id=site.id,
+                        site_revision=site.revision,
+                        output_format=task.output_format,
+                        umos=tuple(task.umos),
+                    )
             mapping = (
                 {first.id: "legacy-shared", second.id: "legacy-shared"}
                 if shared
@@ -450,68 +499,399 @@ class SchemaV16UpgradeTest(_MigrationCase):
             await sites.close()
 
     async def test_v16_failure_rolls_back_to_v15_data(self) -> None:
+        """v16 复制到第二个任务时失败：来源可证、整体回滚、排除故障后可重迁。
+
+        故障由触发器 RAISE(FAIL) 注入：FAIL 不撤销同一语句已写入的行，所以
+        回滚前的同连接观测能区分「复制到一半」与「还没开始复制」。
+        """
         seeded = await self._seed(
             [_item("daily_news", 2), _item("douyin_hot", 1)],
             [_item("zhihu_hot", 3)],
-            shared=False,
+            shared=True,
+            with_history=True,
         )
         first = seeded["first"]
         second = seeded["second"]
-        mapping = seeded["mapping"]
-        before_items = {
-            shared_id: self._plan_items(shared_id)
-            for shared_id in mapping.values()
-        }
-        before_plans = sorted(
-            row[0] for row in self._query(
-                "SELECT id FROM content_profiles ORDER BY id",
-            )
+        shared_id = seeded["mapping"][first.id]
+        self.assertEqual(seeded["mapping"][second.id], shared_id)
+        names = {first.id: first.name, second.id: second.name}
+        # 迁移按 t.id 升序复制，所以 id 较小的任务先写完自己的栏目。
+        earlier, later = sorted((first.id, second.id))
+        before = self._snapshot()
+        shared_items = self._plan_items(shared_id)
+        self.assertEqual(
+            [(row[1], row[2]) for row in shared_items],
+            [("daily_news", 2), ("douyin_hot", 1)],
         )
-        # 让 v16 复制第二个任务时触发 abort：迁移必须整体回滚。
+        self.assertEqual(
+            self._query(
+                "SELECT COUNT(*) FROM content_profile_items "
+                "WHERE profile_id IN (?, ?)",
+                (first.id, second.id),
+            )[0][0],
+            0,
+            "v15 夹具里两个任务都不该已有私有栏目",
+        )
+
         with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute(
-                "CREATE TRIGGER block_v16_copy BEFORE INSERT ON content_profiles "
-                f"WHEN NEW.id = '{second.id}' "
-                "BEGIN SELECT RAISE(ABORT, 'copy blocked'); END",
+                "CREATE TRIGGER injected_v16_copy_failure "
+                "BEFORE INSERT ON content_profile_items "
+                f"WHEN NEW.profile_id = '{later}' "
+                "AND (SELECT COUNT(*) FROM content_profile_items "
+                f"WHERE profile_id = '{earlier}') = {len(shared_items)} "
+                "BEGIN SELECT RAISE(FAIL, "
+                "'injected v16 failure after first task copy'); END",
             )
 
+        observed: list[dict] = []
+        real_rollback = SiteStore._rollback_quietly
+
+        async def capture_rollback(connection) -> None:
+            # 迁移的 except 分支在回滚前调用这里，用同一连接读同一事务里
+            # 已经写入、尚未提交的状态。
+            if not observed:
+                async def fetch(sql: str, params: tuple = ()) -> list[tuple]:
+                    cursor = await connection.execute(sql, params)
+                    rows = await cursor.fetchall()
+                    await cursor.close()
+                    return [tuple(row) for row in rows]
+
+                observed.append({
+                    "version": (await fetch("PRAGMA user_version"))[0][0],
+                    "plans": await fetch(
+                        "SELECT id, name FROM content_profiles "
+                        "WHERE id IN (?, ?) ORDER BY id",
+                        (first.id, second.id),
+                    ),
+                    "items": await fetch(
+                        "SELECT profile_id, position, content_type, limit_count "
+                        "FROM content_profile_items "
+                        "WHERE profile_id IN (?, ?) "
+                        "ORDER BY profile_id, position",
+                        (first.id, second.id),
+                    ),
+                })
+            await real_rollback(connection)
+
         sites = SiteService(self.path)
-        with self.assertRaises(Exception):
-            await sites.open()
+        with mock.patch.object(
+            SiteStore, "_rollback_quietly", staticmethod(capture_rollback),
+        ):
+            with self.assertRaises(SiteStorageError) as caught:
+                await sites.open()
         await sites.close()
 
-        self.assertEqual(self._user_version(), 15)
+        # 1) 失败来自注入的迁移故障，而不是夹具或无关 SQL。
+        self.assertIsInstance(caught.exception.__cause__, SiteStoreError)
+        cause = caught.exception.__cause__.__cause__
+        self.assertIsInstance(cause, sqlite3.IntegrityError, repr(cause))
+        self.assertIn(
+            "injected v16 failure after first task copy", str(cause), repr(cause),
+        )
+        self.assertEqual(len(observed), 1, "迁移失败时必须走回滚钩子")
+        seen = observed[0]
+        # 2) 失败发生在已有迁移写入之后：两个私有方案行都建好，先复制的任务
+        #    栏目已齐，后一个任务一行都没写，版本号仍停在上一个版本。
+        self.assertEqual(seen["version"], 15)
         self.assertEqual(
-            sorted(
-                row[0] for row in self._query(
-                    "SELECT id FROM content_profiles ORDER BY id",
-                )
-            ),
-            before_plans,
+            seen["plans"],
+            sorted((task_id, names[task_id])
+                   for task_id in (first.id, second.id)),
         )
         self.assertEqual(
-            {row[0] for row in self._query("SELECT profile_id FROM push_tasks")},
-            set(mapping.values()),
+            seen["items"],
+            [
+                (earlier, 0, "daily_news", 2),
+                (earlier, 1, "douyin_hot", 1),
+            ],
         )
-        for shared_id, rows in before_items.items():
-            self.assertEqual(self._plan_items(shared_id), rows)
 
-        # 去掉故障源后同一个库还能正常迁移。
+        # 3) 回滚后版本、任务行、共享栏目、UMO/候选顺序、投递历史逐项不变。
+        self.assertEqual(self._user_version(), 15)
+        self.assertEqual(self._snapshot(), before)
+        self.assertEqual(
+            [row[0] for row in self._query("SELECT id FROM content_profiles")],
+            [shared_id],
+        )
+        self.assertEqual(self._plan_items(shared_id), shared_items)
+        task_rows = {
+            row[0]: row
+            for row in self._query(
+                "SELECT id, profile_id, name, output_format, enabled, revision "
+                "FROM push_tasks ORDER BY id",
+            )
+        }
+        self.assertEqual(set(task_rows), {first.id, second.id})
+        for task, output_format in ((first, "text"), (second, "markdown")):
+            self.assertEqual(
+                task_rows[task.id],
+                (
+                    task.id, shared_id, task.name, output_format,
+                    int(task.enabled), task.revision,
+                ),
+            )
+        self.assertEqual(
+            self._query(
+                "SELECT task_id, position, umo FROM push_task_umos "
+                "ORDER BY task_id, position",
+            ),
+            sorted(
+                (task.id, position, umo)
+                for task, umos in ((first, UMOS), (second, [UMOS[0]]))
+                for position, umo in enumerate(umos)
+            ),
+        )
+        self.assertEqual(
+            self._query(
+                "SELECT task_id, position, site_id FROM push_task_sites "
+                "ORDER BY task_id, position",
+            ),
+            sorted((task.id, 0, seeded["site"].id) for task in (first, second)),
+        )
+        executions = {
+            row[0]: row
+            for row in self._query(
+                "SELECT id, task_id, task_name, profile_id, profile_revision, "
+                "site_id, site_revision, output_format, status, error_code "
+                "FROM delivery_executions ORDER BY id",
+            )
+        }
+        self.assertEqual(
+            set(executions), {f"exec-{first.id}", f"exec-{second.id}"},
+        )
+        for task, revision in ((first, 3), (second, 5)):
+            row = executions[f"exec-{task.id}"]
+            self.assertEqual(row[1], task.id)
+            self.assertEqual(row[2], task.name)
+            self.assertEqual(row[3], shared_id)
+            self.assertEqual(row[4], revision)
+            self.assertEqual(row[5], seeded["site"].id)
+            self.assertEqual(row[7], task.output_format)
+            # 回滚发生在本轮恢复投递历史之前：仍是创建时的状态。
+            self.assertEqual(row[8], "preparing")
+            self.assertIsNone(row[9])
+        self.assertEqual(
+            self._query("SELECT COUNT(*) FROM delivery_targets")[0][0],
+            len(UMOS) + 1,
+        )
+        self.assertEqual(
+            self._query("SELECT COUNT(*) FROM delivery_pages")[0][0], 0,
+        )
+
+        # 4) 排除故障后同一个文件能正常迁移到 16，且栏目按任务复制。
         with closing(sqlite3.connect(self.path)) as connection, connection:
-            connection.execute("DROP TRIGGER block_v16_copy")
+            connection.execute("DROP TRIGGER injected_v16_copy_failure")
+        self.assertEqual(
+            self._query(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'trigger' AND name = 'injected_v16_copy_failure'",
+            )[0][0],
+            0,
+        )
         sites = SiteService(self.path)
         await sites.open()
         try:
             self.assertEqual(self._user_version(), SCHEMA_VERSION)
             tasks = PushTaskService(sites.store)
+            for task in (first, second):
+                migrated = await tasks.get_task(task.id)
+                self.assertEqual(migrated.profile_id, task.id)
+                self.assertEqual(
+                    [(row[1], row[2]) for row in self._plan_items(task.id)],
+                    [("daily_news", 2), ("douyin_hot", 1)],
+                )
+            self.assertEqual(self._plan_items(shared_id), shared_items)
+            for task, revision in ((first, 3), (second, 5)):
+                history = await sites.store.get_delivery_execution(
+                    f"exec-{task.id}",
+                )
+                self.assertEqual(history.profile_id, shared_id)
+                self.assertEqual(history.profile_revision, revision)
+                self.assertEqual(history.status, "stopped")
+                self.assertEqual(history.error_code, "never_started")
+            counts = self._query(
+                "SELECT profile_id, COUNT(*) FROM content_profile_items "
+                "GROUP BY profile_id ORDER BY profile_id",
+            )
+            self.assertEqual([row[1] for row in counts], [2, 2, 2], counts)
+        finally:
+            await sites.close()
+
+        # 5) 再次启动不重复复制栏目。
+        again = SiteService(self.path)
+        await again.open()
+        try:
+            self.assertEqual(self._user_version(), SCHEMA_VERSION)
             self.assertEqual(
-                [item.content_type for item in (await tasks.get_task(first.id)).items],
-                ["daily_news", "douyin_hot"],
+                self._query(
+                    "SELECT profile_id, COUNT(*) FROM content_profile_items "
+                    "GROUP BY profile_id ORDER BY profile_id",
+                ),
+                counts,
+            )
+        finally:
+            await again.close()
+
+    async def test_shared_plan_tasks_keep_own_schedule_umos_sites_and_history(
+        self,
+    ) -> None:
+        """多任务共享旧组合：迁移后各自独立，计划/白名单/候选/历史语义不变。"""
+        schedules = (
+            {"kind": "daily", "timezone": "Asia/Shanghai", "time": "08:30"},
+            {
+                "kind": "weekly", "timezone": "Asia/Shanghai",
+                "time": "21:05", "weekdays": [2, 5],
+            },
+        )
+        sites = SiteService(self.path)
+        await sites.open()
+        try:
+            site_a = await sites.create_site(SiteCreate(
+                name="站点 A", base_url="http://a.example.test/60s",
+                enabled=True, timeout_seconds=5,
+            ))
+            site_b = await sites.create_site(SiteCreate(
+                name="站点 B", base_url="http://b.example.test/60s",
+                enabled=True, timeout_seconds=5,
+            ))
+            tasks = PushTaskService(sites.store)
+            first = await tasks.create_task(TaskCreate(
+                name="共享任务一",
+                items=[_item("daily_news", 2)],
+                sites=[site_a.id, site_b.id],
+                output_format="text",
+                umos=list(UMOS),
+                schedule=schedules[0],
+            ))
+            second = await tasks.create_task(TaskCreate(
+                name="共享任务二",
+                items=[_item("bilibili_hot", 2)],
+                sites=[site_b.id],
+                output_format="markdown",
+                umos=[UMOS[0]],
+                schedule=schedules[1],
+            ))
+            for task, revision in ((first, 3), (second, 5)):
+                await sites.store.create_delivery_execution(
+                    execution_id=f"exec-{task.id}",
+                    task_id=task.id,
+                    task_name=task.name,
+                    task_revision=task.revision,
+                    profile_id="legacy-shared",
+                    profile_revision=revision,
+                    site_id=site_b.id,
+                    site_revision=site_b.revision,
+                    output_format=task.output_format,
+                    umos=tuple(task.umos),
+                )
+        finally:
+            await sites.close()
+
+        # 退回 v15 形态：两个任务共用一个旧组合。
+        self._rewind_to_v15({
+            first.id: "legacy-shared",
+            second.id: "legacy-shared",
+        })
+        self.assertEqual(self._user_version(), 15)
+        shared_items = self._plan_items("legacy-shared")
+        self.assertEqual([row[1] for row in shared_items], ["daily_news"])
+
+        sites = SiteService(self.path)
+        await sites.open()
+        try:
+            self.assertEqual(self._user_version(), SCHEMA_VERSION)
+            tasks = PushTaskService(sites.store)
+            # 各自拥有独立栏目；旧共享行保留但不再被任务读取。
+            for task in (first, second):
+                self.assertEqual(
+                    [(row[1], row[2]) for row in self._plan_items(task.id)],
+                    [("daily_news", 2)],
+                )
+            self.assertEqual(self._plan_items("legacy-shared"), shared_items)
+            migrated_first = await tasks.get_task(first.id)
+            migrated_second = await tasks.get_task(second.id)
+            self.assertEqual(migrated_first.profile_id, first.id)
+            self.assertEqual(migrated_second.profile_id, second.id)
+            # 计划、UMO 顺序、候选顺序都保留原语义。
+            self.assertEqual(
+                migrated_first.schedule.to_dict(), first.schedule.to_dict(),
+            )
+            self.assertEqual(
+                migrated_second.schedule.to_dict(), second.schedule.to_dict(),
+            )
+            self.assertEqual(migrated_first.schedule_raw, first.schedule_raw)
+            self.assertEqual(migrated_second.schedule_raw, second.schedule_raw)
+            self.assertEqual(list(migrated_first.umos), list(first.umos))
+            self.assertEqual(list(migrated_second.umos), [UMOS[0]])
+            self.assertEqual(list(migrated_first.sites), [site_a.id, site_b.id])
+            self.assertEqual(list(migrated_second.sites), [site_b.id])
+            # 历史投递记录仍记着共享组合 id 与当时的版本。
+            for task, revision in ((first, 3), (second, 5)):
+                history = await sites.store.get_delivery_execution(
+                    f"exec-{task.id}",
+                )
+                self.assertEqual(history.task_id, task.id)
+                self.assertEqual(history.profile_id, "legacy-shared")
+                self.assertEqual(history.profile_revision, revision)
+                self.assertEqual(history.site_id, site_b.id)
+                self.assertEqual(history.status, "stopped")
+                self.assertEqual(history.error_code, "never_started")
+            self.assertEqual(
+                self._query(
+                    "SELECT task_id, profile_id, profile_revision "
+                    "FROM delivery_executions ORDER BY task_id",
+                ),
+                sorted(
+                    (task.id, "legacy-shared", revision)
+                    for task, revision in ((first, 3), (second, 5))
+                ),
+            )
+            # 独立编辑只影响自己那份组合。
+            edited = await tasks.update_task(first.id, TaskUpdate(
+                name="共享任务一",
+                items=[_item("toutiao_hot", 7)],
+                output_format="text",
+                umos=[UMOS[1]],
+                expected_revision=first.revision,
+            ))
+            self.assertEqual(
+                [item.content_type for item in edited.items], ["toutiao_hot"],
+            )
+            other = await tasks.get_task(second.id)
+            self.assertEqual(
+                [item.content_type for item in other.items], ["daily_news"],
+            )
+            self.assertEqual(
+                (await tasks.get_config_snapshot(second.id)).plan_revision,
+                second.revision,
+            )
+            self.assertEqual(self._plan_items("legacy-shared"), shared_items)
+            counts = dict(self._query(
+                "SELECT profile_id, COUNT(*) FROM content_profile_items "
+                "GROUP BY profile_id",
+            ))
+            self.assertEqual(
+                counts,
+                {first.id: 1, second.id: 1, "legacy-shared": 1},
             )
         finally:
             await sites.close()
 
-
+        # 二次启动不重复复制。
+        again = SiteService(self.path)
+        await again.open()
+        try:
+            self.assertEqual(self._user_version(), SCHEMA_VERSION)
+            self.assertEqual(
+                dict(self._query(
+                    "SELECT profile_id, COUNT(*) FROM content_profile_items "
+                    "GROUP BY profile_id",
+                )),
+                counts,
+            )
+        finally:
+            await again.close()
     async def test_migration_keeps_schedule_umos_candidate_order_and_history(
         self,
     ) -> None:

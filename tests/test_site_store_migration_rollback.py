@@ -189,6 +189,31 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
         finally:
             raw.close()
 
+    def _rows(self, path: Path, sql: str, params: tuple = ()) -> list[tuple]:
+        raw = sqlite3.connect(path)
+        try:
+            return [tuple(row) for row in raw.execute(sql, params).fetchall()]
+        finally:
+            raw.close()
+
+    _SNAPSHOT_TABLES = (
+        "content_profiles",
+        "content_profile_items",
+        "push_tasks",
+        "push_task_umos",
+        "push_task_sites",
+        "delivery_executions",
+        "delivery_targets",
+        "delivery_pages",
+    )
+
+    def _snapshot(self, path: Path) -> dict[str, list[tuple]]:
+        """整表行集合快照；回滚必须逐行复原，而不只是版本号变回去。"""
+        return {
+            table: sorted(self._rows(path, f"SELECT * FROM {table}"), key=repr)
+            for table in self._SNAPSHOT_TABLES
+        }
+
     # ---- 连接与清理 ----
 
     async def _foreign_keys_on(self, store: SiteStore) -> int:
@@ -419,6 +444,7 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
     async def test_failure_after_alter_rolls_back_all(self) -> None:
         """在 ALTER 与 push_tasks 重建都已执行后注入失败，验证完整回滚。"""
         path, ids = await self._rich_legacy("rollback-after-alter")
+        before = self._snapshot(path)
         real_commit = aiosqlite.Connection.commit
         observed: dict = {}
 
@@ -547,6 +573,37 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._count(path, "push_task_umos"), 2)
         self.assertEqual(self._count(path, "delivery_targets"), 1)
         self.assertEqual(self._count(path, "delivery_pages"), 2)
+        # 顺序与历史记录也是数据：白名单保持位置、候选保持首位,
+        # 投递执行仍记着迁移前的方案 id/版本与状态。
+        self.assertEqual(
+            self._rows(
+                path,
+                "SELECT position, umo FROM push_task_umos "
+                "WHERE task_id = ? ORDER BY position",
+                (ids["task"],),
+            ),
+            [(0, UMOS[0]), (1, UMOS[1])],
+        )
+        self.assertEqual(
+            self._rows(
+                path,
+                "SELECT position, site_id FROM push_task_sites "
+                "WHERE task_id = ? ORDER BY position",
+                (ids["task"],),
+            ),
+            [(0, ids["site"])],
+        )
+        self.assertEqual(
+            self._rows(
+                path,
+                "SELECT profile_id, profile_revision, site_id, output_format, "
+                "status, error_code FROM delivery_executions WHERE id = ?",
+                (EXECUTION_ID,),
+            ),
+            [(ids["task"], 1, ids["site"], "text", "preparing", None)],
+        )
+        # 归零到事务外：所有表的行与夹具建好时逐行一致。
+        self.assertEqual(self._snapshot(path), before)
         self.assertEqual(self._fk_violations(path), [])
 
         # 后续实例仍能完整迁移。

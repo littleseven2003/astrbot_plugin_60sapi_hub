@@ -117,8 +117,11 @@ class DeliveryLimits:
     max_images: int = 6
     max_concurrent_executions: int = 2
     max_pending_executions: int = 4
+    # 内容准备预算：只覆盖候选站点取得内容（含栏目图生成）。
     max_execution_seconds: float = 60.0
     sender_timeout_seconds: float = 15.0
+    # 发送预算：内容准备完成后重新计时，不与内容阶段互相挤占。
+    max_send_seconds: float = 30.0
 
 
 ALLOWED_SEND_CODES = frozenset({
@@ -160,6 +163,10 @@ PAGE_STATUS_SKIPPED = "skipped"
 
 # 新版图片投递的持久化格式标记：一个栏目一张长图。历史行保持 NULL。
 IMAGE_MODEL_SECTIONS = "sections"
+
+# 外层总守卫只在两段预算之外留出收尾余量：阶段内的超时先自行生效，
+# 记录落库也还有一点时间，不会被守卫抢先取消。
+TOTAL_GUARD_EPSILON_SECONDS = 0.05
 
 
 class DeliveryService:
@@ -277,6 +284,13 @@ class DeliveryService:
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             raise DeliveryTimeoutError("投递总耗时已超限。")
+        # 内容准备和发送各有预算：总守卫放行“内容阶段剩余 + 发送预算”，
+        # 两段都不必为对方留时间。
+        total_timeout = (
+            remaining
+            + self._limits.max_send_seconds
+            + TOTAL_GUARD_EPSILON_SECONDS
+        )
         try:
             return await asyncio.wait_for(
                 self._execute_work(
@@ -286,7 +300,7 @@ class DeliveryService:
                     expected_alert_only,
                     deadline=deadline,
                 ),
-                timeout=remaining,
+                timeout=total_timeout,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             await self._mark_incomplete_if_owner(execution_key, owner_token)
@@ -309,7 +323,7 @@ class DeliveryService:
         expected_alert_only: bool | None = None,
         deadline: float | None = None,
     ) -> StoredDeliveryExecution:
-        async with self._admission():
+        async with self._admission(deadline):
             existing = await self._existing_for_task(execution_key, task_key)
             if existing is not None:
                 return existing
@@ -354,14 +368,25 @@ class DeliveryService:
             )
 
     @asynccontextmanager
-    async def _admission(self):
+    async def _admission(self, deadline: float | None = None):
         async with self._admission_condition:
             while self._running >= self._limits.max_concurrent_executions:
                 if self._pending >= self._limits.max_pending_executions:
                     raise DeliveryCapacityError("投递排队已满。")
                 self._pending += 1
                 try:
-                    await self._admission_condition.wait()
+                    if deadline is None:
+                        await self._admission_condition.wait()
+                    else:
+                        # 排队也属于内容准备：内容预算耗尽就结束等待，发送预算
+                        # 不替它续命。
+                        await asyncio.wait_for(
+                            self._admission_condition.wait(),
+                            timeout=max(
+                                0.0,
+                                deadline - asyncio.get_running_loop().time(),
+                            ),
+                        )
                 finally:
                     self._pending -= 1
             self._running += 1
@@ -391,6 +416,7 @@ class DeliveryService:
             or limits.max_pending_executions < 0
             or not valid_timeout(limits.max_execution_seconds)
             or not valid_timeout(limits.sender_timeout_seconds)
+            or not valid_timeout(limits.max_send_seconds)
         ):
             raise DeliveryValidationError("limits", "容量/超时配置不合法")
 
@@ -709,6 +735,11 @@ class DeliveryService:
         any_failed = False
         any_success = False
         partial_reasons: set[str] = set()
+        # 内容已经准备好，从这里开始单独计发送预算；内容阶段没有花完的时间
+        # 不顺延，避免慢站点把发送机会挤掉。
+        send_deadline = (
+            asyncio.get_running_loop().time() + self._limits.max_send_seconds
+        )
         slot_total = len(prepared.slots)
         image_failed_slot_count = sum(
             1 for _, payload in prepared.slots if payload is None
@@ -795,7 +826,9 @@ class DeliveryService:
                     partial_reasons.add("config_changed")
                     break
                 try:
-                    result = await self._call_sender(message)
+                    result = await self._call_sender(
+                        message, send_deadline=send_deadline,
+                    )
                 except asyncio.CancelledError:
                     await self._mark_page_safely(
                         execution_id, position, index,
@@ -891,11 +924,21 @@ class DeliveryService:
         await self._finish(execution_id, final_status, finish_code)
         return await self._read(execution_id)
 
-    async def _call_sender(self, message: DeliveryMessage) -> DeliverySendResult:
+    async def _call_sender(
+        self,
+        message: DeliveryMessage,
+        *,
+        send_deadline: float,
+    ) -> DeliverySendResult:
+        # 单次等待取“单次上限”和“发送阶段剩余”的较小值：阶段预算耗尽后
+        # 结果未知，按既有 sender timeout 路径处理，绝不重发。
+        remaining = send_deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return DeliverySendResult(SendStatus.UNKNOWN, "sender_timeout")
         try:
             result = await asyncio.wait_for(
                 self._sender.send(message),
-                timeout=self._limits.sender_timeout_seconds,
+                timeout=min(self._limits.sender_timeout_seconds, remaining),
             )
         except asyncio.TimeoutError:
             return DeliverySendResult(SendStatus.UNKNOWN, "sender_timeout")

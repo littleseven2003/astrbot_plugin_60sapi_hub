@@ -12,11 +12,6 @@ from typing import Any
 
 from .site_requirements import Requirement, evaluate_sections
 
-# 发送本身要占的时间：任何一次预览尝试都不吃掉这部分。
-SEND_RESERVE_SECONDS = 0.25
-# 每个还没试过的候选至少要留下的一次尝试时长。
-MIN_CANDIDATE_SECONDS = 0.5
-
 
 def attempt_timeout_for(
     deadline: float | None,
@@ -24,12 +19,11 @@ def attempt_timeout_for(
     *,
     remaining_candidates: int = 1,
 ) -> float | None:
-    """按投递截止时间算出这一次预览尝试的时长上限。
+    """按内容准备截止时间算出这一次预览尝试的时长上限。
 
-    只给这一次尝试留下“剩余时间减去发送预留和后续候选底线”的部分，因此
-    正常可用的站点能用掉几乎全部剩余时间，慢站点也吃不完后面候选的机会。
-    预留最多只占剩余时间的一半：候选再多，也不能让一次本可成功的尝试被
-    悲观预留提前判失败。
+    内容准备阶段的剩余时间在还没试过的候选之间等份：唯一候选能用满整段，
+    慢的首选站点也吃不完后面候选的机会。内容准备有独立预算，发送不再从
+    这里预留；等份用尽即按“该站不满足”换下一个候选。
     """
     if deadline is None:
         return None
@@ -38,9 +32,7 @@ def attempt_timeout_for(
     remaining = deadline - now
     if remaining <= 0:
         return 0.0
-    later = max(0, remaining_candidates - 1)
-    reserved = min(remaining * 0.5, SEND_RESERVE_SECONDS + later * MIN_CANDIDATE_SECONDS)
-    return max(0.01, remaining - reserved)
+    return remaining / max(1, remaining_candidates)
 
 
 async def satisfied_previews(
@@ -141,8 +133,6 @@ async def first_satisfying_preview(
 
 
 __all__ = [
-    "MIN_CANDIDATE_SECONDS",
-    "SEND_RESERVE_SECONDS",
     "attempt_timeout_for",
     "first_satisfying_preview",
     "satisfied_previews",

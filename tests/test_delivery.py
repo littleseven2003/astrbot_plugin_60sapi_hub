@@ -1387,9 +1387,11 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(DeliveryRecordNotFoundError):
             await self.sites.store.get_delivery_execution("queue-close-2")
 
-    async def test_total_deadline_applies_while_sending(self) -> None:
+    async def test_send_budget_bounds_sending(self) -> None:
+        # 发送预算独立计时：内容阶段早已结束，挂住的发送仍按自己的预算超时。
         limited = DeliveryLimits(
-            max_execution_seconds=0.1, sender_timeout_seconds=5,
+            max_execution_seconds=5, max_send_seconds=0.1,
+            sender_timeout_seconds=5,
             max_concurrent_executions=2, max_pending_executions=2,
         )
         service = DeliveryService(
@@ -1403,8 +1405,11 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         await self.sender.started.wait()
         result = await running
         self.assertEqual(result.status, "unknown")
-        self.assertEqual(result.error_code, "interrupted")
+        self.assertIsNone(result.error_code)
+        self.assertEqual(result.pages[0].status, "unknown")
+        self.assertEqual(result.pages[0].error_code, "sender_timeout")
         self.assertEqual(len(self.sender.calls), 1)
+        self.sender.release.set()
         await service.close()
 
     async def test_duplicate_waiter_cancel_does_not_mark_owner(self) -> None:
@@ -1575,7 +1580,9 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         limited = DeliveryService(
             tasks=self.tasks, sites=self.sites,
             plan_preview=self.api, store=self.sites.store, sender=self.sender,
-            limits=DeliveryLimits(max_execution_seconds=0.1),
+            limits=DeliveryLimits(
+                max_execution_seconds=0.1, max_send_seconds=0.05,
+            ),
         )
         original = self.sites.store.get_delivery_execution
         entered = asyncio.Event()
@@ -1611,7 +1618,9 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         limited = DeliveryService(
             tasks=self.tasks, sites=self.sites,
             plan_preview=self.api, store=self.sites.store, sender=self.sender,
-            limits=DeliveryLimits(max_execution_seconds=0.1),
+            limits=DeliveryLimits(
+                max_execution_seconds=0.1, max_send_seconds=0.05,
+            ),
         )
         original = self.sites.store.get_delivery_execution
         calls = 0
@@ -1721,7 +1730,9 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         limited = DeliveryService(
             tasks=self.tasks, sites=self.sites,
             plan_preview=self.api, store=self.sites.store, sender=self.sender,
-            limits=DeliveryLimits(max_execution_seconds=0.1),
+            limits=DeliveryLimits(
+                max_execution_seconds=0.1, max_send_seconds=0.05,
+            ),
         )
         original = self.sites.store.get_delivery_execution
         entered = asyncio.Event()
@@ -1755,7 +1766,9 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_non_finite_and_overflowing_timeouts(self) -> None:
         from core.delivery import DeliveryValidationError
 
-        for field in ("max_execution_seconds", "sender_timeout_seconds"):
+        for field in (
+            "max_execution_seconds", "sender_timeout_seconds", "max_send_seconds",
+        ):
             for value in (float("nan"), float("inf"), float("-inf"), 10 ** 400):
                 with self.subTest(field=field, kind=type(value).__name__):
                     with self.assertRaises(DeliveryValidationError) as caught:

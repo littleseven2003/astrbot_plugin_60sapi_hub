@@ -19,7 +19,7 @@ from enum import Enum
 from typing import Protocol
 
 from .candidate_preview import first_satisfying_preview
-from .plan_preview import PlanPreview
+from .plan_preview import PlanPreview, PlanPreviewResult
 from .site_store import (
     DeliveryExecutionExistsError,
     DeliveryRecordNotFoundError,
@@ -646,7 +646,7 @@ class DeliveryService:
             return None
         site_id, data = found
         return await self._build_prepared(
-            execution_id, task, data, by_id[site_id],
+            execution_id, task, data, by_id[site_id], deadline=deadline,
         )
 
     async def _build_prepared(
@@ -655,8 +655,14 @@ class DeliveryService:
         task: PushTask,
         data: dict,
         site: object = None,
+        *,
+        deadline: float | None = None,
     ) -> "_Prepared":
-        """把一次预览结果转换为待发送内容。"""
+        """把一次预览结果转换为待发送内容。
+
+        栏目图生成也属于内容准备：它必须落在同一个内容预算内，不能等到
+        发送阶段才开始等待，也不能让渲染把发送预算一起吃掉。
+        """
         outputs = data.get("outputs")
         raw_failed = data.get("failed_sections") or []
         if not isinstance(raw_failed, list):
@@ -674,10 +680,8 @@ class DeliveryService:
             snapshot = data.get("image_snapshot")
             if not isinstance(snapshot, dict) or not snapshot.get("id"):
                 raise DeliveryNoContentError("image_snapshot_unavailable")
-            image = await self._api.generate_image(
-                task.id,
-                {"snapshot_id": snapshot["id"]},
-                owner=execution_id,
+            image = await self._generate_section_images(
+                execution_id, task, snapshot["id"], deadline=deadline,
             )
             if image.status_code != 200:
                 code = image.body.get("data", {}).get("code", "image_failed")
@@ -722,6 +726,38 @@ class DeliveryService:
             failed_sections=failed,
             site=site,
         )
+
+    async def _generate_section_images(
+        self,
+        execution_id: str,
+        task: PushTask,
+        snapshot_id: object,
+        *,
+        deadline: float | None,
+    ) -> PlanPreviewResult:
+        """在内容准备预算内生成栏目图。
+
+        渲染器自己还有一份固定上限；这里只负责“整次内容准备不得超时”。
+        等待超时只取消协程，渲染器会设置取消标志，已经进入线程池的同步
+        渲染不会被强行终止；失败按既有内容失败语义记录，不发送任何消息。
+        """
+        if deadline is None:
+            return await self._api.generate_image(
+                task.id, {"snapshot_id": snapshot_id}, owner=execution_id,
+            )
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise DeliveryNoContentError("execution_timeout")
+        try:
+            return await asyncio.wait_for(
+                self._api.generate_image(
+                    task.id, {"snapshot_id": snapshot_id},
+                    owner=execution_id,
+                ),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError:
+            raise DeliveryNoContentError("execution_timeout") from None
 
     async def _send_targets(
         self,

@@ -375,6 +375,104 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.sender.messages), 1)
 
 
+    async def test_slow_section_images_stop_at_content_budget(self) -> None:
+        # 栏目图生成属于内容准备：渲染 2 秒、内容预算 0.5 秒时必须在预算内
+        # 结束，记为明确失败，且一次发送都不发起。
+        renderer = SlowImageRenderer(2.0)
+        api = PlanPreview(
+            self.tasks, self.content, self.sites,
+            image_snapshots=self.snapshots, image_service=renderer,
+        )
+        service = DeliveryService(
+            tasks=self.tasks, sites=self.sites, plan_preview=api,
+            store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(
+                max_execution_seconds=0.5, max_send_seconds=1.0,
+            ),
+        )
+        try:
+            task = await self._task([self.fast.id], output_format="image")
+            started = time.monotonic()
+            record = await service.execute(task.id, "image-content-budget")
+            elapsed = time.monotonic() - started
+        finally:
+            await service.close()
+
+        self.assertEqual(renderer.calls, 1)
+        self.assertGreaterEqual(elapsed, 0.5)
+        self.assertLess(elapsed, 1.0, "栏目图生成必须受内容预算约束")
+        self.assertEqual(record.status, "failed")
+        self.assertEqual(record.error_code, "execution_timeout")
+        self.assertEqual(self.sender.calls, 0, "内容准备超时不得发送任何消息")
+
+    async def test_render_that_fills_content_budget_still_gets_send_budget(
+        self,
+    ) -> None:
+        # 渲染几乎用掉整段内容预算（0.8 / 1.0 秒）后，发送仍有自己的预算：
+        # 两次各 0.4 秒的发送必须完成，不能被内容预算剩下的时间截断。
+        renderer = SlowImageRenderer(0.8)
+        api = PlanPreview(
+            self.tasks, self.content, self.sites,
+            image_snapshots=self.snapshots, image_service=renderer,
+        )
+        self.sender.sleep_seconds = 0.4
+        service = DeliveryService(
+            tasks=self.tasks, sites=self.sites, plan_preview=api,
+            store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(
+                max_images=2, max_execution_seconds=1.0, max_send_seconds=1.0,
+            ),
+        )
+        try:
+            task = await self._task([self.fast.id], output_format="image")
+            started = time.monotonic()
+            record = await service.execute(task.id, "image-budget-handover")
+            elapsed = time.monotonic() - started
+        finally:
+            await service.close()
+
+        self.assertEqual(renderer.calls, 1)
+        self.assertEqual(len(self.sender.messages), 2)
+        self.assertGreaterEqual(elapsed, 1.2)
+        self.assertEqual(record.status, "success")
+        self.assertEqual(
+            [page.status for page in record.pages], ["success", "success"],
+        )
+
+    async def test_text_and_markdown_never_wait_for_image_timeout(self) -> None:
+        # 文字与 Markdown 不经过图片渲染：即使渲染器要 5 秒也不影响它们。
+        renderer = SlowImageRenderer(5.0)
+        api = PlanPreview(
+            self.tasks, self.content, self.sites,
+            image_snapshots=self.snapshots, image_service=renderer,
+        )
+        self.delays = {"fast.example.test": 0.3}
+        service = DeliveryService(
+            tasks=self.tasks, sites=self.sites, plan_preview=api,
+            store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(
+                max_execution_seconds=1.0, max_send_seconds=1.0,
+            ),
+        )
+        try:
+            for index, output_format in enumerate(("text", "markdown"), start=1):
+                self.sender.messages = []
+                task = await self._task(
+                    [self.fast.id], items=("daily_news",),
+                    output_format=output_format,
+                )
+                record = await service.execute(
+                    task.id, "text-ignores-image-" + str(index),
+                )
+                self.assertEqual(record.status, "success")
+                self.assertEqual(record.error_code, None)
+                self.assertEqual(len(self.sender.messages), 1)
+                self.assertIn("快新闻一", self.sender.messages[0].text or "")
+        finally:
+            await service.close()
+        self.assertEqual(renderer.calls, 0)
+
+
 class PreviewAttemptTimeoutTest(unittest.TestCase):
     """单站尝试预算：内容准备阶段的剩余时间在未试候选之间等份。"""
 

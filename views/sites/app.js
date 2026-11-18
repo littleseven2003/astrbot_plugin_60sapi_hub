@@ -4838,8 +4838,31 @@ function deliveryStatusLabel(status) {
   })[status] || status;
 }
 
+// 记录里出现的错误码必须能读懂：管理页面不暴露发送器原始异常，
+// 因此这一层只给中文说明；未登记的码仍回退显示原码，便于排查。
 const DELIVERY_ERROR_LABELS = {
+  all_sections_failed: "全部栏目都没有可用内容",
+  cancelled: "已取消",
+  config_changed: "任务或站点配置已变化",
+  content_unavailable: "没有可用内容",
+  execution_timeout: "内容准备超时，未开始发送",
+  internal_error: "内部错误",
+  interrupted: "发送被中断",
+  never_started: "服务重启后未开始发送",
   section_image_failed: "栏目图片生成失败",
+  send_failed: "发送失败",
+  send_unknown: "发送结果未知",
+  sender_budget_exhausted: "发送预算已耗尽，未调用发送器",
+  sender_cancelled: "发送已取消",
+  sender_exception: "发送器异常，结果未知",
+  sender_invalid_payload: "发送内容不符合要求",
+  sender_invalid_result: "发送器返回结果无效",
+  sender_not_found: "找不到发送目标",
+  sender_not_supported: "发送器不支持该消息",
+  sender_route_rejected: "发送通道拒绝了本次投递",
+  sender_timeout: "已调用发送器后超时，结果未知",
+  skipped_after_send_failed: "因前一条发送失败未尝试",
+  skipped_after_send_unknown: "因前一条结果未知未尝试",
 };
 
 function deliveryErrorLabel(code) {
@@ -5322,7 +5345,9 @@ function renderDeliveryExecution(execution) {
   id.textContent = `执行标识：${execution.id}`;
   const content = document.createElement("p");
   content.textContent = `内容状态：${execution.content_status || "未知"} · ` +
-    (execution.error_code ? `错误码：${execution.error_code}` : "无执行级错误");
+    (execution.error_code
+      ? `错误码：${deliveryErrorLabel(execution.error_code)}`
+      : "无执行级错误");
   elements.deliveryResult.append(title, id, content);
   if (execution.status === "unknown") {
     const note = document.createElement("p");
@@ -5336,6 +5361,9 @@ function renderDeliveryExecution(execution) {
     const umo = document.createElement("code");
     umo.textContent = target.umo;
     const detail = document.createElement("span");
+    // 目标自己的终态也要能解释：已调用发送器后超时与预算耗尽未调用
+    // 在目标行上必须可区分，图片槽位只说明单张图发生了什么。
+    const targetCode = deliveryErrorLabel(target.error_code);
     const images = (target.images || []).map((page) => {
       const label = typeof page.label === "string" && page.label
         ? `（${page.label}）`
@@ -5345,7 +5373,9 @@ function renderDeliveryExecution(execution) {
         `${deliveryStatusLabel(page.status)}${label}` +
         (code ? `（${code}）` : "");
     }).join("；");
-    detail.textContent = `${deliveryStatusLabel(target.status)} · ${images}`;
+    detail.textContent = `${deliveryStatusLabel(target.status)}` +
+      (targetCode ? `（${targetCode}）` : "") +
+      ` · ${images}`;
     row.append(umo, detail);
     elements.deliveryResult.append(row);
   }

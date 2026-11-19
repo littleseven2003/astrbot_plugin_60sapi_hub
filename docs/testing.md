@@ -285,6 +285,17 @@ node tests/browser/manual_delivery_query.js
 - 宿主回归：AstrBot 4.29.1 与 4.29.4 从最终 ZIP 上传安装后，`task_draft_real_ui.js` 各 25 项通过；`task_sites_ui.js`（桩 bridge）36 项、`task_image_style_ui.js`、`profile_image_ui.js`、`task_items_real_ui.js` 继续通过。
 - 未验证：真实公开上游、真实账号收件与真实平台定时投递。
 
+## 手测反馈第三轮修复
+
+2026-11-19 针对 `05fc441` 复核退回的三项继续修复，仍使用本机模拟上游、假发送器与两版隔离宿主，零真实发送。
+
+- 超长热度截断：省略逻辑改为二分查找保留长度（并带少量字偶距兜底），不再逐字重测；截断循环响应渲染取消。约 3,200 字热度描述的每日新闻/知乎样例从触发 20 秒超时、线程约 33 秒才释放，降到单次渲染毫秒级（测试断言 <2 秒，实测 0.1 秒量级），同批正常栏目照常出图。`tests/test_profile_image.py` 覆盖耗时上限与取消路径。
+- 无热度栏目：整栏都没有热度时恢复原有整行标题宽度，不再预留空白热度列；雾笺单条无热度新闻恢复 320px（修复前 358px）。有热度与缺值混排时仍统一占位、行高一致。
+- 草稿快照隔离：快照存储按用途区分 `task` 与 `draft`；草稿写入只能淘汰草稿快照，任务快照不会被草稿挤出。总量与字节上限仍由同一个存储约束；任务占满存储时草稿快照写入返回空（预览内容仍可用，只是暂不直接出图）。`tests/test_image_snapshots.py` 覆盖 40 次草稿写入后任务快照仍在、任务占满时拒绝草稿；`tests/test_task_draft.py` 用另一身份连续 40 次草稿预览后，原任务快照仍能成功出图。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 780 项，756 项通过、24 项跳过；`node --check` 与 `git diff --check` 通过。
+- 宿主回归：AstrBot 4.29.1 与 4.29.4 从最终 ZIP 上传安装后，`task_draft_real_ui.js` 各 25 项通过；`task_image_style_ui.js`、`profile_image_ui.js`、`task_items_real_ui.js` 两版继续通过。4.29.1 有一次首个登录页跳转等待超时、两版各有一次 `task_items_real_ui` 在 34 项断言后清理阶段超时，复跑均通过，属既有宿主登录/点击抖动。
+- 未验证：真实公开上游、真实账号收件与真实平台定时投递。
+
 ## 历史检查清单
 
 以下清单记录旧版本的检查方法，其中组合管理相关路径与页面不适用于当前任务内栏目模型。

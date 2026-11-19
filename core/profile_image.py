@@ -415,12 +415,34 @@ class ProfileImageRenderer:
         size: int,
         width: int,
     ) -> str:
-        """保留前 max_lines 行，末行按实测字宽加省略号后截断。"""
+        """保留前 max_lines 行，末行按实测字宽加省略号后截断。
+
+        用二分查找确定保留长度，避免对上千字的文本逐字重测（那是 O(n²)，
+        真实热度描述可达数千字）；循环里响应取消，超时不再拖住渲染线程。
+        """
         kept = list(lines[:max_lines])
+        if not kept:
+            return "…"
         last = kept[-1].rstrip()
-        while last and self._text_width(last + "…", size) > width:
-            last = last[:-1].rstrip()
-        kept[-1] = last + "…"
+        if self._text_width(last + "…", size) <= width:
+            kept[-1] = last + "…" if len(lines) > len(kept) else last
+            return "".join(kept)
+        low, high = 0, len(last)
+        while low < high:
+            self._check_cancelled()
+            middle = (low + high + 1) // 2
+            if self._text_width(last[:middle] + "…", size) <= width:
+                low = middle
+            else:
+                high = middle - 1
+        result = last[:low].rstrip() + "…"
+        # 字偶距可能让宽度不是严格单调：最多再退几个字符兜底。
+        guard = 0
+        while result and self._text_width(result, size) > width and guard < 8:
+            self._check_cancelled()
+            result = result[:-2].rstrip() + "…"
+            guard += 1
+        kept[-1] = result
         return "".join(kept)
 
     @staticmethod
@@ -559,9 +581,11 @@ class ProfileImageRenderer:
         # 热度布局按整栏决定，不逐条判断：只要有一条热度超出列宽，
         # 整栏都改用“热度单独一行”；行高由布局而不是文本长度决定。
         hot_texts = [_hot_text(item) for item in items]
-        inline_hot_column = all(
-            (not hot)
-            or self._text_width(hot, self._style.heat_size) <= _HEAT_COL
+        has_heat = any(hot_texts)
+        # 整栏都没有热度时按原有整行标题排版，不预留空白热度列。
+        inline_hot_column = (not has_heat) or all(
+            self._text_width(hot, self._style.heat_size) <= _HEAT_COL
+            if hot else True
             for hot in hot_texts
         )
         for position, item in enumerate(items, start=1):
@@ -571,7 +595,7 @@ class ProfileImageRenderer:
             # 并排模式给每一条（含缺热度）预留同宽首行热度列，
             # 标题换行宽度一致，缺值条目不会因首行更宽而少一行。
             first_width = full_text_width
-            if inline_hot_column:
+            if has_heat and inline_hot_column:
                 first_width = full_text_width - _HEAT_COL - _HEAT_GAP
             for offset, part in enumerate(
                 self._wrap(
@@ -594,7 +618,7 @@ class ProfileImageRenderer:
                 parts.append(
                     _Part(part, self._style.title_size, self._style.ink, False, text_x),
                 )
-                if offset == 0 and inline_hot_column and hot:
+                if offset == 0 and has_heat and inline_hot_column and hot:
                     parts.append(
                         _Part(
                             self._fit_single_line(
@@ -626,7 +650,7 @@ class ProfileImageRenderer:
                             gap_before=_DETAIL_GAP if offset == 0 else 0,
                         ),
                     )
-            if not inline_hot_column:
+            if has_heat and not inline_hot_column:
                 # 单独一行模式：缺热度也占同样一行高度；极长热度限宽单行
                 # 并加省略号，绝不因为换行把相邻条目撑高。
                 heat_text = (

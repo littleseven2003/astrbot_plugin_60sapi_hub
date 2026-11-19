@@ -1155,6 +1155,42 @@ class ProfileImageRendererTest(unittest.TestCase):
             limit + 1,
         )
 
+    def test_heat_collection_without_any_heat_uses_full_title_width(self) -> None:
+        # 整栏都没有热度：标题按整行宽度排版，不预留空白热度列。
+        data = section("daily_news", "每日新闻", [item(LONG_TITLE), item("短标题")])
+        width = self.renderer.limits.width
+        lines = self.renderer._body_lines(image_module._items(data), width)
+        text_x = image_module._NUM_COL + image_module._NUM_GAP
+        full = self.renderer._content_width(width) - text_x
+        expected = len(self.renderer._wrap(LONG_TITLE, image_module._TITLE_SIZE, full))
+        title_lines = [line for line in lines if any(p.number for p in line.parts)]
+        self.assertEqual(len(title_lines), expected)
+        # 没有热度行，所有行都不应出现热度字号。
+        self.assertFalse(any(
+            part.size == image_module._HEAT_SIZE
+            for line in lines for part in line.parts
+        ))
+
+    def test_huge_heat_text_is_truncated_quickly_and_cancellable(self) -> None:
+        import threading
+        import time
+
+        huge = "热度：" + "超长热度描述" * 400
+        data = profile([section("douyin_hot", "抖音热搜", [item("热点", hot_value_desc=huge)])])
+        started = time.monotonic()
+        image = self.renderer.render(data)[0]
+        elapsed = time.monotonic() - started
+        self.assertEqual(image.status, "success")
+        self.assertLess(elapsed, 2.0, f"超长热度截断过慢：{elapsed:.2f}s")
+
+        self.renderer._cancel_event = threading.Event()
+        try:
+            self.renderer._cancel_event.set()
+            with self.assertRaises(image_module.ImageRenderCancelled):
+                self.renderer._fit_single_line(huge, image_module._HEAT_SIZE, 400)
+        finally:
+            self.renderer._cancel_event = None
+
     def test_long_title_in_body_is_not_truncated(self) -> None:
         data = section("daily_news", "每日新闻", [item(LONG_TITLE)])
         width = self.renderer.limits.width

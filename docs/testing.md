@@ -254,10 +254,11 @@ node tests/browser/manual_delivery_query.js
 - 注册表与预设：`core/image_styles/` 提供不可变定义与稳定顺序；新增款式只需登记定义，渲染器共用中文测字、换行、基线、内容顺序、来源脱敏与资源限制。四套预设的可读文字与实际底色均达到 4.5:1（本机核算最低 4.63 / 5.10 / 4.65 / 4.83）。
 - 渲染：4 套 × 5 类内容实际渲染 900px 长图全部成功，序号颜色取自样式、页眉/页脚底色与方形序号按样式绘制；空栏目出空状态图，失败栏目保持失败状态。默认款与 313ac13 相比只调整次要文字（`#6B717B`）与热度（`#6F7580`）以提升对比度，序号统一 `#6B7280`。
 - 存储与接口：schema v17 新增 `push_tasks.image_style`，v16 旧库升级后任务、栏目、白名单、计划、启用状态、revision 与执行历史保留，旧行默认 `default`；新建省略字段为默认，更新省略保留原值，显式 `null`、非字符串或未知 ID 返回字段级 400，历史未知值安全回退默认。任务列表附带 `image_styles` 与 `default_image_style`，任务与预览响应返回有效样式。
-- 快照：样式写入图片快照数据，生成图片前核对方案版本与样式；改样式后旧快照返回 409 `snapshot_stale`，需要重新预览。
-- 后台：任务表单「输出与计划」提供带可见标签的图片样式下拉，回填已保存值，改选计入未保存判定；4.29.1 / 4.29.4 隔离宿主的真实 Dashboard 均验证选项顺序、保存、重开与放弃未保存提示。
-- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 754 项，730 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过）；`node --check` 与 `git diff --check` 通过。
-- 宿主回归：`tests/browser/task_image_style_ui.js` 在 4.29.1 与 4.29.4 通过；既有 `task_items_real_ui` 34 项、`profile_image_ui` 89 项、`delivery_error_labels_ui` 29 项、`delivery_status_copy_ui` 69 项继续通过。
+- 快照：样式写入图片快照数据，生成图片前核对方案版本与样式；改样式后旧快照返回 409 `snapshot_stale`，需要重新预览。渲染完成后再复核一次方案、样式与站点版本：渲染期间保存了新样式或栏目，手里这张旧图不再按 200 返回。
+- 后台：任务表单「输出与计划」提供带可见标签的图片样式下拉，回填已保存值，改选计入未保存判定并立即作废在途预览；改选未保存值时预览按钮置灰，改回已保存值即恢复。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 760 项，736 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过）；`node --check` 与 `git diff --check` 通过。
+- 链路样式：`tests/test_image_style_chain.py` 用模拟上游与假发送器、真实渲染器分别跑聊天长图、手动投递与定时投递，断言最终 PNG 页眉底色来自任务所选样式（粗体工作室 / 花间 / 雾笺）。
+- 宿主回归：`tests/browser/task_image_style_ui.js` 在 4.29.1 与 4.29.4 通过，新增「改选置灰、改回恢复」3 项断言；既有 `task_items_real_ui` 34 项、`profile_image_ui` 89 项、`delivery_error_labels_ui` 29 项、`delivery_status_copy_ui` 69 项继续通过。4.29.4 有一次 `task_items_real_ui` 在 34 项断言后的 390px 收尾阶段等待对话框关闭超时，复跑通过，属既有的宿主点击/会话抖动。
 - 未验证：真实平台账号收件与回执、真实公开上游、真实平台定时投递；参考模板的视觉细节未逐像素复刻，样式以配色、层级、页眉页脚和序号气质适配现有排版。
 
 ## 历史检查清单

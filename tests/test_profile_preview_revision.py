@@ -13,7 +13,7 @@ from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshotStore
 from core.plan_preview import PlanPreview
 from core.sites import SiteCreate, SiteService, SiteUpdate
-from core.tasks import PushTaskService, TaskCreate
+from core.tasks import PushTaskService, TaskCreate, TaskUpdate
 
 SECRET = "simulated-secret-abc123"
 
@@ -145,6 +145,55 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
         images = image.body["data"]["images"]
         self.assertEqual(len(images), 3)
         self.assertTrue(all(item["status"] == "success" for item in images))
+
+    async def test_style_change_mid_preview_returns_confirmed_config(self) -> None:
+        task = await self._task()
+        original = self.content.preview_cached
+        calls = {"count": 0}
+
+        async def switching(content_type, site_id, **kwargs):
+            result = await original(content_type, site_id, **kwargs)
+            calls["count"] += 1
+            if calls["count"] == 1:
+                # 取数中改样式：任务 revision 和方案 revision 都会前进。
+                current = await self.tasks.get_task(task.id)
+                await self.tasks.update_task(
+                    task.id,
+                    TaskUpdate(
+                        name=current.name,
+                        items=[
+                            {"content_type": "daily_news", "params": {}, "limit": 2},
+                            {"content_type": "zhihu_hot", "params": {}, "limit": 1},
+                            {"content_type": "douyin_hot", "params": {}, "limit": 1},
+                        ],
+                        output_format="text",
+                        umos=[],
+                        expected_revision=current.revision,
+                        image_style="floral",
+                    ),
+                )
+            return result
+
+        self.content.preview_cached = switching  # type: ignore[assignment]
+        result = await self.api.preview_site(
+            {"task_id": task.id}, site_id=self.site.id,
+        )
+        self.assertEqual(result.status_code, 200, result.body)
+        data = result.body["data"]
+        confirmed = await self.tasks.get_config_snapshot(task.id)
+        # 响应必须描述重试后真正采用的那一版配置，而不是首轮的旧值。
+        self.assertEqual(data["task_revision"], confirmed.task.revision)
+        self.assertEqual(data["image_style"], "floral")
+        self.assertEqual(data["plan_revision"], confirmed.plan_revision)
+        self.assertEqual(
+            {section["content_type"] for section in data["sections"]},
+            {"daily_news", "zhihu_hot", "douyin_hot"},
+        )
+        snapshot_id = data["image_snapshot"]["id"]
+        snapshot = self.snapshots.get(snapshot_id)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.profile_revision, confirmed.plan_revision)
+        self.assertEqual(snapshot.data["image_style"], "floral")
 
     async def test_persistent_change_fails_without_mixing(self) -> None:
         task = await self._task()

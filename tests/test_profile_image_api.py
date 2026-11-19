@@ -96,6 +96,21 @@ class FakeImageService:
         return self.images
 
 
+class MutatingImageService:
+    """渲染期间改动任务或站点，用来验证渲染完成后的版本复核。"""
+
+    def __init__(self, mutate) -> None:
+        self.mutate = mutate
+        self.calls = 0
+
+    async def render(self, _data, *, created_at: str = ""):
+        self.calls += 1
+        await self.mutate()
+        return (
+            FakeSectionImage(1, "daily_news", "每日新闻", "success", png=b"\x89PNG-one"),
+        )
+
+
 @unittest.skipUnless(has_font(), "no CJK font available")
 class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -322,6 +337,69 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
             owner="alice",
         )
         self.assertEqual(bad.status_code, 400)
+    async def test_style_change_during_render_invalidates_snapshot(self) -> None:
+        task = await self._task()
+        _, snapshot_id = await self._snapshot_for(self.api, task)
+
+        async def switch_style() -> None:
+            current = await self.tasks.get_task(task.id)
+            await self.tasks.update_task(
+                task.id,
+                TaskUpdate(
+                    name=current.name,
+                    items=[
+                        {"content_type": "daily_news", "params": {}, "limit": 1},
+                        {"content_type": "douyin_hot", "params": {}, "limit": None},
+                    ],
+                    output_format="text",
+                    umos=[],
+                    expected_revision=current.revision,
+                    image_style="floral",
+                ),
+            )
+
+        service = MutatingImageService(switch_style)
+        api = self._api_with(service)
+        result = await api.generate_image(
+            task.id,
+            {"snapshot_id": snapshot_id},
+            owner="alice",
+        )
+        # 渲染确实发生过，但完成后发现样式已改：旧图不能按 200 返回。
+        self.assertEqual(service.calls, 1)
+        self.assertEqual(result.status_code, 409, result.body)
+        self.assertEqual(result.body["data"]["code"], "snapshot_stale")
+        self.assertNotIn("images", result.body["data"])
+
+    async def test_site_change_during_render_invalidates_snapshot(self) -> None:
+        task = await self._task()
+        _, snapshot_id = await self._snapshot_for(self.api, task)
+
+        async def switch_site() -> None:
+            current = await self.sites.get_site(self.site.id)
+            await self.sites.update_site(
+                self.site.id,
+                SiteUpdate(
+                    name=current.name,
+                    base_url="http://example.test/other",
+                    enabled=True,
+                    timeout_seconds=5,
+                    expected_revision=current.revision,
+                ),
+            )
+
+        service = MutatingImageService(switch_site)
+        api = self._api_with(service)
+        result = await api.generate_image(
+            task.id,
+            {"snapshot_id": snapshot_id},
+            owner="alice",
+        )
+        self.assertEqual(service.calls, 1)
+        self.assertEqual(result.status_code, 409, result.body)
+        self.assertEqual(result.body["data"]["code"], "snapshot_stale")
+        self.assertNotIn("images", result.body["data"])
+
     async def test_deleted_task_snapshot_is_stale(self) -> None:
         task = await self._task()
         preview = await self.api.preview_site(

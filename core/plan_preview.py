@@ -172,11 +172,15 @@ class PlanPreview:
                     "该站点未启用，无法获取上游内容。",
                     code="site_disabled",
                 )
+            # 重试与最终响应都使用这一版已确认配置：否则重试拿到的栏目
+            # 属于新配置，响应里的任务 revision 和样式却还是首轮的旧值。
+            config = latest
             if (
                 latest.plan_revision == plan_revision
                 and latest_site.id == site.id
                 and latest_site.revision == site.revision
             ):
+                site = latest_site
                 break
             if attempt + 1 >= _MAX_PREVIEW_ATTEMPTS:
                 return _error(
@@ -359,35 +363,9 @@ class PlanPreview:
                 "图片快照不属于该任务。",
                 code="snapshot_not_found",
             )
-        try:
-            config = await self._tasks.get_config_snapshot(plan_id)
-        except TaskNotFoundError:
-            return _stale_snapshot_error()
-        except TaskValidationError:
-            return _stale_snapshot_error()
-        except (TaskStorageError, SiteStorageError):
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        # 方案 revision 必须一致；站点则校验快照记录的那一个，
-        # 这样故障切换选中的备用站点快照不会被误判为过期。
-        if config.plan_revision != snapshot.profile_revision:
-            return _stale_snapshot_error()
-        # 样式也属于这一版配置：改样式后旧快照必须重新预览。
-        if resolve_style_id(config.task.image_style) != resolve_style_id(
-            snapshot.data.get("image_style"),
-        ):
-            return _stale_snapshot_error()
-        try:
-            site = await self._sites.get_site(snapshot.site_id)
-        except SiteNotFoundError:
-            return _stale_snapshot_error()
-        except SiteStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        if not site.enabled or site.revision != snapshot.site_revision:
-            return _stale_snapshot_error()
+        stale = await self._snapshot_outdated(plan_id, snapshot)
+        if stale is not None:
+            return stale
 
         try:
             section_images = await self._image_service.render(
@@ -431,6 +409,12 @@ class PlanPreview:
                 code="image_internal_error",
             )
 
+        # 渲染期间任务可能被保存成别的一版：此时手里这张图属于旧样式或旧栏目，
+        # 不能再按 200 返回；必须与前置校验一致地判定快照过期。
+        stale = await self._snapshot_outdated(plan_id, snapshot)
+        if stale is not None:
+            return stale
+
         images: list[dict[str, Any]] = []
         failed_sections: list[str] = []
         total_png_bytes = 0
@@ -472,6 +456,42 @@ class PlanPreview:
                 "snapshot_id": snapshot.id,
             },
         )
+
+    async def _snapshot_outdated(
+        self,
+        plan_id: str,
+        snapshot: Any,
+    ) -> PlanPreviewResult | None:
+        """按最新任务与站点配置复核快照；返回 None 表示仍然有效。
+
+        方案 revision 必须一致；站点则校验快照记录的那一个，这样故障切换
+        选中的备用站点快照不会被误判为过期。样式也属于这一版配置。
+        """
+        try:
+            config = await self._tasks.get_config_snapshot(plan_id)
+        except (TaskNotFoundError, TaskValidationError):
+            return _stale_snapshot_error()
+        except (TaskStorageError, SiteStorageError):
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if config.plan_revision != snapshot.profile_revision:
+            return _stale_snapshot_error()
+        if resolve_style_id(config.task.image_style) != resolve_style_id(
+            snapshot.data.get("image_style"),
+        ):
+            return _stale_snapshot_error()
+        try:
+            site = await self._sites.get_site(snapshot.site_id)
+        except SiteNotFoundError:
+            return _stale_snapshot_error()
+        except SiteStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if not site.enabled or site.revision != snapshot.site_revision:
+            return _stale_snapshot_error()
+        return None
 
 
 def _section_error(

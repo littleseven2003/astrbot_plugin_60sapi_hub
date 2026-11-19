@@ -274,6 +274,17 @@ node tests/browser/manual_delivery_query.js
 - 宿主回归：AstrBot 4.29.1 与 4.29.4 隔离 Dashboard 均从最终 ZIP 上传安装。`tests/browser/task_draft_real_ui.js` 两版各 24 项通过（新建与编辑草稿的能力测试、预览、真实出图、草稿不落库、已保存任务 revision 不变、候选站点桌面与 390px 布局）；`task_image_style_ui`、`profile_image_ui`、`task_items_real_ui` 两版继续通过。4.29.1 有一次 `task_items_real_ui` 在 34 项断言后清理阶段超时，复跑通过，属既有宿主点击/会话抖动。
 - 未验证：真实公开上游、真实平台账号收件与真实平台定时投递；草稿能力测试复用内容缓存，结论是缓存时效内的判断。
 
+## 手测反馈第二轮修复
+
+2026-11-19 针对 `865ecf8` 复核退回的三项继续修复，仍用本机模拟上游、假发送器与隔离宿主，零真实发送。
+
+- 草稿取数隔离：`ContentService.preview_cached(..., use_cache=False)` 直接取数，既不读也不写生产缓存；草稿预览与草稿能力测试都走该路径，返回栏目的 `cache` 标为 `{"used": false}`。`normalize_draft` 统一限制候选 1–5 个并拒绝重复项（不再静默去重），与能力测试只查前五个保持一致。`tests/test_task_draft.py` 验证：已保存任务先缓存内容 A，草稿预览拿到 B 后，已保存任务预览仍读到 A 且没有新的上游请求；草稿能力测试后已保存预览需要真实取数并重新缓存。另覆盖重复站点与 6 个候选的字段级 400。
+- 热度行高：整栏统一布局后，缺热度条目在单独一行模式占同样的热度行，并排模式也为缺值条目预留同宽首行热度列；极长热度固定单行并按实测字宽加省略号，不再换行撑高。50 条 8 位/7 位/缺值/超长描述/超大数字混排，四款样式实渲高度 5,920–6,122px，同栏相邻条目 117–118px（仅末条与分隔线的 1px 差）。`tests/test_profile_heat_layout.py` 与 `test_profile_image.py` 覆盖。
+- 390px 候选行：移动端不再把选择器与「添加」各设 100%，改回同行（选择器占剩余宽度、按钮固定），列表操作组仍整体下移、按钮 ≥44px。`tests/browser/task_sites_ui.js` 36 项断言含窄屏同行与无横向滚动；`task_draft_real_ui.js` 在真实宿主 390px 复核。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 775 项，751 项通过、24 项跳过；`node --check` 与 `git diff --check` 通过。
+- 宿主回归：AstrBot 4.29.1 与 4.29.4 从最终 ZIP 上传安装后，`task_draft_real_ui.js` 各 25 项通过；`task_sites_ui.js`（桩 bridge）36 项、`task_image_style_ui.js`、`profile_image_ui.js`、`task_items_real_ui.js` 继续通过。
+- 未验证：真实公开上游、真实账号收件与真实平台定时投递。
+
 ## 历史检查清单
 
 以下清单记录旧版本的检查方法，其中组合管理相关路径与页面不适用于当前任务内栏目模型。

@@ -125,7 +125,19 @@ const UNKNOWN_CODE = execution("exec-unknown-code", "未知错误码记录", {
   ]),
 ]);
 
-const DETAILS = { "exec-timeout": TIMEOUT, "exec-failed": FAILED, "exec-unknown-code": UNKNOWN_CODE };
+// 发送成功但写投递记录失败：执行级必须译成中文，目标本身仍是成功。
+const RECORD_FAILED = execution("exec-record-failed", "记录写入失败记录", {
+  status: "unknown", contentStatus: "complete", errorCode: "record_after_send_failed",
+}, [
+  target(0, UMO_A, "success", null, [page_(1, "success")]),
+]);
+
+const DETAILS = {
+  "exec-timeout": TIMEOUT,
+  "exec-failed": FAILED,
+  "exec-unknown-code": UNKNOWN_CODE,
+  "exec-record-failed": RECORD_FAILED,
+};
 
 function summary(item) {
   return {
@@ -213,7 +225,9 @@ function countOf(text, needle) {
         },
       };
     }, {
-      summaries: [summary(TIMEOUT), summary(FAILED), summary(UNKNOWN_CODE)],
+      summaries: [
+        summary(TIMEOUT), summary(FAILED), summary(UNKNOWN_CODE), summary(RECORD_FAILED),
+      ],
       details: DETAILS,
     });
 
@@ -308,7 +322,17 @@ function countOf(text, needle) {
       "未登记的槽位错误码要回退显示原码: " + unknown.text);
     check(!unknown.text.includes("undefined"), "回退时不得出现 undefined: " + unknown.text);
 
-    // 6) 打开详情不写投递：只读 executions
+    // 6) 发送成功但写投递记录失败：执行级错误码要译成中文，目标不受影响
+    await closeDialog();
+    const recordFailed = await openDetail("exec-record-failed");
+    check(recordFailed.text.includes("错误码：已发送成功，但写入投递记录失败"),
+      "记录写入失败要译成中文: " + recordFailed.text);
+    check(!recordFailed.text.includes("record_after_send_failed"),
+      "映射后不得再出现原码: " + recordFailed.text);
+    check(recordFailed.rows.length === 1 && recordFailed.rows[0].includes("成功"),
+      "发送成功的目标行不应被改写: " + JSON.stringify(recordFailed.rows));
+
+    // 7) 打开详情不写投递：只读 executions
     const calls = await page.evaluate(() => window.__deliveryCalls.slice());
     check(!calls.some((item) => String(item).startsWith("POST")),
       "打开执行记录不得发起写请求: " + calls.join(","));

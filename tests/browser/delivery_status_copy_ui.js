@@ -229,6 +229,22 @@ const CASES = {
       ],
     }],
   },
+  // 发送成功但写投递记录失败：执行级错误码要译成中文，目标本身仍是成功。
+  "copy-record-failed": {
+    id: "copy-record-failed", taskName: "记录写入失败记录", model: "sections",
+    status: "unknown", contentStatus: "complete", errorCode: "record_after_send_failed",
+    slots: 1, generated: 1, records: 1, delivered: 1, skipped: 0,
+    imagePartial: false,
+    failedSections: [],
+    targets: [{
+      position: 0, umo: "fake_qq_01:GroupMessage:g0", status: "success",
+      error_code: null, delivered_image_count: 1,
+      skipped_image_count: 0, section_image_count: 1,
+      images: [
+        { image_index: 1, status: "success", label: "每日新闻" },
+      ],
+    }],
+  },
   "copy-text-output": {
     id: "copy-text-output", taskName: "文字历史记录", model: "unknown",
     outputFormat: "text", status: "success", imagePartial: false,
@@ -457,6 +473,24 @@ async function frameOf(page) {
       "预算耗尽不得暴露原码: " + interruptedDetail);
     check(!interruptedDetail.includes("skipped_after_send_unknown"),
       "跳过原因不得暴露原码: " + interruptedDetail);
+
+    // 10) 发送成功但写投递记录失败：执行级译成中文，目标仍为成功
+    await frame.evaluate(() => {
+      const button = document.querySelector('button[aria-label="查看执行 copy-record-failed"]');
+      if (button) button.click();
+    });
+    await frame.waitForFunction(
+      () => document.getElementById("delivery-result")?.innerText.includes("copy-record-failed"),
+      null, { timeout: WAIT },
+    );
+    const recordFailedDetail = await frame.evaluate(() =>
+      document.getElementById("delivery-result").innerText);
+    check(recordFailedDetail.includes("错误码：已发送成功，但写入投递记录失败"),
+      "记录写入失败要译成中文: " + recordFailedDetail);
+    check(!recordFailedDetail.includes("record_after_send_failed"),
+      "记录写入失败不得暴露原码: " + recordFailedDetail);
+    check(recordFailedDetail.includes("成功 · 第 1 张 成功"),
+      "发送成功的目标行不应被改写: " + recordFailedDetail);
 
     console.log("DELIVERY STATUS COPY PASS", { assertions });
   } finally {

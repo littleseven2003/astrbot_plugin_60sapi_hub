@@ -4849,6 +4849,7 @@ const DELIVERY_ERROR_LABELS = {
   internal_error: "内部错误",
   interrupted: "发送被中断",
   never_started: "服务重启后未开始发送",
+  record_after_send_failed: "已发送成功，但写入投递记录失败",
   section_image_failed: "栏目图片生成失败",
   send_failed: "发送失败",
   send_unknown: "发送结果未知",

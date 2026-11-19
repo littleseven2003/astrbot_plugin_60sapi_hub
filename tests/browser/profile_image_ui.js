@@ -744,6 +744,10 @@ async function stateText(frame) {
         /* 切换回第一个任务后重新请求，必须拿到新结果（旧响应已失效） */
         routeState.imageData = imagesPayload([SECTIONS[0]], []);
         routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
+        /* 对话框是模态的：真实用户要切换任务，必须先关掉当前预览。 */
+        await closePreview(frame);
+        check(!(await frame.evaluate(() => Boolean(document.getElementById("task-preview-dialog")?.open))),
+          "切换任务前必须能关闭上一个预览");
         await openTask(frame, taskIds.first);
         await runImage(frame);
         await frame.waitForFunction(
@@ -756,6 +760,9 @@ async function stateText(frame) {
 
         /* 5) 关闭/失效：切走任务后预览结果清空，不再展示旧图 */
         routeState.previewData = previewPayload(taskIds.second, "图片回归任务B" + stamp, secondRevision);
+        await closePreview(frame);
+        check(!(await frame.evaluate(() => Boolean(document.getElementById("task-preview-dialog")?.open))),
+          "切走任务前必须能关闭上一个预览");
         await openTask(frame, taskIds.second);
         await frame.waitForFunction(
           () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,

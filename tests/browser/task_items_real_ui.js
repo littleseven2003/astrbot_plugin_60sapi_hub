@@ -139,12 +139,23 @@ async function nav(frame, view) {
 async function openDashboard(browser, width) {
   const page = await browser.newPage({ viewport: { width, height: 1000 } });
   await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
-  await page.fill("input[name=username]", "astrbot");
-  await page.fill("input[name=password]", PASSWORD);
-  await Promise.all([
-    page.waitForURL((url) => !url.toString().includes("/auth/login")),
-    page.getByRole("button", { name: "登录", exact: true }).click(),
-  ]);
+  // 同一浏览器打开第二档视口时可能复用登录 Cookie：只有登录页才填表。
+  await page.waitForTimeout(1200);
+  if (await page.locator("input[name=username]").count() === 0) {
+    try {
+      await page.waitForSelector("input[name=username]", { timeout: 4000 });
+    } catch {
+      /* 已登录 */
+    }
+  }
+  if (await page.locator("input[name=username]").count() > 0) {
+    await page.fill("input[name=username]", "astrbot");
+    await page.fill("input[name=password]", PASSWORD);
+    await Promise.all([
+      page.waitForURL((url) => !url.toString().includes("/auth/login")),
+      page.getByRole("button", { name: "登录", exact: true }).click(),
+    ]);
+  }
   await page.goto(BASE + "/#/plugin-view/" + PLUGIN + "/sites", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(300);
   await page.evaluate(() => {

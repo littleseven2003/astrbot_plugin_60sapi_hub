@@ -247,6 +247,19 @@ node tests/browser/manual_delivery_query.js
 - 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 736 项，712 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过宿主集成测试）；`node --check` 与 `git diff --check` 通过。
 - 未验证：真实平台账号收件与回执、真实公开上游、真实平台定时投递、其他宿主版本；边界同 M4/M5 各节。
 
+## 可配置图片样式
+
+2026-11-19 完成本轮功能验证，功能与测试基线 `0710e0e`。任务可保存图片样式（`default` / `mist` / `floral` / `bold_studio`），样式随预览快照冻结，后台预览、聊天长图、手动与定时图片投递共用同一次渲染。
+
+- 注册表与预设：`core/image_styles/` 提供不可变定义与稳定顺序；新增款式只需登记定义，渲染器共用中文测字、换行、基线、内容顺序、来源脱敏与资源限制。四套预设的可读文字与实际底色均达到 4.5:1（本机核算最低 4.63 / 5.10 / 4.65 / 4.83）。
+- 渲染：4 套 × 5 类内容实际渲染 900px 长图全部成功，序号颜色取自样式、页眉/页脚底色与方形序号按样式绘制；空栏目出空状态图，失败栏目保持失败状态。默认款与 313ac13 相比只调整次要文字（`#6B717B`）与热度（`#6F7580`）以提升对比度，序号统一 `#6B7280`。
+- 存储与接口：schema v17 新增 `push_tasks.image_style`，v16 旧库升级后任务、栏目、白名单、计划、启用状态、revision 与执行历史保留，旧行默认 `default`；新建省略字段为默认，更新省略保留原值，显式 `null`、非字符串或未知 ID 返回字段级 400，历史未知值安全回退默认。任务列表附带 `image_styles` 与 `default_image_style`，任务与预览响应返回有效样式。
+- 快照：样式写入图片快照数据，生成图片前核对方案版本与样式；改样式后旧快照返回 409 `snapshot_stale`，需要重新预览。
+- 后台：任务表单「输出与计划」提供带可见标签的图片样式下拉，回填已保存值，改选计入未保存判定；4.29.1 / 4.29.4 隔离宿主的真实 Dashboard 均验证选项顺序、保存、重开与放弃未保存提示。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 754 项，730 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过）；`node --check` 与 `git diff --check` 通过。
+- 宿主回归：`tests/browser/task_image_style_ui.js` 在 4.29.1 与 4.29.4 通过；既有 `task_items_real_ui` 34 项、`profile_image_ui` 89 项、`delivery_error_labels_ui` 29 项、`delivery_status_copy_ui` 69 项继续通过。
+- 未验证：真实平台账号收件与回执、真实公开上游、真实平台定时投递；参考模板的视觉细节未逐像素复刻，样式以配色、层级、页眉页脚和序号气质适配现有排版。
+
 ## 历史检查清单
 
 以下清单记录旧版本的检查方法，其中组合管理相关路径与页面不适用于当前任务内栏目模型。

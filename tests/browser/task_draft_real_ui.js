@@ -105,12 +105,24 @@ async function frameOf(page) {
 async function openDashboard(browser, width) {
   const page = await browser.newPage({ viewport: { width, height: 1000 } });
   await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
-  await page.fill("input[name=username]", "astrbot");
-  await page.fill("input[name=password]", PASSWORD);
-  await Promise.all([
-    page.waitForURL((url) => !url.toString().includes("/auth/login")),
-    page.getByRole("button", { name: "登录", exact: true }).click(),
-  ]);
+  // 登录页由前端路由渲染：先给一点时间，再判断是否需要填表。
+  await page.waitForTimeout(1200);
+  if (await page.locator("input[name=username]").count() === 0) {
+    try {
+      await page.waitForSelector("input[name=username]", { timeout: 4000 });
+    } catch {
+      /* 已登录，无需填表 */
+    }
+  }
+  // 同一浏览器里后续页面可能已带登录 Cookie：只有还停在登录页才需要填表。
+  if (await page.locator("input[name=username]").count() > 0) {
+    await page.fill("input[name=username]", "astrbot");
+    await page.fill("input[name=password]", PASSWORD);
+    await Promise.all([
+      page.waitForURL((url) => !url.toString().includes("/auth/login")),
+      page.getByRole("button", { name: "登录", exact: true }).click(),
+    ]);
+  }
   await page.goto(BASE + "/#/plugin-view/" + PLUGIN + "/sites", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(300);
   await page.evaluate(() => {
@@ -207,11 +219,14 @@ async function closePreview(frame) {
   );
 }
 
-async function discardIfAsked(frame) {
+async function closeTaskDialog(frame) {
   if (await frame.evaluate(() => document.getElementById("discard-dialog")?.open === true)) {
     await frame.locator("#discard-confirm-button").click();
-    await frame.waitForFunction(() => !document.getElementById("task-dialog")?.open, null, { timeout: WAIT });
   }
+  await frame.waitForFunction(
+    () => !document.getElementById("task-dialog")?.open,
+    null, { timeout: WAIT },
+  );
 }
 
 async function layoutAt(page, frame, width) {
@@ -309,7 +324,9 @@ async function layoutAt(page, frame, width) {
     check(preview.meta.includes("花间"), "预览应显示草稿样式：" + preview.meta);
     const image = await generateImage(frame);
     check(image.pages === 2, "草稿出图应有 2 张：" + JSON.stringify(image));
-    check(image.captions.some((text) => text.includes("草稿")), "图片说明应沿用草稿任务名");
+    check(image.captions.some((text) => text.includes("每日新闻"))
+      && image.captions.some((text) => text.includes("知乎热榜")),
+    "两张图应分别对应草稿的两个栏目：" + JSON.stringify(image.captions));
     await shot(page, "draft-desktop-preview");
     await closePreview(frame);
 
@@ -346,43 +363,39 @@ async function layoutAt(page, frame, width) {
     const still = await api("GET", ep("/tasks/" + ids.task));
     check(still.body.data.revision === savedRevision, "草稿操作不应改动已保存任务");
 
-    // 编辑已保存任务：改动未保存时能力测试与预览直接用草稿。
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await frame.locator("#task-cancel-button").click();
-    await discardIfAsked(frame);
-    await frame.waitForFunction(
+    // 编辑已保存任务：改动未保存时能力测试与预览直接用草稿（另开一页，避免与新建弹窗状态耦合）。
+    const second = await openDashboard(browser, 1440);
+    const sframe = second.frame;
+    await sframe.waitForFunction(
       (id) => [...document.querySelectorAll("#tasks-list .task-card")]
         .some((node) => node.dataset.taskId === id),
       ids.task, { timeout: WAIT },
     );
-    await frame.locator('#tasks-list .task-card[data-task-id="' + ids.task + '"]')
+    await sframe.locator('#tasks-list .task-card[data-task-id="' + ids.task + '"]')
       .getByRole("button", { name: /编辑推送任务/ }).click();
-    await frame.waitForSelector("#task-dialog[open]", { timeout: WAIT });
-    await frame.fill("#task-item-list .task-item-limit-input", "6");
-    await frame.locator("#task-capability-test-button").click();
-    const editCapability = await waitCapability(frame);
+    await sframe.waitForSelector("#task-dialog[open]", { timeout: WAIT });
+    await sframe.fill("#task-item-list .task-item-limit-input", "6");
+    await sframe.locator("#task-capability-test-button").click();
+    const editCapability = await waitCapability(sframe);
     check(editCapability.includes("可以满足"), "编辑态草稿能力测试：" + editCapability);
-    await frame.locator("#task-preview-form-button").click();
-    const editPreview = await readPreviewMeta(frame);
+    await sframe.locator("#task-preview-form-button").click();
+    const editPreview = await readPreviewMeta(sframe);
     check(editPreview.meta.includes("当前表单草稿"),
       "编辑态预览应标注草稿：" + editPreview.meta);
-    await closePreview(frame);
+    await closePreview(sframe);
     const untouched = await api("GET", ep("/tasks/" + ids.task));
     check(untouched.body.data.revision === savedRevision, "编辑态草稿预览不应保存任务");
 
     // 390px 下重复一次编辑态草稿预览，确认移动端交互。
-    await page.setViewportSize({ width: 390, height: 1000 });
-    await page.waitForTimeout(250);
-    await frame.locator("#task-preview-form-button").click();
-    const mobilePreview = await readPreviewMeta(frame);
+    await second.page.setViewportSize({ width: 390, height: 1000 });
+    await second.page.waitForTimeout(300);
+    await sframe.locator("#task-preview-form-button").click();
+    const mobilePreview = await readPreviewMeta(sframe);
     check(mobilePreview.sections === 1, "390px 编辑态预览栏目数：" + mobilePreview.sections);
-    await shot(page, "draft-390-preview");
-    await closePreview(frame);
-    const dirty = await frame.evaluate(() => document.getElementById("discard-dialog")?.open === true);
-    if (dirty) {
-      await frame.locator("#discard-confirm-button").click();
-      await frame.waitForFunction(() => !document.getElementById("task-dialog")?.open, null, { timeout: WAIT });
-    }
+    await shot(second.page, "draft-390-preview");
+    await closePreview(sframe);
+    await second.page.close();
+
     console.log("TASK DRAFT REAL UI PASS", { checks, taskId: ids.task });
   } catch (error) {
     workError = error;

@@ -675,7 +675,8 @@ async function stateText(frame) {
         check(failedCard.hasImage === false, "失败栏目不得当作图片");
         check(failedCard.buttons.length === 0, "失败栏目不得有下载按钮");
         check(failedCard.captions.join("").includes("未生成"), "失败栏目要有明确提示");
-        check(failedCard.captions.join("").includes("section_too_tall"), "失败原因要展示");
+        check(failedCard.captions.join("").includes("图片高度超限"),
+          "失败原因要用可读中文展示");
         const partialState = await stateText(frame);
         check(partialState.state.includes("2 张栏目长图"), "部分失败仍按实际张数计数");
         check(partialState.state.includes("1 个栏目未生成"), "部分失败要在状态行提示");

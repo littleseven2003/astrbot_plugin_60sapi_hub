@@ -243,7 +243,7 @@ node tests/browser/manual_delivery_query.js
 
 - 任务栏目与预览：`tests/browser/task_items_real_ui.js` 在 1440 与 390px 下验证栏目新建/保存/重开/排序/条数、预览栏目顺序与条数标注、预览不改任务配置且零投递记录，34 项断言通过；两版均通过。
 - 图片预览：`tests/browser/profile_image_ui.js` 验证切换任务前必须关闭图片预览、旧响应隔离、按栏目长图生成与逐张下载，89 项断言通过。稳定性修复前，脚本在宿主 iframe 刚完成导航后立即点击，Chromium 偶发丢掉第一次合成点击（按钮收不到 `click`，非插件重渲染、非遮罩、非布局位移）；修复增加「两帧渲染 + 导航静默 300ms」等待与对话框打开断言（失败即报具体状态，不再挂到图片按钮超时），修复后 4.29.1 连续 15 次、4.29.4 连续 5 次通过。
-- 投递记录文案：`tests/browser/delivery_error_labels_ui.js` 28 项、`tests/browser/delivery_status_copy_ui.js` 68 项断言通过。发送器返回成功但写入投递记录失败时，执行级错误码 `record_after_send_failed` 显示「发送器返回成功，但写入投递记录失败，请核对实际收件」；该场景执行状态为 unknown，目标与图片仍是尚未写回的 `sending`（显示「发送中」），夹具按真实记录状态断言，`tests/test_delivery.py` 同一场景校验 `error_code`、目标与页面状态为 `sending`。
+- 投递记录文案：`tests/browser/delivery_error_labels_ui.js` 29 项、`tests/browser/delivery_status_copy_ui.js` 69 项断言通过。发送器返回成功但写入投递记录失败时，执行级错误码 `record_after_send_failed` 显示「发送器返回成功，但写入投递记录失败，请核对实际收件」；该场景执行状态为 unknown，目标与图片仍是尚未写回的 `sending`（显示「发送中」），夹具按真实记录状态断言，`tests/test_delivery.py` 同一场景校验 `error_code`、目标与页面状态为 `sending`。
 - 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 736 项，712 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过宿主集成测试）；`node --check` 与 `git diff --check` 通过。
 - 未验证：真实平台账号收件与回执、真实公开上游、真实平台定时投递、其他宿主版本；边界同 M4/M5 各节。
 

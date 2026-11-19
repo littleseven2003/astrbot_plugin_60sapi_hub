@@ -4832,7 +4832,7 @@ function isDeliveryFinal(status) {
 
 function deliveryStatusLabel(status) {
   return ({
-    preparing: "准备中", running: "运行中", success: "成功",
+    preparing: "准备中", running: "运行中", sending: "发送中", success: "成功",
     partial: "部分成功", failed: "失败", unknown: "结果未知",
     no_targets: "空名单", stopped: "已停止", skipped: "未送达",
   })[status] || status;
@@ -4849,7 +4849,7 @@ const DELIVERY_ERROR_LABELS = {
   internal_error: "内部错误",
   interrupted: "发送被中断",
   never_started: "服务重启后未开始发送",
-  record_after_send_failed: "已发送成功，但写入投递记录失败",
+  record_after_send_failed: "发送器返回成功，但写入投递记录失败，请核对实际收件",
   section_image_failed: "栏目图片生成失败",
   send_failed: "发送失败",
   send_unknown: "发送结果未知",

@@ -125,11 +125,12 @@ const UNKNOWN_CODE = execution("exec-unknown-code", "未知错误码记录", {
   ]),
 ]);
 
-// 发送成功但写投递记录失败：执行级必须译成中文，目标本身仍是成功。
+// 发送器已返回成功但写投递记录失败：执行级 unknown，目标与图片停在 sending，
+// 与真实库中记录一致（尚未写回 success）。
 const RECORD_FAILED = execution("exec-record-failed", "记录写入失败记录", {
   status: "unknown", contentStatus: "complete", errorCode: "record_after_send_failed",
 }, [
-  target(0, UMO_A, "success", null, [page_(1, "success")]),
+  target(0, UMO_A, "sending", null, [page_(1, "sending")]),
 ]);
 
 const DETAILS = {
@@ -322,15 +323,19 @@ function countOf(text, needle) {
       "未登记的槽位错误码要回退显示原码: " + unknown.text);
     check(!unknown.text.includes("undefined"), "回退时不得出现 undefined: " + unknown.text);
 
-    // 6) 发送成功但写投递记录失败：执行级错误码要译成中文，目标不受影响
+    // 6) 发送器返回成功但写投递记录失败：执行级译成中文；目标和图片仍是
+    //    真实库里未写回的状态 sending，不能伪造成成功。
     await closeDialog();
     const recordFailed = await openDetail("exec-record-failed");
-    check(recordFailed.text.includes("错误码：已发送成功，但写入投递记录失败"),
-      "记录写入失败要译成中文: " + recordFailed.text);
+    check(recordFailed.text.includes("错误码：发送器返回成功，但写入投递记录失败，请核对实际收件"),
+      "记录写入失败要按真实语义译成中文: " + recordFailed.text);
     check(!recordFailed.text.includes("record_after_send_failed"),
       "映射后不得再出现原码: " + recordFailed.text);
-    check(recordFailed.rows.length === 1 && recordFailed.rows[0].includes("成功"),
-      "发送成功的目标行不应被改写: " + JSON.stringify(recordFailed.rows));
+    check(recordFailed.rows.length === 1
+      && recordFailed.rows[0].includes("发送中 · 第 1 张 发送中（每日新闻）"),
+    "目标与图片应显示真实的未写回状态发送中: " + JSON.stringify(recordFailed.rows));
+    check(!recordFailed.text.includes("sending"),
+      "发送中不得显示英文原值: " + recordFailed.text);
 
     // 7) 打开详情不写投递：只读 executions
     const calls = await page.evaluate(() => window.__deliveryCalls.slice());

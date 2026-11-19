@@ -237,11 +237,11 @@ const CASES = {
     imagePartial: false,
     failedSections: [],
     targets: [{
-      position: 0, umo: "fake_qq_01:GroupMessage:g0", status: "success",
-      error_code: null, delivered_image_count: 1,
+      position: 0, umo: "fake_qq_01:GroupMessage:g0", status: "sending",
+      error_code: null, delivered_image_count: 0,
       skipped_image_count: 0, section_image_count: 1,
       images: [
-        { image_index: 1, status: "success", label: "每日新闻" },
+        { image_index: 1, status: "sending", label: "每日新闻" },
       ],
     }],
   },
@@ -485,12 +485,14 @@ async function frameOf(page) {
     );
     const recordFailedDetail = await frame.evaluate(() =>
       document.getElementById("delivery-result").innerText);
-    check(recordFailedDetail.includes("错误码：已发送成功，但写入投递记录失败"),
-      "记录写入失败要译成中文: " + recordFailedDetail);
+    check(recordFailedDetail.includes("错误码：发送器返回成功，但写入投递记录失败，请核对实际收件"),
+      "记录写入失败要按真实语义译成中文: " + recordFailedDetail);
     check(!recordFailedDetail.includes("record_after_send_failed"),
       "记录写入失败不得暴露原码: " + recordFailedDetail);
-    check(recordFailedDetail.includes("成功 · 第 1 张 成功"),
-      "发送成功的目标行不应被改写: " + recordFailedDetail);
+    check(recordFailedDetail.includes("发送中 · 第 1 张 发送中（每日新闻）"),
+      "目标与图片应显示真实的未写回状态: " + recordFailedDetail);
+    check(!recordFailedDetail.includes("sending"),
+      "发送中不得显示英文原值: " + recordFailedDetail);
 
     console.log("DELIVERY STATUS COPY PASS", { assertions });
   } finally {

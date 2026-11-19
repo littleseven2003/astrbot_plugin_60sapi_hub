@@ -297,6 +297,11 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.sender.calls), 1)
         result = await self.sites.store.get_delivery_execution("write-after-1")
         self.assertEqual(result.status, "unknown")
+        self.assertEqual(result.error_code, "record_after_send_failed")
+        # 发送器已经成功，但 success 状态写不进去：目标与图片停在 sending，
+        # 不得伪造成成功；页面文案要能解释这一真实状态。
+        self.assertEqual([target.status for target in result.targets], ["sending"])
+        self.assertEqual([page.status for page in result.pages], ["sending"])
         # A repeated call returns the existing record and does not resend.
         again = await self.service.execute(task.id, "write-after-1")
         self.assertEqual(again.status, "unknown")

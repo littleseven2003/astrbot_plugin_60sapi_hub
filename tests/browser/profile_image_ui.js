@@ -327,6 +327,13 @@ async function openPage(browser, width) {
   page.on("request", (request) => {
     if (!request.url().startsWith(BASE)) upstreamCalls.push(request.url());
   });
+  // 记录宿主 iframe 最近一次导航时间。Chromium 在帧刚完成导航的瞬间偶尔
+  // 丢掉第一次合成点击（mousedown/mouseup 落不到同一节点，按钮收不到
+  // click），表现为点“预览内容”没反应。等导航静默一小段时间再交互。
+  page.on("framenavigated", (navigated) => {
+    if (navigated === page.mainFrame()) return;
+    page.evaluate(() => { window.__lastFrameNavAt = Date.now(); }).catch(() => {});
+  });
   await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
   await page.fill("input[name=username]", "astrbot");
   await page.fill("input[name=password]", PASSWORD);
@@ -345,14 +352,51 @@ async function openPage(browser, width) {
   });
   const frame = await frameOf(page);
   await showTasks(frame);
+  await waitForFrameSettled(page, frame);
   return { page, frame };
+}
+
+// 等待宿主 iframe 完成上一次导航后再交互：先让页面画两帧，再要求最近
+// 一次 iframe 导航已静默 300ms，避免点击落在帧切换的空档里被丢掉。
+async function waitForFrameSettled(page, frame) {
+  await frame.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await page.waitForFunction(
+    () => Date.now() - (window.__lastFrameNavAt || 0) > 300,
+    null, { timeout: WAIT },
+  );
 }
 
 // 打开任务卡片上的“预览内容”：预览按已保存的任务配置发起，拿到快照后才能生成长图。
 async function openTask(frame, taskId) {
   const card = frame.locator(`#tasks-list .task-card[data-task-id="${taskId}"]`).first();
   await card.waitFor({ state: "visible", timeout: WAIT });
+  const waitDialogOpen = () => frame.waitForFunction(
+    () => document.getElementById("task-preview-dialog")?.open === true,
+    null, { timeout: 5000 },
+  );
   await card.locator(".task-card-actions button").first().click({ timeout: WAIT });
+  try {
+    await waitDialogOpen();
+  } catch (firstError) {
+    // 兜底：宿主帧边界偶发丢掉一次点击时，像真实用户一样再点一次；
+    // 仍打不开就带上对话框状态直接失败，而不是一直等到图片按钮超时。
+    await card.locator(".task-card-actions button").first().click({ timeout: WAIT });
+    try {
+      await waitDialogOpen();
+    } catch {
+      const state = await frame.evaluate(() => ({
+        open: Boolean(document.getElementById("task-preview-dialog")?.open),
+        status: document.getElementById("task-preview-status")?.textContent || "",
+        buttonDisabled: Boolean(document.getElementById("task-preview-image-button")?.disabled),
+      }));
+      throw new Error(
+        "点击预览内容后对话框未打开：" + JSON.stringify(state)
+        + "；首次错误：" + (firstError && firstError.message),
+      );
+    }
+  }
   await frame.waitForFunction(
     () => !document.getElementById("task-preview-image-button").disabled,
     null, { timeout: WAIT },

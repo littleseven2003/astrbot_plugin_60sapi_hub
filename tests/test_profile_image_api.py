@@ -70,6 +70,7 @@ class FakeSectionImage:
         png: bytes | None = None,
         error: str | None = None,
         height: int = 640,
+        note: str | None = None,
     ) -> None:
         self.index = index
         self.content_type = content_type
@@ -79,6 +80,7 @@ class FakeSectionImage:
         self.height = height
         self.png = png
         self.error = error
+        self.note = note
 
 
 class FakeImageService:
@@ -451,6 +453,25 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
         # 同一快照渲染不增加上游请求。
         self.assertEqual(self.calls, calls_before)
         self.assertEqual(service.calls, 1)
+
+    async def test_reflow_note_is_projected_only_when_present(self) -> None:
+        task = await self._task()
+        _, snapshot_id = await self._snapshot_for(self.api, task)
+        service = FakeImageService(images=(
+            FakeSectionImage(
+                1, "daily_news", "每日新闻", "success",
+                png=b"\x89PNG-one", note="部分摘要已缩略",
+            ),
+            FakeSectionImage(2, "douyin_hot", "抖音热搜", "success", png=b"\x89PNG-two"),
+        ))
+        api = self._api_with(service)
+        result = await api.generate_image(
+            task.id, {"snapshot_id": snapshot_id}, owner="alice",
+        )
+        self.assertEqual(result.status_code, 200, result.body)
+        images = result.body["data"]["images"]
+        self.assertEqual(images[0]["note"], "部分摘要已缩略")
+        self.assertNotIn("note", images[1])
 
     async def test_unknown_status_and_unsafe_error_code_are_normalised(self) -> None:
         task = await self._task()

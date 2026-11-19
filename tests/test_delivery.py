@@ -670,9 +670,10 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
         result = await self.service.execute(task.id, "preview-image-merge")
         failed = json.loads(result.failed_sections_json or "[]")
+        # 渲染器给出的具体失败原因要保留，页面才能提示“高度超限”等。
         self.assertEqual(failed, [{
             "label": "知乎热榜",
-            "reason": "image_failed",
+            "reason": "image_limit_exceeded",
             "image_index": 2,
         }])
         self.assertNotIn("上游敏感响应正文", result.failed_sections_json or "")
@@ -724,11 +725,27 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             {"label": "每日新闻", "image_index": 1},
             {
                 "label": "知乎热榜",
-                "reason": "image_failed",
+                "reason": "image_limit_exceeded",
                 "image_index": 2,
             },
         ])
         self.assertNotIn("上游错误", result.failed_sections_json or "")
+
+    async def test_image_failure_keeps_specific_section_reason(self) -> None:
+        self.api.image_sections[1]["status"] = "failed"
+        self.api.image_sections[1]["error"] = "section_too_tall"
+        task = await self._task(["aiocqhttp:GroupMessage:g1"], output="image")
+        result = await self.service.execute(task.id, "image-tall-reason")
+        failed = json.loads(result.failed_sections_json or "[]")
+        # 页面需要能显示「知乎热榜 · 图片高度超限」，而不是笼统的图片失败。
+        self.assertEqual(failed, [{
+            "label": "知乎热榜",
+            "reason": "section_too_tall",
+            "image_index": 2,
+        }])
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].image_png, fake_png(b"image-one"))
 
     async def test_all_section_images_failed_never_calls_sender(self) -> None:
         for section in self.api.image_sections:

@@ -1236,7 +1236,7 @@ def _decode_section_images(
         return None
     if len(raw) > MAX_SECTION_IMAGES:
         return None
-    parsed: list[tuple[int, bytes | None, str | None, str]] = []
+    parsed: list[tuple[int, bytes | None, str | None, str, str | None]] = []
     refs: list[tuple[int, str, str]] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -1255,7 +1255,10 @@ def _decode_section_images(
             content_type = ""
         refs.append((index, label.strip(), content_type.strip()[:64]))
         if status == "failed":
-            parsed.append((index, None, label.strip(), content_type))
+            # 渲染器已给出具体原因（高度/字节/字符超限等），失败栏目保留它，
+            # 页面才能显示“知乎热榜 · 图片高度超限”这类可行动提示。
+            reason = _failure_reason(item.get("error")) or None
+            parsed.append((index, None, label.strip(), content_type, reason))
             continue
         encoded = item.get("png_base64")
         if not isinstance(encoded, str) or not encoded:
@@ -1268,18 +1271,18 @@ def _decode_section_images(
             return None
         if len(png) > MAX_SECTION_IMAGE_BYTES:
             return None
-        parsed.append((index, png, None, content_type))
+        parsed.append((index, png, None, content_type, None))
     parsed.sort(key=lambda entry: entry[0])
     if [entry[0] for entry in parsed] != list(range(1, len(parsed) + 1)):
         return None
-    slots = tuple((index, png) for index, png, _, _ in parsed)
+    slots = tuple((index, png) for index, png, _, _, _ in parsed)
     failed_entries = tuple(
         {
             "label": label,
-            "reason": "image_failed",
+            "reason": reason or "image_failed",
             "image_index": index,
         }
-        for index, png, label, _ in parsed
+        for index, png, label, _, reason in parsed
         if png is None and label
     )
     refs.sort(key=lambda entry: entry[0])

@@ -65,6 +65,8 @@ class SectionImage:
     height: int
     png: bytes | None
     error: str | None
+    # 成功出图但摘要被有界缩略时给出的提示；失败或完整排版时为 None。
+    note: str | None = None
 
 
 _FONT_CANDIDATES = (
@@ -310,28 +312,47 @@ class ProfileImageRenderer:
         header = self._header_lines(
             section, label, content_type, limits.width,
         )
-        body = self._body_lines(items, limits.width)
         footer = self._footer_lines(
             section, site_name, created_at, limits.width,
         )
-        # 外框之后是页眉区；页眉的强调条、上内边距与末尾整幅宽度分隔线都是
-        # 页眉自身的 _Line，正文分隔线与页脚上边线同样各自计入高度。
-        height = (
-            self._style.card_border
-            + self._lines_height(header)
-            + self._lines_height(body)
-            + self._lines_height(footer)
-            + _FOOTER_BOTTOM_PAD
-            + self._style.card_border
-        )
-        if height > limits.max_height:
-            return self._failed(
-                limits, index, label, content_type, _ERROR_TOO_TALL,
+        # 先按完整摘要排版；高度或单图字节超限时有界地缩略摘要
+        # （最多两行，再一次一行）。标题、顺序、条数与栏目数都不变，
+        # 全文仍可在文字/Markdown 输出中查看。
+        png: bytes | None = None
+        height = 0
+        summary_truncated = False
+        failure = _ERROR_TOO_TALL
+        for max_detail_lines in (None, 2, 1):
+            rendered_items, truncated = self._truncate_details(
+                items, max_detail_lines, limits.width,
             )
-        png = self._draw(header, body, footer, height, limits.width)
-        if len(png) > limits.max_image_bytes:
+            body = self._body_lines(rendered_items, limits.width)
+            # 外框之后是页眉区；页眉的强调条、上内边距与末尾整幅宽度分隔线
+            # 都是页眉自身的 _Line，正文分隔线与页脚上边线同样计入高度。
+            candidate_height = (
+                self._style.card_border
+                + self._lines_height(header)
+                + self._lines_height(body)
+                + self._lines_height(footer)
+                + _FOOTER_BOTTOM_PAD
+                + self._style.card_border
+            )
+            if candidate_height > limits.max_height:
+                failure = _ERROR_TOO_TALL
+                continue
+            candidate_png = self._draw(
+                header, body, footer, candidate_height, limits.width,
+            )
+            if len(candidate_png) > limits.max_image_bytes:
+                failure = _ERROR_TOO_LARGE
+                continue
+            png = candidate_png
+            height = candidate_height
+            summary_truncated = truncated
+            break
+        if png is None:
             return self._failed(
-                limits, index, label, content_type, _ERROR_TOO_LARGE,
+                limits, index, label, content_type, failure,
             )
         status = _STATUS_EMPTY if not items else _STATUS_SUCCESS
         return SectionImage(
@@ -343,7 +364,58 @@ class ProfileImageRenderer:
             height=height,
             png=png,
             error=None,
+            note=(
+                "部分摘要已缩略"
+                if summary_truncated and status == _STATUS_SUCCESS
+                else None
+            ),
         )
+
+    def _truncate_details(
+        self,
+        items: list[dict[str, Any]],
+        max_lines: int | None,
+        width: int,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """把超长摘要压到最多 max_lines 行；返回新条目与被缩略标记。
+
+        max_lines 为 None 时原样返回。只在整栏高度或字节超限后调用，
+        因此正常内容不会因为个别长摘要被提前截断。
+        """
+        if max_lines is None:
+            return items, False
+        text_x = self._style.num_col + self._style.num_gap
+        available = self._content_width(width) - text_x
+        changed = False
+        rendered: list[dict[str, Any]] = []
+        for item in items:
+            detail = _display_text(item.get("detail"))
+            if detail:
+                wrapped = self._wrap(detail, self._style.detail_size, available)
+                if len(wrapped) > max_lines:
+                    detail = self._truncate_wrapped(
+                        wrapped, max_lines, self._style.detail_size, available,
+                    )
+                    changed = True
+            copy = dict(item)
+            copy["detail"] = detail
+            rendered.append(copy)
+        return rendered, changed
+
+    def _truncate_wrapped(
+        self,
+        lines: list[str],
+        max_lines: int,
+        size: int,
+        width: int,
+    ) -> str:
+        """保留前 max_lines 行，末行按实测字宽加省略号后截断。"""
+        kept = list(lines[:max_lines])
+        last = kept[-1].rstrip()
+        while last and self._text_width(last + "…", size) > width:
+            last = last[:-1].rstrip()
+        kept[-1] = last + "…"
+        return "".join(kept)
 
     @staticmethod
     def _failed(

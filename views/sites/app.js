@@ -1921,6 +1921,25 @@ const PREVIEW_IMAGE_STATUS_LABELS = {
   failed: "未生成",
 };
 
+// 栏目长图失败原因：渲染器给出具体上限时直接可行动；历史记录只有
+// 通用 image_failed，仍按旧文案兼容。
+const SECTION_IMAGE_ERROR_LABELS = {
+  section_too_tall: "图片高度超限",
+  section_too_large: "图片体积超限",
+  section_too_long: "栏目内容超出字符上限",
+  section_failed: "栏目获取失败",
+  total_bytes_exceeded: "图片总量超限",
+  image_failed: "图片生成失败",
+  render_failed: "渲染失败",
+};
+
+function sectionImageErrorLabel(code) {
+  if (!code) {
+    return "";
+  }
+  return SECTION_IMAGE_ERROR_LABELS[code] || String(code);
+}
+
 const PREVIEW_IMAGE_VIEWER_CLASS = "preview-image-viewer-open";
 const PREVIEW_IMAGE_VIEWER_HINT =
   "已按屏幕宽度显示完整长图；需要细节时点“原始尺寸”。";
@@ -2155,15 +2174,18 @@ function renderPreviewImages(data) {
     }
     const caption = document.createElement("figcaption");
     if (hasImage) {
+      const note = typeof section.note === "string" && section.note
+        ? " · " + section.note
+        : "";
       caption.textContent =
         section.index + ". " + section.label + " · " +
         section.width + "×" + section.height + " · " +
-        PREVIEW_IMAGE_STATUS_LABELS[section.status];
+        PREVIEW_IMAGE_STATUS_LABELS[section.status] + note;
     } else {
       caption.className = "task-disabled";
-      const reason = typeof section.error === "string" && section.error
-        ? section.error
-        : "未生成";
+      const reason = sectionImageErrorLabel(
+        typeof section.error === "string" ? section.error : "",
+      ) || "未生成";
       caption.textContent =
         section.index + ". " + section.label + " · 未生成（" + reason + "）";
     }
@@ -5404,6 +5426,25 @@ function renderDeliveryExecution(execution) {
     note.className = "task-disabled";
     note.textContent = "结果不确定，不会自动重发；请人工确认后再决定是否新建测试。";
     elements.deliveryResult.append(note);
+  }
+  const failedSections = Array.isArray(execution.failed_sections)
+    ? execution.failed_sections
+    : [];
+  if (failedSections.length > 0) {
+    const failed = document.createElement("div");
+    failed.className = "task-disabled";
+    for (const entry of failedSections) {
+      const line = document.createElement("p");
+      const label = entry && typeof entry.label === "string" && entry.label
+        ? entry.label
+        : "栏目";
+      const reason = sectionImageErrorLabel(
+        entry && typeof entry.reason === "string" ? entry.reason : "",
+      );
+      line.textContent = reason ? `${label} · ${reason}` : label;
+      failed.append(line);
+    }
+    elements.deliveryResult.append(failed);
   }
   for (const target of execution.targets || []) {
     const row = document.createElement("div");

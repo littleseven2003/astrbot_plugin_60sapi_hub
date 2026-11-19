@@ -415,6 +415,14 @@ class PlanPreview:
         if stale is not None:
             return stale
 
+        return self._image_result(section_images, snapshot.id)
+
+    @staticmethod
+    def _image_result(
+        section_images: Any,
+        snapshot_id: str,
+    ) -> PlanPreviewResult:
+        """把渲染结果整理成图片响应；成功/失败的栏目都保留具体原因。"""
         images: list[dict[str, Any]] = []
         failed_sections: list[str] = []
         total_png_bytes = 0
@@ -453,7 +461,7 @@ class PlanPreview:
             {
                 "images": images,
                 "failed_sections": failed_sections,
-                "snapshot_id": snapshot.id,
+                "snapshot_id": snapshot_id,
             },
         )
 
@@ -563,6 +571,11 @@ def _section_image_payload(section_image: Any, position: int) -> dict[str, Any]:
             _safe_error_code(getattr(section_image, "error", None))
             if known_status else "render_failed"
         )
+    else:
+        # 成功出图但摘要被有界缩略时带上提示；正常排版不带该字段。
+        note = _safe_text(getattr(section_image, "note", None))
+        if note:
+            payload["note"] = note
     return payload
 
 

@@ -711,7 +711,7 @@ class ProfileImageRendererTest(unittest.TestCase):
             fields,
             [
                 "index", "content_type", "label", "status",
-                "width", "height", "png", "error",
+                "width", "height", "png", "error", "note",
             ],
         )
 
@@ -1317,3 +1317,45 @@ class ProfileImageRendererTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(has_font(), "no CJK font available")
+class OverflowReflowAndHeatTest(unittest.TestCase):
+    """超限摘要有界缩略、热度按整栏统一布局。"""
+
+    def setUp(self) -> None:
+        self.renderer = ProfileImageRenderer()
+
+    def _zhihu(self, detail_repeat: int, heat: int, count: int = 50) -> dict:
+        items = [
+            {
+                "title": f"知乎问题第{index}条：如何评价当前的行业趋势",
+                "detail": "一段较长的摘要内容，" * detail_repeat,
+                "hot_value": heat if index % 2 else heat + 1,
+            }
+            for index in range(1, count + 1)
+        ]
+        return profile([section("zhihu_hot", "知乎热榜", items)])
+
+    def test_long_summaries_are_reflowed_not_dropped(self) -> None:
+        data = self._zhihu(detail_repeat=18, heat=12_345_678)
+        for style in ("default", "mist", "floral", "bold_studio"):
+            with self.subTest(style=style):
+                image = self.renderer.render({**data, "image_style": style})[0]
+                self.assertEqual(image.status, "success")
+                self.assertIsNotNone(image.png)
+                self.assertLessEqual(image.height, 8000)
+                self.assertLessEqual(len(image.png), 2 * 1024 * 1024)
+                # 标题、条数与顺序都保留，只缩略摘要。
+                self.assertEqual(len(image_module._items(
+                    data["sections"][0],
+                )), 50)
+                self.assertEqual(image.note, "部分摘要已缩略")
+
+    def test_unshrinkable_overflow_still_fails_clearly(self) -> None:
+        items = [item(f"标题 {index}") for index in range(1, 201)]
+        data = profile([section("bilibili_hot", "Bilibili 热搜", items)])
+        image = self.renderer.render(data)[0]
+        self.assertEqual(image.status, "failed")
+        self.assertEqual(image.error, "section_too_tall")
+        self.assertIsNone(image.note)

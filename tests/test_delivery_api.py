@@ -237,7 +237,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["failed_section_count"], 1)
         self.assertEqual(data["failed_sections"], [{
             "label": "知乎热榜",
-            "reason": "image_failed",
+            "reason": "image_limit_exceeded",
             "image_index": 2,
         }])
         target = data["targets"][0]

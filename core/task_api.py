@@ -131,70 +131,10 @@ class TaskApi:
         if self._content is None:
             return _error(503, "内容获取不可用。", code="content_unavailable")
 
-        requirements = requirements_from_items(task.items)
         baseline = (task.revision, tuple(task.sites))
-        checked: list[dict[str, Any]] = []
-        site_snapshot: dict[str, tuple[int, bool]] = {}
-        winner: dict[str, Any] | None = None
-        candidates = tuple(task.sites)[:MAX_TEST_CANDIDATES]
-        truncated = len(tuple(task.sites)) > len(candidates)
-        for site_id in candidates:
-            site = sites.get(site_id)
-            entry: dict[str, Any] = {
-                "site_id": site_id,
-                "site_name": site.name if site is not None else None,
-                "satisfied": False,
-                "reason": None,
-                "missing": [],
-            }
-            if site is None:
-                entry["reason"] = "site_missing"
-                checked.append(entry)
-                continue
-            # 记录所有候选（含停用的）当时的 revision 与启用状态，
-            # 结束后复核，避免期间被启用/修改的站点让结论失真。
-            site_snapshot[site_id] = (site.revision, bool(site.enabled))
-            if not site.enabled:
-                entry["reason"] = "site_disabled"
-                checked.append(entry)
-                continue
-            sections: list[dict[str, Any]] = []
-            for item in task.items:
-                try:
-                    cached = await self._content.preview_cached(
-                        item.content_type, site_id,
-                    )
-                    snapshot = content_snapshot_dict(
-                        item.content_type, cached.snapshot,
-                    )
-                    items = snapshot.get("items")
-                    sections.append({
-                        "content_type": item.content_type,
-                        "status": "ok",
-                        "items": items if isinstance(items, list) else [],
-                    })
-                except Exception:
-                    sections.append({
-                        "content_type": item.content_type,
-                        "status": "error",
-                        "items": [],
-                    })
-            satisfied, shortfalls = evaluate_sections(sections, requirements)
-            entry["satisfied"] = satisfied
-            entry["reason"] = None if satisfied else "requirements_not_met"
-            entry["missing"] = [
-                {
-                    "content_type": item.content_type,
-                    "required": item.required,
-                    "available": item.available,
-                    "reason": item.reason,
-                }
-                for item in shortfalls
-            ]
-            checked.append(entry)
-            if satisfied:
-                winner = entry
-                break
+        checked, site_snapshot, winner, truncated = await self._scan_capability(
+            task.items, task.sites, sites,
+        )
 
         # 测试期间配置发生变化时，不能把旧结果报告为当前配置可用。
         try:
@@ -242,6 +182,230 @@ class TaskApi:
             "truncated": truncated,
             "checked_count": len(checked),
         })
+
+    async def _scan_capability(
+        self,
+        items: tuple[Any, ...],
+        site_ids: tuple[str, ...],
+        sites: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, tuple[int, bool]], dict[str, Any] | None, bool]:
+        """按候选顺序判断单站能否满足全部栏目；草稿与已保存任务共用。"""
+        requirements = requirements_from_items(items)
+        checked: list[dict[str, Any]] = []
+        site_snapshot: dict[str, tuple[int, bool]] = {}
+        winner: dict[str, Any] | None = None
+        candidates = tuple(site_ids)[:MAX_TEST_CANDIDATES]
+        truncated = len(tuple(site_ids)) > len(candidates)
+        for site_id in candidates:
+            site = sites.get(site_id)
+            entry: dict[str, Any] = {
+                "site_id": site_id,
+                "site_name": site.name if site is not None else None,
+                "satisfied": False,
+                "reason": None,
+                "missing": [],
+            }
+            if site is None:
+                entry["reason"] = "site_missing"
+                checked.append(entry)
+                continue
+            # 记录所有候选（含停用的）当时的 revision 与启用状态，
+            # 结束后复核，避免期间被启用/修改的站点让结论失真。
+            site_snapshot[site_id] = (site.revision, bool(site.enabled))
+            if not site.enabled:
+                entry["reason"] = "site_disabled"
+                checked.append(entry)
+                continue
+            sections: list[dict[str, Any]] = []
+            for item in items:
+                try:
+                    cached = await self._content.preview_cached(
+                        item.content_type, site_id,
+                    )
+                    snapshot = content_snapshot_dict(
+                        item.content_type, cached.snapshot,
+                    )
+                    raw_items = snapshot.get("items")
+                    sections.append({
+                        "content_type": item.content_type,
+                        "status": "ok",
+                        "items": raw_items if isinstance(raw_items, list) else [],
+                    })
+                except Exception:
+                    sections.append({
+                        "content_type": item.content_type,
+                        "status": "error",
+                        "items": [],
+                    })
+            satisfied, shortfalls = evaluate_sections(sections, requirements)
+            entry["satisfied"] = satisfied
+            entry["reason"] = None if satisfied else "requirements_not_met"
+            entry["missing"] = [
+                {
+                    "content_type": item.content_type,
+                    "required": item.required,
+                    "available": item.available,
+                    "reason": item.reason,
+                }
+                for item in shortfalls
+            ]
+            checked.append(entry)
+            if satisfied:
+                winner = entry
+                break
+        return checked, site_snapshot, winner, truncated
+
+    async def _draft_sites_changed(
+        self,
+        site_snapshot: dict[str, tuple[int, bool]],
+    ) -> bool:
+        for site_id, (revision, enabled) in site_snapshot.items():
+            try:
+                latest_site = await self._sites.get_site(site_id)
+            except Exception:
+                return True
+            if latest_site.revision != revision or bool(latest_site.enabled) != enabled:
+                return True
+        return False
+
+    async def test_draft(self, payload: object) -> TaskApiResult:
+        """用表单草稿判断候选站点能力；不保存、不投递、不请求真实消息。"""
+        if self._content is None:
+            return _error(503, "内容获取不可用。", code="content_unavailable")
+        try:
+            draft = await self._tasks.normalize_draft(payload)
+        except TaskValidationError as exc:
+            return _validation_error(exc)
+        except TaskNotFoundError:
+            return _error(
+                400, "候选站点不存在，请重新选择。", code="invalid_sites",
+            )
+        except TaskStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        try:
+            sites = {site.id: site for site in await self._sites.list_sites()}
+        except SiteStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        checked, site_snapshot, winner, truncated = await self._scan_capability(
+            draft.items, draft.sites, sites,
+        )
+        if await self._draft_sites_changed(site_snapshot):
+            return _error(
+                409,
+                "站点配置在测试期间发生变化，请重新测试。",
+                code="config_changed",
+            )
+        if winner is not None:
+            message = f"站点「{winner['site_name'] or winner['site_id']}」可以满足全部配置。"
+        elif not checked:
+            message = "任务没有配置候选站点。"
+        else:
+            message = "所选站点均无法满足全部类别与条数要求。"
+        ttl = getattr(self._content, "cache_ttl_seconds", None)
+        return _ok({
+            "draft": True,
+            "satisfied": winner is not None,
+            "site_id": winner["site_id"] if winner is not None else None,
+            "site_name": winner["site_name"] if winner is not None else None,
+            "message": message,
+            "checked": checked,
+            "checked_at": self._clock().isoformat(),
+            "cache": {"used": True, "ttl_seconds": ttl},
+            "truncated": truncated,
+            "checked_count": len(checked),
+        })
+
+    async def preview_draft(
+        self,
+        payload: object,
+        *,
+        owner: str | None = None,
+    ) -> TaskApiResult:
+        """按表单草稿取一次内容并保存草稿图片快照；不改任务或调度。"""
+        if self._plan_preview is None:
+            return _error(
+                503, "内容预览当前不可用。", code="preview_unavailable",
+            )
+        data = _payload_dict(payload)
+        if data is None:
+            return _invalid_body_error()
+        force_refresh = data.get("force_refresh", False)
+        if type(force_refresh) is not bool:
+            return _error(
+                400,
+                "force_refresh 必须是布尔值。",
+                code="invalid_force_refresh",
+            )
+        try:
+            draft = await self._tasks.normalize_draft(data)
+        except TaskValidationError as exc:
+            return _validation_error(exc)
+        except TaskNotFoundError:
+            return _error(
+                400, "候选站点不存在，请重新选择。", code="invalid_sites",
+            )
+        except TaskStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        try:
+            sites = {site.id: site for site in await self._sites.list_sites()}
+        except SiteStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        # 草稿预览也只走仍启用的候选；停用或已删除的站点不请求上游。
+        candidates = [
+            site_id for site_id in draft.sites
+            if getattr(sites.get(site_id), "enabled", False)
+        ]
+        adapter = _DraftPreviewAdapter(self._plan_preview, draft)
+        try:
+            found = await first_satisfying_preview(
+                adapter,
+                plan_id="draft",
+                requirements=requirements_from_items(draft.items),
+                site_ids=candidates,
+                owner=owner,
+                catch_errors=True,
+                force_refresh=force_refresh,
+            )
+        except Exception:
+            return _internal_error()
+        if found is None:
+            return _error(
+                502,
+                "没有候选站点能同时提供全部栏目，请调整栏目或候选站点。",
+                code="content_unavailable",
+            )
+        _, preview_data = found
+        result = dict(preview_data)
+        result["draft"] = True
+        result["task_name"] = draft.name
+        result["items"] = plan_payload(draft.items)
+        result["image_style"] = draft.image_style
+        result["image_styles"] = list(style_options())
+        return _ok(result)
+
+    async def generate_draft_image(
+        self,
+        payload: object,
+        *,
+        owner: str | None = None,
+    ) -> TaskApiResult:
+        """渲染草稿快照；快照与已保存任务入口互相不可用。"""
+        if self._plan_preview is None:
+            return _error(
+                503, "图片渲染当前不可用。", code="image_unavailable",
+            )
+        result = await self._plan_preview.generate_draft_image(
+            payload, owner=owner,
+        )
+        return TaskApiResult(result.status_code, result.body)
 
     async def list_schedule_runs(self, *, limit: int = 20, offset: int = 0) -> TaskApiResult:
         if self._scheduler is None:
@@ -674,3 +838,23 @@ def _internal_error() -> TaskApiResult:
 
 
 __all__ = ["TaskApi", "TaskApiResult"]
+
+
+class _DraftPreviewAdapter:
+    """把草稿参数适配成 first_satisfying_preview 需要的 preview_site 接口。"""
+
+    def __init__(self, preview, draft) -> None:
+        self._preview = preview
+        self._draft = draft
+
+    async def preview_site(self, payload, *, site_id=None, owner=None):
+        return await self._preview.preview_draft(
+            self._draft.items,
+            name=self._draft.name,
+            image_style=self._draft.image_style,
+            site_id=site_id,
+            owner=owner,
+            force_refresh=bool(
+                payload.get("force_refresh") if isinstance(payload, dict) else False
+            ),
+        )

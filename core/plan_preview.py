@@ -252,6 +252,234 @@ class PlanPreview:
                 }
         return _ok(data)
 
+    async def preview_draft(
+        self,
+        items: tuple[Any, ...],
+        *,
+        name: str,
+        image_style: str,
+        site_id: str,
+        owner: str | None = None,
+        force_refresh: bool = False,
+    ) -> PlanPreviewResult:
+        """按未保存的表单草稿取一次内容；不写任务、不发送。"""
+        try:
+            site = await self._sites.get_site(site_id)
+        except SiteNotFoundError:
+            return _site_not_found_error()
+        except SiteStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if not site.enabled:
+            return _error(
+                409,
+                "该站点未启用，无法获取上游内容。",
+                code="site_disabled",
+            )
+        sections: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for attempt in range(_MAX_PREVIEW_ATTEMPTS):
+            sections, failures = await self._collect_sections(
+                items, force_refresh, site.id,
+            )
+            try:
+                latest_site = await self._sites.get_site(site_id)
+            except SiteNotFoundError:
+                return _site_not_found_error()
+            except SiteStorageError:
+                return _storage_error()
+            except Exception:
+                return _internal_error()
+            if not latest_site.enabled:
+                return _error(
+                    409,
+                    "该站点未启用，无法获取上游内容。",
+                    code="site_disabled",
+                )
+            if latest_site.revision == site.revision:
+                site = latest_site
+                break
+            if attempt + 1 >= _MAX_PREVIEW_ATTEMPTS:
+                return _error(
+                    409,
+                    "站点配置在获取期间发生变化，本次预览已取消，请重试。",
+                    code="preview_revision_changed",
+                )
+            site = latest_site
+
+        success_count = len(sections) - len(failures)
+        data = {
+            "draft": True,
+            "task_name": name,
+            "image_style": image_style,
+            "items": plan_payload(items),
+            "site_id": site.id,
+            "site_name": site.name,
+            "success_count": success_count,
+            "failure_count": len(failures),
+            "sections": sections,
+            "failed_sections": [
+                {
+                    "content_type": section["content_type"],
+                    "label": section["label"],
+                    "message": section["message"],
+                }
+                for section in failures
+            ],
+        }
+        if success_count == 0:
+            data["status"] = "failed"
+        elif failures:
+            data["status"] = "partial"
+        else:
+            data["status"] = "complete"
+        if success_count == 0:
+            failed_labels = "、".join(
+                section["label"] for section in failures
+            ) or "未知栏目"
+            return _error(
+                502,
+                f"所有栏目获取失败：{failed_labels}。",
+                code="all_sections_failed",
+                data=data,
+            )
+        data["outputs"] = render_profile_outputs(data)
+        if self._image_snapshots is not None:
+            try:
+                snapshot = self._image_snapshots.put(
+                    owner=owner or "",
+                    # 草稿没有任务行：空 id 与 0 版本配合 data.draft 标记，
+                    # 与已保存任务的图片入口严格隔离。
+                    profile_id="",
+                    profile_revision=0,
+                    site_id=site.id,
+                    site_revision=site.revision,
+                    data={**_image_snapshot_data(data), "draft": True},
+                )
+            except ImageSnapshotError:
+                snapshot = None
+            if snapshot is not None:
+                data["image_snapshot"] = {
+                    "id": snapshot.id,
+                    "expires_at": snapshot.expires_at,
+                }
+        return _ok(data)
+
+    async def generate_draft_image(
+        self,
+        payload: object,
+        *,
+        owner: str | None = None,
+    ) -> PlanPreviewResult:
+        """渲染草稿预览的快照；不触碰任何已保存任务。"""
+        data = _payload_dict(payload)
+        if data is None:
+            return _invalid_body_error()
+        snapshot_id = data.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+            return _error(
+                400,
+                "snapshot_id 必须是非空字符串。",
+                code="invalid_snapshot_id",
+            )
+        if self._image_snapshots is None or self._image_service is None:
+            return _error(
+                503,
+                "图片渲染当前不可用。",
+                code="image_unavailable",
+            )
+        try:
+            snapshot = self._image_snapshots.get(snapshot_id.strip())
+        except ImageSnapshotClosedError:
+            return _error(
+                503,
+                "图片快照当前不可用。",
+                code="snapshot_unavailable",
+            )
+        if snapshot is None:
+            return _error(
+                410,
+                "图片快照已过期或被淘汰，请重新预览。",
+                code="snapshot_expired",
+            )
+        if (owner or "") != snapshot.owner:
+            return _error(
+                403,
+                "无权使用该图片快照。",
+                code="forbidden",
+            )
+        if not snapshot.data.get("draft"):
+            # 已保存任务的快照只能走任务图片入口。
+            return _error(
+                404,
+                "图片快照不属于当前预览。",
+                code="snapshot_not_found",
+            )
+        try:
+            site = await self._sites.get_site(snapshot.site_id)
+        except SiteNotFoundError:
+            return _stale_snapshot_error()
+        except SiteStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if not site.enabled or site.revision != snapshot.site_revision:
+            return _stale_snapshot_error()
+        try:
+            section_images = await self._image_service.render(
+                snapshot.data,
+                created_at=snapshot.created_at,
+            )
+        except ImageTimeoutError:
+            return _error(
+                504,
+                "图片生成超时，请稍后重试。",
+                code="image_timeout",
+            )
+        except FontUnavailableError:
+            return _error(
+                503,
+                "宿主缺少可用的中文字体，无法生成图片。",
+                code="font_unavailable",
+            )
+        except ImageLimitError:
+            return _error(
+                422,
+                "图片内容超过高度或大小限制，请减少栏目或条数后重试。",
+                code="image_limit_exceeded",
+            )
+        except ImageServiceClosedError:
+            return _error(
+                503,
+                "图片渲染当前不可用。",
+                code="image_unavailable",
+            )
+        except (ImageRenderFailedError, ProfileImageError):
+            return _error(
+                422,
+                "图片渲染失败，文字和 Markdown 仍可使用。",
+                code="image_render_failed",
+            )
+        except Exception:
+            return _error(
+                500,
+                "图片渲染失败，文字和 Markdown 仍可使用。",
+                code="image_internal_error",
+            )
+        # 渲染期间站点被改配置或停用：这张图不再对应当前草稿。
+        try:
+            latest_site = await self._sites.get_site(snapshot.site_id)
+        except SiteNotFoundError:
+            return _stale_snapshot_error()
+        except SiteStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        if not latest_site.enabled or latest_site.revision != snapshot.site_revision:
+            return _stale_snapshot_error()
+        return self._image_result(section_images, snapshot.id)
+
     async def _collect_sections(
         self,
         plan_items: tuple[PlanItem, ...],

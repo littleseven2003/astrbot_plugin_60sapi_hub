@@ -272,6 +272,16 @@ class TaskWebRouteTest(unittest.TestCase):
         # 关键是两条测试路由各被注册一次，且互不覆盖。
         self.assertEqual(routes.count("/p/tasks/<task_id>/capability-test"), 1)
         self.assertEqual(routes.count("/p/tasks/<task_id>/test"), 1)
+        # 草稿入口与已保存任务入口各自独立，不能互相覆盖。
+        self.assertIn("/p/task-drafts/capability-test", routes)
+        self.assertIn("/p/task-drafts/preview", routes)
+        self.assertIn("/p/task-drafts/image", routes)
+        for path in (
+            "/p/task-drafts/capability-test",
+            "/p/task-drafts/preview",
+            "/p/task-drafts/image",
+        ):
+            self.assertEqual(routes.count(path), 1)
         self.assertEqual(
             len([r for r in routes if r != "/p/tasks"]),
             len({r for r in routes if r != "/p/tasks"}),

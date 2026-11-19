@@ -335,6 +335,8 @@ const state = {
   taskItems: [],
   taskPreviewLoading: false,
   taskPreviewTaskId: null,
+  // true 时预览走 task-drafts/*：用当前表单草稿，不读已保存任务。
+  taskPreviewDraft: false,
   taskPreviewTaskRevision: null,
   taskPreviewRequestId: 0,
   taskPreviewSnapshotId: null,
@@ -2268,6 +2270,7 @@ async function generatePreviewImage() {
     return;
   }
   const taskId = state.taskPreviewTaskId;
+  const draft = state.taskPreviewDraft;
   const snapshotId = state.taskPreviewSnapshotId;
   const requestId = ++state.taskPreviewImageRequestId;
   state.taskPreviewImageLoading = true;
@@ -2279,13 +2282,16 @@ async function generatePreviewImage() {
   syncPreviewImageButton();
   try {
     const data = await bridge.apiPost(
-      `tasks/${encodeURIComponent(taskId)}/image`,
+      draft
+        ? "task-drafts/image"
+        : `tasks/${encodeURIComponent(taskId)}/image`,
       { snapshot_id: snapshotId },
     );
     if (
       requestId !== state.taskPreviewImageRequestId ||
       snapshotId !== state.taskPreviewSnapshotId ||
       taskId !== state.taskPreviewTaskId ||
+      draft !== state.taskPreviewDraft ||
       !state.taskPreviewOutputs
     ) {
       return;
@@ -2804,6 +2810,9 @@ function renderTaskPreviewMeta(data) {
   addMeta(meta, "结果",
     "成功 " + Number(data.success_count || 0) + " 个栏目 · 失败 " +
     Number(data.failure_count || 0) + " 个栏目");
+  if (data.draft === true) {
+    addMeta(meta, "配置来源", "当前表单草稿（未保存）");
+  }
   meta.hidden = false;
 }
 
@@ -2868,18 +2877,35 @@ function renderTaskPreview(data) {
 }
 
 async function requestTaskPreview(force) {
+  const draft = state.taskPreviewDraft;
   const taskId = state.taskPreviewTaskId;
-  if (!bridge || !taskId || state.taskPreviewLoading) {
+  if (
+    !bridge
+    || state.taskPreviewLoading
+    || (!draft && !taskId)
+  ) {
     return false;
   }
   const requestId = ++state.taskPreviewRequestId;
-  // 预览请求的始终是已保存版本；若预览的正是正在编辑的任务，
-  // 响应还要能对上发起时的表单签名，避免旧响应落到改过的表单上。
-  const formSignature = state.editingTask && state.editingTask.id === taskId
+  const epoch = state.taskFormEpoch;
+  const mode = state.taskMode;
+  const editingId = state.editingTaskId;
+  // 草稿预览必须对齐发起时的表单内容；已保存任务预览只在编辑同一任务时核对。
+  const formSignature = draft || (state.editingTask && state.editingTask.id === taskId)
     ? taskFormSignatureKey()
     : null;
   const stillCurrent = () => {
-    if (requestId !== state.taskPreviewRequestId || taskId !== state.taskPreviewTaskId) {
+    if (requestId !== state.taskPreviewRequestId) {
+      return false;
+    }
+    if (draft) {
+      return state.taskPreviewDraft
+        && epoch === state.taskFormEpoch
+        && state.taskMode === mode
+        && state.editingTaskId === editingId
+        && taskFormSignatureKey() === formSignature;
+    }
+    if (taskId !== state.taskPreviewTaskId) {
       return false;
     }
     if (formSignature === null) return true;
@@ -2887,14 +2913,28 @@ async function requestTaskPreview(force) {
       && state.editingTask.id === taskId
       && taskFormSignatureKey() === formSignature;
   };
+  let payload = { force_refresh: force === true };
+  if (draft) {
+    try {
+      payload = {
+        ...collectTaskDraftPayload(),
+        force_refresh: force === true,
+      };
+    } catch (error) {
+      showTaskPreviewStatus(friendlyErrorMessage(error), "error");
+      return false;
+    }
+  }
   clearTaskPreviewResults();
   setTaskPreviewBusy(true);
   showTaskPreviewStatus("正在获取内容…", "info");
   try {
-    // 载荷只带 force_refresh：栏目与候选站点一律用已保存的任务配置。
+    // 草稿预览不读已保存任务；已保存任务预览的栏目与候选一律来自任务配置。
     const data = await bridge.apiPost(
-      "tasks/" + encodeURIComponent(taskId) + "/preview",
-      { force_refresh: force === true },
+      draft
+        ? "task-drafts/preview"
+        : "tasks/" + encodeURIComponent(taskId) + "/preview",
+      payload,
     );
     if (!stillCurrent()) return false;
     renderTaskPreview(data && data.data ? data.data : data);
@@ -2916,8 +2956,22 @@ function openTaskPreview(task) {
   if (!bridge || !task || typeof task.id !== "string" || state.taskPreviewLoading) {
     return;
   }
+  state.taskPreviewDraft = false;
   state.taskPreviewTaskId = task.id;
   elements.taskPreviewTitle.textContent = "预览内容 · " + task.name;
+  clearTaskPreviewPanels();
+  openDialog(elements.taskPreviewDialog);
+  requestTaskPreview(false);
+}
+
+function openTaskDraftPreview() {
+  if (!bridge || state.taskPreviewLoading) {
+    return;
+  }
+  state.taskPreviewDraft = true;
+  state.taskPreviewTaskId = null;
+  state.taskPreviewTaskRevision = null;
+  elements.taskPreviewTitle.textContent = "预览内容 · 当前草稿";
   clearTaskPreviewPanels();
   openDialog(elements.taskPreviewDialog);
   requestTaskPreview(false);
@@ -2926,24 +2980,30 @@ function openTaskPreview(task) {
 function closeTaskPreview() {
   state.taskPreviewRequestId += 1;
   state.taskPreviewTaskId = null;
+  state.taskPreviewDraft = false;
   closePreviewImageViewer(true);
   closeDialog(elements.taskPreviewDialog);
   clearTaskPreviewPanels();
 }
 
 function previewSavedTask() {
-  if (state.taskMode !== "edit" || !state.editingTask) {
-    showTaskFormError("请先保存任务后再预览。");
+  // 入口名沿用旧称呼：现在用当前表单草稿预览，未保存的修改同样生效。
+  if (state.taskSaving || state.taskFormDisabled) {
+    return;
+  }
+  try {
+    collectTaskDraftPayload();
+  } catch (error) {
+    showTaskFormError(friendlyErrorMessage(error));
     return;
   }
   const hint = taskFormGateHintText();
   if (hint) {
-    // 兜底：按钮正常时已被置灰，这里保证入口语义与共用提示完全一致。
     showTaskFormError(hint);
     updateTaskFormGates();
     return;
   }
-  openTaskPreview(state.editingTask);
+  openTaskDraftPreview();
 }
 
 function blockIfPendingWrite() {
@@ -4174,15 +4234,13 @@ function taskFormMatchesSaved() {
     JSON.stringify(savedTaskFormSignature(state.editingTask));
 }
 
-// 三处共用这一条提示：条数非法必须修正；其余未保存改动必须先保存。
+// 能力测试与预览都用当前表单草稿：只有「条数非法」这类无法提交的输入
+// 才挡住入口；未保存修改本身不再是阻塞条件。
 function taskFormGateHintText() {
   const invalid = invalidTaskItemLabels();
   if (invalid.length > 0) {
     return "栏目条数不合法：" + invalid.join("、") + "。条数需为 1-" +
       TASK_ITEM_LIMIT_MAX + " 的整数，留空表示不限；修正后才能预览或进行能力测试。";
-  }
-  if (!taskFormMatchesSaved()) {
-    return "当前修改尚未保存；预览与能力测试都使用已保存的任务配置，请先保存后再试。";
   }
   return "";
 }
@@ -4192,8 +4250,8 @@ function updateTaskFormGates() {
   if (state.taskLimitErrorShown && invalidTaskItemLabels().length === 0) {
     clearTaskFormError();
   }
-  const blocked = state.taskFormDisabled || state.taskMode !== "edit" ||
-    !state.editingTask || state.taskSaving;
+  // 新建与编辑都可以直接测试/预览当前草稿；只受保存中与表单禁用限制。
+  const blocked = state.taskFormDisabled || state.taskSaving;
   const hint = blocked ? "" : taskFormGateHintText();
   const locked = blocked || hint.length > 0;
   // 忙状态是表单状态之外的第二个维度：请求在途时按钮保持置灰。
@@ -4229,23 +4287,61 @@ function invalidateTaskFormRequests() {
   state.taskCapabilityTestRequestId += 1;
   // 作废的请求不再持有忙状态：它结束时（成功或失败）不得再动按钮。
   state.taskCapabilityTestInflightId = 0;
-  if (state.taskPreviewLoading && state.taskPreviewTaskId === state.editingTaskId) {
+  // 结论只对发起时的草稿成立：表单一改就明确作废，避免旧结论误导。
+  if (elements.taskCapabilityResult && !elements.taskCapabilityResult.hidden) {
+    setTaskCapabilityResult(
+      "表单已修改，上次能力测试结果已作废；可基于当前草稿重新测试。", "info",
+    );
+  }
+  if (
+    state.taskPreviewLoading
+    && (state.taskPreviewDraft
+      || state.taskPreviewTaskId === state.editingTaskId)
+  ) {
     clearTaskPreviewPanels();
-    showTaskPreviewStatus("任务表单已修改，本次预览已作废；保存后可重新预览。", "info");
+    showTaskPreviewStatus(
+      "任务表单已修改，本次预览已作废；可基于当前草稿重新预览。", "info",
+    );
   }
 }
 
+function collectTaskDraftPayload() {
+  // 草稿只包含能即时验证的配置：栏目与条数、候选顺序、输出格式、样式、
+  // 可选名称。UMO 与定时计划不参与预览，也不写库。
+  const items = collectTaskItems();
+  if (items.length === 0) {
+    throw new Error("请至少添加一个内容栏目后再测试或预览。");
+  }
+  if (state.taskSites.length === 0) {
+    throw new Error("请至少添加一个候选站点后再测试或预览。");
+  }
+  return {
+    name: String(elements.taskName.value || "").trim(),
+    items,
+    sites: state.taskSites.slice(),
+    output_format: elements.taskOutputFormat.value,
+    image_style: elements.taskImageStyle?.value || "default",
+  };
+}
+
 async function runTaskCapabilityTest() {
-  if (state.taskMode !== "edit" || !state.editingTaskId) {
-    setTaskCapabilityResult("请先保存任务后再测试。", "error");
+  if (state.taskSaving || state.taskFormDisabled) {
+    setTaskCapabilityResult("正在保存任务，请稍后再测试。", "info");
     return;
   }
+  let draft;
+  try {
+    draft = collectTaskDraftPayload();
+  } catch (error) {
+    setTaskCapabilityResult(friendlyErrorMessage(error), "error");
+    return;
+  }
+  const formSignature = taskFormSignatureKey();
+  const epoch = state.taskFormEpoch;
+  const mode = state.taskMode;
   const taskId = state.editingTaskId;
   const revision = state.editingTaskRevision;
-  const epoch = state.taskFormEpoch;
-  const formSignature = taskFormSignatureKey();
   const requestId = ++state.taskCapabilityTestRequestId;
-  // 忙状态记在「最新一次请求」的序号上：只有它结束才能解除。
   state.taskCapabilityTestInflightId = requestId;
   elements.taskCapabilityTestButton.disabled = true;
   setTaskCapabilityResult("正在检查候选站点…", "info");
@@ -4253,14 +4349,12 @@ async function runTaskCapabilityTest() {
   // 序号认请求世代，epoch 认弹窗世代，签名认表单内容。
   const stillCurrent = () => requestId === state.taskCapabilityTestRequestId
     && epoch === state.taskFormEpoch
-    && state.taskMode === "edit"
+    && state.taskMode === mode
     && state.editingTaskId === taskId
     && state.editingTaskRevision === revision
     && taskFormSignatureKey() === formSignature;
   try {
-    const data = await bridge.apiPost(
-      `tasks/${encodeURIComponent(taskId)}/capability-test`, {},
-    );
+    const data = await bridge.apiPost("task-drafts/capability-test", draft);
     if (!stillCurrent()) return;
     const payload = data && data.data ? data.data : (data || {});
     const notes = [];
@@ -4275,11 +4369,9 @@ async function runTaskCapabilityTest() {
     setTaskCapabilityResult((payload.message || "测试完成。") + suffix,
       payload.satisfied ? "success" : "error");
   } catch (error) {
-    // 失败同样必须丢弃过期响应，不能覆盖“先保存”等当前提示。
     if (!stillCurrent()) return;
     setTaskCapabilityResult(friendlyErrorMessage(error), "error");
   } finally {
-    // 旧请求（成功或失败）既不得解除新请求的忙状态，也不得覆盖它的文案。
     elements.taskDialog.dataset.capabilitySettled = String(requestId);
     if (state.taskCapabilityTestInflightId === requestId) {
       state.taskCapabilityTestInflightId = 0;
@@ -6091,6 +6183,7 @@ function bindEvents() {
   elements.taskPreviewDialog.addEventListener("close", () => {
     state.taskPreviewRequestId += 1;
     state.taskPreviewTaskId = null;
+    state.taskPreviewDraft = false;
     closePreviewImageViewer(true);
   });
   elements.taskPreviewRoot.addEventListener("change", (event) => {

@@ -174,6 +174,17 @@ class TaskUpdate:
     image_style: object = IMAGE_STYLE_UNSET
 
 
+@dataclass(frozen=True, slots=True)
+class TaskDraft:
+    """未保存表单草稿：只用于能力测试与预览，不写数据库。"""
+
+    name: str
+    items: tuple[PlanItem, ...]
+    sites: tuple[str, ...]
+    output_format: str
+    image_style: str
+
+
 class PushTaskService:
     """推送任务 CRUD；与站点共用同一个 SQLite 连接和事务锁。"""
 
@@ -216,6 +227,32 @@ class PushTaskService:
                 )
                 for candidate in stored.candidates
             ),
+        )
+
+    async def normalize_draft(self, payload: object) -> TaskDraft:
+        """校验并归一化表单草稿；与保存任务使用同一套字段规则。"""
+        if not isinstance(payload, dict):
+            raise TaskValidationError("body", "请求体必须是 JSON 对象")
+        raw_name = payload.get("name")
+        name = (
+            "草稿预览"
+            if raw_name is None or raw_name == ""
+            else _normalize_task_name(raw_name)
+        )
+        items = _normalize_plan_items(payload.get("items"))
+        if not items:
+            raise TaskValidationError("items", "请至少添加一个内容栏目")
+        output_format = normalize_output_format(payload.get("output_format"))
+        image_style = normalize_image_style(
+            payload.get("image_style", DEFAULT_STYLE_ID),
+        )
+        sites = await self._resolve_site_ids(payload.get("sites"))
+        return TaskDraft(
+            name=name,
+            items=items,
+            sites=sites,
+            output_format=output_format,
+            image_style=image_style,
         )
 
     async def create_task(self, data: TaskCreate) -> PushTask:

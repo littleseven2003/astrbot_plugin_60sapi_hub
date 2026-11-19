@@ -135,6 +135,14 @@ async function openPage(browser, port, overrides = {}) {
             content_policy: "fresh",
           };
         }
+        if (endpoint === "task-drafts/preview") {
+          return {
+            draft: true, task_name: "草稿任务", image_style: payload.image_style,
+            items: [], site_name: "站点A", status: "complete",
+            success_count: 0, failure_count: 0, sections: [],
+            failed_sections: [], outputs: { text: "", markdown: "" },
+          };
+        }
         if (endpoint.endsWith("/capability-test")) {
           // 失败意图在请求发起时固定，之后测试可以安全地改动窗口标志。
           const failNow = Boolean(window.__capabilityFail);
@@ -259,23 +267,31 @@ async function openPage(browser, port, overrides = {}) {
     check(message.includes("可以满足"), "能力测试结论：" + message);
     check(message.includes("内容缓存"), "应说明缓存时效：" + message);
 
-    // 未保存的候选改动必须让旧结论失效并阻止再次测试。
+    // 未保存的候选改动：旧结论立即作废，但草稿仍可直接重新测试。
     await page.selectOption("#task-site-picker", "site-c");
     await page.click("#task-site-add-button");
     await page.waitForFunction(
       () => document.querySelectorAll("#task-site-list .task-site-row").length >= 2,
     );
-    const gated = await page.isDisabled("#task-capability-test-button");
-    check(gated, "有未保存候选改动时应禁用能力测试");
-    const gateText = await page.textContent("#task-capability-result");
-    check(gateText.includes("尚未保存"), "应提示先保存：" + gateText);
+    check(!(await page.isDisabled("#task-capability-test-button")),
+      "未保存的候选改动不应再禁用能力测试");
+    const gatedText = await page.textContent("#task-capability-result");
+    check(gatedText.includes("已作废"), "旧结论应明确作废：" + gatedText);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint === "task-drafts/capability-test"));
+    const draftCall = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint === "task-drafts/capability-test").pop());
+    check(JSON.stringify(draftCall.payload.sites) === JSON.stringify(["site-b", "site-a", "site-c"]),
+      "草稿能力测试应带当前候选顺序：" + JSON.stringify(draftCall.payload.sites));
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("可以满足"));
     await page.locator("#task-site-list button", { hasText: "移除" }).last().click();
     await page.waitForFunction(
-      () => !document.querySelector("#task-capability-test-button").disabled,
+      () => document.querySelectorAll("#task-site-list .task-site-row").length === 2,
     );
-    check(true, "撤销改动后能力测试恢复可用");
 
-    // 在途修改栏目条数（成功响应）：旧结论不得覆盖“先保存”，按钮保持禁用。
+    // 在途修改栏目条数（成功响应）：旧响应不得覆盖“已作废”提示。
     await page.evaluate(() => {
       window.__capabilityGate = new Promise((resolve) => {
         window.__releaseCapability = resolve;
@@ -294,14 +310,12 @@ async function openPage(browser, port, overrides = {}) {
     await page.waitForFunction(
       (n) => (window.__capabilityDoneCount || 0) > n, doneBefore);
     await page.waitForFunction(() => document
-      .querySelector("#task-capability-result").textContent.includes("尚未保存"));
-    check(await page.isDisabled("#task-capability-test-button"),
-      "在途改栏目（成功）后按钮应保持禁用");
+      .querySelector("#task-capability-result").textContent.includes("已作废"));
+    check(!(await page.isDisabled("#task-capability-test-button")),
+      "在途改栏目后仍可按草稿重新测试");
 
-    // 恢复为已保存栏目后可以再次测试；随后验证失败响应同样被丢弃。
+    // 恢复为已保存栏目后可以再次测试；失败响应同样被丢弃。
     await page.fill("#task-item-list .task-item-limit-input", "2");
-    await page.waitForFunction(
-      () => !document.querySelector("#task-capability-test-button").disabled);
     await page.evaluate(() => {
       window.__capabilityFail = true;
       window.__capabilityGate = new Promise((resolve) => {
@@ -321,24 +335,33 @@ async function openPage(browser, port, overrides = {}) {
     await page.waitForFunction(
       (n) => (window.__capabilityDoneCount || 0) > n, doneBefore);
     await page.waitForFunction(() => document
-      .querySelector("#task-capability-result").textContent.includes("尚未保存"));
-    check(await page.isDisabled("#task-capability-test-button"),
-      "在途改栏目（失败）后按钮应保持禁用且提示未被覆盖");
+      .querySelector("#task-capability-result").textContent.includes("已作废"));
     const failures = await page.evaluate(() => window.__capabilityFailures || 0);
     check(failures > 0, "延迟失败桩确实触发过请求失败：" + failures);
 
-    // 撤销修改：警告清除、按钮可用，可再次测试。
+    // 撤销修改后可以再次测试；改回未保存值再预览，走草稿预览接口。
     await page.fill("#task-item-list .task-item-limit-input", "2");
     await page.waitForFunction(() =>
       !document.querySelector("#task-capability-test-button").disabled);
-    const clearedHint = await page.textContent("#task-capability-result");
-    check(!clearedHint.includes("尚未保存"),
-      "撤销修改后不应残留“请先保存”：" + clearedHint);
     await page.click("#task-capability-test-button");
     await page.waitForFunction(() => document
       .querySelector("#task-capability-result")
       .textContent.includes("可以满足"));
-    check(true, "撤销修改后可以再次测试");
+    await page.fill("#task-item-list .task-item-limit-input", "5");
+    await page.click("#task-preview-form-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint === "task-drafts/preview"));
+    const previewCall = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint === "task-drafts/preview").pop());
+    check(previewCall.payload.items[0].limit === 5,
+      "草稿预览应带未保存的条数：" + JSON.stringify(previewCall.payload));
+    check(JSON.stringify(previewCall.payload.sites) === JSON.stringify(["site-b", "site-a"]),
+      "草稿预览应带当前候选顺序：" + JSON.stringify(previewCall.payload.sites));
+    await page.waitForSelector("#task-preview-dialog[open]");
+    await page.click("#task-preview-close-button");
+    await page.waitForFunction(
+      () => !document.querySelector("#task-preview-dialog")?.open);
+    check(true, "未保存草稿可以直接预览");
 
     await page.click("#task-close-dialog-button");
 

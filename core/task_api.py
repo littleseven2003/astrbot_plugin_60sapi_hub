@@ -26,7 +26,9 @@ from .sites import SiteService, SiteStorageError
 
 # 一次能力测试最多检查的候选站点数，避免请求被候选数量拖长。
 MAX_TEST_CANDIDATES = 5
+from .image_styles import style_options
 from .tasks import (
+    IMAGE_STYLE_UNSET,
     PushTask,
     PushTaskService,
     TaskConflictError,
@@ -80,6 +82,8 @@ class TaskApi:
             return _internal_error()
         return _ok(
             {
+                "image_styles": list(style_options()),
+                "default_image_style": "default",
                 "tasks": [
                     _task_dict(
                         task,
@@ -311,6 +315,10 @@ class TaskApi:
                     umos=data.get("umos"),
                     schedule=data.get("schedule"),
                     sites=data.get("sites"),
+                    image_style=(
+                        data["image_style"] if "image_style" in data
+                        else IMAGE_STYLE_UNSET
+                    ),
                 ),
             )
             sites = {site.id: site for site in await self._sites.list_sites()}
@@ -351,6 +359,10 @@ class TaskApi:
                         else SCHEDULE_UNSET
                     ),
                     sites=data.get("sites"),
+                    image_style=(
+                        data["image_style"] if "image_style" in data
+                        else IMAGE_STYLE_UNSET
+                    ),
                 ),
             )
             sites = {site.id: site for site in await self._sites.list_sites()}
@@ -442,6 +454,8 @@ class TaskApi:
         result["task_name"] = task.name
         result["task_revision"] = task.revision
         result["items"] = plan_payload(task.items)
+        result["image_style"] = task.image_style
+        result["image_styles"] = list(style_options())
         return _ok(result)
 
     async def generate_task_image(
@@ -555,6 +569,7 @@ def _task_dict(
         "sites": candidates,
         "output_format": task.output_format,
         "output_label": task.output_label,
+        "image_style": task.image_style,
         "umos": list(task.umos),
         "target_count": task.target_count,
         "enabled": task.enabled,

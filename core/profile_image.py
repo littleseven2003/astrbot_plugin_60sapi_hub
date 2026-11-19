@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .image_styles import DEFAULT_STYLE, ImageStyle, get_style
 from .source_url import source_display_text
 
 try:
@@ -81,33 +82,44 @@ _FONT_CANDIDATES = (
     "C:/Windows/Fonts/simhei.ttf",
 )
 
-# 视觉规范：白底卡片、深灰正文、莓红强调色、细分隔线；正文常规字重，不用
-# 标题色块和逐条描边加粗，只保留栏目标题的字号层次。
-_ACCENT = (161, 60, 98)          # #a13c62 莓红强调色
-_PAGE_BG = (238, 240, 243)       # #eef0f3 卡片圆角外的页面底色
-_INK = (48, 52, 59)              # #30343b 正文深灰
-_TITLE_INK = (32, 36, 44)        # #20242c 栏目标题
-_MUTED = (115, 121, 131)         # #737983 次要文字
-_NUM = (107, 114, 128)           # #6b7280 序号统一深中性灰
-_HEAT = (129, 135, 145)          # #818791 热度
-_DIVIDER = (237, 240, 243)       # #edf0f3 条目分隔线
-_BORDER = (223, 226, 232)        # #dfe2e8 外框与标题分隔线
-_WHITE = (255, 255, 255)
+# 视觉规范由 core/image_styles 提供；下列常量只是默认款的别名，便于测试引用
+# 与旧代码阅读。渲染器每张图都按选定样式取色值、字号和装饰，不再直接依赖
+# 这些全局值。
+_DEFAULT_STYLE = DEFAULT_STYLE
+_ACCENT = _DEFAULT_STYLE.accent
+_PAGE_BG = _DEFAULT_STYLE.page_bg
+_INK = _DEFAULT_STYLE.ink
+_TITLE_INK = _DEFAULT_STYLE.title_ink
+_MUTED = _DEFAULT_STYLE.muted
+_NUM = _DEFAULT_STYLE.num
+_HEAT = _DEFAULT_STYLE.heat
+_DIVIDER = _DEFAULT_STYLE.divider
+_BORDER = _DEFAULT_STYLE.border
+_WHITE = _DEFAULT_STYLE.card_bg
+_CARD_BORDER = _DEFAULT_STYLE.card_border
+_CARD_RADIUS = _DEFAULT_STYLE.card_radius
+_PAD_X = _DEFAULT_STYLE.pad_x
+_ACCENT_BAR_W = _DEFAULT_STYLE.accent_bar_w
+_ACCENT_BAR_H = _DEFAULT_STYLE.accent_bar_h
+_BRAND_SIZE = _DEFAULT_STYLE.brand_size
+_LABEL_SIZE = _DEFAULT_STYLE.label_size
+_LABEL_LEADING = _DEFAULT_STYLE.label_leading
+_TITLE_SIZE = _DEFAULT_STYLE.title_size
+_TITLE_LEADING = _DEFAULT_STYLE.title_leading
+_NUM_SIZE = _DEFAULT_STYLE.num_size
+_NUM_COL = _DEFAULT_STYLE.num_col
+_NUM_GAP = _DEFAULT_STYLE.num_gap
+_DETAIL_SIZE = _DEFAULT_STYLE.detail_size
+_DETAIL_LEADING = _DEFAULT_STYLE.detail_leading
+_HEAT_SIZE = _DEFAULT_STYLE.heat_size
+_FOOTER_SIZE = _DEFAULT_STYLE.footer_size
+_FOOTER_LEADING = _DEFAULT_STYLE.footer_leading
 
-_CARD_BORDER = 1
-_CARD_RADIUS = 20
-_PAD_X = 40
-_ACCENT_BAR_W = 44
-_ACCENT_BAR_H = 5
-
-# 强调条是页眉的第一行：上方留出与外框的距离，下方紧接品牌行。
+# 其余间距由渲染器统一控制，所有款式共用同一套基线、换行与留白规则。
 _HEADER_TOP_PAD = 22
 _ACCENT_BAR_GAP = 10
-_BRAND_SIZE = 18
 _BRAND_LEADING = 26
 _BRAND_GAP = 12
-_LABEL_SIZE = 42
-_LABEL_LEADING = 55
 _COUNT_SIZE = 18
 _COUNT_GAP = 18
 _SUB_SIZE = 17
@@ -117,25 +129,15 @@ _HEADER_BOTTOM_PAD = 20
 _BODY_TOP_GAP = 6
 
 _ROW_PAD_Y = 10
-_NUM_COL = 32
-_NUM_GAP = 16
-_NUM_SIZE = 20
-_TITLE_SIZE = 25
-_TITLE_LEADING = 36
-_DETAIL_SIZE = 19
-_DETAIL_LEADING = 27
-_DETAIL_GAP = 4
-_HEAT_SIZE = 17
 _HEAT_COL = 124
 _HEAT_GAP = 16
+_DETAIL_GAP = 4
 _HOT_LEADING = 26
 _HOT_GAP = 4
 
 _FOOTER_MARGIN_TOP = 2
 _FOOTER_TOP_PAD = 20
 _FOOTER_BOTTOM_PAD = 25
-_FOOTER_SIZE = 16
-_FOOTER_LEADING = 25
 _FOOTER_LEFT_WIDTH = 300
 _FOOTER_COLUMN_GAP = 40
 
@@ -172,6 +174,7 @@ class _Part:
     x: int = 0
     right: int | None = None
     baseline: bool = False
+    number: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +186,7 @@ class _Line:
     gap_before: int = 0
     gap_after: int = 0
     leading: int = 0
+    rule_ink: tuple[int, int, int] | None = None
 
 
 class ProfileImageRenderer:
@@ -198,6 +202,7 @@ class ProfileImageRenderer:
         self._font_cache: dict[int, Any] = {}
         self._validated_font_path: Path | None = None
         self._cancel_event: Any | None = None
+        self._style: ImageStyle = DEFAULT_STYLE
 
     @property
     def limits(self) -> ImageRenderLimits:
@@ -210,8 +215,13 @@ class ProfileImageRenderer:
         limits: ImageRenderLimits | None = None,
         created_at: str = "",
         cancel_event: Any | None = None,
+        style: str | ImageStyle | None = None,
     ) -> tuple[SectionImage, ...]:
         """按组合配置顺序返回每个栏目对应的长图结果。"""
+        # 每张图只使用一个不可变样式；快照数据里带着任务保存时的样式 ID。
+        self._style = get_style(
+            style if style is not None else (data.get("image_style") if isinstance(data, dict) else None)
+        )
         if Image is None or ImageDraw is None or ImageFont is None:
             raise FontUnavailableError("图片渲染依赖 Pillow 未安装。")
         active = limits if limits is not None else self._limits
@@ -307,12 +317,12 @@ class ProfileImageRenderer:
         # 外框之后是页眉区；页眉的强调条、上内边距与末尾整幅宽度分隔线都是
         # 页眉自身的 _Line，正文分隔线与页脚上边线同样各自计入高度。
         height = (
-            _CARD_BORDER
+            self._style.card_border
             + self._lines_height(header)
             + self._lines_height(body)
             + self._lines_height(footer)
             + _FOOTER_BOTTOM_PAD
-            + _CARD_BORDER
+            + self._style.card_border
         )
         if height > limits.max_height:
             return self._failed(
@@ -362,7 +372,7 @@ class ProfileImageRenderer:
         width: int,
     ) -> list[_Line]:
         content_width = self._content_width(width)
-        brand_width = self._text_width("60s", _BRAND_SIZE)
+        brand_width = self._text_width("60s", self._style.brand_size)
         lines: list[_Line] = [
             # 强调条是页眉的第一行，与品牌行一起参与排版和高度计算，
             # 不再用绝对坐标贴在卡片外框上。
@@ -373,8 +383,8 @@ class ProfileImageRenderer:
             ),
             _Line(
                 parts=(
-                    _Part("60s", _BRAND_SIZE, _ACCENT, False, 0),
-                    _Part("API Hub", _BRAND_SIZE, _MUTED, False, brand_width),
+                    _Part("60s", self._style.brand_size, self._style.brand_ink, False, 0),
+                    _Part("API Hub", self._style.brand_size, self._style.brand_secondary_ink, False, brand_width),
                 ),
                 leading=_BRAND_LEADING,
                 gap_after=_BRAND_GAP,
@@ -385,32 +395,32 @@ class ProfileImageRenderer:
         # 数量与标题同一行时先为它留出宽度，避免长栏目名换行后压到数量。
         label_width = content_width - count_width - _COUNT_GAP
         for offset, part in enumerate(
-            self._wrap(label, _LABEL_SIZE, label_width, bold=True),
+            self._wrap(label, self._style.label_size, label_width, bold=True),
         ):
             parts: list[_Part] = [
-                _Part(part, _LABEL_SIZE, _TITLE_INK, True, 0, baseline=True),
+                _Part(part, self._style.label_size, self._style.title_ink, True, 0, baseline=True),
             ]
             if offset == 0:
                 parts.append(
                     _Part(
                         count,
                         _COUNT_SIZE,
-                        _MUTED,
+                        self._style.muted,
                         False,
-                        self._text_width(part, _LABEL_SIZE, bold=True)
+                        self._text_width(part, self._style.label_size, bold=True)
                         + _COUNT_GAP,
                         baseline=True,
                     ),
                 )
             lines.append(
-                _Line(parts=tuple(parts), leading=_LABEL_LEADING),
+                _Line(parts=tuple(parts), leading=self._style.label_leading),
             )
         sub = _content_date_text(section, content_type)
         if sub:
             for part in self._wrap(sub, _SUB_SIZE, content_width):
                 lines.append(
                     _Line(
-                        parts=(_Part(part, _SUB_SIZE, _MUTED, False, 0),),
+                        parts=(_Part(part, _SUB_SIZE, self._style.muted, False, 0),),
                         leading=_SUB_LEADING,
                         gap_before=_SUB_GAP,
                     ),
@@ -431,7 +441,7 @@ class ProfileImageRenderer:
         width: int,
     ) -> list[_Line]:
         content_width = self._content_width(width)
-        text_x = _NUM_COL + _NUM_GAP
+        text_x = self._style.num_col + self._style.num_gap
         full_text_width = content_width - text_x
         lines: list[_Line] = []
         if not items:
@@ -443,7 +453,7 @@ class ProfileImageRenderer:
                 _Line(
                     parts=(
                         _Part(
-                            empty_text, 22, _MUTED, False, empty_x,
+                            empty_text, 22, self._style.muted, False, empty_x,
                         ),
                     ),
                     leading=32,
@@ -456,7 +466,7 @@ class ProfileImageRenderer:
                     parts=(
                         _Part(
                             "合法空栏目：获取成功，但本次没有可展示条目。",
-                            18, _MUTED, False, text_x,
+                            18, self._style.muted, False, text_x,
                         ),
                     ),
                     leading=28,
@@ -466,7 +476,7 @@ class ProfileImageRenderer:
             return lines
         # 五类栏目的序号都表示条目在列表中的位置，统一用深中性灰；莓红只留给
         # 页眉强调色。字号、两位补零与标题首行基线保持一致，不按内容类型分色。
-        num_color = _NUM
+        num_color = self._style.num
         last = len(items)
         for position, item in enumerate(items, start=1):
             title = _display_text(item.get("title"))
@@ -475,14 +485,14 @@ class ProfileImageRenderer:
             # 短热度与标题并排：为热度列留出固定宽度，标题在剩余宽度内换行；
             # 热度放不下时整体移到标题下方，标题恢复整行宽度。
             inline_hot = bool(hot) and (
-                self._text_width(hot, _HEAT_SIZE) <= _HEAT_COL
+                self._text_width(hot, self._style.heat_size) <= _HEAT_COL
             )
             first_width = full_text_width
             if inline_hot:
                 first_width = full_text_width - _HEAT_COL - _HEAT_GAP
             for offset, part in enumerate(
                 self._wrap(
-                    title, _TITLE_SIZE, full_text_width, first_width=first_width,
+                    title, self._style.title_size, full_text_width, first_width=first_width,
                 ),
             ):
                 parts: list[_Part] = []
@@ -490,27 +500,28 @@ class ProfileImageRenderer:
                     parts.append(
                         _Part(
                             f"{position:02d}",
-                            _NUM_SIZE,
+                            self._style.num_size,
                             num_color,
                             False,
                             0,
                             baseline=True,
+                            number=True,
                         ),
                     )
                 parts.append(
-                    _Part(part, _TITLE_SIZE, _INK, False, text_x),
+                    _Part(part, self._style.title_size, self._style.ink, False, text_x),
                 )
                 if offset == 0 and inline_hot:
                     parts.append(
                         _Part(
-                            hot, _HEAT_SIZE, _HEAT, False, 0,
+                            hot, self._style.heat_size, self._style.heat, False, 0,
                             right=content_width,
                         ),
                     )
                 lines.append(
                     _Line(
                         parts=tuple(parts),
-                        leading=_TITLE_LEADING,
+                        leading=self._style.title_leading,
                         gap_before=_ROW_PAD_Y if offset == 0 else 0,
                     ),
                 )
@@ -518,26 +529,26 @@ class ProfileImageRenderer:
                 # 热度只落在标题行，摘要不与热度列抢宽度：整行宽度排版
                 # 更紧凑，也不会与右对齐的热度重叠。
                 for offset, part in enumerate(
-                    self._wrap(detail, _DETAIL_SIZE, full_text_width),
+                    self._wrap(detail, self._style.detail_size, full_text_width),
                 ):
                     lines.append(
                         _Line(
                             parts=(
-                                _Part(part, _DETAIL_SIZE, _MUTED, False, text_x),
+                                _Part(part, self._style.detail_size, self._style.muted, False, text_x),
                             ),
-                            leading=_DETAIL_LEADING,
+                            leading=self._style.detail_leading,
                             gap_before=_DETAIL_GAP if offset == 0 else 0,
                         ),
                     )
             if hot and not inline_hot:
-                hot_width = self._text_width(hot, _HEAT_SIZE)
+                hot_width = self._text_width(hot, self._style.heat_size)
                 if hot_width <= full_text_width:
                     # 一行放得下：右对齐到内容右边缘，与标题序号区分。
                     lines.append(
                         _Line(
                             parts=(
                                 _Part(
-                                    hot, _HEAT_SIZE, _HEAT, False, 0,
+                                    hot, self._style.heat_size, self._style.heat, False, 0,
                                     right=content_width,
                                 ),
                             ),
@@ -547,13 +558,13 @@ class ProfileImageRenderer:
                     )
                 else:
                     for offset, part in enumerate(
-                        self._wrap(hot, _HEAT_SIZE, full_text_width),
+                        self._wrap(hot, self._style.heat_size, full_text_width),
                     ):
                         lines.append(
                             _Line(
                                 parts=(
                                     _Part(
-                                        part, _HEAT_SIZE, _HEAT, False, text_x,
+                                        part, self._style.heat_size, self._style.heat, False, text_x,
                                     ),
                                 ),
                                 leading=_HOT_LEADING,
@@ -589,22 +600,26 @@ class ProfileImageRenderer:
         content_width = self._content_width(width)
         left_width = min(_FOOTER_LEFT_WIDTH, content_width // 2)
         right_width = content_width - left_width - _FOOTER_COLUMN_GAP
+        footer_ink = (
+            self._style.footer_muted_ink if self._style.footer_bg
+            else self._style.muted
+        )
         left_lines: list[_Part] = [
-            _Part("60sAPI Hub", _FOOTER_SIZE, _ACCENT, False, 0),
-            _Part("由插件根据接口数据生成", _FOOTER_SIZE, _MUTED, False, 0),
+            _Part("60sAPI Hub", self._style.footer_size, self._style.footer_brand_ink, False, 0),
+            _Part("由插件根据接口数据生成", self._style.footer_size, footer_ink, False, 0),
         ]
         right_lines: list[_Part] = []
         for part in self._wrap(
-            f"数据来源：{source}", _FOOTER_SIZE, right_width,
+            f"数据来源：{source}", self._style.footer_size, right_width,
         ):
             right_lines.append(
-                _Part(part, _FOOTER_SIZE, _MUTED, False, 0, content_width),
+                _Part(part, self._style.footer_size, footer_ink, False, 0, content_width),
             )
         for part in self._wrap(
-            f"获取时间：{fetched_text}", _FOOTER_SIZE, right_width,
+            f"获取时间：{fetched_text}", self._style.footer_size, right_width,
         ):
             right_lines.append(
-                _Part(part, _FOOTER_SIZE, _MUTED, False, 0, content_width),
+                _Part(part, self._style.footer_size, footer_ink, False, 0, content_width),
             )
         lines: list[_Line] = [
             _Line(
@@ -612,6 +627,7 @@ class ProfileImageRenderer:
                 strong=True,
                 gap_before=_FOOTER_MARGIN_TOP,
                 gap_after=_FOOTER_TOP_PAD,
+                rule_ink=footer_ink if self._style.footer_bg else None,
             ),
         ]
         for index in range(max(len(left_lines), len(right_lines))):
@@ -620,7 +636,7 @@ class ProfileImageRenderer:
                 parts.append(left_lines[index])
             if index < len(right_lines):
                 parts.append(right_lines[index])
-            lines.append(_Line(parts=tuple(parts), leading=_FOOTER_LEADING))
+            lines.append(_Line(parts=tuple(parts), leading=self._style.footer_leading))
         return lines
 
     def _draw(
@@ -632,19 +648,53 @@ class ProfileImageRenderer:
         width: int,
     ) -> bytes:
         assert Image is not None and ImageDraw is not None
-        image = Image.new("RGB", (width, height), _PAGE_BG)
+        st = self._style
+        image = Image.new("RGB", (width, height), st.page_bg)
         try:
             draw = ImageDraw.Draw(image)
-            # 整张图就是卡片本身：白色圆角矩形铺满画布，圆角外露出页面底色，
-            # 1px 外框画在画布最外沿。
-            draw.rounded_rectangle(
-                (0, 0, width - 1, height - 1),
-                radius=_CARD_RADIUS,
-                fill=_WHITE,
-                outline=_BORDER,
-                width=_CARD_BORDER,
-            )
-            y = self._draw_lines(draw, header, _CARD_BORDER, width)
+            # 整张图就是卡片本身：圆角（或方角）矩形铺满画布，圆角外露出页面
+            # 底色；外框宽度、圆角半径都来自样式定义。
+            radius = st.card_radius if st.frame_style == "card" else 0
+            box = (0, 0, width - 1, height - 1)
+            if radius > 0:
+                draw.rounded_rectangle(
+                    box, radius=radius, fill=st.card_bg,
+                    outline=st.border, width=st.card_border,
+                )
+            else:
+                draw.rectangle(
+                    box, fill=st.card_bg,
+                    outline=st.border, width=st.card_border,
+                )
+            # 页眉底色只铺在页眉区；圆角款用「圆角矩形 + 方角补齐」避免盖住
+            # 卡片顶部圆角，页眉下面是正文，不能出现横向色块。
+            header_h = self._lines_height(header)
+            if st.header_bg and header_h > 0:
+                x0 = st.card_border
+                x1 = width - 1 - st.card_border
+                y0 = st.card_border
+                y1 = st.card_border + header_h
+                if radius > 0:
+                    draw.rounded_rectangle(
+                        (x0, y0, x1, y1 + radius), radius=radius,
+                        fill=st.header_bg,
+                    )
+                    draw.rectangle((x0, y1, x1, y1 + radius), fill=st.card_bg)
+                else:
+                    draw.rectangle((x0, y0, x1, y1), fill=st.header_bg)
+            # 页脚色带（如粗体工作室的黑底）同样只覆盖页脚区与底部内边距。
+            footer_h = self._lines_height(footer) + _FOOTER_BOTTOM_PAD
+            if st.footer_bg and footer_h > 0:
+                y0 = max(
+                    st.card_border,
+                    height - 1 - st.card_border - footer_h,
+                )
+                draw.rectangle(
+                    (st.card_border, y0, width - 1 - st.card_border,
+                     height - 1 - st.card_border),
+                    fill=st.footer_bg,
+                )
+            y = self._draw_lines(draw, header, st.card_border, width)
             y = self._draw_lines(draw, body, y, width)
             self._draw_lines(draw, footer, y, width)
             buffer = io.BytesIO()
@@ -661,23 +711,28 @@ class ProfileImageRenderer:
         width: int,
     ) -> int:
         y = start_y
-        left = _CARD_BORDER + _PAD_X
-        right = width - _CARD_BORDER - _PAD_X
+        left = self._style.card_border + self._style.pad_x
+        right = width - self._style.card_border - self._style.pad_x
         for line in lines:
             self._check_cancelled()
             y += line.gap_before
             if line.bar:
-                draw.rounded_rectangle(
-                    (left, y, left + _ACCENT_BAR_W - 1, y + _ACCENT_BAR_H - 1),
-                    radius=_ACCENT_BAR_H // 2,
-                    fill=_ACCENT,
-                )
-                y += _ACCENT_BAR_H + line.gap_after
+                if self._style.accent_bar_h > 0:
+                    draw.rounded_rectangle(
+                        (left, y, left + self._style.accent_bar_w - 1,
+                         y + self._style.accent_bar_h - 1),
+                        radius=self._style.accent_bar_h // 2,
+                        fill=self._style.accent,
+                    )
+                y += self._style.accent_bar_h + line.gap_after
                 continue
             if line.rule:
                 draw.line(
                     (left, y, right, y),
-                    fill=_BORDER if line.strong else _DIVIDER,
+                    fill=line.rule_ink or (
+                        self._style.border if line.strong
+                        else self._style.divider
+                    ),
                     width=1,
                 )
                 y += 1 + line.gap_after
@@ -697,7 +752,22 @@ class ProfileImageRenderer:
                 else:
                     part_h = self._text_height(part.size)
                     part_y = y + (line_h - part_h) // 2
-                self._draw_text(draw, part, left + part.x, part_y)
+                text_x = left + part.x
+                if (
+                    part.number
+                    and self._style.number_shape == "square"
+                    and self._style.number_bg is not None
+                ):
+                    text_width = self._font(part.size).getlength(part.text)
+                    block_h = self._text_height(part.size) + 8
+                    x0 = text_x
+                    y0 = part_y - 4
+                    draw.rectangle(
+                        (x0, y0, x0 + self._style.num_col - 1, y0 + block_h - 1),
+                        fill=self._style.number_bg,
+                    )
+                    text_x = x0 + (self._style.num_col - text_width) / 2
+                self._draw_text(draw, part, text_x, part_y)
             y += line_h + line.gap_after
         return y
 
@@ -727,7 +797,7 @@ class ProfileImageRenderer:
 
     def _line_height(self, line: _Line) -> int:
         if line.bar:
-            return line.gap_before + _ACCENT_BAR_H + line.gap_after
+            return line.gap_before + self._style.accent_bar_h + line.gap_after
         if line.rule:
             return line.gap_before + 1 + line.gap_after
         return (
@@ -750,9 +820,8 @@ class ProfileImageRenderer:
         ascent, descent = self._font(size).getmetrics()
         return int(ascent) + int(descent)
 
-    @staticmethod
-    def _content_width(width: int) -> int:
-        return width - 2 * (_CARD_BORDER + _PAD_X)
+    def _content_width(self, width: int) -> int:
+        return width - 2 * (self._style.card_border + self._style.pad_x)
 
     def _ink_inset(self, text: str, size: int) -> float:
         """返回文字在给定字号下的左侧字面空白，用于中标点悬挂对齐。"""

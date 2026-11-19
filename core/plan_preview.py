@@ -45,6 +45,7 @@ from .profile_image import (
 )
 from .profile_render import render_profile_outputs
 from .content_plan import PlanItem, plan_payload
+from .image_styles import resolve_style_id
 from .tasks import (
     PushTaskService,
     TaskNotFoundError,
@@ -192,6 +193,7 @@ class PlanPreview:
             "task_id": config.task.id,
             "task_name": config.task.name,
             "task_revision": config.task.revision,
+            "image_style": config.task.image_style,
             "plan_revision": plan_revision,
             "items": plan_payload(plan_items),
             "site_id": site.id,
@@ -370,6 +372,11 @@ class PlanPreview:
         # 方案 revision 必须一致；站点则校验快照记录的那一个，
         # 这样故障切换选中的备用站点快照不会被误判为过期。
         if config.plan_revision != snapshot.profile_revision:
+            return _stale_snapshot_error()
+        # 样式也属于这一版配置：改样式后旧快照必须重新预览。
+        if resolve_style_id(config.task.image_style) != resolve_style_id(
+            snapshot.data.get("image_style"),
+        ):
             return _stale_snapshot_error()
         try:
             site = await self._sites.get_site(snapshot.site_id)
@@ -568,6 +575,8 @@ def _image_snapshot_data(data: dict[str, Any]) -> dict[str, Any]:
     return {
         # 渲染器沿用 profile_name 作为标题，这里由任务名映射过去。
         "profile_name": data.get("task_name"),
+        # 样式随同一版快照固定，之后改任务样式不会改写已生成的快照。
+        "image_style": data.get("image_style") or "default",
         "site_name": data.get("site_name"),
         "status": data.get("status"),
         "success_count": data.get("success_count"),

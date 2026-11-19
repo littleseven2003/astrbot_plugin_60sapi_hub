@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS push_tasks (
     output_format TEXT NOT NULL CHECK (
         output_format IN ('text', 'markdown', 'image')
     ),
+    image_style TEXT NOT NULL DEFAULT 'default',
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
     schedule_kind TEXT,
     schedule_timezone TEXT,
@@ -410,6 +411,7 @@ class StoredTask:
     schedule_start_at: str | None = None
     schedule_interval_minutes: int | str | None = None
     schedule_expression: str | None = None
+    image_style: str = "default"
     sites: tuple[str, ...] = ()
     # 任务自己的栏目配置（顺序即输出顺序），随任务一起读写。
     items: tuple[StoredProfileItem, ...] = ()
@@ -774,6 +776,17 @@ class SiteStore:
             await connection.execute(
                 "UPDATE push_tasks SET profile_id = id WHERE profile_id <> id"
             )
+            # v17：任务级图片样式。旧行与旧客户端省略字段时保留默认款；
+            # 同一事务内加列，失败回滚不影响旧库。
+            async with connection.execute(
+                "PRAGMA table_info(push_tasks)",
+            ) as cursor:
+                task_columns = {row[1] for row in await cursor.fetchall()}
+            if "image_style" not in task_columns:
+                await connection.execute(
+                    "ALTER TABLE push_tasks ADD COLUMN "
+                    "image_style TEXT NOT NULL DEFAULT 'default'",
+                )
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -1221,6 +1234,7 @@ class SiteStore:
         items: tuple[StoredProfileItem, ...],
         output_format: str,
         umos: tuple[str, ...],
+        image_style: str = "default",
         site_ids: tuple[str, ...] = (),
         schedule_kind: str | None = None,
         schedule_timezone: str | None = None,
@@ -1240,15 +1254,15 @@ class SiteStore:
                 await connection.execute(
                     """
                     INSERT INTO push_tasks (
-                        id, name, profile_id, output_format, enabled,
+                        id, name, profile_id, output_format, image_style, enabled,
                         schedule_kind, schedule_timezone, schedule_time,
                         schedule_weekdays, schedule_start_at,
                         schedule_interval_minutes, schedule_expression,
                         revision, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
-                        task_id, name, task_id, output_format,
+                        task_id, name, task_id, output_format, image_style,
                         schedule_kind, schedule_timezone, schedule_time,
                         schedule_weekdays, schedule_start_at,
                         schedule_interval_minutes, schedule_expression,
@@ -1269,6 +1283,7 @@ class SiteStore:
                 profile_id=task_id,
                 items=items,
                 output_format=output_format,
+                image_style=image_style,
                 umos=umos,
                 sites=site_ids,
                 enabled=False,
@@ -1290,7 +1305,7 @@ class SiteStore:
             try:
                 async with connection.execute(
                     """
-                    SELECT id, name, profile_id, output_format, enabled,
+                    SELECT id, name, profile_id, output_format, image_style, enabled,
                            schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes, schedule_expression,
                            revision, created_at, updated_at
                     FROM push_tasks
@@ -1321,7 +1336,7 @@ class SiteStore:
             try:
                 row = await self._fetchone_unlocked(
                     """
-                    SELECT id, name, profile_id, output_format, enabled,
+                    SELECT id, name, profile_id, output_format, image_style, enabled,
                            schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes, schedule_expression,
                            revision, created_at, updated_at
                     FROM push_tasks
@@ -1356,7 +1371,7 @@ class SiteStore:
             try:
                 row = await self._fetchone_unlocked(
                     """
-                    SELECT id, name, profile_id, output_format, enabled,
+                    SELECT id, name, profile_id, output_format, image_style, enabled,
                            schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes, schedule_expression,
                            revision, created_at, updated_at
                     FROM push_tasks
@@ -1435,6 +1450,7 @@ class SiteStore:
         output_format: str,
         umos: tuple[str, ...],
         expected_revision: int,
+        image_style: str | None = None,
         site_ids: tuple[str, ...] | None = None,
         schedule_unchanged: bool = False,
         schedule_kind: str | None = None,
@@ -1459,12 +1475,13 @@ class SiteStore:
                         """
                         UPDATE push_tasks
                         SET name = ?, profile_id = ?, output_format = ?,
+                            image_style = COALESCE(?, image_style),
                             enabled = 0, revision = revision + 1,
                             updated_at = ?
                         WHERE id = ? AND revision = ?
                         """,
                         (
-                            name, task_id, output_format, now,
+                            name, task_id, output_format, image_style, now,
                             task_id, expected_revision,
                         ),
                     )
@@ -1473,6 +1490,7 @@ class SiteStore:
                         """
                         UPDATE push_tasks
                         SET name = ?, profile_id = ?, output_format = ?,
+                            image_style = COALESCE(?, image_style),
                             enabled = 0, schedule_kind = ?,
                             schedule_timezone = ?, schedule_time = ?,
                             schedule_weekdays = ?, schedule_start_at = ?,
@@ -1481,7 +1499,7 @@ class SiteStore:
                         WHERE id = ? AND revision = ?
                         """,
                         (
-                            name, task_id, output_format,
+                            name, task_id, output_format, image_style,
                             schedule_kind, schedule_timezone, schedule_time,
                             schedule_weekdays, schedule_start_at,
                             schedule_interval_minutes, schedule_expression,
@@ -1526,7 +1544,7 @@ class SiteStore:
             )
             row = await self._fetchone_unlocked(
                 """
-                SELECT id, name, profile_id, output_format, enabled,
+                SELECT id, name, profile_id, output_format, image_style, enabled,
                        schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes, schedule_expression,
                        revision, created_at, updated_at
                 FROM push_tasks WHERE id = ?
@@ -1634,7 +1652,7 @@ class SiteStore:
             )
             row = await self._fetchone_unlocked(
                 """
-                SELECT id, name, profile_id, output_format, enabled,
+                SELECT id, name, profile_id, output_format, image_style, enabled,
                        schedule_kind, schedule_timezone, schedule_time, schedule_weekdays, schedule_start_at, schedule_interval_minutes, schedule_expression,
                        revision, created_at, updated_at
                 FROM push_tasks WHERE id = ?
@@ -2783,6 +2801,7 @@ def _row_to_task(
         profile_id=row["profile_id"],
         items=items,
         output_format=row["output_format"],
+        image_style=str(row["image_style"] or "default"),
         umos=umos,
         sites=sites,
         enabled=bool(row["enabled"]),

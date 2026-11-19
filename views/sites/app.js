@@ -230,6 +230,7 @@ const elements = {
   siteDeleteSelected: document.getElementById("site-delete-selected"),
   siteTestSummary: document.getElementById("site-test-summary"),
   taskOutputFormat: document.getElementById("task-output-format"),
+  taskImageStyle: document.getElementById("task-image-style"),
   taskUmos: document.getElementById("task-umos"),
   taskScheduleNone: document.getElementById("task-schedule-none"),
   taskScheduleDaily: document.getElementById("task-schedule-daily"),
@@ -352,6 +353,7 @@ const state = {
   credentialAutoCleared: false,
   tasks: [],
   taskMode: "create",
+  imageStyles: [],
   taskSites: [],
   editingTaskId: null,
   editingTaskRevision: null,
@@ -2767,6 +2769,9 @@ function renderTaskPreviewMeta(data) {
       return Number.isInteger(item.limit) ? label + "（" + item.limit + " 条）" : label;
     }).join("、")
     : "未记录");
+  if (data.image_style) {
+    addMeta(meta, "图片样式", taskStyleName(data.image_style));
+  }
   const sections = Array.isArray(data.sections) ? data.sections : [];
   const source = sections.find((section) =>
     section && typeof section.source_display === "string" && section.source_display);
@@ -3792,6 +3797,13 @@ async function loadTasks() {
       return false;
     }
     const raw = result && Array.isArray(result.tasks) ? result.tasks : [];
+    const styles = result && Array.isArray(result.image_styles)
+      ? result.image_styles
+      : [];
+    if (styles.length > 0) {
+      state.imageStyles = styles;
+      renderTaskStyleOptions();
+    }
     state.tasks = raw.filter((task) => task && typeof task.id === "string");
     renderTasks();
     if (state.scheduleClaims.length || state.scheduleSkips.length) {
@@ -4105,6 +4117,7 @@ function currentTaskFormSignature() {
     items: taskItemEntriesSignature(currentTaskItemEntries()),
     sites: state.taskSites.slice().join(","),
     output_format: String(elements.taskOutputFormat.value || ""),
+    image_style: String(elements.taskImageStyle?.value || "default"),
     schedule: currentTaskScheduleSignature(),
     umos: collectTaskUmos().join("\n"),
   };
@@ -4117,6 +4130,7 @@ function savedTaskFormSignature(task) {
     items: taskItemEntriesSignature(savedTaskItemEntries(task)),
     sites: savedTaskSites(task).join(","),
     output_format: String(task && task.output_format != null ? task.output_format : ""),
+    image_style: String(task && task.image_style != null ? task.image_style : "default"),
     schedule: taskScheduleSignature(savedTaskSchedule(task)),
     umos: umos.map((umo) => String(umo).trim()).filter((umo) => umo.length > 0).join("\n"),
   };
@@ -4252,6 +4266,38 @@ async function runTaskCapabilityTest() {
   }
 }
 
+const DEFAULT_IMAGE_STYLES = [
+  { id: "default", name: "默认", description: "白色圆角卡片、莓红页眉强调。" },
+];
+
+function taskStyleOptions() {
+  return state.imageStyles.length > 0 ? state.imageStyles : DEFAULT_IMAGE_STYLES;
+}
+
+function taskStyleName(styleId) {
+  const style = taskStyleOptions().find((item) => item.id === styleId);
+  return style ? style.name : (styleId || "默认");
+}
+
+function renderTaskStyleOptions(selected) {
+  if (!elements.taskImageStyle) return;
+  const current = selected === undefined
+    ? elements.taskImageStyle.value
+    : selected;
+  const options = taskStyleOptions();
+  elements.taskImageStyle.replaceChildren(
+    ...options.map((style) => {
+      const option = document.createElement("option");
+      option.value = style.id;
+      option.textContent = style.name;
+      if (style.description) option.title = style.description;
+      return option;
+    }),
+  );
+  const ids = options.map((style) => style.id);
+  elements.taskImageStyle.value = ids.includes(current) ? current : "default";
+}
+
 function openCreateTask() {
   if (state.taskSaving || state.taskDeleting || state.taskPending || state.taskPowerPending) {
     return;
@@ -4269,6 +4315,7 @@ function openCreateTask() {
   state.editingTaskRevision = null;
   state.taskSites = [];
   elements.taskForm.reset();
+  renderTaskStyleOptions("default");
   resetTaskScheduleEditor();
   renderTaskSites();
   setTaskCapabilityResult("", null);
@@ -4299,6 +4346,7 @@ function openTaskEditor(task) {
   elements.taskDialogTitle.textContent = "编辑推送任务";
   elements.taskName.value = task.name;
   elements.taskOutputFormat.value = task.output_format;
+  renderTaskStyleOptions(task.image_style || "default");
   elements.taskUmos.value = Array.isArray(task.umos) ? task.umos.join("\n") : "";
   state.editingTask = task;
   state.taskItems = savedTaskItems(task).map((item) => ({
@@ -4371,6 +4419,7 @@ async function handleTaskSave(event) {
     name: elements.taskName.value,
     items,
     output_format: elements.taskOutputFormat.value,
+    image_style: elements.taskImageStyle?.value || "default",
     umos: collectTaskUmos(),
   };
   payload.sites = state.taskSites.slice();

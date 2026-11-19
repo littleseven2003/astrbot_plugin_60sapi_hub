@@ -19,6 +19,7 @@ from .schedule import (
     ScheduleValidationError,
     parse_schedule,
 )
+from .image_styles import DEFAULT_STYLE_ID, parse_style_id, resolve_style_id
 from .content_plan import (
     PlanItem,
     PlanValidationError,
@@ -46,6 +47,7 @@ MAX_UMO_LENGTH = 512
 MAX_PLATFORM_ID_LENGTH = 128
 MAX_SESSION_ID_LENGTH = 384
 SCHEDULE_UNSET = object()
+IMAGE_STYLE_UNSET = object()
 SUPPORTED_OUTPUT_FORMATS = ("text", "markdown", "image")
 OUTPUT_FORMAT_LABELS = {
     "text": "纯文字",
@@ -114,6 +116,7 @@ class PushTask:
     schedule_raw: dict[str, object] | None = None
     schedule_error: str | None = None
     sites: tuple[str, ...] = ()
+    image_style: str = DEFAULT_STYLE_ID
 
     @property
     def profile_id(self) -> str:
@@ -156,6 +159,7 @@ class TaskCreate:
     umos: object
     schedule: object = None
     sites: object = None
+    image_style: object = IMAGE_STYLE_UNSET
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +171,7 @@ class TaskUpdate:
     expected_revision: object
     schedule: object = SCHEDULE_UNSET
     sites: object = None
+    image_style: object = IMAGE_STYLE_UNSET
 
 
 class PushTaskService:
@@ -218,6 +223,11 @@ class PushTaskService:
         items = _normalize_plan_items(data.items)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
+        image_style = (
+            DEFAULT_STYLE_ID
+            if data.image_style is IMAGE_STYLE_UNSET
+            else normalize_image_style(data.image_style)
+        )
         schedule = parse_schedule(data.schedule)
         site_ids = await self._resolve_site_ids(data.sites)
         try:
@@ -227,6 +237,7 @@ class PushTaskService:
                 items=plan_items_to_stored(items),
                 output_format=output_format,
                 umos=umos,
+                image_style=image_style,
                 site_ids=site_ids,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
@@ -268,6 +279,11 @@ class PushTaskService:
         umos = normalize_umos(data.umos)
         schedule_unchanged = data.schedule is SCHEDULE_UNSET
         schedule = None if schedule_unchanged else parse_schedule(data.schedule)
+        image_style = (
+            None
+            if data.image_style is IMAGE_STYLE_UNSET
+            else normalize_image_style(data.image_style)
+        )
         site_ids = await self._resolve_updated_site_ids(
             normalized_id, data.sites,
         )
@@ -279,6 +295,7 @@ class PushTaskService:
                 output_format=output_format,
                 umos=umos,
                 expected_revision=expected_revision,
+                image_style=image_style,
                 site_ids=site_ids,
                 schedule_unchanged=schedule_unchanged,
                 schedule_kind=schedule.kind if schedule else None,
@@ -408,6 +425,17 @@ def normalize_output_format(value: object) -> str:
             "必须是 text、markdown 或 image",
         )
     return value
+
+
+def normalize_image_style(value: object) -> str:
+    """严格校验任务提交的图片样式；未知值转成字段级 400。"""
+    try:
+        return parse_style_id(value)
+    except ValueError:
+        raise TaskValidationError(
+            "image_style",
+            "必须是已登记的图片样式",
+        ) from None
 
 
 def normalize_umos(value: object) -> tuple[str, ...]:
@@ -556,6 +584,7 @@ def _to_task(stored: StoredTask) -> PushTask:
         schedule=schedule,
         schedule_raw=raw,
         schedule_error=error,
+        image_style=resolve_style_id(getattr(stored, "image_style", None)),
     )
 
 

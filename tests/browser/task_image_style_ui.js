@@ -93,6 +93,21 @@ function check(ok, msg) { if (!ok) throw new Error(msg); }
     await openEditor();
     const reopened = await frame.evaluate(() => document.getElementById("task-image-style").value);
     check(reopened === "bold_studio", "重开未回填: " + reopened);
+    // 改选未保存样式必须立即置灰预览按钮；改回已保存值必须恢复。
+    const previewButton = frame.locator("#task-preview-form-button");
+    check(await previewButton.isEnabled(), "重开后预览按钮应可用");
+    await frame.selectOption("#task-image-style", "floral");
+    await frame.waitForFunction(
+      () => document.getElementById("task-preview-form-button")?.disabled === true,
+      null, { timeout: WAIT },
+    );
+    check(!(await previewButton.isEnabled()), "改选样式后预览按钮未置灰");
+    await frame.selectOption("#task-image-style", "bold_studio");
+    await frame.waitForFunction(
+      () => document.getElementById("task-preview-form-button")?.disabled === false,
+      null, { timeout: WAIT },
+    );
+    check(await previewButton.isEnabled(), "改回已保存样式后预览按钮未恢复");
     // 未保存判定：改选后取消应弹出放弃修改
     await frame.selectOption("#task-image-style", "floral");
     await frame.locator("#task-cancel-button").click();

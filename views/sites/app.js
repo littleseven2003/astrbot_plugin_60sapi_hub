@@ -6021,7 +6021,8 @@ function bindEvents() {
     }
   });
   elements.taskItemAddButton.addEventListener("click", addTaskItem);
-  // 名称、输出方式、UMO 此前没有任何监听：改动它们同样要算「未保存修改」。
+  // 名称、输出方式、UMO、图片样式此前没有任何监听：改动它们同样要算
+  // 「未保存修改」，并立即作废在途的能力测试与预览。
   [elements.taskName, elements.taskOutputFormat, elements.taskUmos].forEach((field) => {
     if (!field) return;
     field.addEventListener("input", () => {
@@ -6029,6 +6030,12 @@ function bindEvents() {
       updateTaskFormGates();
     });
   });
+  if (elements.taskImageStyle) {
+    elements.taskImageStyle.addEventListener("change", () => {
+      invalidateTaskFormRequests();
+      updateTaskFormGates();
+    });
+  }
   elements.taskPreviewFormButton.addEventListener("click", previewSavedTask);
   elements.taskPreviewRefreshButton.addEventListener(
     "click",

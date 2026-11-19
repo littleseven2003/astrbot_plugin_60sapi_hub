@@ -1904,10 +1904,11 @@ function resetPreviewImages() {
 }
 
 function syncPreviewImageButton() {
+  // 草稿预览没有任务 id：草稿标志同样构成可出图上下文。
   const hasImageContext = Boolean(
     state.taskPreviewOutputs &&
     state.taskPreviewSnapshotId &&
-    state.taskPreviewTaskId,
+    (state.taskPreviewTaskId || state.taskPreviewDraft),
   );
   elements.taskPreviewImageButton.disabled =
     state.taskPreviewLoading ||

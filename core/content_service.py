@@ -225,8 +225,13 @@ class ContentService:
         site_id: object,
         *,
         force_refresh: bool = False,
+        use_cache: bool = True,
     ) -> CacheResult:
-        """统一预览的缓存入口；站点状态在读取缓存前重新校验。"""
+        """统一预览的缓存入口；站点状态在读取缓存前重新校验。
+
+        ``use_cache=False`` 时直接取数，既不读也不写生产缓存：表单草稿的
+        测试与预览不能改变已保存任务后续看到的内容。
+        """
         site = await self._sites.get_fetch_config(site_id)
         fetchers = {
             "daily_news": lambda: self.news.preview(site.id),
@@ -249,6 +254,12 @@ class ContentService:
             day_token = lambda: self._clock().astimezone(
                 CHINA_TIMEZONE,
             ).date()
+        if not use_cache:
+            return CacheResult(
+                snapshot=await fetch(),
+                hit=False,
+                expires_at="",
+            )
         return await self._cache.get(
             key,
             fetch,

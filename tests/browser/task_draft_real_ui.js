@@ -235,6 +235,8 @@ async function layoutAt(page, frame, width) {
   return frame.evaluate(() => {
     const picker = document.getElementById("task-site-picker");
     const add = document.getElementById("task-site-add-button");
+    const pickerBox = picker.getBoundingClientRect();
+    const addBox = add.getBoundingClientRect();
     const list = document.getElementById("task-site-list");
     const row = document.querySelector("#task-site-list .task-site-row");
     const name = row?.querySelector(".task-site-name");
@@ -247,6 +249,9 @@ async function layoutAt(page, frame, width) {
     const buttons = [...actions.querySelectorAll("button")];
     return {
       sameRow: Math.abs((p.top + p.height / 2) - (a.top + a.height / 2)) <= 2,
+      pickerAddSameRow: Math.abs(
+        (pickerBox.top + pickerBox.height / 2) - (addBox.top + addBox.height / 2),
+      ) <= 2,
       listStyle: getComputedStyle(list).listStyleType,
       rowOverflow: row.scrollWidth - row.clientWidth,
       pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
@@ -350,6 +355,8 @@ async function layoutAt(page, frame, width) {
       null, { timeout: WAIT },
     );
     const narrow = await layoutAt(page, frame, 390);
+    check(narrow.pickerAddSameRow,
+      "390px 选择器与添加按钮应同一行：" + JSON.stringify(narrow));
     check(narrow.pageOverflow <= 0, "390px 页面不应横向滚动：" + narrow.pageOverflow);
     check(narrow.rowOverflow <= 0, "390px 行内不应溢出：" + narrow.rowOverflow);
     check(narrow.actionsBelowName, "390px 操作组应下移：" + JSON.stringify(narrow));

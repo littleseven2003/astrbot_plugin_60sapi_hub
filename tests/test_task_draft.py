@@ -49,14 +49,21 @@ class TaskDraftApiTest(unittest.IsolatedAsyncioTestCase):
         self.tasks = PushTaskService(self.sites.store)
         self.calls: list[str] = []
         self.fail = False
+        self.serial = 0
 
         async def handler(request: httpx.Request) -> httpx.Response:
             self.calls.append(request.url.path)
             if self.fail:
                 return httpx.Response(500, content=b"upstream down")
-            return httpx.Response(
-                200, content=json.dumps(payload_for(request.url.path)).encode(),
-            )
+            body = payload_for(request.url.path)
+            if request.url.path.endswith("/v2/60s"):
+                # 每次真实取数给不同标题，便于断言缓存里留下的是哪一次。
+                self.serial += 1
+                body["data"] = dict(body["data"])
+                body["data"]["news"] = [
+                    f"新闻{self.serial}A", f"新闻{self.serial}B", f"新闻{self.serial}C",
+                ]
+            return httpx.Response(200, content=json.dumps(body).encode())
 
         self.content = ContentService(
             self.sites,
@@ -235,6 +242,62 @@ class TaskDraftApiTest(unittest.IsolatedAsyncioTestCase):
         snapshot = self.snapshots.get(data["image_snapshot"]["id"])
         self.assertEqual(snapshot.site_id, self.backup.id)
         self.assertEqual(snapshot.data["image_style"], "bold_studio")
+
+    async def test_draft_sites_are_bounded_and_not_silently_deduped(self) -> None:
+        duplicate = await self.api.test_draft(
+            self.draft(sites=[self.first.id, self.first.id]),
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(duplicate.body["data"]["field"], "sites")
+        self.assertIn("重复", duplicate.body["message"])
+
+        too_many = await self.api.test_draft(
+            self.draft(sites=[f"site-{index}" for index in range(6)]),
+        )
+        self.assertEqual(too_many.status_code, 400)
+        self.assertEqual(too_many.body["data"]["field"], "sites")
+        self.assertIn("最多", too_many.body["message"])
+
+    async def test_draft_reads_bypass_production_cache(self) -> None:
+        task = await self.tasks.create_task(TaskCreate(
+            name="缓存基线任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+            output_format="text", umos=[], sites=[self.first.id],
+        ))
+        saved = await self.api.preview_task(task.id, {}, owner="alice")
+        self.assertEqual(saved.status_code, 200, saved.body)
+        cached_title = saved.body["data"]["sections"][0]["items"][0]["title"]
+        calls_after_saved = len(self.calls)
+
+        # 草稿预览直接取数：拿到新内容，但不得写进生产缓存。
+        draft = await self.api.preview_draft(
+            self.draft(items=[{"content_type": "daily_news", "limit": 1}]),
+            owner="alice",
+        )
+        self.assertEqual(draft.status_code, 200, draft.body)
+        draft_title = draft.body["data"]["sections"][0]["items"][0]["title"]
+        self.assertNotEqual(draft_title, cached_title)
+        self.assertEqual(draft.body["data"]["sections"][0]["cache"], {"used": False})
+
+        again = await self.api.preview_task(task.id, {}, owner="alice")
+        self.assertEqual(again.status_code, 200, again.body)
+        self.assertEqual(
+            again.body["data"]["sections"][0]["items"][0]["title"], cached_title,
+        )
+        self.assertEqual(
+            len(self.calls), calls_after_saved + 1, "已保存任务应命中原缓存，草稿那次取数不入缓存",
+        )
+
+        # 草稿能力测试同样不写缓存：之后的已保存预览需要真实取数并缓存。
+        before_capability = len(self.calls)
+        capability = await self.api.test_draft(self.draft())
+        self.assertEqual(capability.status_code, 200, capability.body)
+        self.assertEqual(capability.body["data"]["cache"], {"used": False})
+        fresh = await self.api.preview_task(task.id, {}, owner="alice")
+        self.assertEqual(fresh.status_code, 200, fresh.body)
+        self.assertGreater(len(self.calls), before_capability)
+        hit = await self.api.preview_task(task.id, {}, owner="alice")
+        self.assertEqual(hit.status_code, 200, hit.body)
 
     async def test_preview_draft_rejects_bad_body(self) -> None:
         result = await self.api.preview_draft([], owner="alice")

@@ -402,6 +402,12 @@ class ProfileImageRenderer:
             rendered.append(copy)
         return rendered, changed
 
+    def _fit_single_line(self, text: str, size: int, width: int) -> str:
+        """超宽文本压成一行并加省略号；不超宽时原样返回。"""
+        if self._text_width(text, size) <= width:
+            return text
+        return self._truncate_wrapped([text], 1, size, width)
+
     def _truncate_wrapped(
         self,
         lines: list[str],
@@ -551,24 +557,21 @@ class ProfileImageRenderer:
         num_color = self._style.num
         last = len(items)
         # 热度布局按整栏决定，不逐条判断：只要有一条热度超出列宽，
-        # 整栏都改用“热度单独一行”，否则 7 位与 8 位热度混排时
-        # 相邻条目会在两种行高之间跳变。
+        # 整栏都改用“热度单独一行”；行高由布局而不是文本长度决定。
+        hot_texts = [_hot_text(item) for item in items]
         inline_hot_column = all(
-            (not _hot_text(item))
-            or self._text_width(
-                _hot_text(item), self._style.heat_size,
-            ) <= _HEAT_COL
-            for item in items
+            (not hot)
+            or self._text_width(hot, self._style.heat_size) <= _HEAT_COL
+            for hot in hot_texts
         )
         for position, item in enumerate(items, start=1):
             title = _display_text(item.get("title"))
             detail = _display_text(item.get("detail"))
             hot = _hot_text(item)
-            # 常规热度用同宽右对齐热度列，给标题首行统一留位；
-            # 整栏存在超长热度时全部改为标题下方一行，缺值自然留空。
-            inline_hot = bool(hot) and inline_hot_column
+            # 并排模式给每一条（含缺热度）预留同宽首行热度列，
+            # 标题换行宽度一致，缺值条目不会因首行更宽而少一行。
             first_width = full_text_width
-            if inline_hot:
+            if inline_hot_column:
                 first_width = full_text_width - _HEAT_COL - _HEAT_GAP
             for offset, part in enumerate(
                 self._wrap(
@@ -591,10 +594,13 @@ class ProfileImageRenderer:
                 parts.append(
                     _Part(part, self._style.title_size, self._style.ink, False, text_x),
                 )
-                if offset == 0 and inline_hot:
+                if offset == 0 and inline_hot_column and hot:
                     parts.append(
                         _Part(
-                            hot, self._style.heat_size, self._style.heat, False, 0,
+                            self._fit_single_line(
+                                hot, self._style.heat_size, _HEAT_COL,
+                            ),
+                            self._style.heat_size, self._style.heat, False, 0,
                             right=content_width,
                         ),
                     )
@@ -620,37 +626,26 @@ class ProfileImageRenderer:
                             gap_before=_DETAIL_GAP if offset == 0 else 0,
                         ),
                     )
-            if hot and not inline_hot:
-                hot_width = self._text_width(hot, self._style.heat_size)
-                if hot_width <= full_text_width:
-                    # 一行放得下：右对齐到内容右边缘，与标题序号区分。
-                    lines.append(
-                        _Line(
-                            parts=(
-                                _Part(
-                                    hot, self._style.heat_size, self._style.heat, False, 0,
-                                    right=content_width,
-                                ),
+            if not inline_hot_column:
+                # 单独一行模式：缺热度也占同样一行高度；极长热度限宽单行
+                # 并加省略号，绝不因为换行把相邻条目撑高。
+                heat_text = (
+                    self._fit_single_line(hot, self._style.heat_size, full_text_width)
+                    if hot else ""
+                )
+                lines.append(
+                    _Line(
+                        parts=(
+                            _Part(
+                                heat_text, self._style.heat_size,
+                                self._style.heat, False, 0,
+                                right=content_width,
                             ),
-                            leading=_HOT_LEADING,
-                            gap_before=_HOT_GAP,
                         ),
-                    )
-                else:
-                    for offset, part in enumerate(
-                        self._wrap(hot, self._style.heat_size, full_text_width),
-                    ):
-                        lines.append(
-                            _Line(
-                                parts=(
-                                    _Part(
-                                        part, self._style.heat_size, self._style.heat, False, text_x,
-                                    ),
-                                ),
-                                leading=_HOT_LEADING,
-                                gap_before=_HOT_GAP if offset == 0 else 0,
-                            ),
-                        )
+                        leading=_HOT_LEADING,
+                        gap_before=_HOT_GAP,
+                    ),
+                )
             if position < last:
                 # 分隔线前的 10px 是条目的下留白，和上留白一起构成 57px 行距。
                 lines.append(_Line(rule=True, gap_before=_ROW_PAD_Y))

@@ -2746,9 +2746,19 @@ dialog.dialog button {
 }
 
 @media (max-width: 480px) {
-  .task-site-picker-row select,
+  /* 390px 也保持选择器与「添加」同一行：选择器占剩余宽度，按钮不换行。 */
+  .task-site-picker-row {
+    flex-wrap: nowrap;
+  }
+
+  .task-site-picker-row select {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   .task-site-picker-row .button {
-    flex: 1 1 100%;
+    flex: 0 0 auto;
+    min-height: 44px;
   }
 
   .task-site-row {

@@ -517,7 +517,7 @@ class PlanPreviewTest(unittest.IsolatedAsyncioTestCase):
         original = self.content.preview_cached
         revisions: list[int] = []
 
-        async def hooked(content_type, site_id, *, force_refresh=False):
+        async def hooked(content_type, site_id, *, force_refresh=False, use_cache=True):
             current = await self.tasks.get_task(task.id)
             alternative = (
                 profile_item("bilibili_hot", 1)
@@ -538,7 +538,8 @@ class PlanPreviewTest(unittest.IsolatedAsyncioTestCase):
                 (await self.tasks.get_config_snapshot(task.id)).plan_revision,
             )
             return await original(
-                content_type, site_id, force_refresh=force_refresh,
+                content_type, site_id,
+                force_refresh=force_refresh, use_cache=use_cache,
             )
 
         self.content.preview_cached = hooked

@@ -174,6 +174,10 @@ class TaskUpdate:
     image_style: object = IMAGE_STYLE_UNSET
 
 
+# 草稿能力测试与预览共用同一候选上限，避免两处遍历范围不一致。
+MAX_DRAFT_SITES = 5
+
+
 @dataclass(frozen=True, slots=True)
 class TaskDraft:
     """未保存表单草稿：只用于能力测试与预览，不写数据库。"""
@@ -233,6 +237,22 @@ class PushTaskService:
         """校验并归一化表单草稿；与保存任务使用同一套字段规则。"""
         if not isinstance(payload, dict):
             raise TaskValidationError("body", "请求体必须是 JSON 对象")
+        raw_sites = payload.get("sites")
+        if isinstance(raw_sites, (list, tuple)):
+            # 能力测试最多检查前 5 个候选：草稿也必须用同一上限，且不静默去重，
+            # 否则预览会遍历比能力测试更多的站点。
+            if len(raw_sites) > MAX_DRAFT_SITES:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                )
+            seen: set[str] = set()
+            for raw_site in raw_sites:
+                if not isinstance(raw_site, str):
+                    continue
+                site_id = raw_site.strip()
+                if site_id in seen:
+                    raise TaskValidationError("sites", "候选站点不能重复")
+                seen.add(site_id)
         raw_name = payload.get("name")
         name = (
             "草稿预览"

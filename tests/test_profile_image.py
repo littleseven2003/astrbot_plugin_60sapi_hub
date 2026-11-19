@@ -1131,7 +1131,8 @@ class ProfileImageRendererTest(unittest.TestCase):
             [part.text for part in first.parts],
         )
 
-    def test_hot_value_wider_than_content_wraps_without_loss(self) -> None:
+    def test_hot_value_wider_than_content_is_one_ellipsised_line(self) -> None:
+        # 极长热度不再换行：固定单行 + 省略号，避免把该条行高撑高。
         huge = "热度：" + "超长热度描述" * 30
         data = section(
             "douyin_hot", "抖音热搜", [item("热点", hot_value_desc=huge)],
@@ -1142,15 +1143,17 @@ class ProfileImageRendererTest(unittest.TestCase):
             part for line in lines for part in line.parts
             if part.size == image_module._HEAT_SIZE
         ]
-        self.assertGreater(len(hot_parts), 1)
-        self.assertEqual("".join(part.text for part in hot_parts), huge)
+        self.assertEqual(len(hot_parts), 1)
+        self.assertTrue(hot_parts[0].text.startswith("热度："))
+        self.assertTrue(hot_parts[0].text.endswith("…"))
+        self.assertNotEqual(hot_parts[0].text, huge)
         limit = self.renderer._content_width(width) - (
             image_module._NUM_COL + image_module._NUM_GAP
         )
-        for part in hot_parts:
-            self.assertLessEqual(
-                self.renderer._text_width(part.text, part.size), limit + 1,
-            )
+        self.assertLessEqual(
+            self.renderer._text_width(hot_parts[0].text, hot_parts[0].size),
+            limit + 1,
+        )
 
     def test_long_title_in_body_is_not_truncated(self) -> None:
         data = section("daily_news", "每日新闻", [item(LONG_TITLE)])

@@ -439,6 +439,10 @@ async function openPage(browser, port, overrides = {}) {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(200);
     const narrowLayout = await page.evaluate(() => {
+      const picker = document.getElementById("task-site-picker");
+      const add = document.getElementById("task-site-add-button");
+      const p = picker.getBoundingClientRect();
+      const a = add.getBoundingClientRect();
       const row = document.querySelector("#task-site-list .task-site-row");
       const name = row.querySelector(".task-site-name");
       const actions = row.querySelector(".task-site-actions");
@@ -447,6 +451,7 @@ async function openPage(browser, port, overrides = {}) {
       const act = actions.getBoundingClientRect();
       const buttons = [...actions.querySelectorAll("button")];
       return {
+        sameRow: Math.abs((p.top + p.height / 2) - (a.top + a.height / 2)) <= 2,
         pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
         rowOverflow: row.scrollWidth - row.clientWidth,
         actionsBelowName: act.top >= n.bottom - 1,
@@ -455,6 +460,8 @@ async function openPage(browser, port, overrides = {}) {
         minButtonHeight: Math.min(...buttons.map((b) => b.getBoundingClientRect().height)),
       };
     });
+    check(narrowLayout.sameRow,
+      "390px 选择器与添加按钮应同一行：" + JSON.stringify(narrowLayout));
     check(narrowLayout.pageOverflow <= 0,
       "390px 页面不应横向滚动：" + narrowLayout.pageOverflow);
     check(narrowLayout.rowOverflow <= 0,

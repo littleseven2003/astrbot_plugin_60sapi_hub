@@ -188,6 +188,8 @@ class TaskApi:
         items: tuple[Any, ...],
         site_ids: tuple[str, ...],
         sites: dict[str, Any],
+        *,
+        use_cache: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, tuple[int, bool]], dict[str, Any] | None, bool]:
         """按候选顺序判断单站能否满足全部栏目；草稿与已保存任务共用。"""
         requirements = requirements_from_items(items)
@@ -220,7 +222,7 @@ class TaskApi:
             for item in items:
                 try:
                     cached = await self._content.preview_cached(
-                        item.content_type, site_id,
+                        item.content_type, site_id, use_cache=use_cache,
                     )
                     snapshot = content_snapshot_dict(
                         item.content_type, cached.snapshot,
@@ -291,7 +293,7 @@ class TaskApi:
         except Exception:
             return _internal_error()
         checked, site_snapshot, winner, truncated = await self._scan_capability(
-            draft.items, draft.sites, sites,
+            draft.items, draft.sites, sites, use_cache=False,
         )
         if await self._draft_sites_changed(site_snapshot):
             return _error(
@@ -314,7 +316,8 @@ class TaskApi:
             "message": message,
             "checked": checked,
             "checked_at": self._clock().isoformat(),
-            "cache": {"used": True, "ttl_seconds": ttl},
+            # 草稿直接取数，不读也不写生产缓存，结论是本次实时判断。
+            "cache": {"used": False},
             "truncated": truncated,
             "checked_count": len(checked),
         })

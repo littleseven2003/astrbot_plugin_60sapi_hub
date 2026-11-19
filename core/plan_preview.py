@@ -281,7 +281,7 @@ class PlanPreview:
         failures: list[dict[str, Any]] = []
         for attempt in range(_MAX_PREVIEW_ATTEMPTS):
             sections, failures = await self._collect_sections(
-                items, force_refresh, site.id,
+                items, force_refresh, site.id, use_cache=False,
             )
             try:
                 latest_site = await self._sites.get_site(site_id)
@@ -485,6 +485,8 @@ class PlanPreview:
         plan_items: tuple[PlanItem, ...],
         force_refresh: bool,
         site_id: str,
+        *,
+        use_cache: bool = True,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """按给定栏目方案获取全部栏目；失败栏目单独记录，不中断其余栏目。"""
         sections: list[dict[str, Any]] = []
@@ -496,6 +498,7 @@ class PlanPreview:
                     item.content_type,
                     site_id,
                     force_refresh=force_refresh,
+                    use_cache=use_cache,
                 )
             except Exception as exc:
                 section = _section_error(item.content_type, item.label, exc)
@@ -533,11 +536,15 @@ class PlanPreview:
             snapshot["limit"] = item.limit
             snapshot["label"] = item.label
             snapshot["status"] = "ok"
-            snapshot["cache"] = {
-                "hit": cached.hit,
-                "expires_at": cached.expires_at,
-                "ttl_seconds": self._content.cache_ttl_seconds,
-            }
+            if use_cache:
+                snapshot["cache"] = {
+                    "hit": cached.hit,
+                    "expires_at": cached.expires_at,
+                    "ttl_seconds": self._content.cache_ttl_seconds,
+                }
+            else:
+                # 草稿直接取数：明确标注未使用生产缓存。
+                snapshot["cache"] = {"used": False}
             sections.append(snapshot)
 
         return sections, failures

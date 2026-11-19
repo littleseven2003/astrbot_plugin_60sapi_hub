@@ -2650,6 +2650,127 @@ dialog.dialog button {
   text-align: center;
 }
 
+/* ---------- 候选站点编辑器 ---------- */
+
+.task-site-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.task-site-picker-row select {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.task-site-picker-row .button {
+  flex: 0 0 auto;
+  min-height: 38px;
+}
+
+.task-site-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.task-site-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+}
+
+.task-site-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--sub);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-site-name {
+  flex: 1 1 180px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.task-site-status {
+  margin-left: 6px;
+  color: var(--sub);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.task-site-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.task-site-actions .button {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.task-site-empty {
+  list-style: none;
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--sub);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+@media (max-width: 480px) {
+  .task-site-picker-row select,
+  .task-site-picker-row .button {
+    flex: 1 1 100%;
+  }
+
+  .task-site-row {
+    align-items: flex-start;
+  }
+
+  .task-site-name {
+    flex: 1 1 calc(100% - 34px);
+  }
+
+  .task-site-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
+  }
+
+  .task-site-actions .button {
+    min-height: 44px;
+    padding: 8px 14px;
+  }
+}
+
 .task-card-items,
 .task-card-sites {
   color: var(--ink-2);

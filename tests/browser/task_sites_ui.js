@@ -403,6 +403,87 @@ async function openPage(browser, port, overrides = {}) {
       (nodes) => nodes.length);
     check(pickerValues.length + rowSiteIds <= 3,
       "添加下拉不包含已加入站点：" + JSON.stringify(pickerValues));
+
+    // 候选站点区块样式：同一行、无原生圆点、操作组右对齐。
+    const desktopLayout = await page.evaluate(() => {
+      const picker = document.querySelector("#task-site-picker");
+      const add = document.getElementById("task-site-add-button");
+      const list = document.getElementById("task-site-list");
+      const row = document.querySelector("#task-site-list .task-site-row");
+      const order = row.querySelector(".task-site-order");
+      const actions = row.querySelector(".task-site-actions");
+      const p = picker.getBoundingClientRect();
+      const a = add.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
+      const o = order.getBoundingClientRect();
+      const act = actions.getBoundingClientRect();
+      return {
+        sameRow: Math.abs((p.top + p.height / 2) - (a.top + a.height / 2)) <= 2,
+        listStyle: getComputedStyle(list).listStyleType,
+        rowStyle: getComputedStyle(row).listStyleType,
+        orderWidth: Math.round(o.width),
+        actionsRightGap: Math.round(r.right - act.right),
+        rowOverflow: row.scrollWidth - row.clientWidth,
+      };
+    });
+    check(desktopLayout.sameRow, "选择器与添加按钮应同一行：" + JSON.stringify(desktopLayout));
+    check(desktopLayout.listStyle === "none" && desktopLayout.rowStyle === "none",
+      "候选列表不应显示原生圆点：" + JSON.stringify(desktopLayout));
+    check(desktopLayout.orderWidth === 24,
+      "序号应有独立方块：" + desktopLayout.orderWidth);
+    check(desktopLayout.actionsRightGap <= 16 && desktopLayout.actionsRightGap >= 0,
+      "操作组应右对齐：" + desktopLayout.actionsRightGap);
+    check(desktopLayout.rowOverflow <= 0, "桌面行内不应溢出：" + desktopLayout.rowOverflow);
+
+    // 390px：长名称换行、操作组整体下移、按钮至少 44px、页面无横向滚动。
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(200);
+    const narrowLayout = await page.evaluate(() => {
+      const row = document.querySelector("#task-site-list .task-site-row");
+      const name = row.querySelector(".task-site-name");
+      const actions = row.querySelector(".task-site-actions");
+      const r = row.getBoundingClientRect();
+      const n = name.getBoundingClientRect();
+      const act = actions.getBoundingClientRect();
+      const buttons = [...actions.querySelectorAll("button")];
+      return {
+        pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+        rowOverflow: row.scrollWidth - row.clientWidth,
+        actionsBelowName: act.top >= n.bottom - 1,
+        actionsWidth: Math.round(act.width),
+        rowWidth: Math.round(r.width),
+        minButtonHeight: Math.min(...buttons.map((b) => b.getBoundingClientRect().height)),
+      };
+    });
+    check(narrowLayout.pageOverflow <= 0,
+      "390px 页面不应横向滚动：" + narrowLayout.pageOverflow);
+    check(narrowLayout.rowOverflow <= 0,
+      "390px 候选行内不应溢出：" + narrowLayout.rowOverflow);
+    check(narrowLayout.actionsBelowName,
+      "390px 操作组应整体移到名称下一行：" + JSON.stringify(narrowLayout));
+    check(narrowLayout.minButtonHeight >= 44,
+      "390px 操作按钮点击高度应至少 44px：" + narrowLayout.minButtonHeight);
+
+    // 若前面的预览关闭留下一层未确认提示，先回到表单再验证空列表。
+    if (await page.evaluate(() => document.getElementById("discard-dialog")?.open === true)) {
+      await page.click("#discard-cancel-button");
+      await page.waitForFunction(
+        () => document.getElementById("discard-dialog")?.open !== true);
+    }
+    // 空列表给虚线提示，不残留圆点。
+    while (await page.locator("#task-site-list .task-site-row").count()) {
+      await page.locator("#task-site-list button", { hasText: "移除" }).first().click();
+    }
+    await page.waitForSelector("#task-site-list .task-site-empty");
+    const emptyStyle = await page.evaluate(() => {
+      const empty = document.querySelector("#task-site-list .task-site-empty");
+      return {
+        text: empty.textContent,
+        listStyle: getComputedStyle(document.getElementById("task-site-list")).listStyleType,
+      };
+    });
+    check(emptyStyle.text.includes("还没有候选站点") && emptyStyle.listStyle === "none",
+      "空列表应显示提示且无圆点：" + JSON.stringify(emptyStyle));
     console.log("TASK SITES UI PASS", { assertions });
   } finally {
     await browser.close();

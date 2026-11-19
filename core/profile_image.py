@@ -550,15 +550,23 @@ class ProfileImageRenderer:
         # 页眉强调色。字号、两位补零与标题首行基线保持一致，不按内容类型分色。
         num_color = self._style.num
         last = len(items)
+        # 热度布局按整栏决定，不逐条判断：只要有一条热度超出列宽，
+        # 整栏都改用“热度单独一行”，否则 7 位与 8 位热度混排时
+        # 相邻条目会在两种行高之间跳变。
+        inline_hot_column = all(
+            (not _hot_text(item))
+            or self._text_width(
+                _hot_text(item), self._style.heat_size,
+            ) <= _HEAT_COL
+            for item in items
+        )
         for position, item in enumerate(items, start=1):
             title = _display_text(item.get("title"))
             detail = _display_text(item.get("detail"))
             hot = _hot_text(item)
-            # 短热度与标题并排：为热度列留出固定宽度，标题在剩余宽度内换行；
-            # 热度放不下时整体移到标题下方，标题恢复整行宽度。
-            inline_hot = bool(hot) and (
-                self._text_width(hot, self._style.heat_size) <= _HEAT_COL
-            )
+            # 常规热度用同宽右对齐热度列，给标题首行统一留位；
+            # 整栏存在超长热度时全部改为标题下方一行，缺值自然留空。
+            inline_hot = bool(hot) and inline_hot_column
             first_width = full_text_width
             if inline_hot:
                 first_width = full_text_width - _HEAT_COL - _HEAT_GAP

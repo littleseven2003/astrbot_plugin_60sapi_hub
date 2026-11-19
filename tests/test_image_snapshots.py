@@ -30,7 +30,7 @@ class FakeClock:
         self.wall += timedelta(seconds=seconds)
 
 
-def put(store: ImageSnapshotStore, name="组合", owner="alice"):
+def put(store: ImageSnapshotStore, name="组合", owner="alice", scope="task"):
     return store.put(
         owner=owner,
         profile_id="profile-1",
@@ -43,6 +43,7 @@ def put(store: ImageSnapshotStore, name="组合", owner="alice"):
             "status": "complete",
             "sections": [{"label": "每日新闻", "items": []}],
         },
+        scope=scope,
     )
 
 
@@ -152,3 +153,36 @@ class MultiSectionImageBudgetTest(unittest.TestCase):
             self.assertEqual(store.total_bytes, snapshot.size_bytes)
         finally:
             store.close()
+
+
+class SnapshotScopeTest(unittest.TestCase):
+    """草稿快照淘汰只清理草稿，不挤掉已保存任务的图片快照。"""
+
+    def _store(self, max_snapshots: int = 4) -> ImageSnapshotStore:
+        return ImageSnapshotStore(
+            max_snapshots=max_snapshots,
+            max_total_bytes=DEFAULT_MAX_TOTAL_BYTES,
+        )
+
+    def test_draft_evictions_never_remove_task_snapshots(self) -> None:
+        store = self._store(4)
+        task = put(store)
+        self.assertIsNotNone(task)
+        latest = None
+        for index in range(40):
+            latest = put(store, name=f"草稿{index}", scope="draft")
+        self.assertIsNotNone(store.get(task.id), "任务快照不能被草稿淘汰")
+        self.assertIsNotNone(latest)
+        self.assertIsNotNone(store.get(latest.id))
+        self.assertLessEqual(store.size, 4)
+        self.assertLessEqual(store.total_bytes, DEFAULT_MAX_TOTAL_BYTES)
+
+    def test_full_task_store_rejects_drafts_instead_of_evicting(self) -> None:
+        store = self._store(2)
+        first = put(store, "任务一")
+        second = put(store, "任务二")
+        rejected = put(store, "草稿", scope="draft")
+        self.assertIsNone(rejected, "存储被任务占满时应放弃草稿快照")
+        self.assertIsNotNone(store.get(first.id))
+        self.assertIsNotNone(store.get(second.id))
+        self.assertEqual(store.size, 2)

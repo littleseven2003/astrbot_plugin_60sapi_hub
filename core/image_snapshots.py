@@ -79,6 +79,9 @@ class ImageSnapshotStore:
             lambda: datetime.now(timezone.utc)
         )
         self._snapshots: OrderedDict[str, ImageSnapshot] = OrderedDict()
+        # 快照用途：已保存任务（task）与表单草稿（draft）。草稿淘汰只清理
+        # 草稿自己，绝不挤掉已保存任务的快照；总量上限仍由同一个存储约束。
+        self._scopes: dict[str, str] = {}
         self._total_bytes = 0
         self._closed = False
 
@@ -103,6 +106,7 @@ class ImageSnapshotStore:
         site_id: str,
         site_revision: int,
         data: dict[str, Any],
+        scope: str = "task",
     ) -> ImageSnapshot | None:
         if self._closed:
             raise ImageSnapshotClosedError("图片快照存储当前不可用。")
@@ -119,14 +123,17 @@ class ImageSnapshotStore:
             return None
         now = self._monotonic()
         self._prune_expired(now)
-        while (
-            self._snapshots
-            and (
-                len(self._snapshots) >= self._max_snapshots
-                or self._total_bytes + size > self._max_total_bytes
-            )
+        normalized_scope = "draft" if scope == "draft" else "task"
+        while self._snapshots and (
+            len(self._snapshots) >= self._max_snapshots
+            or self._total_bytes + size > self._max_total_bytes
         ):
-            self._evict_oldest()
+            victim = self._oldest_evictable(normalized_scope)
+            if victim is None:
+                # 草稿不得淘汰已保存任务的快照；存储已满时放弃本次草稿快照，
+                # 预览内容仍可用，只是暂时不能直接出图。
+                return None
+            self._remove(victim)
         if size > self._max_total_bytes:
             return None
 
@@ -151,6 +158,7 @@ class ImageSnapshotStore:
             expires_monotonic=now + self._ttl_seconds,
         )
         self._snapshots[snapshot_id] = snapshot
+        self._scopes[snapshot_id] = normalized_scope
         self._total_bytes += size
         return snapshot
 
@@ -170,6 +178,7 @@ class ImageSnapshotStore:
     def close(self) -> None:
         self._closed = True
         self._snapshots.clear()
+        self._scopes.clear()
         self._total_bytes = 0
 
     def _prune_expired(self, now: float) -> None:
@@ -179,13 +188,20 @@ class ImageSnapshotStore:
             if snapshot.expires_monotonic <= now
         ]
         for snapshot_id in expired:
-            snapshot = self._snapshots.pop(snapshot_id, None)
-            if snapshot is not None:
-                self._total_bytes -= snapshot.size_bytes
+            self._remove(snapshot_id)
 
-    def _evict_oldest(self) -> None:
-        _snapshot_id, snapshot = self._snapshots.popitem(last=False)
-        self._total_bytes -= snapshot.size_bytes
+    def _oldest_evictable(self, scope: str) -> str | None:
+        """草稿只能淘汰草稿；任务快照可以按最旧顺序淘汰任意用途。"""
+        for snapshot_id in self._snapshots:
+            if scope == "task" or self._scopes.get(snapshot_id) == "draft":
+                return snapshot_id
+        return None
+
+    def _remove(self, snapshot_id: str) -> None:
+        snapshot = self._snapshots.pop(snapshot_id, None)
+        self._scopes.pop(snapshot_id, None)
+        if snapshot is not None:
+            self._total_bytes -= snapshot.size_bytes
 
 
 __all__ = [

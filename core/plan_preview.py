@@ -356,6 +356,7 @@ class PlanPreview:
                     site_id=site.id,
                     site_revision=site.revision,
                     data={**_image_snapshot_data(data), "draft": True},
+                    scope="draft",
                 )
             except ImageSnapshotError:
                 snapshot = None

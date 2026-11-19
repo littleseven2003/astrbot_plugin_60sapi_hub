@@ -299,6 +299,46 @@ class TaskDraftApiTest(unittest.IsolatedAsyncioTestCase):
         hit = await self.api.preview_task(task.id, {}, owner="alice")
         self.assertEqual(hit.status_code, 200, hit.body)
 
+    async def test_draft_snapshots_do_not_evict_saved_task_snapshots(self) -> None:
+        # 小容量快照库：一个已保存任务快照 + 另一身份的 40 次草稿预览。
+        store = ImageSnapshotStore(
+            max_snapshots=4, max_total_bytes=8 * 1024 * 1024,
+        )
+        preview = PlanPreview(
+            self.tasks, self.content, self.sites,
+            image_snapshots=store, image_service=self.images,
+        )
+        api = TaskApi(
+            self.tasks, self.sites,
+            content=self.content, plan_preview=preview,
+        )
+        task = await self.tasks.create_task(TaskCreate(
+            name="快照隔离任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+            output_format="image", umos=[], sites=[self.first.id],
+        ))
+        saved = await api.preview_task(task.id, {}, owner="alice")
+        self.assertEqual(saved.status_code, 200, saved.body)
+        snapshot_id = saved.body["data"]["image_snapshot"]["id"]
+        rendered = await api.generate_task_image(
+            task.id, {"snapshot_id": snapshot_id}, owner="alice",
+        )
+        self.assertEqual(rendered.status_code, 200, rendered.body)
+
+        for index in range(40):
+            draft = await api.preview_draft(
+                self.draft(), owner=f"draft-owner-{index}",
+            )
+            self.assertEqual(draft.status_code, 200, draft.body)
+        self.assertLessEqual(store.size, 4)
+        again = await api.generate_task_image(
+            task.id, {"snapshot_id": snapshot_id}, owner="alice",
+        )
+        self.assertEqual(again.status_code, 200, again.body)
+        self.assertEqual(
+            again.body["data"]["images"][0]["status"], "success",
+        )
+
     async def test_preview_draft_rejects_bad_body(self) -> None:
         result = await self.api.preview_draft([], owner="alice")
         self.assertEqual(result.status_code, 400)

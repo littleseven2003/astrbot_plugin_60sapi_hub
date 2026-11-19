@@ -88,7 +88,7 @@ _PAGE_BG = (238, 240, 243)       # #eef0f3 卡片圆角外的页面底色
 _INK = (48, 52, 59)              # #30343b 正文深灰
 _TITLE_INK = (32, 36, 44)        # #20242c 栏目标题
 _MUTED = (115, 121, 131)         # #737983 次要文字
-_NUM = (146, 152, 162)           # #9298a2 新闻序号
+_NUM = (107, 114, 128)           # #6b7280 序号统一深中性灰
 _HEAT = (129, 135, 145)          # #818791 热度
 _DIVIDER = (237, 240, 243)       # #edf0f3 条目分隔线
 _BORDER = (223, 226, 232)        # #dfe2e8 外框与标题分隔线
@@ -300,7 +300,7 @@ class ProfileImageRenderer:
         header = self._header_lines(
             section, label, content_type, limits.width,
         )
-        body = self._body_lines(items, limits.width, content_type)
+        body = self._body_lines(items, limits.width)
         footer = self._footer_lines(
             section, site_name, created_at, limits.width,
         )
@@ -429,7 +429,6 @@ class ProfileImageRenderer:
         self,
         items: list[dict[str, Any]],
         width: int,
-        content_type: str = "",
     ) -> list[_Line]:
         content_width = self._content_width(width)
         text_x = _NUM_COL + _NUM_GAP
@@ -465,9 +464,9 @@ class ProfileImageRenderer:
                 ),
             )
             return lines
-        # 序号配色按栏目类型判定：只有每日新闻用中性灰，其余热榜栏目一律用
-        # 强调色。不能依赖“有没有热度值”，Bilibili 等适配器本身没有热度字段。
-        num_color = _NUM if content_type == "daily_news" else _ACCENT
+        # 五类栏目的序号都表示条目在列表中的位置，统一用深中性灰；莓红只留给
+        # 页眉强调色。字号、两位补零与标题首行基线保持一致，不按内容类型分色。
+        num_color = _NUM
         last = len(items)
         for position, item in enumerate(items, start=1):
             title = _display_text(item.get("title"))

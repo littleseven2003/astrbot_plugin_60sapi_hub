@@ -872,7 +872,7 @@ class ProfileImageRendererTest(unittest.TestCase):
             if part.text == "01"
         ]
         self.assertEqual(len(index_parts), 1)
-        self.assertEqual(index_parts[0].color, image_module._ACCENT)
+        self.assertEqual(index_parts[0].color, image_module._NUM)
         title_parts = [
             part
             for line in lines
@@ -1079,7 +1079,7 @@ class ProfileImageRendererTest(unittest.TestCase):
     def test_empty_state_placeholder_hangs_full_width_parens(self) -> None:
         # 全角括号自带左侧空白，空状态首行需要悬挂该空白才与正文左对齐。
         width = self.renderer.limits.width
-        lines = self.renderer._body_lines([], width, "douyin_hot")
+        lines = self.renderer._body_lines([], width)
         placeholder, note = lines[0].parts[0], lines[1].parts[0]
         inset = self.renderer._ink_inset(placeholder.text, placeholder.size)
         self.assertGreater(inset, 0)
@@ -1212,14 +1212,15 @@ class ProfileImageRendererTest(unittest.TestCase):
         self.assertEqual(image.status, "success")
         self.assertIsNotNone(image.png)
 
-    def test_news_numbers_are_gray_and_hot_numbers_are_accent(self) -> None:
+    def test_all_section_numbers_use_the_same_gray(self) -> None:
+        """五类栏目共用同一序号颜色：深中性灰 #6b7280，不再按类型分色。"""
+        self.assertEqual(image_module._NUM, (107, 114, 128))
         width = self.renderer.limits.width
         news = self.renderer._body_lines(
             image_module._items(
                 section("daily_news", "每日新闻", [item("新闻一")]),
             ),
             width,
-            "daily_news",
         )
         hot = self.renderer._body_lines(
             image_module._items(
@@ -1234,7 +1235,8 @@ class ProfileImageRendererTest(unittest.TestCase):
             part for line in hot for part in line.parts if part.text == "01"
         ]
         self.assertEqual(news_index[0].color, image_module._NUM)
-        self.assertEqual(hot_index[0].color, image_module._ACCENT)
+        self.assertEqual(hot_index[0].color, image_module._NUM)
+        self.assertEqual(news_index[0].color, hot_index[0].color)
 
     def test_no_ink_outside_content_margins(self) -> None:
         image = self.renderer.render(
@@ -1280,15 +1282,15 @@ class ProfileImageRendererTest(unittest.TestCase):
             content_width + 0.5,
         )
 
-    def test_hot_numbers_are_accent_even_without_heat_values(self) -> None:
-        """Bilibili 适配器没有热度字段，热榜序号仍必须是强调色。"""
+    def test_hot_numbers_keep_unified_gray_without_heat_values(self) -> None:
+        """Bilibili 适配器没有热度字段，序号仍是统一的深中性灰。"""
         width = self.renderer.limits.width
         data = section(
             "bilibili_hot", "Bilibili 热搜",
             [item("热搜一"), item("热搜二")],
         )
         lines = self.renderer._body_lines(
-            image_module._items(data), width, "bilibili_hot",
+            image_module._items(data), width,
         )
         index_parts = [
             part for line in lines for part in line.parts
@@ -1296,7 +1298,7 @@ class ProfileImageRendererTest(unittest.TestCase):
         ]
         self.assertEqual(len(index_parts), 2)
         for part in index_parts:
-            self.assertEqual(part.color, image_module._ACCENT)
+            self.assertEqual(part.color, image_module._NUM)
         self.assertFalse(
             any(part.size == image_module._HEAT_SIZE for line in lines for part in line.parts),
         )
@@ -1305,7 +1307,7 @@ class ProfileImageRendererTest(unittest.TestCase):
         width = self.renderer.limits.width
         data = section("daily_news", "每日新闻", [item("新闻一")])
         lines = self.renderer._body_lines(
-            image_module._items(data), width, "daily_news",
+            image_module._items(data), width,
         )
         index_parts = [
             part for line in lines for part in line.parts if part.text == "01"

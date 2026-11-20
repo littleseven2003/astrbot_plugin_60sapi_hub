@@ -310,6 +310,19 @@ node tests/browser/manual_delivery_query.js
 - 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 784 项，760 项通过、24 项跳过；`node --check` 与 `git diff --check` 通过。
 - 未验证：真实公开上游、真实账号收件与真实平台定时投递；纯键盘在 macOS 原生下拉中依赖首个字符 typeahead（重复字符会循环匹配），已在用例中固定该行为。
 
+## 侧栏入口与插件生命周期
+
+2026-11-20 在 AstrBot 4.29.4 与 4.29.1 的隔离宿主验证 Dashboard 左侧栏插件入口，零真实发送。
+
+- 注册方式：宿主从插件 `views/<page>/index.html` 自动发现页面；侧栏标题优先读插件本地化 `views.<page>.title`，再回退插件显示名。插件 `.astrbot-plugin/i18n/zh-CN.json`、`en-US.json` 与 `metadata.yaml` 的 `display_name` 均设为 `60sAPI Hub`，原「站点管理」标题改为该名称。
+- 入口：两版登录后侧栏各只有一个「60sAPI Hub」入口，图标 `mdi-puzzle`，路径 `#/plugin-view/astrbot_plugin_60sapi_hub/sites`；点击后路径正确、入口为选中态，iframe 加载管理页并可切换到「推送任务」。截图 `/tmp/sidebar-entry-16311.png`、`/tmp/sidebar-entry-16312.png`。
+- 鉴权：未登录访问深层链接被重定向到 `#/auth/login`，未带令牌访问 `/api/v1/plugins/astrbot_plugin_60sapi_hub/pages` 返回 401。
+- 英文回退：把 `astrbot-locale` 设为 `en-US` 后侧栏仍显示 `60sAPI Hub`（`en-US.json` 与显示名一致）。
+- 生命周期（两版一致）：停用后不刷新页面入口仍在（`offBeforeReload=1`），刷新后消失（`offAfterReload=0`）；重新启用后不刷新仍为 0、刷新后恢复为 1（`onAfterReload=1`）；卸载后刷新为 0；从最终 ZIP 重装后只有 1 个入口（`reinstalled=1`）。说明侧栏需要刷新页面才反映启停/卸载。
+- 单元：`tests/test_plugin_identity.py` 校验 `metadata.yaml` 显示名、`views/sites/index.html` 入口存在、中英文 `metadata.display_name` 与 `views.sites.title` 一致。
+- 自动化：`tests/browser/sidebar_entry_ui.js` 两版通过，覆盖上述入口、点击、鉴权、英文回退与停用/启用/卸载/重装。
+- 未验证：真实部署环境的反向代理与多用户权限差异。
+
 ## 历史检查清单
 
 以下清单记录旧版本的检查方法，其中组合管理相关路径与页面不适用于当前任务内栏目模型。

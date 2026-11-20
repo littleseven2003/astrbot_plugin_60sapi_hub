@@ -142,10 +142,10 @@ async function pressDown(page, times) {
   for (let i = 0; i < times; i += 1) await page.keyboard.press('ArrowDown');
 }
 
-async function openEdit(page, frame, name) {
+async function openEdit(page, frame, taskId) {
   await closeHostPrompts(page);
   const f = await nav(frame, 'tasks');
-  await f.locator('#tasks-list li').filter({ hasText: name })
+  await f.locator(`#tasks-list li[data-task-id="${taskId}"]`)
     .getByRole('button', { name: /编辑推送任务/ }).click();
   await f.waitForSelector('#task-dialog[open]');
   return f;
@@ -228,13 +228,14 @@ async function cancelDialog(f) {
     });
 
     // 2. 编辑后键盘回到 00:00（选项循环），保存读回。
-    f = await openEdit(page, f, nameA);
+    f = await openEdit(page, f, taskA.id);
     assert.equal(await f.inputValue('#task-schedule-hour'), '23');
     assert.equal(await f.inputValue('#task-schedule-minute'), '59');
+    // 重复字符在原生 typeahead 里会循环匹配，按一次「0」即可选中 00。
     await f.focus('#task-schedule-hour');
-    await page.keyboard.type('00');
+    await page.keyboard.type('0');
     await f.focus('#task-schedule-minute');
-    await page.keyboard.type('00');
+    await page.keyboard.type('0');
     assert.equal(await f.inputValue('#task-schedule-hour'), '00');
     assert.equal(await f.inputValue('#task-schedule-minute'), '00');
     await f.locator('#task-save-button').click();
@@ -243,10 +244,10 @@ async function cancelDialog(f) {
     assert.equal(detail.body.data.schedule.time, '00:00');
 
     // 3. 改后放弃：只改表单不保存，取消后重新打开仍是 00:00。
-    f = await openEdit(page, f, nameA);
+    f = await openEdit(page, f, taskA.id);
     await f.selectOption('#task-schedule-hour', '07');
     await cancelDialog(f);
-    f = await openEdit(page, f, nameA);
+    f = await openEdit(page, f, taskA.id);
     assert.equal(await f.inputValue('#task-schedule-hour'), '00');
     assert.equal(await f.inputValue('#task-schedule-minute'), '00');
     await cancelDialog(f);
@@ -267,7 +268,7 @@ async function cancelDialog(f) {
     f = await frameOfPage(page);
     f = await nav(f, 'tasks');
     await f.waitForFunction((n) => document.getElementById('tasks-list')?.innerText.includes(n), nameB);
-    f = await openEdit(page, f, nameB);
+    f = await openEdit(page, f, taskB.id);
     const legacy = await f.evaluate(() => ({
       value: document.getElementById('task-schedule-timezone').value,
       options: [...document.getElementById('task-schedule-timezone').options]
@@ -291,13 +292,13 @@ async function cancelDialog(f) {
     });
 
     // 5. 切到上海任务再切回：临时「已保存」选项只在原任务回填时存在。
-    f = await openEdit(page, f, nameA);
+    f = await openEdit(page, f, taskA.id);
     const presetOptions = await f.evaluate(() => [...document.getElementById('task-schedule-timezone')
       .options].map((o) => o.value));
     assert.equal(presetOptions.includes('Europe/Paris'), false);
-    assert.equal(await f.inputValue('#task-schedule-timezone'), 'Asia/Shanghai');
+    assert.equal(await f.inputValue('#task-schedule-timezone'), 'Asia/Tokyo');
     await cancelDialog(f);
-    f = await openEdit(page, f, nameB + '改');
+    f = await openEdit(page, f, taskB.id);
     assert.equal(await f.inputValue('#task-schedule-timezone'), 'Europe/Paris');
 
     // 6. 无计划隐藏时间与时区控件并禁用。
@@ -311,11 +312,18 @@ async function cancelDialog(f) {
     assert.equal(await f.locator('#task-schedule-timezone').isDisabled(), true);
     await cancelDialog(f);
 
+    // 桌面截图留档：计划时间与时区控件。
+    f = await openEdit(page, f, taskB.id);
+    await f.locator('#task-time-field').scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: '/tmp/time-timezone-desktop.png', fullPage: false });
+    await cancelDialog(f);
+
     // 7. 390px：小时/分钟并排、44px 点击高度、无横向溢出、可见标签。
     const mobile = await browser.newPage({ viewport: { width: 390, height: 900 } });
     let mf = await loginPage(mobile);
     await closeHostPrompts(mobile);
-    await mf.locator('#tasks-list li').filter({ hasText: nameA })
+    await mf.locator(`#tasks-list li[data-task-id="${taskA.id}"]`)
       .getByRole('button', { name: /编辑推送任务/ }).click();
     await mf.waitForSelector('#task-dialog[open]');
     const layout = await mf.evaluate(() => {
@@ -340,7 +348,9 @@ async function cancelDialog(f) {
     assert.ok(layout.minuteHeight >= 44, JSON.stringify(layout));
     assert.deepEqual(layout.labels, ['小时', '分钟']);
     assert.equal(layout.overflow, false, JSON.stringify(layout));
-    await mobile.screenshot({ path: '/tmp/time-timezone-390.png', fullPage: true });
+    await mf.locator('#task-time-field').scrollIntoViewIfNeeded();
+    await mobile.waitForTimeout(200);
+    await mobile.screenshot({ path: '/tmp/time-timezone-390.png', fullPage: false });
     await mobile.close();
 
     console.log('TIME TIMEZONE UI PASS', {

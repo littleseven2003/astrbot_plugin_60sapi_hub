@@ -144,7 +144,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - SQLite 存储：`core/site_store.py`，使用 `aiosqlite` 异步访问，不阻塞事件循环。
 - 数据库位置：`main.py` 通过 `StarTools.get_data_dir(plugin_name)` 获取插件数据目录，再使用其中的 `sites.sqlite3`。
 - 生命周期：`initialize()` 打开数据库并完成首次建库，`terminate()` 关闭连接；打开失败会关闭已创建的连接，`close()` 可重复调用。
-- schema：当前版本为 18，包含 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次打开直接创建当前结构；受支持的 v1～v17 数据库在同一事务中补齐并提升 `PRAGMA user_version=18`；v18 移除站点级启用（旧列保留供追溯），并只暂停引用了历史停用站点的已启用任务、保留其计划与历史；失败回滚并保留站点、凭据、组合、任务、白名单和历史；遇到更高版本拒绝打开，不自动删除或覆盖数据库。
+- schema：当前版本为 19，包含 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次打开直接创建当前结构；受支持的 v1～v18 数据库在同一事务中补齐并提升 `PRAGMA user_version=19`；v18 移除站点级启用（旧列保留供追溯），并只暂停引用了历史停用站点的已启用任务、保留其计划与历史；v19 为投递执行记录新增逐栏来源列 `content_sources_json`，历史行保持 NULL；失败回滚并保留站点、凭据、组合、任务、白名单和历史；遇到更高版本拒绝打开，不自动删除或覆盖数据库。
 - 任务栏目与站点共用 `SiteStore` 连接、锁和事务；站点删除会检查任务候选引用并由外键约束兜底。旧组合表仅作为迁移保留数据。
 - revision：新增为 1；编辑和删除必须传入期望 revision，冲突时抛出明确错误；成功编辑后加 1。
 - 取消写入：新增、编辑、删除被取消时保留 `CancelledError`，在释放锁前完成回滚或关闭；提交前取消会回滚，COMMIT 已完成时不承诺撤销；清理无法确认时关闭连接并标记存储不可用，需要重建实例。

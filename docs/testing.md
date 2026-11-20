@@ -323,6 +323,18 @@ node tests/browser/manual_delivery_query.js
 - 自动化：`tests/browser/sidebar_entry_ui.js` 两版通过，覆盖上述入口、点击、鉴权、英文回退与停用/启用/卸载/重装。
 - 未验证：真实部署环境的反向代理与多用户权限差异。
 
+## 站点启用移除、多站拼合与新样式
+
+2026-11-20 基于 `100964d` 完成三项优化，使用本机模拟上游与假 aiocqhttp 平台，零真实发送。
+
+- 站点启用移除：模型/存储/API/取数/任务/投递/聊天/UI 全面清理站点级过滤；旧列保留，旧请求 `enabled: true` 兼容、`false` 返回 400。`tests/test_schema_v18_pause.py` 覆盖 v17→v18 只暂停引用历史停用站点的任务、保留计划/白名单/历史、重新启用后二次打开不再暂停；独立旧库样本由审查员核对通过。
+- 多站拼合：新增 `core/site_assembly.py` 纯判定；`tests/test_site_assembly.py` 覆盖单站优先、逐栏取最靠前候选、同栏整表不拼条数、缺栏短报；`tests/test_multi_site_e2e.py` 用两站（A 只给新闻、B 只给知乎）验证预览 `source_mode=multi`、能力测试 `需要多站点拼合`、投递发送 A+B 内容且执行记录 `site_name=多站点`、旧确认格式 409、拼合快照可出 2 张图。
+- 真实宿主：AstrBot 4.29.4 / 4.29.1 从最终 ZIP 安装并迁移到 schema v18。本机模拟上游（两站点）在宿主实测：能力测试 `multi`、预览 `complete`（文字同时含 A/B）、出图 2 张、手动投递到假账号成功且记录「多站点」、无 `confirmation_version` 的旧确认返回 409 `confirmation_stale`。
+- 新样式：`morning` / `midnight` / `beacon` 三款加入注册表，七款可读文字对比度均 ≥ 4.5:1（新三款主要文字 ≥ 6.1:1），`tests/test_image_styles.py` 校验字号/层级/对比度/preview token，实渲样张 `/private/tmp/hub-evidence/style-{morning,midnight,beacon}.png`。样式下拉旁示例卡在 4.29.4/4.29.1 通过 `tests/browser/task_image_style_ui.js`；390px 实测卡移到下方、无横向溢出（`/tmp/style-preview-390.png`、`/tmp/style-preview-desktop.png`）。
+- 回归：`task_sites_ui` 36 项、`site_list_ui`、`task_items_ui` 70 项、`profile_site_decoupling_ui` 18 项；相关脚本按移除启用和草稿预览语义更新断言。
+- 自动化：`python -m unittest discover -s tests -q` 共运行 798 项，774 项通过、24 项跳过；`node --check` 与 `git diff --check` 通过。
+- 未验证：真实公开上游、真实账号收件与真实平台定时投递；真实部署的反向代理与多用户权限差异。
+
 ## 历史检查清单
 
 以下清单记录旧版本的检查方法，其中组合管理相关路径与页面不适用于当前任务内栏目模型。

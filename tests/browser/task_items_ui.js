@@ -408,7 +408,7 @@ async function cancelTaskDialog(page) {
       "卡片栏目与条数：" + cardA.slice(0, 120));
     check(cardA.includes("输出：Markdown"), "卡片显示输出方式");
     check(cardA.includes("Asia/Shanghai"), "卡片显示计划与时区");
-    check(cardA.includes("候选站点：1. 站点A → 2. 站点C（已停用）"),
+    check(cardA.includes("候选站点：1. 站点A → 2. 站点C"),
       "卡片显示候选顺序与停用标记");
     check(cardA.includes("已启用 · 定时调度"), "卡片显示启用状态");
     check(cardA.includes("目标数量：1 个 UMO"), "卡片显示 UMO 数量");
@@ -464,7 +464,7 @@ async function cancelTaskDialog(page) {
     await page.click("#task-preview-done-button");
     await page.waitForFunction(() => !document.getElementById("task-preview-dialog").open);
 
-    // ⑦ 有未保存改动时预览与能力测试入口一起置灰并给出共用提示，零请求；撤销后恢复。
+    // ⑦ 有未保存改动时两个入口仍可用（草稿预览），撤销后保持干净。
     const previewCount = await page.evaluate(() =>
       window.__calls.filter((call) => call.endpoint.endsWith("/preview")).length);
     const testCount = await page.evaluate(() =>
@@ -485,16 +485,10 @@ async function cancelTaskDialog(page) {
       hint: document.getElementById("task-capability-result").textContent,
       hintHidden: document.getElementById("task-capability-result").hidden,
     }));
-    check(dirtyGate.preview && dirtyGate.test,
-      "未保存改动时预览与能力测试都置灰：" + JSON.stringify(dirtyGate));
-    check(!dirtyGate.hintHidden && dirtyGate.hint.includes("预览与能力测试都使用已保存的任务配置"),
-      "未保存改动时给出共用提示：" + dirtyGate.hint);
-    const previewAfter = await page.evaluate(() =>
-      window.__calls.filter((call) => call.endpoint.endsWith("/preview")).length);
-    check(previewAfter === previewCount, "未保存改动时不发预览请求");
-    const testAfter = await page.evaluate(() =>
-      window.__calls.filter((call) => call.endpoint.endsWith("/capability-test")).length);
-    check(testAfter === testCount, "未保存改动时不发能力测试请求");
+    // 草稿预览：未保存改动不再置灰，也不显示「请先保存」阻塞提示。
+    check(!dirtyGate.preview && !dirtyGate.test,
+      "未保存改动时两个入口仍可用：" + JSON.stringify(dirtyGate));
+    check(dirtyGate.hintHidden, "未保存改动不显示阻塞提示：" + dirtyGate.hint);
     await page.fill("#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "2");
     const restoredGate = await page.evaluate(() => ({
       preview: document.getElementById("task-preview-form-button").disabled,

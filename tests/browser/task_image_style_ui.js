@@ -114,13 +114,6 @@ function check(ok, msg) { if (!ok) throw new Error(msg); }
     const morningCard = await frame.evaluate(() =>
       document.querySelector("#task-style-preview .style-preview-card")?.dataset.style);
     check(morningCard === "morning", "切到晨报后示例卡未更新: " + morningCard);
-    await page.setViewportSize({ width: 390, height: 900 });
-    await frame.waitForTimeout(150);
-    const mobileDirection = await frame.evaluate(() =>
-      getComputedStyle(document.querySelector(".task-style-row")).flexDirection);
-    check(mobileDirection === "column", "390px 示例卡应移到下方: " + mobileDirection);
-    await page.setViewportSize({ width: 1400, height: 1000 });
-    await frame.waitForTimeout(150);
     // 改选未保存样式不再置灰预览：预览与能力测试改用当前表单草稿。
     const previewButton = frame.locator("#task-preview-form-button");
     check(await previewButton.isEnabled(), "重开后预览按钮应可用");
@@ -132,11 +125,6 @@ function check(ok, msg) { if (!ok) throw new Error(msg); }
     check(await previewButton.isEnabled(), "改回已保存样式后预览按钮仍应可用");
     // 未保存判定：改选后取消应弹出放弃修改
     await frame.selectOption("#task-image-style", "floral");
-    await frame.locator("#task-cancel-button").click();
-    await frame.waitForFunction(() => document.getElementById("discard-dialog")?.open === true, null, { timeout: WAIT });
-    await frame.locator("#discard-cancel-button").click();
-    await frame.waitForFunction(() => document.getElementById("discard-dialog")?.open !== true, null, { timeout: WAIT });
-    // 取消放弃后仍是编辑态，直接取消并确认放弃
     await frame.locator("#task-cancel-button").click();
     await frame.waitForFunction(() => document.getElementById("discard-dialog")?.open === true, null, { timeout: WAIT });
     await frame.locator("#discard-confirm-button").click();

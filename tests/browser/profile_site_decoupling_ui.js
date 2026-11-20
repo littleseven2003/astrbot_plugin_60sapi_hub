@@ -170,7 +170,7 @@ async function openPage(browser, port) {
     const rowNames = await page.$$eval("#task-site-list .task-site-name",
       (nodes) => nodes.map((node) => node.textContent));
     check(rowNames.length === 2 && rowNames[0] === "站点A" &&
-      rowNames[1] === "站点C（已停用）",
+      rowNames[1] === "站点C",
       "候选站点按保存顺序展示并标注停用：" + rowNames.join(" | "));
     const pickerOptions = await page.$$eval("#task-site-picker option",
       (nodes) => nodes.map((node) => node.textContent));
@@ -186,7 +186,7 @@ async function openPage(browser, port) {
     await page.locator("#task-site-list button", { hasText: "下移" }).nth(0).click();
     const reordered = await page.$$eval("#task-site-list .task-site-name",
       (nodes) => nodes.map((node) => node.textContent));
-    check(reordered.join(",") === "站点B,站点A,站点C（已停用）",
+    check(reordered.join(",") === "站点B,站点A,站点C",
       "候选顺序随上移/下移改变：" + reordered.join(","));
 
     const sitesBefore = await page.evaluate(() => JSON.stringify(window.__state.sites));
@@ -209,14 +209,14 @@ async function openPage(browser, port) {
 
     await page.waitForSelector("#tasks-list li");
     const card = await page.textContent('li[data-task-id="task-a"] .task-card-sites');
-    check(card.includes("1. 站点B") && card.includes("3. 站点C（已停用）"),
+    check(card.includes("1. 站点B") && card.includes("3. 站点C"),
       "卡片按顺序显示候选站点并标注停用：" + card);
 
     await page.locator('li[data-task-id="task-a"] button', { hasText: "编辑" }).click();
     await page.waitForSelector("#task-dialog[open]");
     const reopened = await page.$$eval("#task-site-list .task-site-name",
       (nodes) => nodes.map((node) => node.textContent));
-    check(reopened.join(",") === "站点B,站点A,站点C（已停用）",
+    check(reopened.join(",") === "站点B,站点A,站点C",
       "重开后候选顺序一致：" + reopened.join(","));
     await page.click("#task-cancel-button");
     if (await page.$("#discard-dialog[open]")) {

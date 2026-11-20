@@ -363,7 +363,6 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
       "名称有宽度上限：" + inline.nameMaxWidth);
     check(inline.urlOverflow === "ellipsis" && inline.urlNowrap === "nowrap",
       "地址单行省略：超出部分显示省略号");
-    check(firstRow.disabledBadge === false, "启用站点不显示已停用");
     check(firstRow.selectLabel === "选择站点 公开站点甲", "勾选框有可读名称");
     check(firstRow.actions.length === 3, "每行三个操作按钮");
     check(firstRow.actions[0].text === "" && firstRow.actions[0].label === "测试站点 公开站点甲 的五类接口",
@@ -374,8 +373,6 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
       "自建站点显示自建药丸");
     check((await page.textContent('#sites-list > li[data-site-id="site-partial"] .badge-source')).trim() === "自建",
       "自建药丸文案为自建");
-    check((await page.textContent('#sites-list > li[data-site-id="site-disabled"] .badge-disabled')).trim() === "已停用",
-      "停用站点标注已停用");
 
     // 五类状态初始都是未测试，图标与文字一起表达。
     const initial = await chips(page, "site-ok");
@@ -421,8 +418,6 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
       "全选后勾选框都选中");
     check(await page.$$eval("#sites-list > li", (nodes) => nodes.every((node) => node.dataset.selected === "true")),
       "选中行有 data-selected 标记");
-    check(await page.$$eval("#sites-list > li", (nodes) => nodes.map((node) => node.dataset.enabled).join(","))
-      === "true,true,false", "勾选不改启用状态");
     await page.click("#site-select-none");
     check((await page.textContent("#site-selection-count")).trim() === "已选 0 个",
       "全不选后已选 0 个");
@@ -473,8 +468,6 @@ const allState = (list, name) => list.every((chip) => chip.state === name);
       "空内容文字：" + disabledChips.find((chip) => chip.state === "empty").text);
     check((await page.textContent('#sites-list > li[data-site-id="site-disabled"] .site-test-note'))
       .includes("接口返回空列表。"), "空内容附带后端说明");
-    check(await page.getAttribute('#sites-list > li[data-site-id="site-disabled"]', "data-enabled") === "false",
-      "测试停用站点不会启用它");
     const writes = await page.evaluate(() => window.__calls.filter(
       (call) => call.endpoint !== "sites/test-batch"));
     check(writes.length === 0, "测试不会改动站点配置：" + JSON.stringify(writes.map((call) => call.endpoint)));

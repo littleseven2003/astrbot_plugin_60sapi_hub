@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "display_name": "60sAPI Hub"
+  },
+  "views": {
+    "sites": {
+      "title": "60sAPI Hub",
+      "description": "Manage 60s API sites and preview daily news, Bilibili hot search, Zhihu hot list, Douyin hot search and Toutiao hot list."
+    }
+  }
+}

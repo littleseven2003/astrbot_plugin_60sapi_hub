@@ -1104,7 +1104,9 @@ class ProfileImageRendererTest(unittest.TestCase):
         self.assertGreaterEqual(len(wrapped[-1]), 2)
         self.assertEqual("".join(wrapped).replace(" ", ""), title.replace(" ", ""))
 
-    def test_long_hot_value_moves_below_the_title(self) -> None:
+    def test_long_hot_value_is_ellipsised_inline_for_no_detail_sections(self) -> None:
+        # 无摘要栏目（B 站/抖音/头条）热度不换行：限宽单行省略，
+        # 否则整栏每条都会多占一行，行高明显高于每日新闻。
         long_hot = "热度：1.2 亿（较昨日上升 3 位，来自站内实时榜单）"
         data = section(
             "bilibili_hot", "Bilibili 热榜",
@@ -1116,20 +1118,20 @@ class ProfileImageRendererTest(unittest.TestCase):
         width = self.renderer.limits.width
         lines = self.renderer._body_lines(image_module._items(data), width)
         first = lines[0]
-        self.assertEqual([part.text for part in first.parts], ["01", "标题"])
-        hot_lines = [
-            line for line in lines
-            if any(part.text == long_hot for part in line.parts)
-        ]
-        self.assertEqual(len(hot_lines), 1)
-        hot_part = hot_lines[0].parts[0]
+        self.assertEqual(len(first.parts), 3, [part.text for part in first.parts])
+        self.assertEqual(first.parts[0].text, "01")
+        self.assertEqual(first.parts[1].text, "标题")
+        hot_part = first.parts[2]
+        self.assertTrue(hot_part.text.startswith("热度：1.2 亿"))
+        self.assertTrue(hot_part.text.endswith("…"))
         self.assertIsNotNone(hot_part.right)
         self.assertEqual(hot_part.right, self.renderer._content_width(width))
-        self.assertGreater(lines.index(hot_lines[0]), 0)
-        self.assertNotIn(
-            long_hot,
-            [part.text for part in first.parts],
-        )
+        # 每条仍是一行标题：热度不会单独占一行。
+        self.assertFalse([
+            line for line in lines
+            if line.parts and not line.parts[0].number
+            and "热度" in line.parts[0].text
+        ])
 
     def test_hot_value_wider_than_content_is_one_ellipsised_line(self) -> None:
         # 极长热度不再换行：固定单行 + 省略号，避免把该条行高撑高。

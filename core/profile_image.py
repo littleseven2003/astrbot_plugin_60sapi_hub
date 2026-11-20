@@ -132,6 +132,9 @@ _BODY_TOP_GAP = 6
 
 _ROW_PAD_Y = 10
 _HEAT_COL = 124
+# 无摘要栏目按本栏实测宽度分配热度列：抖音/头条的原始整数热度（7、8 位约
+# 128px、139px）可以完整同行显示，但不超过 180px，也不超过正文宽的四分之一。
+_HEAT_COL_MAX = 180
 _HEAT_GAP = 16
 _DETAIL_GAP = 4
 _HOT_LEADING = 26
@@ -582,12 +585,36 @@ class ProfileImageRenderer:
         # 整栏都改用“热度单独一行”；行高由布局而不是文本长度决定。
         hot_texts = [_hot_text(item) for item in items]
         has_heat = any(hot_texts)
-        # 整栏都没有热度时按原有整行标题排版，不预留空白热度列。
-        inline_hot_column = (not has_heat) or all(
-            self._text_width(hot, self._style.heat_size) <= _HEAT_COL
-            if hot else True
-            for hot in hot_texts
-        )
+        # 排版密度按“本栏是否有可展开的摘要”决定：每日新闻、B 站、抖音、
+        # 头条没有详情，热度一律与标题同行；知乎等带摘要的栏目沿用原有
+        # 展开布局。此前只要热度超过固定 124px 就把整栏切成独立热度行，
+        # 导致无详情的抖音/头条每条都白占一行（七八位原始整数约 128/139px）。
+        has_detail = any(_display_text(item.get("detail")) for item in items)
+        if not has_heat:
+            # 整栏都没有热度时按原有整行标题排版，不预留空白热度列。
+            inline_hot_column = True
+            heat_col = _HEAT_COL
+        elif not has_detail:
+            # 无摘要：本栏共用一列热度，按实测最宽值分配，封顶 180px 与
+            # 正文宽度的四分之一；极长热度仍限宽单行省略，文字稿保留原值。
+            inline_hot_column = True
+            widest = max(
+                int(round(self._text_width(hot, self._style.heat_size)))
+                for hot in hot_texts
+                if hot
+            )
+            heat_col = min(
+                _HEAT_COL_MAX,
+                content_width // 4,
+                max(_HEAT_COL, widest + 2),
+            )
+        else:
+            inline_hot_column = all(
+                self._text_width(hot, self._style.heat_size) <= _HEAT_COL
+                if hot else True
+                for hot in hot_texts
+            )
+            heat_col = _HEAT_COL
         for position, item in enumerate(items, start=1):
             title = _display_text(item.get("title"))
             detail = _display_text(item.get("detail"))
@@ -596,7 +623,7 @@ class ProfileImageRenderer:
             # 标题换行宽度一致，缺值条目不会因首行更宽而少一行。
             first_width = full_text_width
             if has_heat and inline_hot_column:
-                first_width = full_text_width - _HEAT_COL - _HEAT_GAP
+                first_width = full_text_width - heat_col - _HEAT_GAP
             for offset, part in enumerate(
                 self._wrap(
                     title, self._style.title_size, full_text_width, first_width=first_width,
@@ -622,7 +649,7 @@ class ProfileImageRenderer:
                     parts.append(
                         _Part(
                             self._fit_single_line(
-                                hot, self._style.heat_size, _HEAT_COL,
+                                hot, self._style.heat_size, heat_col,
                             ),
                             self._style.heat_size, self._style.heat, False, 0,
                             right=content_width,

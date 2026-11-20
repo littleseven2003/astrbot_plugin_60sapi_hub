@@ -11,7 +11,7 @@ import httpx
 
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
-from core.sites import SiteCreate, SiteDisabledError, SiteService
+from core.sites import SiteCreate, SiteService
 
 
 class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -31,7 +31,6 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name=name,
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
                 bearer_token=token,
             ),
@@ -170,11 +169,11 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         content = ContentService(self.sites, client=client, clock=self.clock)
         public_site = await self.sites.create_site(SiteCreate(
             name="公开实例", base_url="https://public.example.test/60s",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self_hosted = await self.sites.create_site(SiteCreate(
             name="自建服务", base_url="http://10.0.0.5:8080/proxy",
-            enabled=True, timeout_seconds=5, source_kind="self_built",
+            timeout_seconds=5, source_kind="self_built",
         ))
         await content.open()
         try:
@@ -235,7 +234,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_site_connection_probe_five_types_without_writes(self) -> None:
         site = await self.sites.create_site(SiteCreate(
             name="测试连接站点", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5, bearer_token="secret-token",
+            timeout_seconds=5, bearer_token="secret-token",
         ))
         seen = []
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -259,8 +258,6 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             raise AssertionError("connection test must not touch cache")
         service._cache.get = forbidden_cache
         try:
-            with self.assertRaises(SiteDisabledError):
-                await service.preview_cached("bilibili_hot", site.id)
             for content_type in (
                 "daily_news", "bilibili_hot", "zhihu_hot",
                 "douyin_hot", "toutiao_hot",
@@ -272,7 +269,6 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["revision"], site.revision)
             self.assertEqual(len(seen), 5)
             current = await self.sites.get_site(site.id)
-            self.assertFalse(current.enabled)
             self.assertEqual(current.revision, site.revision)
             self.assertEqual(await self.sites.store.list_tasks(), [])
         finally:
@@ -285,7 +281,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         site = await self.sites.create_site(SiteCreate(
             name="边界站点", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         calls = []
         release = asyncio.Event()
@@ -360,7 +356,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         from core.sites import SiteConflictError, SiteUpdate
         site = await self.sites.create_site(SiteCreate(
             name="并发修改", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         started = asyncio.Event(); release = asyncio.Event()
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -376,7 +372,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             await started.wait()
             await self.sites.update_site(site.id, SiteUpdate(
                 name="并发修改后", base_url="http://example.test/proxy",
-                enabled=False, timeout_seconds=5, expected_revision=site.revision,
+                timeout_seconds=5, expected_revision=site.revision,
             ))
             release.set()
             with self.assertRaises(SiteConflictError):

@@ -81,7 +81,7 @@ async def authorize_task(
     candidates = tuple(
         (item.id, item.revision)
         for item in snapshot.candidates
-        if item.enabled is True and item.revision is not None
+        if item.revision is not None
     )
     if snapshot.plan_revision is None or not candidates:
         raise _Unavailable
@@ -114,13 +114,13 @@ async def config_changed(
     current = tuple(
         (item.id, item.revision)
         for item in snapshot.candidates
-        if item.enabled is True and item.revision is not None
+        if item.revision is not None
     )
     return (
         umo not in snapshot.task.umos
         or snapshot.task.revision != before.task_revision
         or snapshot.plan_revision != before.plan_revision
-        # 顺序、成员、启用状态或站点版本任一变化都要求重新查询。
+        # 顺序、成员或站点版本任一变化都要求重新查询。
         or current != before.candidates
     )
 

@@ -264,7 +264,7 @@ class AstrBotAiocqhttpSenderTest(unittest.IsolatedAsyncioTestCase):
                 tasks = PushTaskService(sites.store)
                 site = await sites.create_site(SiteCreate(
                     name="发送站点", base_url="http://example.test/proxy",
-                    enabled=True, timeout_seconds=5,
+                    timeout_seconds=5,
                 ))
                 task = await tasks.create_task(TaskCreate(
                     name="发送任务", items=[item()],

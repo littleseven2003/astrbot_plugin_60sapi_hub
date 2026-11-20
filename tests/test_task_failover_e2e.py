@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,10 +46,14 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.path = Path(self._tmp.name) / "e2e.sqlite3"
         self.hosts: list[str] = []
+        # 站点级启用已移除；用上游失败模拟“该候选本次不可用”。
+        self.fail_hosts: set[str] = set()
 
         async def handler(request: httpx.Request) -> httpx.Response:
             host = request.url.host
             self.hosts.append(host)
+            if host in self.fail_hosts:
+                return httpx.Response(500, content=b"upstream down")
             rich = host.startswith("b.")
             if request.url.path.endswith("/v2/60s"):
                 news = (
@@ -92,11 +97,11 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         )
         self.a = await self.sites.create_site(SiteCreate(
             name="站点A", base_url=f"https://a.example.test/{SECRET}",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.b = await self.sites.create_site(SiteCreate(
             name="站点B", base_url=f"https://b.example.test/{SECRET}",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
 
     async def asyncTearDown(self) -> None:
@@ -108,12 +113,27 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def _set_enabled(self, site, enabled: bool) -> None:
-        current = await self.sites.get_site(site.id)
-        await self.sites.update_site(site.id, SiteUpdate(
-            name=current.name, base_url=current.base_url, enabled=enabled,
-            timeout_seconds=5, source_kind=current.source_kind,
-            expected_revision=current.revision,
-        ))
+        """兼容旧用例名：enabled=False 表示该候选上游失败，而不是站点停用。"""
+        host = (await self.sites.get_site(site.id)).base_url.split("/")[2]
+        if enabled:
+            self.fail_hosts.discard(host)
+        else:
+            self.fail_hosts.add(host)
+
+    async def _clear_candidates(self, task) -> None:
+        """清空任务候选行：模拟“没有单站可用且没有提示目标”的告警路径。"""
+        with sqlite3.connect(self.path) as connection, connection:
+            connection.execute(
+                "DELETE FROM push_task_sites WHERE task_id = ?", (task.id,),
+            )
+
+    async def _restore_candidate(self, task, site_id: str) -> None:
+        with sqlite3.connect(self.path) as connection, connection:
+            connection.execute(
+                "INSERT INTO push_task_sites (task_id, site_id, position) "
+                "VALUES (?, ?, 0)",
+                (task.id, site_id),
+            )
 
     @staticmethod
     def _items(limit: int = 2):
@@ -198,8 +218,7 @@ class TaskFailoverEndToEndTest(unittest.IsolatedAsyncioTestCase):
         task = await self._task([self.a.id, self.b.id], items=items)
         current = await self.sites.get_site(self.a.id)
         await self.sites.update_site(self.a.id, SiteUpdate(
-            name=current.name, base_url=current.base_url, enabled=False,
-            timeout_seconds=5, source_kind=current.source_kind,
+            name=current.name, base_url=current.base_url, timeout_seconds=5, source_kind=current.source_kind,
             expected_revision=current.revision,
         ))
         record = await self.delivery.execute(task.id, "exec-6")
@@ -268,8 +287,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         items = self._items(2)
         task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
-        await self._set_enabled(self.a, False)
-        await self._set_enabled(self.b, False)
+        await self._clear_candidates(task)
         data = (await api.preview(task.id)).body["data"]
         self.assertTrue(data["alert_only"])
         result = await api.execute(task.id, {
@@ -314,10 +332,9 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         items = self._items(2)
         task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
-        await self._set_enabled(self.a, False)
-        await self._set_enabled(self.b, False)
+        await self._clear_candidates(task)
         data = (await api.preview(task.id)).body["data"]
-        await self._set_enabled(self.b, True)
+        await self._restore_candidate(task, self.b.id)
         result = await api.execute(task.id, {
             "execution_id": "stale-terminal",
             "expected_task_revision": data["task_revision"],
@@ -379,48 +396,6 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         self.assertEqual(len(self.sender.messages), 1)
         self.assertEqual(self.sender.messages[0].kind, "text")
 
-    async def test_state_change_after_api_check_is_blocked(self) -> None:
-        """API 校验通过后、投递读取候选前变化，也不得发送。"""
-        from unittest import mock
-
-        from core.delivery import DeliveryService
-
-        items = self._items(2)
-        task = await self._task([self.a.id, self.b.id], items=items)
-        api = self._api()
-        await self._set_enabled(self.a, False)
-        await self._set_enabled(self.b, False)
-        preview = await api.preview(task.id)
-        data = preview.body["data"]
-        self.assertTrue(data["alert_only"])
-
-        original = DeliveryService._candidate_sites
-        fired = {"done": False}
-
-        async def racing(service, task_arg):
-            if not fired["done"]:
-                fired["done"] = True
-                await self._set_enabled(self.b, True)
-            return await original(service, task_arg)
-
-        with mock.patch.object(DeliveryService, "_candidate_sites", racing):
-            result = await api.execute(task.id, {
-                "execution_id": "race-1",
-                "expected_task_revision": data["task_revision"],
-                "expected_profile_revision": data["plan_revision"],
-                "expected_site_revision": data["site_revision"],
-                "expected_candidates": data["candidate_snapshot"],
-                "expected_alert_only": True,
-            })
-        self.assertTrue(fired["done"])
-        self.assertEqual(result.status_code, 409, result.body)
-        self.assertEqual(result.body["data"]["code"], "confirmation_stale")
-        self.assertEqual(self.sender.messages, [])
-        # 记录已创建但必须收敛到终态，不能遗留 preparing。
-        record = await self.sites.store.get_delivery_execution("race-1")
-        self.assertEqual(record.status, "failed")
-        self.assertEqual(record.error_code, "confirmation_stale")
-
     async def test_same_execution_id_returns_original_record(self) -> None:
         items = self._items(2)
         task = await self._task([self.a.id, self.b.id], items=items)
@@ -444,13 +419,12 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         items = self._items(2)
         task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
-        await self._set_enabled(self.a, False)
-        await self._set_enabled(self.b, False)
+        await self._clear_candidates(task)
         preview = await api.preview(task.id)
         data = preview.body["data"]
         self.assertTrue(data["alert_only"])
-        # 提交前 B 被启用：确认的意图（只发提示）已失效。
-        await self._set_enabled(self.b, True)
+        # 提交前 B 恢复为候选：确认的意图（只发提示）已失效。
+        await self._restore_candidate(task, self.b.id)
         result = await api.execute(task.id, {
             "execution_id": "confirm-1",
             "expected_task_revision": data["task_revision"],
@@ -467,12 +441,11 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
         items = self._items(2)
         task = await self._task([self.a.id, self.b.id], items=items)
         api = self._api()
-        await self._set_enabled(self.a, False)
         preview = await api.preview(task.id)
         data = preview.body["data"]
         self.assertFalse(data["alert_only"])
-        # 提交前 B 被停用：实际会变成提示，与确认不符。
-        await self._set_enabled(self.b, False)
+        # 提交前候选全部清空：实际会变成提示，与确认不符。
+        await self._clear_candidates(task)
         result = await api.execute(task.id, {
             "execution_id": "confirm-2",
             "expected_task_revision": data["task_revision"],

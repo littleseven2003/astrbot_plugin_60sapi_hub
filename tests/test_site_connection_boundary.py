@@ -267,7 +267,6 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name=name,
                 base_url="http://example.test/proxy",
-                enabled=enabled,
                 timeout_seconds=5,
                 bearer_token=bearer_token,
             ),
@@ -336,7 +335,6 @@ class SiteConnectionFixture(unittest.IsolatedAsyncioTestCase):
                 item.id,
                 item.name,
                 item.base_url,
-                item.enabled,
                 item.timeout_seconds,
                 item.has_bearer_token,
                 item.revision,
@@ -643,7 +641,6 @@ class SiteConnectionStateTest(SiteConnectionFixture):
     async def test_connection_test_keeps_cache_content_and_expiry(self) -> None:
         site = await self._site(
             "缓存站点",
-            enabled=True,
             bearer_token="cache-token",
         )
         upstream_calls: list[str] = []
@@ -690,7 +687,6 @@ class SiteConnectionStateTest(SiteConnectionFixture):
     ) -> None:
         site = await self._site(
             "保持配置站点",
-            enabled=True,
             bearer_token="keep-token",
         )
         disabled_site = await self._site("停用站点")
@@ -733,7 +729,7 @@ class SiteConnectionStateTest(SiteConnectionFixture):
         self.assertEqual(len(sender.calls), 1)
 
     async def test_connection_test_never_sends_or_renders_images(self) -> None:
-        site = await self._site("不触达站点", enabled=True)
+        site = await self._site("不触达站点")
         _task, _delivery, sender = (
             await self._existing_configuration(site)
         )
@@ -774,7 +770,7 @@ class SiteConnectionStateTest(SiteConnectionFixture):
         self.assertEqual(execution_ids, ("existing-run",))
 
     async def test_missing_site_never_reaches_sender_or_image(self) -> None:
-        delivery_site = await self._site("投递站点", enabled=True)
+        delivery_site = await self._site("投递站点")
         _task, _delivery, sender = (
             await self._existing_configuration(delivery_site)
         )
@@ -800,7 +796,6 @@ class SiteConnectionCredentialReflectionTest(SiteConnectionFixture):
             SiteCreate(
                 name="反射站点",
                 base_url=self.upstream.base_url,
-                enabled=False,
                 timeout_seconds=5,
                 bearer_token=SECRET_TOKEN,
             ),

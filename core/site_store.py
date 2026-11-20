@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -334,13 +334,14 @@ class StoredSite:
     id: str
     name: str
     base_url: str
-    enabled: bool
     timeout_seconds: float
     source_kind: str = "public"
     bearer_token: str | None = field(default=None, repr=False)
     revision: int = 1
     created_at: str = ""
     updated_at: str = ""
+    # 历史列：站点级启用已移除，保留供旧库追溯与迁移读取，运行时不再过滤。
+    enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,7 +422,6 @@ class StoredTask:
 class StoredTaskCandidateSite:
     id: str
     revision: int | None
-    enabled: bool | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -787,6 +787,37 @@ class SiteStore:
                     "ALTER TABLE push_tasks ADD COLUMN "
                     "image_style TEXT NOT NULL DEFAULT 'default'",
                 )
+            # v18：站点级启用开关移除。历史停用站点保留供追溯，运行时不
+            # 再按它过滤；但升级前已启用的任务若引用了停用站点，升级后不
+            # 应在管理员核对候选顺序前自动取数，因此只暂停这些任务，保留
+            # 计划、白名单、revision 与历史，管理员确认后可重新启用。
+            if version < 18:
+                async with connection.execute(
+                    """
+                    SELECT DISTINCT ps.task_id
+                    FROM push_task_sites AS ps
+                    JOIN push_tasks AS t ON t.id = ps.task_id
+                    JOIN sites AS s ON s.id = ps.site_id
+                    WHERE t.enabled = 1 AND s.enabled = 0
+                    """
+                ) as cursor:
+                    paused_task_ids = [
+                        str(row[0]) for row in await cursor.fetchall()
+                    ]
+                if paused_task_ids:
+                    now = _utc_now()
+                    placeholders = ",".join("?" for _ in paused_task_ids)
+                    await connection.execute(
+                        "UPDATE push_tasks SET enabled = 0, "
+                        "revision = revision + 1, updated_at = ? "
+                        f"WHERE id IN ({placeholders})",
+                        (now, *paused_task_ids),
+                    )
+                    await connection.execute(
+                        "DELETE FROM push_schedule_state "
+                        f"WHERE task_id IN ({placeholders})",
+                        tuple(paused_task_ids),
+                    )
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -838,7 +869,6 @@ class SiteStore:
         site_id: str,
         name: str,
         base_url: str,
-        enabled: bool,
         timeout_seconds: float,
         source_kind: str,
         bearer_token: str | None,
@@ -862,7 +892,7 @@ class SiteStore:
                         site_id,
                         name,
                         base_url,
-                        int(enabled),
+                        1,
                         timeout_seconds,
                         source_kind,
                         bearer_token,
@@ -880,7 +910,7 @@ class SiteStore:
                 id=site_id,
                 name=name,
                 base_url=base_url,
-                enabled=enabled,
+                enabled=True,
                 timeout_seconds=timeout_seconds,
                 source_kind=source_kind,
                 bearer_token=bearer_token,
@@ -936,7 +966,6 @@ class SiteStore:
         *,
         name: str,
         base_url: str,
-        enabled: bool,
         timeout_seconds: float,
         source_kind: str,
         bearer_token: str | None,
@@ -952,7 +981,7 @@ class SiteStore:
                 cursor = await connection.execute(
                     """
                     UPDATE sites
-                    SET name = ?, base_url = ?, enabled = ?, timeout_seconds = ?,
+                    SET name = ?, base_url = ?, timeout_seconds = ?,
                         source_kind = ?, bearer_token = ?, revision = revision + 1,
                         updated_at = ?
                     WHERE id = ? AND revision = ?
@@ -960,7 +989,6 @@ class SiteStore:
                     (
                         name,
                         base_url,
-                        int(enabled),
                         timeout_seconds,
                         source_kind,
                         bearer_token,
@@ -1390,8 +1418,7 @@ class SiteStore:
                 )
                 async with self._require_connection().execute(
                     """
-                    SELECT ps.site_id AS site_id, s.revision AS revision,
-                           s.enabled AS enabled
+                    SELECT ps.site_id AS site_id, s.revision AS revision
                     FROM push_task_sites AS ps
                     LEFT JOIN sites AS s ON s.id = ps.site_id
                     WHERE ps.task_id = ?
@@ -1400,17 +1427,13 @@ class SiteStore:
                     (task_id,),
                 ) as cursor:
                     candidate_rows = await cursor.fetchall()
-                # 候选顺序即尝试顺序；停用候选同样带出，供确认与告警判定。
+                # 候选顺序即尝试顺序；已删除候选同样带出，供确认与告警判定。
                 candidates = tuple(
                     StoredTaskCandidateSite(
                         id=str(item["site_id"]),
                         revision=(
                             int(item["revision"])
                             if item["revision"] is not None else None
-                        ),
-                        enabled=(
-                            bool(item["enabled"])
-                            if item["enabled"] is not None else None
                         ),
                     )
                     for item in candidate_rows

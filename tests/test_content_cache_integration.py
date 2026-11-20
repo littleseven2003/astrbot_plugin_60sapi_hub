@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,6 @@ from core.content_service import ContentService
 from core.sites import (
     CredentialAction,
     SiteCreate,
-    SiteDisabledError,
     SiteNotFoundError,
     SiteService,
     SiteUpdate,
@@ -78,7 +78,6 @@ class ContentCacheIntegrationTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="缓存站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=3,
                 bearer_token="cache-token",
             ),
@@ -177,7 +176,6 @@ class ContentCacheIntegrationTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name="改名后的站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=3,
                 expected_revision=1,
                 credential_action=CredentialAction.KEEP,
@@ -194,7 +192,6 @@ class ContentCacheIntegrationTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name="改名后的站点",
                 base_url="http://example.test/new-proxy",
-                enabled=True,
                 timeout_seconds=3,
                 expected_revision=updated.revision,
                 credential_action=CredentialAction.SET,
@@ -206,25 +203,18 @@ class ContentCacheIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.seen_auth[-1], "Bearer new-cache-token")
         self.assertEqual(len(self.calls), 3)
 
-    async def test_disabled_and_deleted_sites_never_use_cache(self) -> None:
+    async def test_legacy_disabled_site_uses_cache_until_deleted(self) -> None:
         await self.content.preview_cached("bilibili_hot", self.site.id)
-        disabled = await self.sites.update_site(
-            self.site.id,
-            SiteUpdate(
-                name="缓存站点",
-                base_url="http://example.test/proxy",
-                enabled=False,
-                timeout_seconds=3,
-                expected_revision=1,
-                credential_action=CredentialAction.KEEP,
-            ),
-        )
-        with self.assertRaises(SiteDisabledError):
-            await self.content.preview_cached("bilibili_hot", self.site.id)
-        with self.assertRaises(SiteDisabledError):
-            await self.content.preview_cached("daily_news", self.site.id)
+        # 站点级启用已移除：旧库 enabled=0 不再绕过或阻止缓存。
+        with sqlite3.connect(self.db_path) as connection, connection:
+            connection.execute(
+                "UPDATE sites SET enabled = 0 WHERE id = ?", (self.site.id,),
+            )
+        hit = await self.content.preview_cached("bilibili_hot", self.site.id)
+        self.assertTrue(hit.hit)
         self.assertEqual(len(self.calls), 1)
-        await self.sites.delete_site(self.site.id, disabled.revision)
+        current = await self.sites.get_site(self.site.id)
+        await self.sites.delete_site(self.site.id, current.revision)
         with self.assertRaises(SiteNotFoundError):
             await self.content.preview_cached("bilibili_hot", self.site.id)
 
@@ -239,7 +229,6 @@ class ContentCacheIntegrationTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name="请求中改名",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=3,
                 expected_revision=1,
                 credential_action=CredentialAction.KEEP,
@@ -346,7 +335,6 @@ class FullChainCancellationTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="取消链路站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
             ),
         )

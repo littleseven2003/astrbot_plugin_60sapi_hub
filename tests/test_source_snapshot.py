@@ -88,7 +88,6 @@ class _Harness(unittest.IsolatedAsyncioTestCase):
                 name=f"来源站点 {self._site_seq}",
                 base_url=base_url,
                 source_kind=source_kind,
-                enabled=True,
                 timeout_seconds=5,
             ),
         )

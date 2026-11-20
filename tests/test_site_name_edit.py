@@ -33,7 +33,6 @@ class SiteNameEditTest(unittest.IsolatedAsyncioTestCase):
         payload: dict[str, object] = {
             "name": site["name"],
             "base_url": site["base_url"],
-            "enabled": site["enabled"],
             "timeout_seconds": site["timeout_seconds"],
             "expected_revision": site["revision"],
         }
@@ -192,7 +191,6 @@ class LongNamePrivacyTest(unittest.IsolatedAsyncioTestCase):
             {
                 "name": legacy_name,
                 "base_url": current["base_url"],
-                "enabled": current["enabled"],
                 "timeout_seconds": 12,
                 "expected_revision": current["revision"],
             },
@@ -205,7 +203,6 @@ class LongNamePrivacyTest(unittest.IsolatedAsyncioTestCase):
             {
                 "name": "改短的名字",
                 "base_url": current["base_url"],
-                "enabled": current["enabled"],
                 "timeout_seconds": 12,
                 "expected_revision": kept.body["data"]["revision"],
             },

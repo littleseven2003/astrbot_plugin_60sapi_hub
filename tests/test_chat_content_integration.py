@@ -61,7 +61,7 @@ class ChatContentIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def make(self, prefix: str, content_types=("daily_news",)):
         site = await self.sites.create_site(SiteCreate(
             name=f"站点-{prefix}", base_url=f"http://example.test/{prefix}",
-            enabled=True, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         task = await self.tasks.create_task(TaskCreate(
             name=f"任务-{prefix}",

@@ -48,7 +48,6 @@ class TaskSitesTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name=name,
                 base_url=f"https://{name}.example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
                 source_kind=kind,
             ),

@@ -134,12 +134,6 @@ class PlanPreview:
             return _storage_error()
         except Exception:
             return _internal_error()
-        if not site.enabled:
-            return _error(
-                409,
-                "该站点未启用，无法获取上游内容。",
-                code="site_disabled",
-            )
         plan_items = config.task.items
         plan_revision = config.plan_revision
 
@@ -166,12 +160,6 @@ class PlanPreview:
                 return _storage_error()
             except Exception:
                 return _internal_error()
-            if not latest_site.enabled:
-                return _error(
-                    409,
-                    "该站点未启用，无法获取上游内容。",
-                    code="site_disabled",
-                )
             # 重试与最终响应都使用这一版已确认配置：否则重试拿到的栏目
             # 属于新配置，响应里的任务 revision 和样式却还是首轮的旧值。
             config = latest
@@ -271,12 +259,6 @@ class PlanPreview:
             return _storage_error()
         except Exception:
             return _internal_error()
-        if not site.enabled:
-            return _error(
-                409,
-                "该站点未启用，无法获取上游内容。",
-                code="site_disabled",
-            )
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for attempt in range(_MAX_PREVIEW_ATTEMPTS):
@@ -291,12 +273,6 @@ class PlanPreview:
                 return _storage_error()
             except Exception:
                 return _internal_error()
-            if not latest_site.enabled:
-                return _error(
-                    409,
-                    "该站点未启用，无法获取上游内容。",
-                    code="site_disabled",
-                )
             if latest_site.revision == site.revision:
                 site = latest_site
                 break
@@ -425,7 +401,7 @@ class PlanPreview:
             return _storage_error()
         except Exception:
             return _internal_error()
-        if not site.enabled or site.revision != snapshot.site_revision:
+        if site.revision != snapshot.site_revision:
             return _stale_snapshot_error()
         try:
             section_images = await self._image_service.render(
@@ -477,7 +453,7 @@ class PlanPreview:
             return _storage_error()
         except Exception:
             return _internal_error()
-        if not latest_site.enabled or latest_site.revision != snapshot.site_revision:
+        if latest_site.revision != snapshot.site_revision:
             return _stale_snapshot_error()
         return self._image_result(section_images, snapshot.id)
 
@@ -733,7 +709,7 @@ class PlanPreview:
             return _storage_error()
         except Exception:
             return _internal_error()
-        if not site.enabled or site.revision != snapshot.site_revision:
+        if site.revision != snapshot.site_revision:
             return _stale_snapshot_error()
         return None
 

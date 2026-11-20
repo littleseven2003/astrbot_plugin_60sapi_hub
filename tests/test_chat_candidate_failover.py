@@ -26,8 +26,8 @@ def _snapshot(task, candidates):
         profile_id=task.id,
         plan_revision=3,
         candidates=tuple(
-            SimpleNamespace(id=site_id, revision=revision, enabled=enabled)
-            for site_id, revision, enabled in candidates
+            SimpleNamespace(id=site_id, revision=revision)
+            for site_id, revision, _enabled in candidates
         ),
     )
 
@@ -136,17 +136,18 @@ class ChatCandidateFailoverTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("s1", reply)
         self.assertEqual(previews.calls, ["s1", "s2"])
 
-    async def test_disabled_and_deleted_candidates_are_skipped(self) -> None:
+    async def test_deleted_candidates_are_skipped(self) -> None:
+        # revision 为 None 表示候选站点已删除，无法复核版本，不能使用。
         service, _tasks, previews = self.build_text(
-            (("s1", 4, False), ("s2", None, True), ("s3", 6, True)),
+            (("s1", None, True), ("s2", 5, True)),
         )
         reply = await service.handle(UMO, "/60s get task-1")
-        self.assertIn("来自 s3 的内容", reply)
-        self.assertEqual(previews.calls, ["s3"])
+        self.assertIn("来自 s2 的内容", reply)
+        self.assertEqual(previews.calls, ["s2"])
 
     async def test_no_usable_candidate_reports_config_unavailable(self) -> None:
         service, _tasks, previews = self.build_text(
-            (("s1", 4, False), ("s2", None, True)),
+            (("s1", None, True), ("s2", None, True)),
         )
         self.assertEqual(
             await service.handle(UMO, "/60s get task-1"),

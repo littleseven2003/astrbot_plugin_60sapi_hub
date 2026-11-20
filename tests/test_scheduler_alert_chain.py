@@ -51,9 +51,13 @@ class SchedulerAlertChainTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.path = Path(self._tmp.name) / "sched.sqlite3"
         self.now = datetime(2026, 3, 2, 0, 30, tzinfo=timezone.utc)
+        # 站点级启用已移除；用上游失败模拟“该候选本次不可用”。
+        self.fail_hosts: set[str] = set()
 
         async def handler(request: httpx.Request) -> httpx.Response:
             host = request.url.host
+            if host in self.fail_hosts:
+                return httpx.Response(500, content=b"upstream down")
             rich = host.startswith("b.")
             if request.url.path.endswith("/v2/60s"):
                 news = ["B新闻一", "B新闻二"] if rich else ["A新闻一"]
@@ -96,11 +100,11 @@ class SchedulerAlertChainTest(unittest.IsolatedAsyncioTestCase):
         )
         self.a = await self.sites.create_site(SiteCreate(
             name="A", base_url=f"https://a.example.test/{SECRET}",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.b = await self.sites.create_site(SiteCreate(
             name="B", base_url=f"https://b.example.test/{SECRET}",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
 
     async def asyncTearDown(self) -> None:
@@ -113,12 +117,9 @@ class SchedulerAlertChainTest(unittest.IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def _disable(self, site) -> None:
-        current = await self.sites.get_site(site.id)
-        await self.sites.update_site(site.id, SiteUpdate(
-            name=current.name, base_url=current.base_url, enabled=False,
-            timeout_seconds=5, source_kind=current.source_kind,
-            expected_revision=current.revision,
-        ))
+        """兼容旧用例名：表示该候选上游失败，而不是站点停用。"""
+        host = (await self.sites.get_site(site.id)).base_url.split("/")[2]
+        self.fail_hosts.add(host)
 
     async def _task(self, sites, *, limit=2, fmt="text", umos=(UMO,)):
         task = await self.tasks.create_task(TaskCreate(

@@ -47,8 +47,8 @@ class FakeSites:
         return list(self.items)
 
 
-def site(site_id="site-1", enabled=True):
-    return SimpleNamespace(id=site_id, enabled=enabled)
+def site(site_id="site-1"):
+    return SimpleNamespace(id=site_id)
 
 
 class ParseCommandTest(unittest.TestCase):
@@ -95,25 +95,21 @@ class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
                 task("empty", []),
                 task("removed", ["bot1:FriendMessage:other"]),
                 task(
-                    "disabled", ["bot1:FriendMessage:me"],
-                    sites=("site-disabled",),
-                ),
-                task(
                     "missing-site", ["bot1:FriendMessage:me"],
                     sites=("site-missing",),
                 ),
             ],
-            sites=[site(), site("site-disabled", enabled=False)],
+            sites=[site()],
         )
         text = await service.handle("bot1:FriendMessage:me", "/60s list")
         self.assertEqual(text, EMPTY_TEXT)
-        for name in ("empty", "removed", "disabled", "missing-site"):
+        for name in ("empty", "removed", "missing-site"):
             self.assertNotIn(f"任务-{name}", text)
         self.assertEqual(
             (self.tasks.list_calls, self.sites.list_calls), (1, 1),
         )
 
-    async def test_visible_tasks_include_disabled_task_but_require_enabled_site(
+    async def test_visible_tasks_include_disabled_task_with_existing_site(
         self,
     ) -> None:
         service = self.build(tasks=[
@@ -201,12 +197,10 @@ class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.open()
         self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
-            name="聊天站点", base_url="http://example.test", enabled=True,
-            timeout_seconds=5,
+            name="聊天站点", base_url="http://example.test", timeout_seconds=5,
         ))
         self.disabled_site = await self.sites.create_site(SiteCreate(
-            name="停用站点", base_url="http://disabled.test", enabled=False,
-            timeout_seconds=5,
+            name="停用站点", base_url="http://disabled.test", timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="可见任务",
@@ -232,7 +226,8 @@ class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.task.id, text)
         self.assertIn("可见任务", text)
         self.assertIn("输出：Markdown", text)
-        self.assertNotIn("停用站点任务", text)
+        # 站点级启用已移除：历史“停用”站点的任务同样可见。
+        self.assertIn("停用站点任务", text)
         self.assertEqual(len(await self.tasks.list_tasks()), len(before))
 
 
@@ -247,7 +242,7 @@ class ContentFixture:
         )
         # 任务私有方案的 revision（存储层列名仍是 profile_revision）。
         self.plan_revision = 3
-        self.site = SimpleNamespace(id="s1", enabled=True, revision=4)
+        self.site = SimpleNamespace(id="s1", revision=4)
         self.task_reads = 0
         self.site_reads = 0
         self.preview_calls = []
@@ -267,7 +262,6 @@ class ContentFixture:
             plan_revision=self.plan_revision,
             candidates=(SimpleNamespace(
                 id=self.site.id, revision=self.site.revision,
-                enabled=self.site.enabled,
             ),),
         )
 
@@ -306,20 +300,12 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing, "任务不存在或当前会话无权查询。")
         self.assertEqual(len(self.f.preview_calls), 1)
 
-    async def test_usage_site_disabled_and_all_failed_no_upstream(self) -> None:
+    async def test_usage_and_all_failed_no_upstream(self) -> None:
         service = self.build()
         self.assertEqual(
             await service.handle("bot:GroupMessage:g", "/60s get"),
             "用法：/60s get <任务ID>。",
         )
-        self.f.site.enabled = False
-        self.assertEqual(
-            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
-            "任务配置不可用，请检查栏目或站点状态。",
-        )
-        self.assertEqual(self.f.preview_calls, [])
-
-        self.f.site.enabled = True
         async def failed(payload, *, site_id=None):
             self.f.preview_calls.append(payload)
             return SimpleNamespace(status_code=502, body={"data": {"status": "failed"}})
@@ -407,8 +393,7 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.open()
         self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
-            name="并发站点", base_url="http://example.test", enabled=True,
-            timeout_seconds=5,
+            name="并发站点", base_url="http://example.test", timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="并发任务",
@@ -480,7 +465,7 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
             current = await self.sites.get_site(self.site.id)
             await self.sites.update_site(self.site.id, SiteUpdate(
                 name=current.name, base_url=current.base_url,
-                enabled=False, timeout_seconds=current.timeout_seconds,
+                timeout_seconds=current.timeout_seconds,
                 expected_revision=current.revision,
             ))
         self.assertEqual(
@@ -514,7 +499,7 @@ class ImageFixture:
             revision=5, created_at="2026-01-01T00:00:00Z",
         )
         self.plan_revision = 2
-        self.site = SimpleNamespace(id="s1", enabled=True, revision=3)
+        self.site = SimpleNamespace(id="s1", revision=3)
         self.owners = []
         self.preview_owners = []
         self.image_plan_ids = []
@@ -535,7 +520,7 @@ class ImageFixture:
             task=self.task,
             profile_id=self.task.id,
             plan_revision=self.plan_revision,
-            candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision, enabled=self.site.enabled),),
+            candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision),),
         )
 
     async def preview_site(self, payload, *, owner=None, site_id=None):
@@ -638,8 +623,7 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.open()
         self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
-            name="图片竞态站点", base_url="http://example.test", enabled=True,
-            timeout_seconds=5,
+            name="图片竞态站点", base_url="http://example.test", timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="图片竞态任务",
@@ -694,8 +678,7 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         await self.preview.started.wait()
         current = await self.sites.get_site(self.site.id)
         await self.sites.update_site(self.site.id, SiteUpdate(
-            name=current.name, base_url=current.base_url, enabled=False,
-            timeout_seconds=current.timeout_seconds,
+            name=current.name, base_url=current.base_url, timeout_seconds=current.timeout_seconds,
             expected_revision=current.revision,
         ))
         self.preview.release.set()

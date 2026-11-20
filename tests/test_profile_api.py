@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
+from contextlib import closing
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,7 +68,6 @@ class PlanPreviewTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="自建预览站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
                 source_kind="self_built",
                 bearer_token=self.secret,
@@ -76,7 +77,6 @@ class PlanPreviewTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="公开实例站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
                 source_kind="public",
                 bearer_token="public-token",
@@ -312,7 +312,6 @@ class PlanPreviewTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name="改名后的站点",
                 base_url="http://new.example.test/other-prefix",
-                enabled=True,
                 timeout_seconds=5,
                 expected_revision=self.public_site.revision,
             ),
@@ -376,7 +375,6 @@ class PlanPreviewTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name="站点改名",
                 base_url=self.site.base_url,
-                enabled=True,
                 timeout_seconds=self.site.timeout_seconds,
                 expected_revision=self.site.revision,
             ),
@@ -483,22 +481,16 @@ class PlanPreviewTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("（空列表，0 条）", empty.body["data"]["outputs"]["text"])
 
-    async def test_disabled_site_rejects_before_upstream(self) -> None:
+    async def test_legacy_disabled_site_is_not_rejected(self) -> None:
+        # 站点级启用已移除：旧库 enabled=0 只供追溯，不再阻止预览取数。
         task = await self._task()
-        await self.sites.update_site(
-            self.site.id,
-            SiteUpdate(
-                name=self.site.name,
-                base_url=self.site.base_url,
-                enabled=False,
-                timeout_seconds=self.site.timeout_seconds,
-                expected_revision=self.site.revision,
-            ),
-        )
+        with closing(sqlite3.connect(self.db_path)) as connection, connection:
+            connection.execute(
+                "UPDATE sites SET enabled = 0 WHERE id = ?", (self.site.id,),
+            )
         result = await self._preview(task)
-        self.assertEqual(result.status_code, 409)
-        self.assertEqual(result.body["data"]["code"], "site_disabled")
-        self.assertEqual(self.calls, [])
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertTrue(self.calls)
 
     async def test_invalid_force_refresh_does_not_fetch(self) -> None:
         task = await self._task()

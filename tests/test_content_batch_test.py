@@ -169,10 +169,10 @@ class ContentWebRegistrationTest(BatchTestBase):
 
 
 class BatchTestRunnerTest(BatchTestBase):
-    async def _site(self, name: str, *, enabled: bool = True) -> dict:
+    async def _site(self, name: str) -> dict:
         site = await self.sites.create_site(SiteCreate(
             name=name, base_url="http://upstream.test/proxy",
-            enabled=enabled, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         return site
 
@@ -181,13 +181,13 @@ class BatchTestRunnerTest(BatchTestBase):
         WEB_REQUEST.payload = payload
         return self.web
 
-    async def test_five_types_for_each_selected_site_including_disabled(self) -> None:
+    async def test_five_types_for_each_selected_site(self) -> None:
         first = await self._site("甲站点")
         second = await self._site("乙站点")
-        disabled = await self._site("停用站点", enabled=False)
+        third = await self._site("第三站点")
 
         self._post({
-            "site_ids": [first.id, second.id, disabled.id],
+            "site_ids": [first.id, second.id, third.id],
             "content_types": list(FIVE_TYPES),
         })
         result = await self.web.test_sites_batch()
@@ -198,14 +198,12 @@ class BatchTestRunnerTest(BatchTestBase):
         self.assertEqual(result.body["failed"], 0)
         self.assertEqual(
             {(item["site_id"], item["content_type"]) for item in results},
-            {(site, kind) for site in (first.id, second.id, disabled.id)
+            {(site, kind) for site in (first.id, second.id, third.id)
              for kind in FIVE_TYPES},
         )
         self.assertEqual({item["result"] for item in results}, {"empty"})
         self.assertEqual(len(self.upstream.seen), 15)
 
-        current = await self.sites.get_site(disabled.id)
-        self.assertFalse(current.enabled)
 
     async def test_partial_failure_keeps_other_results(self) -> None:
         good = await self._site("正常站点")
@@ -253,7 +251,6 @@ class BatchTestRunnerTest(BatchTestBase):
         self.assertEqual(result.status_code, 200, result.body)
         current = await self.sites.get_site(site.id)
         self.assertEqual(current.revision, site.revision)
-        self.assertEqual(current.enabled, site.enabled)
 
     async def test_invalid_payloads_are_rejected_before_any_request(self) -> None:
         site = await self._site("校验站点")
@@ -292,7 +289,7 @@ class BatchTestRunnerTest(BatchTestBase):
             site.id,
             SiteUpdate(
                 name="已改动站点", base_url="http://upstream.test/proxy2",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
                 expected_revision=seen_revision,
             ),
         )

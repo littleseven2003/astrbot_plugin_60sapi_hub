@@ -22,7 +22,6 @@ from core.bili_service import BiliHotService
 from core.content_client import ContentHttpClient
 from core.sites import (
     SiteCreate,
-    SiteDisabledError,
     SiteNotFoundError,
     SiteService,
 )
@@ -197,12 +196,11 @@ class BiliServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self._temporary_directory.cleanup()
 
-    async def _site(self, *, enabled=True, token="fictional-bili-token"):
+    async def _site(self, *, token="fictional-bili-token"):
         return await self.sites.create_site(
             SiteCreate(
                 name="Bilibili 测试站点",
                 base_url="http://example.test/proxy",
-                enabled=enabled,
                 timeout_seconds=3,
                 bearer_token=token,
             ),
@@ -237,8 +235,7 @@ class BiliServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.items[0].link, "https://example.test/s")
         self.assertNotIn("fictional-bili-token", repr(snapshot))
 
-    async def test_disabled_and_missing_sites_are_rejected(self) -> None:
-        disabled = await self._site(enabled=False)
+    async def test_missing_site_is_rejected(self) -> None:
         service = BiliHotService(
             self.sites,
             client=ContentHttpClient(transport=httpx.MockTransport(
@@ -247,8 +244,6 @@ class BiliServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         await service.open()
         try:
-            with self.assertRaises(SiteDisabledError):
-                await service.preview(disabled.id)
             with self.assertRaises(SiteNotFoundError):
                 await service.preview("missing-site-id")
         finally:

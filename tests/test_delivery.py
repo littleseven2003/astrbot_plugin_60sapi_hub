@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
@@ -143,7 +144,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.site = await self.sites.create_site(
             SiteCreate(
                 name="投递站点", base_url="http://example.test/proxy",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ),
         )
         self.api = StubApi()
@@ -356,18 +357,16 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
         self.assertEqual(len(self.sender.calls), 0)
 
-    async def test_disabled_site_and_all_failed_preview_no_send(self) -> None:
-        await self.sites.update_site(
-            self.site.id,
-            __import__("core.sites", fromlist=["SiteUpdate"]).SiteUpdate(
-                name=self.site.name, base_url=self.site.base_url,
-                enabled=False, timeout_seconds=5,
-                expected_revision=self.site.revision,
-            ),
-        )
+    async def test_missing_candidate_and_all_failed_preview_no_send(self) -> None:
+        # 站点级启用已移除；候选被删除后才是“没有可用候选”的告警路径。
         task = await self._task(["aiocqhttp:GroupMessage:g1"])
-        result = await self.service.execute(task.id, "disabled-1")
-        # 全部候选停用：向任务白名单发送一条安全文字提示。
+        # 绕过引用保护直接清空任务的候选行，模拟候选全部失效的历史任务。
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            connection.execute(
+                "DELETE FROM push_task_sites WHERE task_id = ?", (task.id,),
+            )
+        result = await self.service.execute(task.id, "missing-1")
+        # 全部候选已删除：向任务白名单发送一条安全文字提示。
         self.assertEqual(self.api.preview_calls, 0)
         self.assertEqual(len(self.sender.calls), 1)
         self.assertEqual(self.sender.calls[0].kind, "text")

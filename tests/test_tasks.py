@@ -130,7 +130,6 @@ class TaskServiceTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="任务站点",
                 base_url="http://example.test/proxy",
-                enabled=False,
                 timeout_seconds=5,
             ),
         )
@@ -1236,7 +1235,6 @@ class TaskConcurrencyTest(unittest.IsolatedAsyncioTestCase):
                 SiteCreate(
                     name="并发站点",
                     base_url="http://example.test/proxy",
-                    enabled=True,
                     timeout_seconds=5,
                 ),
             )

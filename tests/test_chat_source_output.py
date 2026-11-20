@@ -87,7 +87,6 @@ class ChatSourceOutputTest(unittest.IsolatedAsyncioTestCase):
                 name="聊天来源站点",
                 base_url=BASE,
                 source_kind=source_kind,
-                enabled=True,
                 timeout_seconds=5,
             ),
         )

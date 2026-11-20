@@ -136,7 +136,6 @@ class SiteConfig:
     id: str
     name: str
     base_url: str
-    enabled: bool
     timeout_seconds: float
     source_kind: str
     has_bearer_token: bool
@@ -164,7 +163,6 @@ class SiteCreate:
 
     name: str
     base_url: str
-    enabled: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     source_kind: str = SOURCE_KIND_PUBLIC
     bearer_token: str | None = field(default=None, repr=False)
@@ -176,7 +174,6 @@ class SiteUpdate:
 
     name: str
     base_url: str
-    enabled: bool
     timeout_seconds: float
     expected_revision: int
     source_kind: str | None = None
@@ -222,7 +219,6 @@ class SiteService:
     async def create_site(self, data: SiteCreate) -> SiteConfig:
         base_url = normalize_base_url(data.base_url)
         name = normalize_site_name(data.name, fallback=base_url)
-        enabled = normalize_enabled(data.enabled)
         timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
         source_kind = normalize_source_kind(
             data.source_kind,
@@ -235,7 +231,6 @@ class SiteService:
                 site_id=uuid.uuid4().hex,
                 name=name,
                 base_url=base_url,
-                enabled=enabled,
                 timeout_seconds=timeout_seconds,
                 source_kind=source_kind,
                 bearer_token=bearer_token,
@@ -266,12 +261,10 @@ class SiteService:
         return _to_public(stored)
 
     async def get_fetch_config(self, site_id: object) -> SiteFetchConfig:
-        """读取已启用站点的内部连接配置；凭据只交给获取层。"""
+        """读取站点的内部连接配置；凭据只交给获取层。"""
         normalized_id = normalize_site_id(site_id)
         async with self._translate_store_errors(normalized_id):
             stored = await self._store.get_site(normalized_id)
-        if not stored.enabled:
-            raise SiteDisabledError(normalized_id)
         return SiteFetchConfig(
             id=stored.id,
             name=stored.name,
@@ -285,7 +278,7 @@ class SiteService:
     async def get_test_config(
         self, site_id: object, expected_revision: object,
     ) -> SiteFetchConfig:
-        """读取测试连接快照；允许停用站点，但 revision 必须匹配。"""
+        """读取测试连接快照；revision 必须匹配。"""
         normalized_id = normalize_site_id(site_id)
         revision = normalize_revision(expected_revision)
         async with self._translate_store_errors(normalized_id):
@@ -321,7 +314,6 @@ class SiteService:
                 fallback=base_url,
                 keep=current.name,
             )
-            enabled = normalize_enabled(data.enabled)
             timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
             source_kind = normalize_source_kind(
                 data.source_kind,
@@ -338,7 +330,6 @@ class SiteService:
                 normalized_id,
                 name=name,
                 base_url=base_url,
-                enabled=enabled,
                 timeout_seconds=timeout_seconds,
                 source_kind=source_kind,
                 bearer_token=bearer_token,
@@ -659,7 +650,6 @@ def _to_public(stored: StoredSite) -> SiteConfig:
         id=stored.id,
         name=stored.name,
         base_url=stored.base_url,
-        enabled=stored.enabled,
         timeout_seconds=stored.timeout_seconds,
         source_kind=stored.source_kind,
         has_bearer_token=stored.bearer_token is not None,
@@ -693,7 +683,6 @@ __all__ = [
     "normalize_base_url",
     "normalize_bearer_token",
     "normalize_credential_action",
-    "normalize_enabled",
     "normalize_revision",
     "normalize_site_id",
     "normalize_site_name",

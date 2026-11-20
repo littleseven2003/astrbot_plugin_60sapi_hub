@@ -62,7 +62,6 @@ class SiteNameConflictTest(unittest.IsolatedAsyncioTestCase):
             {
                 "name": "主站",
                 "base_url": second["base_url"],
-                "enabled": second["enabled"],
                 "timeout_seconds": second["timeout_seconds"],
                 "expected_revision": second["revision"],
             },
@@ -78,7 +77,6 @@ class SiteNameConflictTest(unittest.IsolatedAsyncioTestCase):
             {
                 "name": "main",
                 "base_url": site["base_url"],
-                "enabled": site["enabled"],
                 "timeout_seconds": site["timeout_seconds"],
                 "expected_revision": site["revision"],
             },

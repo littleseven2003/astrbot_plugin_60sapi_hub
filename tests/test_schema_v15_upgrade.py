@@ -118,11 +118,11 @@ class SchemaV15UpgradeTest(_MigrationCase):
         try:
             site_a = await sites.create_site(SiteCreate(
                 name="旧站 A", base_url="http://a.example.test/60s",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             site_b = await sites.create_site(SiteCreate(
                 name="旧站 B", base_url="http://b.example.test/60s",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             backfilled = await tasks.create_task(TaskCreate(
                 name="旧单候选任务", items=[_item("daily_news", 3)],
@@ -195,7 +195,6 @@ class SchemaV15UpgradeTest(_MigrationCase):
                 [item.id for item in migrated.candidates], [site_b.id],
             )
             self.assertIsNotNone(migrated.candidates[0].revision)
-            self.assertTrue(migrated.candidates[0].enabled)
 
             # 栏目、条数、名称、版本、白名单与输出格式都在迁移后保留。
             task = await tasks.get_task(dropped.id)
@@ -333,7 +332,7 @@ class SchemaV16UpgradeTest(_MigrationCase):
         try:
             site = await sites.create_site(SiteCreate(
                 name="旧站", base_url="http://old.example.test/60s",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             first = await tasks.create_task(TaskCreate(
                 name="旧任务一", items=first_items, sites=[site.id],
@@ -749,11 +748,11 @@ class SchemaV16UpgradeTest(_MigrationCase):
         try:
             site_a = await sites.create_site(SiteCreate(
                 name="站点 A", base_url="http://a.example.test/60s",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             site_b = await sites.create_site(SiteCreate(
                 name="站点 B", base_url="http://b.example.test/60s",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             tasks = PushTaskService(sites.store)
             first = await tasks.create_task(TaskCreate(
@@ -901,11 +900,11 @@ class SchemaV16UpgradeTest(_MigrationCase):
         try:
             site_a = await sites.create_site(SiteCreate(
                 name="站点 A", base_url="http://a.example.test/60s",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             site_b = await sites.create_site(SiteCreate(
                 name="站点 B", base_url="http://b.example.test/60s",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             tasks = PushTaskService(sites.store)
             # 候选顺序 B→A 与 UMO 顺序都是任务语义的一部分，迁移必须原样保留。
@@ -956,8 +955,8 @@ class SchemaV16UpgradeTest(_MigrationCase):
                 self.assertEqual(migrated.revision, task.revision)
                 snapshot = await tasks.get_config_snapshot(task.id)
                 self.assertEqual(
-                    [(item.id, item.enabled) for item in snapshot.candidates],
-                    [(site_b.id, True), (site_a.id, True)],
+                    [item.id for item in snapshot.candidates],
+                    [site_b.id, site_a.id],
                 )
                 # 历史投递记录仍指向当时的方案行与站点，不被迁移改写；
                 # 未完成的执行按既有恢复规则标记为 stopped，不当作已投递。

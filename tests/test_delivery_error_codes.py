@@ -122,7 +122,7 @@ class DeliveryErrorCodeTest(unittest.IsolatedAsyncioTestCase):
         self.sender = ScriptedSender([])
         self.site = await self.sites.create_site(SiteCreate(
             name="本地站点", base_url="https://fast.example.test/api",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.delivery = self._delivery()
 

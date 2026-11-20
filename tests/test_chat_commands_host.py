@@ -90,7 +90,7 @@ class ListTasks:
 
 class ListSites:
     async def list_sites(self):
-        return [SimpleNamespace(id="s1", enabled=True)]
+        return [SimpleNamespace(id="s1")]
 
 
 def host_root() -> Path | None:
@@ -274,7 +274,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                     sites=("s1",),
                     items=(SimpleNamespace(content_type="daily_news", limit=None),),
                 )
-                self.site = SimpleNamespace(id="s1", site_revision=4, enabled=True, revision=4)
+                self.site = SimpleNamespace(id="s1", site_revision=4, revision=4)
 
             async def get_task(self, task_id):
                 from core.tasks import TaskNotFoundError
@@ -354,7 +354,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                 )
                 return SimpleNamespace(
                     task=task, plan_revision=1,
-                    candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
+                    candidates=(SimpleNamespace(id="s1", revision=1),),
                 )
 
             async def preview_site(self, payload, *, owner=None, site_id=None):
@@ -526,7 +526,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
             await hub.initialize()
             site = await hub.sites.create_site(SiteCreate(
                 name="调度站点", base_url="http://example.test/proxy",
-                enabled=True, timeout_seconds=5,
+                timeout_seconds=5,
             ))
             task = await hub.tasks.create_task(TaskCreate(
                 name="调度任务", output_format="text",
@@ -589,7 +589,7 @@ class ChatCommandHostTest(unittest.IsolatedAsyncioTestCase):
                         items=(SimpleNamespace(content_type="daily_news", limit=None),),
                     ),
                     plan_revision=1,
-                    candidates=(SimpleNamespace(id="s1", revision=1, enabled=True),),
+                    candidates=(SimpleNamespace(id="s1", revision=1),),
                 )
 
         image_module = importlib.import_module(

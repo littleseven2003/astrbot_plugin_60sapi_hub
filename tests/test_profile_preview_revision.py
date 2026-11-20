@@ -49,7 +49,6 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
                 name="来源站点",
                 base_url="https://old.example.test/" + SECRET,
                 source_kind="self_built",
-                enabled=True,
                 timeout_seconds=5,
             ),
         )
@@ -88,7 +87,6 @@ class ProfilePreviewRevisionTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name=current.name,
                 base_url=f"https://gen{self.generation}.example.test/{SECRET}",
-                enabled=True,
                 timeout_seconds=5,
                 source_kind="public" if self.generation % 2 else "self_built",
                 expected_revision=current.revision,

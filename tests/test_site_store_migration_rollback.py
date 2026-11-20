@@ -66,7 +66,6 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
                 SiteCreate(
                     name="关联旧站点",
                     base_url="https://old.example.test/proxy",
-                    enabled=True,
                     timeout_seconds=7,
                     source_kind="public",
                     bearer_token="legacy-token",
@@ -249,7 +248,6 @@ class ConcurrentMigrationRollbackTest(unittest.IsolatedAsyncioTestCase):
             site = await sites.get_site(ids["site"])
             self.assertEqual(site.name, "关联旧站点")
             self.assertEqual(site.base_url, "https://old.example.test/proxy")
-            self.assertTrue(site.enabled)
             self.assertEqual(site.timeout_seconds, 7)
             # 无 source_kind 的旧站点迁移为 public。
             self.assertEqual(site.source_kind, "public")

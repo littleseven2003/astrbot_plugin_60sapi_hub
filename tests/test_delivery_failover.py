@@ -77,8 +77,8 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
             "site-b": _data("B", 5),
         })
         sites = _FakeSites({
-            "site-a": SimpleNamespace(id="site-a", enabled=True),
-            "site-b": SimpleNamespace(id="site-b", enabled=True),
+            "site-a": SimpleNamespace(id="site-a"),
+            "site-b": SimpleNamespace(id="site-b"),
         })
         service = self._service(api, sites)
         prepared = await service._prepare_with_failover(
@@ -96,8 +96,8 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
             "site-b": _data("B", 5),
         })
         sites = _FakeSites({
-            "site-a": SimpleNamespace(id="site-a", enabled=True),
-            "site-b": SimpleNamespace(id="site-b", enabled=True),
+            "site-a": SimpleNamespace(id="site-a"),
+            "site-b": SimpleNamespace(id="site-b"),
         })
         service = self._service(api, sites)
         prepared = await service._prepare_with_failover(
@@ -111,8 +111,8 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
     async def test_all_sites_failing_yields_safe_alert(self) -> None:
         api = _FakeApi({"site-a": _data("A", 1)})
         sites = _FakeSites({
-            "site-a": SimpleNamespace(id="site-a", enabled=True),
-            "site-b": SimpleNamespace(id="site-b", enabled=True),
+            "site-a": SimpleNamespace(id="site-a"),
+            "site-b": SimpleNamespace(id="site-b"),
         })
         service = self._service(api, sites)
         prepared = await service._prepare(
@@ -129,9 +129,9 @@ class DeliveryFailoverTest(unittest.IsolatedAsyncioTestCase):
     async def test_candidates_keep_order_and_skip_disabled(self) -> None:
         api = _FakeApi({})
         sites = _FakeSites({
-            "site-a": SimpleNamespace(id="site-a", enabled=False),
-            "site-b": SimpleNamespace(id="site-b", enabled=True),
-            "site-c": SimpleNamespace(id="site-c", enabled=True),
+            "site-a": SimpleNamespace(id="site-a"),
+            "site-b": SimpleNamespace(id="site-b"),
+            "site-c": SimpleNamespace(id="site-c"),
         })
         service = self._service(api, sites)
         resolved = await service._candidate_sites(

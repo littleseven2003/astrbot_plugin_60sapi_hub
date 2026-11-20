@@ -28,9 +28,8 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(
             SiteCreate(
-                name="禁用站点",
+                name="候选站点",
                 base_url="http://example.test/proxy",
-                enabled=False,
                 timeout_seconds=5,
             ),
         )
@@ -60,7 +59,7 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("profile_id", task)
         self.assertNotIn("profile_name", task)
-        self.assertFalse(task["site_enabled"])
+        self.assertIsNone(task["site_enabled"])
         listed = await self.api.list_tasks()
         self.assertEqual(len(listed.body["data"]["tasks"]), 1)
         got = await self.api.get_task(task["id"])
@@ -355,22 +354,7 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
             sections=[{"content_type": "daily_news", "status": "ok", "items": ["a"]}],
         )
         self.api = TaskApi(self.tasks, self.sites, plan_preview=previews)
-        # 站点停用：候选为空，不请求上游。
-        disabled = await self.api.preview_task(task["id"], {})
-        self.assertEqual(disabled.status_code, 502)
-        self.assertEqual(disabled.body["data"]["code"], "content_unavailable")
-        self.assertEqual(previews.calls, [])
-
-        await self.sites.update_site(
-            self.site.id,
-            SiteUpdate(
-                name=self.site.name,
-                base_url=self.site.base_url,
-                enabled=True,
-                timeout_seconds=self.site.timeout_seconds,
-                expected_revision=self.site.revision,
-            ),
-        )
+        # 站点级启用已移除：候选站点存在即可预览，不再要求先启用。
         ok = await self.api.preview_task(task["id"], {"force_refresh": True})
         self.assertEqual(ok.status_code, 200, ok.body)
         data = ok.body["data"]
@@ -398,16 +382,6 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(updated.status_code, 200, updated.body)
 
-        await self.sites.update_site(
-            self.site.id,
-            SiteUpdate(
-                name=self.site.name,
-                base_url=self.site.base_url,
-                enabled=True,
-                timeout_seconds=self.site.timeout_seconds,
-                expected_revision=self.site.revision,
-            ),
-        )
         previews = _StubPlanPreview(
             sections=[
                 {"content_type": "daily_news", "status": "ok", "items": ["a"]},

@@ -147,14 +147,13 @@ class TaskApi:
                 "任务在测试期间发生变化，请重新测试。",
                 code="config_changed",
             )
-        # 所有候选的 revision 与启用状态都必须与测试开始时一致，
-        # 包括开始时停用、期间被启用的候选。
-        for site_id, (revision, enabled) in site_snapshot.items():
+        # 所有候选的 revision 都必须与测试开始时一致。
+        for site_id, revision in site_snapshot.items():
             try:
                 latest_site = await self._sites.get_site(site_id)
             except Exception:
                 return _storage_error()
-            if latest_site.revision != revision or bool(latest_site.enabled) != enabled:
+            if latest_site.revision != revision:
                 return _error(
                     409,
                     "站点配置在测试期间发生变化，请重新测试。",
@@ -211,13 +210,9 @@ class TaskApi:
                 entry["reason"] = "site_missing"
                 checked.append(entry)
                 continue
-            # 记录所有候选（含停用的）当时的 revision 与启用状态，
-            # 结束后复核，避免期间被启用/修改的站点让结论失真。
-            site_snapshot[site_id] = (site.revision, bool(site.enabled))
-            if not site.enabled:
-                entry["reason"] = "site_disabled"
-                checked.append(entry)
-                continue
+            # 记录所有候选当时的 revision，结束后复核，避免期间被修改
+            # 的站点让结论失真。
+            site_snapshot[site_id] = site.revision
             sections: list[dict[str, Any]] = []
             for item in items:
                 try:
@@ -259,14 +254,14 @@ class TaskApi:
 
     async def _draft_sites_changed(
         self,
-        site_snapshot: dict[str, tuple[int, bool]],
+        site_snapshot: dict[str, int],
     ) -> bool:
-        for site_id, (revision, enabled) in site_snapshot.items():
+        for site_id, revision in site_snapshot.items():
             try:
                 latest_site = await self._sites.get_site(site_id)
             except Exception:
                 return True
-            if latest_site.revision != revision or bool(latest_site.enabled) != enabled:
+            if latest_site.revision != revision:
                 return True
         return False
 
@@ -361,10 +356,9 @@ class TaskApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        # 草稿预览也只走仍启用的候选；停用或已删除的站点不请求上游。
+        # 草稿预览按候选顺序尝试；已删除的站点不请求上游。
         candidates = [
-            site_id for site_id in draft.sites
-            if getattr(sites.get(site_id), "enabled", False)
+            site_id for site_id in draft.sites if site_id in sites
         ]
         adapter = _DraftPreviewAdapter(self._plan_preview, draft)
         try:
@@ -582,10 +576,9 @@ class TaskApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        # 预览只走仍启用的候选；停用或已删除的站点不请求上游。
+        # 预览按候选顺序尝试；已删除的站点不请求上游。
         candidates = [
-            site_id for site_id in task.sites
-            if getattr(sites.get(site_id), "enabled", False)
+            site_id for site_id in task.sites if site_id in sites
         ]
         try:
             found = await first_satisfying_preview(
@@ -692,7 +685,6 @@ def _task_dict(
         candidates.append({
             "id": site_id,
             "name": candidate.name if candidate is not None else None,
-            "enabled": bool(candidate.enabled) if candidate is not None else None,
             "exists": candidate is not None,
         })
     schedule = task.schedule
@@ -732,7 +724,8 @@ def _task_dict(
         "items": plan_payload(task.items),
         # 任务自带栏目；site_id 保留为 null 供旧前端读取。
         "site_id": None,
-        "site_enabled": any(item["enabled"] is True for item in candidates),
+        # 站点级启用已移除；保留字段供旧前端识别，不再有布尔含义。
+        "site_enabled": None,
         "sites": candidates,
         "output_format": task.output_format,
         "output_label": task.output_label,

@@ -140,15 +140,15 @@ class SlowCandidateDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.delivery = self._make_delivery(self.BUDGET)
         self.slow = await self.sites.create_site(SiteCreate(
             name="慢站点", base_url="https://slow.example.test/api",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.fast = await self.sites.create_site(SiteCreate(
             name="快站点", base_url="https://fast.example.test/api",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.broken = await self.sites.create_site(SiteCreate(
             name="坏站点", base_url="https://broken.example.test/api",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.slow_sites = {"slow.example.test"}
 

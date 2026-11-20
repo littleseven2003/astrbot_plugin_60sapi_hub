@@ -115,16 +115,16 @@ class ChatCommandService:
     async def _visible_tasks(self, umo: str) -> list[VisibleTask]:
         tasks = await self._tasks.list_tasks()
         sites = await self._sites.list_sites()
-        enabled_site_ids = {site.id for site in sites if site.enabled}
+        known_site_ids = {site.id for site in sites}
         visible: list[VisibleTask] = []
         for task in tasks:
             # Exact UMO membership only. No prefix, bare ID, platform or
             # member-isolation fallback; the current UMO is never widened.
             if umo not in task.umos:
                 continue
-            # 任务自带栏目即视为已配置内容；候选里至少有一个启用站点
-            # 才可能查询到内容。
-            if not any(site_id in enabled_site_ids for site_id in task.sites):
+            # 任务自带栏目即视为已配置内容；候选里至少有一个仍存在的
+            # 站点才可能查询到内容。
+            if not any(site_id in known_site_ids for site_id in task.sites):
                 continue
             visible.append(VisibleTask(
                 id=task.id,

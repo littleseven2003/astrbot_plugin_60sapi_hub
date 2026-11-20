@@ -25,7 +25,6 @@ def make_update(site, **overrides: object) -> SiteUpdate:
     values: dict[str, object] = {
         "name": site.name,
         "base_url": site.base_url,
-        "enabled": site.enabled,
         "timeout_seconds": site.timeout_seconds,
         "expected_revision": site.revision,
     }

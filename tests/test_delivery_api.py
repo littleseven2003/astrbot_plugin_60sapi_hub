@@ -40,7 +40,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
             name="站点", base_url="http://example.test/proxy",
-            enabled=True, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         self.sender = FakeSender()
         self.stub = StubApi()

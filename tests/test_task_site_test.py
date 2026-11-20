@@ -104,7 +104,6 @@ class TaskSiteTestApiTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name=name,
                 base_url=f"https://{name}/{SECRET}",
-                enabled=True,
                 timeout_seconds=5,
                 source_kind="public",
             ),
@@ -148,25 +147,17 @@ class TaskSiteTestApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(data["site_id"])
         self.assertIn("无法满足", data["message"])
 
-    async def test_disabled_site_is_skipped_with_reason(self) -> None:
+    async def test_insufficient_candidate_falls_through_to_next(self) -> None:
         first = await self._site("a.example.test")
         second = await self._site("b.example.test")
         task = await self._task([first.id, second.id])
-        await self.sites.update_site(
-            first.id,
-            __import__("core.sites", fromlist=["SiteUpdate"]).SiteUpdate(
-                name=first.name,
-                base_url=first.base_url,
-                enabled=False,
-                timeout_seconds=5,
-                source_kind="public",
-                expected_revision=first.revision,
-            ),
-        )
         result = await self.api.test_task(task.id)
         data = result.body["data"]
         self.assertTrue(data["satisfied"])
-        self.assertEqual(data["checked"][0]["reason"], "site_disabled")
+        self.assertEqual(
+            data["checked"][0]["reason"], "requirements_not_met",
+        )
+        self.assertEqual(len(data["checked"]), 2)
         self.assertEqual(data["site_id"], second.id)
 
 

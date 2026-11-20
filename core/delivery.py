@@ -477,8 +477,8 @@ class DeliveryService:
         except DeliveryConfirmationStaleError:
             await self._finish(execution_id, "failed", "confirmation_stale")
             raise
-        # 没有可用候选时同样走告警路径：向任务白名单发送一条文字提示。
-        candidates = [item for item in resolved if item.enabled]
+        # 没有候选时同样走告警路径：向任务白名单发送一条文字提示。
+        candidates = list(resolved)
 
         try:
             prepared = await self._prepare(
@@ -560,7 +560,6 @@ class DeliveryService:
             {
                 "id": item.id,
                 "revision": item.revision,
-                "enabled": bool(item.enabled),
             }
             for item in candidates
         ]
@@ -576,12 +575,11 @@ class DeliveryService:
             confirmed.append({
                 "id": item.get("id"),
                 "revision": item.get("revision"),
-                "enabled": bool(item.get("enabled")),
             })
         if self._candidate_shape(candidates) != confirmed:
             raise DeliveryConfirmationStaleError()
     async def _candidate_sites(self, task: PushTask) -> list[object]:
-        """按任务保存的顺序返回仍存在的候选站点（含已停用的）。"""
+        """按任务保存的顺序返回仍存在的候选站点。"""
         site_ids = tuple(task.sites)
         resolved: list[object] = []
         for site_id in site_ids:
@@ -1026,11 +1024,10 @@ class DeliveryService:
         except Exception:
             return False
         # 栏目以任务 revision 与栏目本身双重校验；选中站点单独校验自身
-        # revision 与启用状态，停用后不得继续发送剩余内容。
+        # revision，版本变化后不得继续发送剩余内容。
         site_ok = True if site is None else (
             current_site is not None
             and current_site.revision == site.revision
-            and current_site.enabled
         )
         return (
             not self._closed

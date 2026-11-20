@@ -141,7 +141,6 @@ class TaskCandidateSite:
 
     id: str
     revision: int | None
-    enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +226,6 @@ class PushTaskService:
                 TaskCandidateSite(
                     id=candidate.id,
                     revision=candidate.revision,
-                    enabled=candidate.enabled,
                 )
                 for candidate in stored.candidates
             ),

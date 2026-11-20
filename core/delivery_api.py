@@ -87,7 +87,7 @@ class DeliveryApi:
                 "valid": valid,
                 "reason": info.get("reason"),
             })
-        # 候选站点里只要还有一个启用，就可以进入正常的选择流程。
+        # 站点级启用已移除：候选仍存在就进入正常的选择流程。
         candidate_ids = tuple(task.sites)
         candidates: list[object] = []
         for candidate_id in candidate_ids:
@@ -95,7 +95,7 @@ class DeliveryApi:
                 candidates.append(await self._sites.get_site(candidate_id))
             except Exception:
                 continue
-        usable = [item for item in candidates if getattr(item, "enabled", False)]
+        usable = list(candidates)
         # 全部候选不可用时仍允许管理员手动验证：这次投递会发送异常提示，
         # 而不是内容；确认页需要把这个语义说清楚。
         alert_only = bool(targets) and all_valid and not usable
@@ -124,7 +124,6 @@ class DeliveryApi:
                 {
                     "id": item.id,
                     "revision": item.revision,
-                    "enabled": bool(item.enabled),
                 }
                 for item in candidates
             ],
@@ -132,7 +131,6 @@ class DeliveryApi:
                 {
                     "id": item.id,
                     "name": item.name,
-                    "enabled": bool(item.enabled),
                 }
                 for item in candidates
             ],
@@ -164,19 +162,18 @@ class DeliveryApi:
             current.append({
                 "id": site.id,
                 "revision": site.revision,
-                "enabled": bool(site.enabled),
             })
         confirmed = [
             {
                 "id": item.get("id"),
                 "revision": item.get("revision"),
-                "enabled": bool(item.get("enabled")),
             }
             for item in expected
         ]
         if current != confirmed:
             return {"reason": "candidates_changed"}
-        now_alert_only = not any(item["enabled"] for item in current)
+        # 站点级启用已移除：没有可用候选（全部被删除）时才走异常提示。
+        now_alert_only = not current
         if isinstance(alert_only, bool) and alert_only != now_alert_only:
             return {"reason": "intent_changed"}
         return None

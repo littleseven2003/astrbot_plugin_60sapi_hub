@@ -59,11 +59,11 @@ class ProfileSiteOverrideTest(unittest.IsolatedAsyncioTestCase):
         )
         self.a = await self.sites.create_site(SiteCreate(
             name="站点A", base_url=f"https://a.example.test/{SECRET}",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.b = await self.sites.create_site(SiteCreate(
             name="站点B", base_url=f"https://b.example.test/{SECRET}",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="任务", items=[

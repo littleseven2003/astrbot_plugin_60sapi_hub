@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 import httpx
@@ -24,7 +26,8 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.sites = SiteService(Path(self._tmp.name) / "edges.sqlite3")
+        self.db_path = Path(self._tmp.name) / "edges.sqlite3"
+        self.sites = SiteService(self.db_path)
         await self.sites.open()
         self.tasks = PushTaskService(self.sites.store)
         self.snapshots = ImageSnapshotStore()
@@ -38,7 +41,6 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
                 name="来源站点",
                 base_url=f"https://gen0.example.test/{SECRET}",
                 source_kind="self_built",
-                enabled=True,
                 timeout_seconds=5,
             ),
         )
@@ -154,7 +156,6 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name=current.name,
                 base_url=current.base_url,
-                enabled=False,
                 timeout_seconds=current.timeout_seconds,
                 source_kind=current.source_kind,
                 expected_revision=current.revision,
@@ -169,41 +170,32 @@ class ProfilePreviewEdgeTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name=current.name,
                 base_url=f"https://gen{self.generation}.example.test/{SECRET}",
-                enabled=True,
                 timeout_seconds=current.timeout_seconds,
                 source_kind="public" if self.generation % 2 else "self_built",
                 expected_revision=current.revision,
             ),
         )
 
-    # ---- 1. 预览进行中停用站点 ----
+    # ---- 1. 历史停用站点升级后仍可预览 ----
 
-    async def test_site_disabled_mid_preview_returns_409_without_sections(
-        self,
-    ) -> None:
-        task = await self._task()
-        self.barrier = self._disable_site
-        self._wrap_preview_cached()
-        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
-        self.assertEqual(result.status_code, 409, result.body)
-        data = result.body.get("data") or {}
-        self.assertEqual(data.get("code"), "site_disabled")
-        self.assertNotIn("sections", data)
-        self.assertNotIn("outputs", data)
-        self.assertEqual(self.snapshots.size, 0)
-        # 至少有一个栏目已经开始获取，屏障才可能触发。
-        self.assertTrue(self.barrier_fired)
+    async def _mark_legacy_disabled(self) -> None:
+        with closing(sqlite3.connect(self.db_path)) as connection, connection:
+            connection.execute(
+                "UPDATE sites SET enabled = 0 WHERE id = ?", (self.site.id,),
+            )
 
-    async def test_site_disabled_before_preview_returns_409(self) -> None:
+    async def test_legacy_disabled_site_still_previews(self) -> None:
+        # 站点级启用已移除：旧库 enabled=0 只供追溯，不再阻止取数。
         task = await self._task()
-        await self._disable_site()
-        result = await self.api.preview_site({"task_id": task.id}, site_id=self.site.id)
-        self.assertEqual(result.status_code, 409, result.body)
+        await self._mark_legacy_disabled()
+        result = await self.api.preview_site(
+            {"task_id": task.id}, site_id=self.site.id,
+        )
+        self.assertEqual(result.status_code, 200, result.body)
         data = result.body.get("data") or {}
-        self.assertEqual(data.get("code"), "site_disabled")
-        self.assertNotIn("sections", data)
-        self.assertEqual(self.snapshots.size, 0)
-        self.assertEqual(self.calls, [])
+        self.assertTrue(data.get("sections"))
+        self.assertTrue(self.calls)
+        self.assertTrue(self.snapshots.size)
 
     # ---- 2. 预览进行中删除组合 ----
 

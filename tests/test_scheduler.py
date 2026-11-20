@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import tempfile
 import unittest
 
@@ -65,7 +66,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
             name="调度站点", base_url="http://example.test/proxy",
-            enabled=True, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         self.clock_now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
         self.sender = FakeSender()
@@ -151,15 +152,15 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.scheduler.check_once(), 1)
         self.assertEqual(len(self.sender.calls), 1)
 
-    async def test_disabled_site_still_sends_safe_alert(self):
-        """站点停用不再静默跳过：到期后仍要发一条安全异常提示。"""
+    async def test_missing_candidate_still_sends_safe_alert(self):
+        """候选失效不再静默跳过：到期后仍要发一条安全异常提示。"""
         task = await self.task()
         await self.scheduler.enable_task(task.id, 1)
-        from core.sites import SiteUpdate
-        await self.sites.update_site(self.site.id, SiteUpdate(
-            name="调度站点", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5, expected_revision=1,
-        ))
+        # 站点级启用已移除：清空候选行，模拟候选全部失效的历史任务。
+        with sqlite3.connect(self.path) as connection, connection:
+            connection.execute(
+                "DELETE FROM push_task_sites WHERE task_id = ?", (task.id,),
+            )
         self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
         self.assertEqual(await self.scheduler.check_once(), 1)
         self.assertEqual(len(self.sender.calls), 1)

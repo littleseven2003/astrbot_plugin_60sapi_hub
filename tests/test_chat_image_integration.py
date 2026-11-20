@@ -80,7 +80,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         )
         self.site = await self.sites.create_site(SiteCreate(
             name="图片查询站点", base_url="http://example.test/img",
-            enabled=True, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="图片查询任务",
@@ -223,7 +223,7 @@ class ChatImageSectionContractTest(unittest.IsolatedAsyncioTestCase):
         self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
             name="契约站点", base_url="http://example.test/contract",
-            enabled=True, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="契约任务",

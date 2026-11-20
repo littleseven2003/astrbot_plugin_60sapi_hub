@@ -30,7 +30,6 @@ class TaskImageStyleApiTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="样式测试站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
             ),
         )
@@ -163,7 +162,7 @@ class TaskImageStyleApiTest(unittest.IsolatedAsyncioTestCase):
                     row[1] for row in
                     connection.execute("PRAGMA table_info(push_tasks)")
                 }
-            self.assertEqual(version, 17)
+            self.assertEqual(version, 18)
             self.assertIn("image_style", columns)
         finally:
             await reopened.close()

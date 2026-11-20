@@ -12,7 +12,6 @@ import httpx
 from core.content_client import ContentHttpClient
 from core.sites import (
     SiteCreate,
-    SiteDisabledError,
     SiteNotFoundError,
     SiteService,
 )
@@ -195,12 +194,11 @@ class ToutiaoServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self._temporary_directory.cleanup()
 
-    async def _site(self, *, enabled=True, token="fictional-toutiao-token"):
+    async def _site(self, *, token="fictional-toutiao-token"):
         return await self.sites.create_site(
             SiteCreate(
                 name="头条测试站点",
                 base_url="http://example.test/proxy",
-                enabled=enabled,
                 timeout_seconds=3,
                 bearer_token=token,
             ),
@@ -234,8 +232,7 @@ class ToutiaoServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.items[0].hot_value, 100)
         self.assertNotIn("fictional-toutiao-token", repr(snapshot))
 
-    async def test_disabled_and_missing_sites_are_rejected(self) -> None:
-        disabled = await self._site(enabled=False)
+    async def test_missing_site_is_rejected(self) -> None:
         service = ToutiaoHotService(
             self.sites,
             client=ContentHttpClient(
@@ -246,8 +243,6 @@ class ToutiaoServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         await service.open()
         try:
-            with self.assertRaises(SiteDisabledError):
-                await service.preview(disabled.id)
             with self.assertRaises(SiteNotFoundError):
                 await service.preview("missing-site-id")
         finally:

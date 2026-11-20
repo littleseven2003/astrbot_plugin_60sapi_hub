@@ -148,7 +148,6 @@ class NewsApiSecretLeakTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="泄露测试站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=2,
                 bearer_token=self.token,
             ),

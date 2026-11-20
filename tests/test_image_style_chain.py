@@ -81,7 +81,6 @@ class ImageStyleChainTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="链路站点",
                 base_url="https://chain.example.test/api",
-                enabled=True,
                 timeout_seconds=5,
                 source_kind="public",
             ),

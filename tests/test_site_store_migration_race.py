@@ -62,7 +62,6 @@ class ConcurrentMigrationTest(unittest.IsolatedAsyncioTestCase):
                 site_id=SITE_ID,
                 name="旧站点",
                 base_url="https://old.example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
                 source_kind="public",
                 bearer_token="legacy-token",

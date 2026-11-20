@@ -82,15 +82,15 @@ class TaskDraftApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.first = await self.sites.create_site(SiteCreate(
             name="首选站点", base_url="https://first.example.test/api",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.backup = await self.sites.create_site(SiteCreate(
             name="备用站点", base_url="https://backup.example.test/api",
-            enabled=True, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
         self.disabled = await self.sites.create_site(SiteCreate(
             name="停用站点", base_url="https://off.example.test/api",
-            enabled=False, timeout_seconds=5, source_kind="public",
+            timeout_seconds=5, source_kind="public",
         ))
 
     async def asyncTearDown(self) -> None:
@@ -130,7 +130,8 @@ class TaskDraftApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bad_format.status_code, 400)
         self.assertEqual(bad_format.body["data"]["field"], "output_format")
 
-    async def test_capability_skips_disabled_and_keeps_no_task(self) -> None:
+    async def test_capability_includes_legacy_disabled_candidate(self) -> None:
+        # 站点级启用已移除：历史停用站点也参与草稿能力测试，按顺序命中首个。
         result = await self.api.test_draft(
             self.draft(sites=[self.disabled.id, self.backup.id]),
         )
@@ -138,9 +139,8 @@ class TaskDraftApiTest(unittest.IsolatedAsyncioTestCase):
         data = result.body["data"]
         self.assertIs(data["draft"], True)
         self.assertIs(data["satisfied"], True)
-        self.assertEqual(data["site_id"], self.backup.id)
-        self.assertEqual([entry["reason"] for entry in data["checked"]],
-                         ["site_disabled", None])
+        self.assertEqual(data["site_id"], self.disabled.id)
+        self.assertEqual([entry["reason"] for entry in data["checked"]], [None])
         # 草稿不落库：任务列表仍为空。
         self.assertEqual(await self.tasks.list_tasks(), [])
 

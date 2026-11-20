@@ -24,7 +24,6 @@ from core.sites import (
     SiteValidationError,
     normalize_base_url,
     normalize_bearer_token,
-    normalize_enabled,
     normalize_revision,
     normalize_site_name,
     normalize_timeout_seconds,
@@ -44,7 +43,6 @@ def make_update(site, **overrides: object) -> SiteUpdate:
     values: dict[str, object] = {
         "name": site.name,
         "base_url": site.base_url,
-        "enabled": site.enabled,
         "timeout_seconds": site.timeout_seconds,
         "expected_revision": site.revision,
     }
@@ -176,14 +174,6 @@ class FieldValidationTest(unittest.TestCase):
                 with self.assertRaises(SiteValidationError):
                     normalize_timeout_seconds(value)
 
-    def test_enabled_must_be_bool(self) -> None:
-        self.assertTrue(normalize_enabled(True))
-        self.assertFalse(normalize_enabled(False))
-        for value in [1, 0, "true", None]:
-            with self.subTest(value=value):
-                with self.assertRaises(SiteValidationError):
-                    normalize_enabled(value)
-
     def test_bearer_token_limits_and_characters(self) -> None:
         self.assertIsNone(normalize_bearer_token(None))
         self.assertIsNone(normalize_bearer_token("   "))
@@ -216,7 +206,6 @@ class FieldValidationTest(unittest.TestCase):
             id="a" * 32,
             name="测试",
             base_url="https://api.example.com",
-            enabled=False,
             timeout_seconds=10.0,
             bearer_token="top-secret-token",
         )
@@ -231,7 +220,6 @@ class FieldValidationTest(unittest.TestCase):
         update = SiteUpdate(
             name="测试",
             base_url="https://api.example.com",
-            enabled=False,
             timeout_seconds=10,
             expected_revision=1,
             credential_action=CredentialAction.SET,
@@ -421,7 +409,6 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(site.id)
         self.assertEqual(site.name, "测试站点")
         self.assertEqual(site.base_url, "https://api.example.com/news")
-        self.assertFalse(site.enabled)
         self.assertEqual(site.timeout_seconds, 10.0)
         self.assertFalse(site.has_bearer_token)
         self.assertEqual(site.revision, 1)
@@ -439,7 +426,6 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
                 site,
                 name="更新后的站点",
                 base_url="http://10.0.0.5:8080/proxy/",
-                enabled=True,
                 timeout_seconds=45,
             ),
         )
@@ -657,7 +643,6 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
             # 旧库没有来源类型；按当前产品口径迁移为公开站点。
             self.assertEqual(sites[0].source_kind, "public")
             self.assertEqual(sites[0].base_url, "https://old.example.test")
-            self.assertTrue(sites[0].enabled)
             self.assertEqual(sites[0].revision, 1)
             self.assertFalse(sites[0].has_bearer_token)
         finally:
@@ -714,16 +699,17 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
             for site in sites:
                 self.assertEqual(site.source_kind, "public")
             self.assertEqual(enabled_site.base_url, "http://10.0.0.9:8080/proxy")
-            self.assertTrue(enabled_site.enabled)
             self.assertEqual(enabled_site.timeout_seconds, 7.5)
             self.assertEqual(enabled_site.revision, 4)
             self.assertTrue(enabled_site.has_bearer_token)
-            self.assertFalse(disabled_site.enabled)
             self.assertEqual(disabled_site.revision, 2)
             self.assertFalse(disabled_site.has_bearer_token)
-            # 凭据仍可用于获取，且未被迁移改写。
+            # 凭据仍可用于获取，且未被迁移改写；历史停用站点升级后也能
+            # 正常取数，站点是否参与只由任务候选决定。
             fetch = await service.get_fetch_config(enabled_site.id)
             self.assertEqual(fetch.bearer_token, "legacy-token")
+            legacy_disabled = await service.get_fetch_config(disabled_site.id)
+            self.assertEqual(legacy_disabled.base_url, "https://off.example.test/news")
         finally:
             await service.close()
 
@@ -764,7 +750,6 @@ class SiteServiceTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name="改名后",
                 base_url=site.base_url,
-                enabled=True,
                 timeout_seconds=5,
                 expected_revision=site.revision,
             ),

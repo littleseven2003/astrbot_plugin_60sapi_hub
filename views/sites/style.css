@@ -2185,15 +2185,13 @@ dialog.dialog button {
 
 /* ---------- 站点列表：选择工具条、五类状态与批量删除结果 ---------- */
 
-.sites-list .badge-source[data-kind="public"],
-.sites-list .badge[data-enabled="true"] {
+.sites-list .badge-source[data-kind="public"] {
   border-color: var(--ok-line);
   background: var(--ok-soft);
   color: var(--ok);
 }
 
-.sites-list .badge-source[data-kind="public"]::before,
-.sites-list .badge[data-enabled="true"]::before {
+.sites-list .badge-source[data-kind="public"]::before {
   background: var(--ok);
 }
 
@@ -2215,16 +2213,6 @@ dialog.dialog button {
 
 .sites-list .badge-source[data-kind="unknown"]::before {
   background: var(--line-strong);
-}
-
-.sites-list .badge-disabled {
-  border-color: var(--danger-line);
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.sites-list .badge-disabled::before {
-  background: var(--danger-line);
 }
 
 .sites-list .site-actions {

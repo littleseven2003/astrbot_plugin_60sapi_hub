@@ -105,7 +105,6 @@ class ChatCandidateSatisfactionTest(unittest.IsolatedAsyncioTestCase):
         return await self.sites.create_site(SiteCreate(
             name=name,
             base_url=f"http://{host}{secret_path}/60s",
-            enabled=True,
             timeout_seconds=5,
         ))
 
@@ -215,34 +214,6 @@ class ChatCandidateSatisfactionTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("e.example.test 新闻", text)
         self.assertEqual(self._hosts_called(), ["f.example.test"])
 
-    async def test_disabled_candidate_is_skipped(self) -> None:
-        disabled = await self._site("停用站", "g.example.test")
-        usable = await self._site("可用站", "i.example.test")
-        self.upstream = {
-            "g.example.test": {"news": 9, "bili": 9},
-            "i.example.test": {"news": 3, "bili": 2},
-        }
-        task = await self._task([disabled, usable])
-        # 停用站点仍在候选里，但聊天不会请求它，也不会用它的内容。
-        await self._disable(disabled)
-
-        text = await self.content_query.query(UMO, task.id)
-
-        self.assertIn("i.example.test 新闻 1", text)
-        self.assertEqual(self._hosts_called(), ["i.example.test"])
-
-    async def _disable(self, site) -> None:
-        from core.sites import SiteUpdate
-
-        await self.sites.update_site(site.id, SiteUpdate(
-            name=site.name,
-            base_url=site.base_url,
-            source_kind=site.source_kind,
-            enabled=False,
-            timeout_seconds=site.timeout_seconds,
-            expected_revision=site.revision,
-        ))
-
     async def test_other_session_cannot_query(self) -> None:
         site = await self._site("授权站", "j.example.test")
         self.upstream = {"j.example.test": {"news": 3, "bili": 2}}
@@ -336,7 +307,7 @@ class ChatCandidateSatisfactionServiceTest(unittest.IsolatedAsyncioTestCase):
         self.image_service = ProfileImageService()
         site = await self.sites.create_site(SiteCreate(
             name="命令站", base_url="http://o.example.test/60s",
-            enabled=True, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
             name="命令任务",

@@ -146,7 +146,6 @@ const elements = {
   name: document.getElementById("name"),
   timeout: document.getElementById("timeout"),
   baseUrl: document.getElementById("base-url"),
-  enabled: document.getElementById("enabled"),
   credentialState: document.getElementById("credential-state"),
   credentialActions: document.getElementById("credential-actions"),
   tokenField: document.getElementById("token-field"),
@@ -600,7 +599,6 @@ function normalizeSite(raw) {
     id,
     name: typeof raw.name === "string" ? raw.name : "未命名站点",
     base_url: typeof raw.base_url === "string" ? raw.base_url : "",
-    enabled: raw.enabled === true,
     timeout_seconds: Number.isFinite(Number(raw.timeout_seconds))
       ? Number(raw.timeout_seconds)
       : 10,
@@ -754,9 +752,9 @@ function safeSiteTestMessage(message) {
   return "测试失败，无法完成连接验证。";
 }
 
-// 站点版本与启用状态一起决定一份测试结果是否还能贴到当前配置上。
+// 站点版本决定一份测试结果是否还能贴到当前配置上。
 function siteTestSignature(site) {
-  return String(site.revision) + ":" + String(site.enabled);
+  return String(site.revision);
 }
 
 function siteRowElement(siteId) {
@@ -1121,7 +1119,6 @@ function renderSite(site) {
   const row = document.createElement("li");
   row.className = "site-row";
   row.dataset.siteId = site.id;
-  row.dataset.enabled = String(site.enabled);
   row.dataset.selected = String(state.siteSelection.has(site.id));
 
   const select = document.createElement("input");
@@ -1149,12 +1146,6 @@ function renderSite(site) {
   name.textContent = site.name;
   name.title = site.name;
   titleLine.append(siteSourcePill(site), name);
-  if (!site.enabled) {
-    const badge = document.createElement("span");
-    badge.className = "badge badge-disabled";
-    badge.textContent = "已停用";
-    titleLine.append(badge);
-  }
 
   // 名称与地址同一行：名称按输入上限截断，地址过长时省略号收尾，完整值在编辑界面可见。
   const url = document.createElement("span");
@@ -1382,28 +1373,28 @@ function resetPreviewResult() {
 
 function syncPreviewSites() {
   resetPreviewResult();
-  const enabledSites = state.sites.filter((site) => site.enabled);
-  if (!enabledSites.some((site) => site.id === state.previewSiteId)) {
-    state.previewSiteId = enabledSites.length ? enabledSites[0].id : null;
+  const sites = state.sites;
+  if (!sites.some((site) => site.id === state.previewSiteId)) {
+    state.previewSiteId = sites.length ? sites[0].id : null;
   }
 
   elements.previewSite.replaceChildren();
-  if (enabledSites.length === 0) {
+  if (sites.length === 0) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "没有已启用的站点";
+    option.textContent = "没有可用站点";
     elements.previewSite.append(option);
     elements.previewSite.disabled = true;
     elements.previewContentType.disabled = true;
     elements.previewButton.disabled = true;
     elements.previewRefreshButton.disabled = true;
     elements.previewHint.textContent =
-      "暂无已启用站点。请先在站点列表中启用一个站点。";
+      "暂无站点。请先在站点列表新增一个站点。";
     elements.previewHint.hidden = false;
     return;
   }
 
-  for (const site of enabledSites) {
+  for (const site of sites) {
     const option = document.createElement("option");
     option.value = site.id;
     option.textContent = site.name;
@@ -1828,9 +1819,7 @@ function pendingReviewText(pending) {
     ? state.sites.find((item) => item.id === pending.targetId)
     : null;
   const current = site
-    ? `仍在列表中：${site.name}（${
-        site.enabled ? "已启用" : "已停用"
-      }）。`
+    ? `仍在列表中：${site.name}。`
     : "不在列表中。";
   if (pending.kind === "edit") {
     return (
@@ -3057,7 +3046,6 @@ function openCreate() {
   elements.name.value = "";
   elements.baseUrl.value = "";
   elements.timeout.value = "10";
-  elements.enabled.checked = false;
   elements.sourceKind.value = SOURCE_KIND_PUBLIC;
   elements.instancePreset.value = "custom";
   state.customBaseUrl = "";
@@ -3090,7 +3078,6 @@ function openEdit(site) {
   state.editingHasToken = Boolean(site.has_bearer_token);
   state.credentialAutoCleared = false;
   elements.timeout.value = String(site.timeout_seconds);
-  elements.enabled.checked = site.enabled;
   const known = isKnownSourceKind(site.source_kind);
   elements.sourceKind.value = known
     ? site.source_kind
@@ -3120,7 +3107,6 @@ function formPayload() {
   const payload = {
     name: elements.name.value,
     base_url: elements.baseUrl.value,
-    enabled: elements.enabled.checked,
     timeout_seconds: Number(elements.timeout.value),
   };
   const kind = elements.sourceKind.value;
@@ -3813,7 +3799,7 @@ function taskCandidateText(task) {
         : item && item.exists === false
           ? "已删除的站点"
           : (item && item.id) || "未知站点";
-      return `${index + 1}. ${name}${item && item.enabled === false ? "（已停用）" : ""}`;
+      return `${index + 1}. ${name}`;
     })
     .join(" → ");
 }
@@ -3861,7 +3847,7 @@ function renderTasks() {
     }
     const candidateList = Array.isArray(task.sites) ? task.sites : [];
     const usableCandidates = candidateList.filter(
-      (item) => item && item.enabled && item.exists !== false,
+      (item) => item && item.exists !== false,
     );
     const candidates = document.createElement("span");
     candidates.className = "task-card-sites";
@@ -4020,7 +4006,7 @@ function taskSiteOptions() {
   for (const site of available) {
     const option = document.createElement("option");
     option.value = site.id;
-    option.textContent = site.enabled ? site.name : `${site.name}（已停用）`;
+    option.textContent = site.name;
     elements.taskSitePicker.append(option);
   }
 }
@@ -4044,10 +4030,10 @@ function renderTaskSites() {
     name.className = "task-site-name";
     const site = state.sites.find((item) => item.id === siteId);
     name.textContent = siteNameById(siteId);
-    if (!site || !site.enabled) {
+    if (!site) {
       const status = document.createElement("span");
       status.className = "task-site-status";
-      status.textContent = site ? "（已停用）" : "（已删除）";
+      status.textContent = "（已删除）";
       name.append(status);
     }
     const actions = document.createElement("span");
@@ -5416,7 +5402,7 @@ function renderDeliveryPreview(data, token) {
   if (candidates.length > 0) {
     const order = document.createElement("p");
     order.textContent = `候选站点（按尝试顺序）：${candidates
-      .map((item, index) => `${index + 1}. ${item.name || item.id}${item.enabled ? "" : "（已停用）"}`)
+      .map((item, index) => `${index + 1}. ${item.name || item.id}`)
       .join(" → ")}`;
     elements.deliveryConfirmInfo.append(order);
   }

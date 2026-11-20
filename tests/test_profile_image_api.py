@@ -123,7 +123,6 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="图片站点",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
             ),
         )
@@ -296,7 +295,6 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
             SiteUpdate(
                 name=self.site.name,
                 base_url=self.site.base_url,
-                enabled=False,
                 timeout_seconds=self.site.timeout_seconds,
                 expected_revision=self.site.revision,
             ),
@@ -384,7 +382,6 @@ class ProfileImageApiTest(unittest.IsolatedAsyncioTestCase):
                 SiteUpdate(
                     name=current.name,
                     base_url="http://example.test/other",
-                    enabled=True,
                     timeout_seconds=5,
                     expected_revision=current.revision,
                 ),

@@ -291,7 +291,6 @@ class ContentApiSecretLeakTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="B 站泄露测试",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=2,
                 bearer_token=self.token,
             ),
@@ -405,7 +404,6 @@ class ContentApiLinkToleranceTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name="链接容错测试",
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=2,
                 bearer_token="chain-token",
             ),

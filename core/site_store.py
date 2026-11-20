@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -953,6 +953,38 @@ class SiteStore:
             except Exception as exc:
                 raise SiteStoreError("读取站点列表失败") from exc
             return [_row_to_site(row) for row in rows]
+
+    async def get_site_revisions(
+        self,
+        site_ids: Iterable[str],
+    ) -> dict[str, int]:
+        """一次查询返回多个站点的 revision；用于来源版本的原子复核。
+
+        单条 SELECT 在同一个读事务里完成：不会出现“读到 A 后、读 B 前
+        A 被修改”的间隙，调用方可按同一快照判断全部来源是否仍一致。
+        不存在的站点不出现在结果里，由调用方按缺失处理。
+        """
+        ids = tuple(dict.fromkeys(
+            site_id for site_id in site_ids
+            if isinstance(site_id, str) and site_id
+        ))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        async with self._lock:
+            connection = self._require_connection()
+            try:
+                async with connection.execute(
+                    f"SELECT id, revision FROM sites "
+                    f"WHERE id IN ({placeholders})",
+                    ids,
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            except SiteStoreError:
+                raise
+            except Exception as exc:
+                raise SiteStoreError("读取站点版本失败") from exc
+        return {str(row["id"]): int(row["revision"]) for row in rows}
 
     async def get_site(self, site_id: str) -> StoredSite:
         async with self._lock:

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 
@@ -29,6 +30,7 @@ from core.plan_preview import PlanPreview, PlanPreviewResult
 from core.sites import (
     SiteCreate,
     SiteService,
+    SiteStorageError,
     SiteUpdate,
 )
 from core.task_api import TaskApi
@@ -492,6 +494,82 @@ class ReviewFixTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sender.messages, [])
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error_code, "config_changed")
+
+    async def test_column_fetch_storage_error_aborts_without_alert(
+        self,
+    ) -> None:
+        async def broken_preview(*args, **kwargs):
+            raise SiteStorageError("injected storage failure")
+
+        self.content.preview_cached = broken_preview  # type: ignore[assignment]
+        task = await self._task()
+        preview = await self.preview.preview_assembled(
+            {"task_id": task.id},
+            site_ids=[self.a.id, self.b.id],
+            owner="column-storage",
+        )
+        # 栏目取数内部的存储故障必须保留为 503，而不是降级成缺栏。
+        self.assertEqual(preview.status_code, 503, preview.body)
+        self.assertEqual(
+            preview.body["data"]["code"], "storage_unavailable",
+        )
+        result = await self.delivery.execute(task.id, "column-storage")
+        self.assertEqual(self.sender.messages, [])
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "storage_unavailable")
+
+    async def test_source_checks_use_one_snapshot_read(self) -> None:
+        class AtomicSites:
+            def __init__(self, real, name: str) -> None:
+                self._real = real
+                self.name = name
+                self.calls: list[tuple[str, ...]] = []
+
+            async def get_revisions(self, site_ids):
+                self.calls.append(tuple(site_ids))
+                return await self._real.get_revisions(list(site_ids))
+
+            async def get_site(self, site_id):
+                raise AssertionError(
+                    f"{self.name} 不应逐站读取来源版本：{site_id}",
+                )
+
+        revision_a = (await self.sites.get_site(self.a.id)).revision
+        revision_b = (await self.sites.get_site(self.b.id)).revision
+        atomic = AtomicSites(self.sites, "preview")
+        original_preview_sites = self.preview._sites
+        self.preview._sites = atomic
+        try:
+            verified = await self.preview._verify_sources((
+                (self.a.id, revision_a), (self.b.id, revision_b),
+            ))
+            self.assertIsNone(verified)
+            # 渲染后校验同一个方法，也必须一次读完。
+            snapshot = SimpleNamespace(
+                sites=((self.a.id, revision_a), (self.b.id, revision_b)),
+            )
+            self.assertIsNone(
+                await self.preview._check_snapshot_sites(snapshot),
+            )
+        finally:
+            self.preview._sites = original_preview_sites
+        self.assertEqual(len(atomic.calls), 2)
+        for call in atomic.calls:
+            self.assertEqual(call, (self.a.id, self.b.id))
+
+        delivery_atomic = AtomicSites(self.sites, "delivery")
+        original_delivery_sites = self.delivery._sites
+        self.delivery._sites = delivery_atomic
+        try:
+            unchanged = await self.delivery._sources_unchanged((
+                (self.a.id, revision_a), (self.b.id, revision_b),
+            ))
+        finally:
+            self.delivery._sites = original_delivery_sites
+        self.assertTrue(unchanged)
+        self.assertEqual(
+            delivery_atomic.calls, [(self.a.id, self.b.id)],
+        )
 
     async def test_storage_error_aborts_without_alert(self) -> None:
         class StoragePreview:

@@ -260,6 +260,20 @@ class SiteService:
             stored = await self._store.get_site(normalized_id)
         return _to_public(stored)
 
+    async def get_revisions(self, site_ids: object) -> dict[str, int]:
+        """一次读取多个站点的 revision，供预览/投递的原子来源复核。"""
+        if isinstance(site_ids, (str, bytes)):
+            raise SiteValidationError("sites", "必须是站点 id 列表")
+        if not isinstance(site_ids, (list, tuple)):
+            raise SiteValidationError("sites", "必须是站点 id 列表")
+        ids = [site_id for site_id in site_ids if isinstance(site_id, str)]
+        try:
+            return await self._store.get_site_revisions(ids)
+        except SiteStoreClosedError as exc:
+            raise SiteStorageError("站点存储尚未打开。") from exc
+        except SiteStoreError as exc:
+            raise SiteStorageError("站点存储操作失败。") from exc
+
     async def get_fetch_config(self, site_id: object) -> SiteFetchConfig:
         """读取站点的内部连接配置；凭据只交给获取层。"""
         normalized_id = normalize_site_id(site_id)

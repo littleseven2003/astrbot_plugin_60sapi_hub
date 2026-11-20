@@ -154,9 +154,12 @@ class PlanPreview:
         # 只要变过就丢弃整轮结果，按最终一致版本重做；超过上限明确失败，
         # 绝不把不同版本的栏目拼进同一个 200 响应。
         for attempt in range(_MAX_PREVIEW_ATTEMPTS):
-            sections, failures = await self._collect_sections(
-                plan_items, force_refresh, site.id, deadline=deadline,
-            )
+            try:
+                sections, failures = await self._collect_sections(
+                    plan_items, force_refresh, site.id, deadline=deadline,
+                )
+            except SiteStorageError:
+                return _storage_error()
             try:
                 latest = await self._tasks.get_config_snapshot(task_id)
                 latest_site = await self._sites.get_site(site_id)
@@ -252,18 +255,38 @@ class PlanPreview:
                 }
         return _ok(data)
 
+    async def _read_revisions(
+        self,
+        site_ids: Iterable[str],
+    ) -> dict[str, int]:
+        """一次读取全部来源的 revision；旧桩回退到逐个读取。"""
+        ids = tuple(dict.fromkeys(site_ids))
+        getter = getattr(self._sites, "get_revisions", None)
+        if callable(getter):
+            return await getter(list(ids))
+        revisions: dict[str, int] = {}
+        for site_id in ids:
+            site = await self._sites.get_site(site_id)
+            revisions[site.id] = site.revision
+        return revisions
+
     async def _check_snapshot_sites(self, snapshot: Any) -> PlanPreviewResult | None:
         """快照里的每个来源站点都仍存在且 revision 未变。"""
-        for site_id, revision in getattr(snapshot, "sites", ()):  # noqa: B905
-            try:
-                site = await self._sites.get_site(site_id)
-            except SiteNotFoundError:
-                return _stale_snapshot_error()
-            except SiteStorageError:
-                return _storage_error()
-            except Exception:
-                return _internal_error()
-            if site.revision != revision:
+        expected = tuple(getattr(snapshot, "sites", ()))
+        if not expected:
+            return None
+        try:
+            revisions = await self._read_revisions(
+                site_id for site_id, _ in expected
+            )
+        except SiteStorageError:
+            return _storage_error()
+        except SiteNotFoundError:
+            return _stale_snapshot_error()
+        except Exception:
+            return _internal_error()
+        for site_id, revision in expected:
+            if revisions.get(site_id) != revision:
                 return _stale_snapshot_error()
         return None
 
@@ -271,17 +294,26 @@ class PlanPreview:
         self,
         sources: Iterable[tuple[str, int]],
     ) -> PlanPreviewResult | None:
-        """本次预览实际使用的来源站点必须仍存在且 revision 一致。"""
-        for site_id, revision in sources:
-            try:
-                site = await self._sites.get_site(site_id)
-            except SiteNotFoundError:
-                return _preview_conflict_error()
-            except SiteStorageError:
-                return _storage_error()
-            except Exception:
-                return _internal_error()
-            if site.revision != revision:
+        """本次预览实际使用的来源站点必须仍存在且 revision 一致。
+
+        一次查询读取全部来源版本，避免逐个读取时“读完 A、读 B 前 A
+        被改”的间隙把旧内容当成新版本。
+        """
+        expected = tuple(sources)
+        if not expected:
+            return None
+        try:
+            revisions = await self._read_revisions(
+                site_id for site_id, _ in expected
+            )
+        except SiteStorageError:
+            return _storage_error()
+        except SiteNotFoundError:
+            return _preview_conflict_error()
+        except Exception:
+            return _internal_error()
+        for site_id, revision in expected:
+            if revisions.get(site_id) != revision:
                 return _preview_conflict_error()
         return None
 
@@ -522,9 +554,12 @@ class PlanPreview:
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for attempt in range(_MAX_PREVIEW_ATTEMPTS):
-            sections, failures = await self._collect_sections(
-                items, force_refresh, site.id, use_cache=False,
-            )
+            try:
+                sections, failures = await self._collect_sections(
+                    items, force_refresh, site.id, use_cache=False,
+                )
+            except SiteStorageError:
+                return _storage_error()
             try:
                 latest_site = await self._sites.get_site(site_id)
             except SiteNotFoundError:
@@ -908,6 +943,10 @@ class PlanPreview:
                 sections.append(section)
                 failures.append(section)
                 continue
+            except SiteStorageError:
+                # 存储故障不是“该栏没有内容”：向上传播为整次预览失败，
+                # 绝不能降级成缺栏后触发异常提示/发送。
+                raise
             except Exception as exc:
                 section = _section_error(item.content_type, item.label, exc)
                 sections.append(section)

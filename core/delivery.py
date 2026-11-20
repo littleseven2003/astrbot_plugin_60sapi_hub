@@ -1091,13 +1091,27 @@ class DeliveryService:
         self,
         sites: tuple[tuple[str, int], ...],
     ) -> bool:
-        """本次内容实际使用的每个来源站点仍存在且 revision 未变。"""
+        """本次内容实际使用的每个来源站点仍存在且 revision 未变。
+
+        通过一次存储查询读取全部来源版本：逐个读取会在“读完 A、读 B
+        前 A 被改”时漏过变更，旧内容仍可能被发送。
+        """
+        if not sites:
+            return True
+        ids = [site_id for site_id, _ in sites]
+        getter = getattr(self._sites, "get_revisions", None)
+        try:
+            if callable(getter):
+                revisions = await getter(ids)
+            else:
+                revisions = {}
+                for site_id in ids:
+                    current = await self._sites.get_site(site_id)
+                    revisions[current.id] = current.revision
+        except Exception:
+            return False
         for site_id, revision in sites:
-            try:
-                current = await self._sites.get_site(site_id)
-            except Exception:
-                return False
-            if current.revision != revision:
+            if revisions.get(site_id) != revision:
                 return False
         return True
 

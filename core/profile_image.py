@@ -982,6 +982,8 @@ class ProfileImageRenderer:
         # 首行可以窄于其余行（例如右侧并排热度列），续行回到整行宽度，
         # 否则长标题每一行都会在右边留出大段空白。
         head_width = width if first_width is None else min(first_width, width)
+        # 首行右侧有热度列时，首行宽度是硬边界：收尾标点不能悬挂进热度列。
+        strict_first = first_width is not None and head_width < width
 
         def measure(value: str) -> float:
             return font.getlength(value) + padding
@@ -1001,7 +1003,9 @@ class ProfileImageRenderer:
             if not current and token in _CLOSING_PUNCT and lines:
                 # 行首不出现收尾标点：先按可用宽度并回上一行，放不下就把上一
                 # 行末尾的字或整词带下来与标点同行，任何情况下都不越界。
-                current = self._attach_punct(lines, token, measure, usable)
+                current = self._attach_punct(
+                    lines, token, measure, usable, strict_first=strict_first,
+                )
                 continue
             # 首行右侧并排热度列时，给紧随其后的收尾标点预留位置：否则标点
             # 要么悬挂越过首行可用宽度、侵入热度文字，要么落到次行行首。
@@ -1030,7 +1034,9 @@ class ProfileImageRenderer:
                     # 收尾标点不另起一行：按宽度并回本行，放不下就把本行末尾
                     # 的字或整词连同标点一起带到下一行，避免越过可用宽度。
                     lines.append(current.rstrip())
-                    current = self._attach_punct(lines, token, measure, usable)
+                    current = self._attach_punct(
+                        lines, token, measure, usable, strict_first=strict_first,
+                    )
                     continue
                 lines.append(current.rstrip())
                 current = token
@@ -1047,6 +1053,8 @@ class ProfileImageRenderer:
         token: str,
         measure: Any,
         limit: Any,
+        *,
+        strict_first: bool = False,
     ) -> str:
         """把收尾标点并回上一行，返回本行继续承接的内容。
 
@@ -1061,7 +1069,22 @@ class ProfileImageRenderer:
         if 0 < len(tail) < len(line) and measure(tail + token) <= limit(len(lines)):
             lines[-1] = line[: -len(tail)].rstrip()
             return tail + token
-        # 整行已是一个不可拆分的单元：既不能让标点起行，也不能拆词，
+        if strict_first and len(lines) == 1 and line:
+            # 首行有热度列时不能悬挂：把行尾内容按宽度带到下一行，与标点
+            # 同行续写，首行严格回到可用宽度以内，标题文字不丢失。行尾已有
+            # 的收尾标点要跟着被带走的字一起下移，不能落在次行行首。
+            cut = len(line)
+            while cut > 0 and line[cut - 1] in _CLOSING_PUNCT:
+                cut -= 1
+            body, punct_run = line[:cut], line[cut:]
+            keep = body
+            while keep and measure(keep + punct_run + token) > limit(0):
+                keep = keep[:-1]
+            if keep:
+                rest = body[len(keep):] + punct_run
+                lines[-1] = keep.rstrip()
+                return rest + token
+        # 其余行整行已是一个不可拆分的单元：既不能让标点起行，也不能拆词，
         # 只能让它悬挂在该行行尾（最多超出一个标点宽，仍在卡片内边距内）。
         lines[-1] = (line + token).rstrip()
         return ""

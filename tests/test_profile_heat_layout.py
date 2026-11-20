@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import unittest
 
-from core.profile_image import FontUnavailableError, ProfileImageRenderer, find_cjk_font
+from core.profile_image import (
+    FontUnavailableError,
+    ProfileImageRenderer,
+    find_cjk_font,
+    get_style,
+)
 
 
 def has_font() -> bool:
@@ -108,6 +113,78 @@ class HeatLayoutTest(unittest.TestCase):
             self.renderer._text_width(heat.text, heat.size), 180,
         )
         self.assertLessEqual(180, content_width // 4 + 1)
+
+    def test_first_line_never_overlaps_heat_with_trailing_punct(self) -> None:
+        # 首行右侧有热度列时，收尾标点不能悬挂进热度列；放不下的标题内容
+        # 续到下一行，且不丢字、不让收尾标点落到次行行首。
+        titles = [
+            "202611201234567890123456789012345678？？？",
+            "字" * 24 + "（续）？？？",
+        ]
+        for style_name in ("default", "mist", "floral", "bold_studio"):
+            self.renderer._style = get_style(style_name)
+            for title in titles:
+                items = [{"title": title, "hot_value": 87654321}]
+                lines = self.renderer._body_lines(items, self.renderer.limits.width)
+                first = [
+                    line for line in lines
+                    if any(part.number for part in line.parts)
+                ][0]
+                heat = first.parts[-1]
+                title_part = first.parts[1]
+                content_width = self.renderer._content_width(
+                    self.renderer.limits.width,
+                )
+                heat_start = content_width - self.renderer._text_width(
+                    heat.text, heat.size,
+                )
+                title_end = title_part.x + self.renderer._text_width(
+                    title_part.text, title_part.size,
+                )
+                self.assertLessEqual(
+                    title_end, heat_start,
+                    f"{style_name} 首行标题压到热度列：{title_end} > {heat_start}",
+                )
+                # 用真实字形墨迹再确认一次：标题最后一笔必须在热度第一笔左侧。
+                title_box = self.renderer._font(
+                    title_part.size,
+                ).getmask(title_part.text).getbbox()
+                heat_box = self.renderer._font(
+                    heat.size,
+                ).getmask(heat.text).getbbox()
+                self.assertIsNotNone(title_box)
+                self.assertIsNotNone(heat_box)
+                title_ink_right = title_part.x + title_box[2]
+                heat_left = heat_start + heat_box[0]
+                self.assertLessEqual(
+                    title_ink_right, heat_left,
+                    f"{style_name} 标题字形与热度重叠：{title_ink_right} > {heat_left}",
+                )
+                joined = "".join(
+                    part.text
+                    for line in lines
+                    for part in line.parts
+                    if part.size == self.renderer._style.title_size
+                )
+                self.assertEqual(joined, title, f"{style_name} 标题文字被截断")
+                self.assertNotIn(
+                    lines[1].parts[0].text[0],
+                    "，。、；：！？）》】”’…",
+                    f"{style_name} 收尾标点落到次行行首",
+                )
+
+    def test_common_single_line_title_stays_compact(self) -> None:
+        for style_name in ("default", "mist", "floral", "bold_studio"):
+            self.renderer._style = get_style(style_name)
+            items = [{"title": "普通标题", "hot_value": 87654321}]
+            lines = self.renderer._body_lines(items, self.renderer.limits.width)
+            numbered = [
+                line for line in lines
+                if any(part.number for part in line.parts)
+            ]
+            self.assertEqual(len(numbered), 1)
+            self.assertEqual(numbered[0].parts[1].text, "普通标题")
+            self.assertEqual(numbered[0].parts[-1].text, "热度：87654321")
 
     def test_detail_sections_keep_expanded_heat_row(self) -> None:
         # 知乎等带摘要栏目沿用原布局：热度超过 124px 时整栏独立一行。

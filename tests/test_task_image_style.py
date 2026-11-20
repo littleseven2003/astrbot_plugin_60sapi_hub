@@ -61,7 +61,10 @@ class TaskImageStyleApiTest(unittest.IsolatedAsyncioTestCase):
         data = listed.body["data"]
         self.assertEqual(
             [style["id"] for style in data["image_styles"]],
-            ["default", "mist", "floral", "bold_studio"],
+            [
+                "default", "mist", "floral", "bold_studio",
+                "morning", "midnight", "beacon",
+            ],
         )
         self.assertEqual(data["default_image_style"], "default")
         got = await self.api.get_task(task["id"])
@@ -137,7 +140,10 @@ class TaskImageStyleApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.body["data"]["image_style"], "bold_studio")
         self.assertEqual(
             [style["id"] for style in result.body["data"]["image_styles"]],
-            ["default", "mist", "floral", "bold_studio"],
+            [
+                "default", "mist", "floral", "bold_studio",
+                "morning", "midnight", "beacon",
+            ],
         )
 
     async def test_old_database_gains_style_column_and_defaults(self) -> None:
@@ -168,7 +174,10 @@ class TaskImageStyleApiTest(unittest.IsolatedAsyncioTestCase):
             await reopened.close()
 
     def test_every_registry_style_is_a_frozen_preset(self) -> None:
-        self.assertEqual(set(PRESETS), {"default", "mist", "floral", "bold_studio"})
+        self.assertEqual(set(PRESETS), {
+            "default", "mist", "floral", "bold_studio",
+            "morning", "midnight", "beacon",
+        })
 
 
 if __name__ == "__main__":

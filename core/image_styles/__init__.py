@@ -36,13 +36,42 @@ def get_style(value: object = None) -> ImageStyle:
     return PRESETS[resolve_style_id(value)]
 
 
-def style_options() -> tuple[dict[str, str], ...]:
+def _hex(color: tuple[int, int, int] | None) -> str | None:
+    if color is None:
+        return None
+    return "#{:02X}{:02X}{:02X}".format(*color)
+
+
+def _preview_tokens(style: ImageStyle) -> dict[str, object]:
+    """下拉旁示例卡的配色与形状；新增样式自动获得示例。"""
+    return {
+        "page_bg": _hex(style.page_bg),
+        "card_bg": _hex(style.card_bg),
+        "header_bg": _hex(style.header_bg or style.card_bg),
+        "ink": _hex(style.ink),
+        "title_ink": _hex(style.title_ink),
+        "muted": _hex(style.muted),
+        "num": _hex(style.num),
+        "heat": _hex(style.heat),
+        "divider": _hex(style.divider),
+        "border": _hex(style.border),
+        "accent": _hex(style.accent),
+        "brand_ink": _hex(style.brand_ink),
+        "number_shape": style.number_shape,
+        "number_bg": _hex(style.number_bg),
+        "frame_style": style.frame_style,
+        "card_radius": style.card_radius,
+    }
+
+
+def style_options() -> tuple[dict[str, object], ...]:
     """后台下拉与任务列表使用的稳定选项；顺序固定，不随字典顺序变化。"""
     return tuple(
         {
             "id": PRESETS[style_id].id,
             "name": PRESETS[style_id].name,
             "description": PRESETS[style_id].description,
+            "preview": _preview_tokens(PRESETS[style_id]),
         }
         for style_id in STYLE_ORDER
         if style_id in PRESETS

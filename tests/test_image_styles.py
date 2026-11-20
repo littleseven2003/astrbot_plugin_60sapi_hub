@@ -1,4 +1,4 @@
-"""图片样式注册表、配色对比度与四套样式的真实渲染回归。"""
+"""图片样式注册表、配色对比度与七套样式的真实渲染回归。"""
 
 from __future__ import annotations
 
@@ -61,14 +61,41 @@ class ImageSnapshotStyleTest(unittest.TestCase):
 
 
 class ImageStyleRegistryTest(unittest.TestCase):
-    def test_four_presets_in_stable_order(self) -> None:
+    def test_seven_presets_in_stable_order(self) -> None:
         self.assertEqual(
-            STYLE_ORDER, ("default", "mist", "floral", "bold_studio"),
+            STYLE_ORDER,
+            (
+                "default", "mist", "floral", "bold_studio",
+                "morning", "midnight", "beacon",
+            ),
         )
         self.assertEqual(tuple(PRESETS), STYLE_ORDER)
         options = style_options()
         self.assertEqual([item["id"] for item in options], list(STYLE_ORDER))
         self.assertTrue(all(item["name"] for item in options))
+
+    def test_style_options_include_preview_tokens(self) -> None:
+        expected = {
+            "default": "默认", "mist": "雾笺", "floral": "花间",
+            "bold_studio": "粗体工作室", "morning": "晨报",
+            "midnight": "夜读", "beacon": "航标",
+        }
+        options = style_options()
+        self.assertEqual(
+            {item["id"]: item["name"] for item in options}, expected,
+        )
+        for item in options:
+            preview = item.get("preview")
+            self.assertIsInstance(preview, dict, item["id"])
+            for key in (
+                "page_bg", "card_bg", "header_bg", "ink", "title_ink",
+                "muted", "num", "heat", "divider", "border", "accent",
+                "brand_ink",
+            ):
+                self.assertRegex(preview[key], r"^#[0-9A-F]{6}$", key)
+            self.assertIn(preview["number_shape"], ("plain", "square"))
+            self.assertIn(preview["frame_style"], ("card", "square"))
+            self.assertIsInstance(preview["card_radius"], int)
 
     def test_every_preset_is_immutable_and_well_formed(self) -> None:
         for style_id in STYLE_ORDER:

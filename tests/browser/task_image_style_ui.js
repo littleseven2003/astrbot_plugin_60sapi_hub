@@ -81,7 +81,7 @@ function check(ok, msg) { if (!ok) throw new Error(msg); }
     });
     check(selectInfo.value === "mist", "编辑器未回填 mist: " + JSON.stringify(selectInfo));
     const ids = selectInfo.options.map((o) => o[0]);
-    check(JSON.stringify(ids) === JSON.stringify(["default", "mist", "floral", "bold_studio"]),
+    check(JSON.stringify(ids) === JSON.stringify(["default", "mist", "floral", "bold_studio", "morning", "midnight", "beacon"]),
       "样式选项顺序不对: " + JSON.stringify(selectInfo.options));
     // 改选并保存
     await frame.selectOption("#task-image-style", "bold_studio");
@@ -93,6 +93,34 @@ function check(ok, msg) { if (!ok) throw new Error(msg); }
     await openEditor();
     const reopened = await frame.evaluate(() => document.getElementById("task-image-style").value);
     check(reopened === "bold_studio", "重开未回填: " + reopened);
+    // 下拉旁示例卡随选项更新，桌面在右侧；390px 移到下方。
+    const previewCard = await frame.evaluate(() => {
+      const card = document.querySelector("#task-style-preview .style-preview-card");
+      const row = document.querySelector(".task-style-row");
+      return card ? {
+        style: card.dataset.style,
+        head: card.querySelector(".style-preview-head")?.textContent,
+        rows: card.querySelectorAll(".style-preview-row").length,
+        direction: getComputedStyle(row).flexDirection,
+      } : null;
+    });
+    check(previewCard && previewCard.style === "bold_studio",
+      "示例卡未跟随已保存样式: " + JSON.stringify(previewCard));
+    check(previewCard.rows === 2 && previewCard.head === "粗体工作室",
+      "示例卡内容不对: " + JSON.stringify(previewCard));
+    check(previewCard.direction === "row", "桌面示例卡应在右侧: " + JSON.stringify(previewCard));
+    await frame.selectOption("#task-image-style", "morning");
+    await frame.waitForTimeout(150);
+    const morningCard = await frame.evaluate(() =>
+      document.querySelector("#task-style-preview .style-preview-card")?.dataset.style);
+    check(morningCard === "morning", "切到晨报后示例卡未更新: " + morningCard);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await frame.waitForTimeout(150);
+    const mobileDirection = await frame.evaluate(() =>
+      getComputedStyle(document.querySelector(".task-style-row")).flexDirection);
+    check(mobileDirection === "column", "390px 示例卡应移到下方: " + mobileDirection);
+    await page.setViewportSize({ width: 1400, height: 1000 });
+    await frame.waitForTimeout(150);
     // 改选未保存样式不再置灰预览：预览与能力测试改用当前表单草稿。
     const previewButton = frame.locator("#task-preview-form-button");
     check(await previewButton.isEnabled(), "重开后预览按钮应可用");
@@ -114,7 +142,7 @@ function check(ok, msg) { if (!ok) throw new Error(msg); }
     await frame.locator("#discard-confirm-button").click();
     await frame.waitForFunction(() => !document.getElementById("task-dialog")?.open, null, { timeout: WAIT });
     const listed = await api("GET", ep("/tasks"));
-    check(JSON.stringify((listed.body.data.image_styles || []).map((s) => s.id)) === JSON.stringify(["default","mist","floral","bold_studio"]),
+    check(JSON.stringify((listed.body.data.image_styles || []).map((s) => s.id)) === JSON.stringify(["default","mist","floral","bold_studio","morning","midnight","beacon"]),
       "任务列表未附带样式注册表: " + JSON.stringify(listed.body.data.image_styles));
     console.log("STYLE UI PASS");
   } finally {

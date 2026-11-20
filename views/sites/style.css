@@ -2877,3 +2877,101 @@ dialog.dialog button {
     max-width: calc(100vw - 16px);
   }
 }
+
+/* ---------- 图片样式示例卡 ---------- */
+.task-style-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.task-style-select {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.task-style-select select {
+  width: 100%;
+}
+
+.task-style-preview {
+  flex: 0 0 232px;
+  min-width: 0;
+}
+
+.style-preview-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.style-preview-head {
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.style-preview-body {
+  padding: 4px 10px 2px;
+}
+
+.style-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.style-preview-num {
+  flex: 0 0 auto;
+  min-width: 18px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.style-preview-row .style-preview-num:not([style*="background"]) {
+  background: transparent;
+}
+
+.style-preview-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+
+.style-preview-heat {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.style-preview-divider {
+  display: block;
+  height: 1px;
+  margin: 3px 0;
+}
+
+.style-preview-source {
+  padding: 4px 10px 8px;
+  font-size: 10px;
+}
+
+@media (max-width: 480px) {
+  .task-style-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .task-style-preview {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}

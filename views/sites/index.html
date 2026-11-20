@@ -372,13 +372,19 @@
               </select>
             </label>
 
-            <label class="field">
+            <div class="field">
               <span>图片样式</span>
-              <select id="task-image-style">
-                <option value="default">默认</option>
-              </select>
-              <small>控制任务预览、聊天长图和定时图片投递的排版；文字与 Markdown 任务也会保存该选择。</small>
-            </label>
+              <div class="task-style-row">
+                <label class="task-style-select">
+                  <select id="task-image-style" aria-label="图片样式">
+                    <option value="default">默认</option>
+                  </select>
+                </label>
+                <div id="task-style-preview" class="task-style-preview"
+                     role="img" aria-label="图片样式示例预览"></div>
+              </div>
+              <small>控制任务预览、聊天长图和定时图片投递的排版；右侧示例仅示意配色与层级，实际长图以生成结果为准。文字与 Markdown 任务也会保存该选择。</small>
+            </div>
 
             <div class="field">
               <span>定时计划</span>

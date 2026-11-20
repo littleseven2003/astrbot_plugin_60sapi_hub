@@ -230,6 +230,7 @@ const elements = {
   siteTestSummary: document.getElementById("site-test-summary"),
   taskOutputFormat: document.getElementById("task-output-format"),
   taskImageStyle: document.getElementById("task-image-style"),
+  taskStylePreview: document.getElementById("task-style-preview"),
   taskUmos: document.getElementById("task-umos"),
   taskScheduleNone: document.getElementById("task-schedule-none"),
   taskScheduleDaily: document.getElementById("task-schedule-daily"),
@@ -4423,7 +4424,19 @@ async function runTaskCapabilityTest() {
 }
 
 const DEFAULT_IMAGE_STYLES = [
-  { id: "default", name: "默认", description: "白色圆角卡片、莓红页眉强调。" },
+  {
+    id: "default",
+    name: "默认",
+    description: "白色圆角卡片、莓红页眉强调。",
+    preview: {
+      page_bg: "#EEF0F3", card_bg: "#FFFFFF", header_bg: "#FFFFFF",
+      ink: "#30343B", title_ink: "#20242C", muted: "#6B717B",
+      num: "#6B7280", heat: "#6F7580", divider: "#EDF0F3",
+      border: "#DFE2E8", brand_ink: "#A13C62", accent: "#A13C62",
+      number_shape: "plain", number_bg: null, frame_style: "card",
+      card_radius: 20,
+    },
+  },
 ];
 
 function taskStyleOptions() {
@@ -4433,6 +4446,70 @@ function taskStyleOptions() {
 function taskStyleName(styleId) {
   const style = taskStyleOptions().find((item) => item.id === styleId);
   return style ? style.name : (styleId || "默认");
+}
+
+function renderTaskStylePreview(styleId) {
+  const container = elements.taskStylePreview;
+  if (!container) return;
+  const styles = taskStyleOptions();
+  const style = styles.find((item) => item.id === styleId) || styles[0];
+  if (!style) return;
+  const tokens = style.preview || {};
+  const card = document.createElement("div");
+  card.className = "style-preview-card";
+  card.dataset.style = style.id;
+  card.style.background = tokens.card_bg || "#FFFFFF";
+  card.style.borderColor = tokens.border || "#DFE2E8";
+  card.style.borderRadius = (Number.isInteger(tokens.card_radius)
+    ? tokens.card_radius
+    : 8) + "px";
+  const head = document.createElement("div");
+  head.className = "style-preview-head";
+  head.style.background = tokens.header_bg || tokens.card_bg || "#FFFFFF";
+  head.style.color = tokens.brand_ink || tokens.title_ink || "#20242C";
+  head.textContent = style.name;
+  const body = document.createElement("div");
+  body.className = "style-preview-body";
+  const rows = [
+    { index: "01", title: "示例条目 · 今日要闻", heat: "热度：12.8 万" },
+    { index: "02", title: "第二条示例 · 榜单跟进", heat: "热度：9876" },
+  ];
+  for (const row of rows) {
+    const line = document.createElement("div");
+    line.className = "style-preview-row";
+    const index = document.createElement("span");
+    index.className = "style-preview-num";
+    index.textContent = row.index;
+    index.style.color = tokens.number_shape === "square"
+      ? (tokens.ink || "#20242C")
+      : (tokens.num || "#6B7280");
+    if (tokens.number_shape === "square") {
+      index.style.background = tokens.number_bg || tokens.accent || "#FFEF5C";
+    }
+    const title = document.createElement("span");
+    title.className = "style-preview-title";
+    title.textContent = row.title;
+    title.style.color = tokens.title_ink || tokens.ink || "#20242C";
+    const heat = document.createElement("span");
+    heat.className = "style-preview-heat";
+    heat.textContent = row.heat;
+    heat.style.color = tokens.heat || tokens.muted || "#6F7580";
+    line.append(index, title, heat);
+    body.append(line);
+    const divider = document.createElement("span");
+    divider.className = "style-preview-divider";
+    divider.style.background = tokens.divider || "#EDF0F3";
+    body.append(divider);
+  }
+  const source = document.createElement("div");
+  source.className = "style-preview-source";
+  source.textContent = "来源：example.test";
+  source.style.color = tokens.muted || "#6B717B";
+  card.append(head, body, source);
+  container.replaceChildren(card);
+  container.setAttribute(
+    "aria-label", "图片样式示例：" + style.name,
+  );
 }
 
 function renderTaskStyleOptions(selected) {
@@ -4452,6 +4529,7 @@ function renderTaskStyleOptions(selected) {
   );
   const ids = options.map((style) => style.id);
   elements.taskImageStyle.value = ids.includes(current) ? current : "default";
+  renderTaskStylePreview(elements.taskImageStyle.value);
 }
 
 function openCreateTask() {
@@ -6209,6 +6287,7 @@ function bindEvents() {
   });
   if (elements.taskImageStyle) {
     elements.taskImageStyle.addEventListener("change", () => {
+      renderTaskStylePreview(elements.taskImageStyle.value);
       invalidateTaskFormRequests();
       updateTaskFormGates();
     });

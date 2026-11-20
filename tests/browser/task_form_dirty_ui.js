@@ -127,8 +127,6 @@ function check(condition, message) {
   assert.ok(condition, message);
 }
 
-const DIRTY_HINT =
-  "当前修改尚未保存；预览与能力测试都使用已保存的任务配置，请先保存后再试。";
 const CAPABILITY_MESSAGE = "候选站点全部可用（桩）。";
 
 async function openPage(browser, port) {
@@ -245,12 +243,13 @@ function gate(page) {
   });
 }
 
+// 未保存修改不再阻塞：预览与能力测试直接用当前表单草稿，
+// 只要输入本身合法，两个入口保持可用，也不显示「请先保存」提示。
 async function expectDirty(page, label) {
   const snapshot = await gate(page);
-  check(snapshot.previewDisabled && snapshot.testDisabled,
-    label + "：预览与能力测试都置灰 " + JSON.stringify(snapshot));
-  check(!snapshot.hintHidden && snapshot.hintText === DIRTY_HINT,
-    label + "：共用「未保存」提示 " + snapshot.hintText);
+  check(!snapshot.previewDisabled && !snapshot.testDisabled,
+    label + "：草稿修改后两个入口仍可用 " + JSON.stringify(snapshot));
+  check(snapshot.hintHidden, label + "：不显示未保存阻塞提示 " + snapshot.hintText);
 }
 
 async function expectClean(page, label) {
@@ -258,6 +257,13 @@ async function expectClean(page, label) {
   check(!snapshot.previewDisabled && !snapshot.testDisabled,
     label + "：两个入口都恢复可用 " + JSON.stringify(snapshot));
   check(snapshot.hintHidden, label + "：提示消失 " + JSON.stringify(snapshot));
+}
+
+// 作废提示（“上次结果已作废”）会保留在结果区，不要求它消失。
+async function expectEntriesEnabled(page, label) {
+  const snapshot = await gate(page);
+  check(!snapshot.previewDisabled && !snapshot.testDisabled,
+    label + "：两个入口仍可用 " + JSON.stringify(snapshot));
 }
 
 async function expectInvalid(page, label, itemName, rowIndex, expectedValue) {
@@ -513,8 +519,8 @@ async function waitCapabilitySettled(page, previous) {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     const boundary = await gate(page);
-    check(!boundary.hintText.includes("不合法") && boundary.previewDisabled,
-      "条数 1000 属于合法值，只算未保存：" + boundary.hintText);
+    check(!boundary.hintText.includes("不合法") && !boundary.previewDisabled,
+      "条数 1000 属于合法值，只算未保存，入口仍可用：" + boundary.hintText);
 
     // ④ 非法条数仍然走既有保存校验，不发请求也不改写输入。
     // 用 1e2 而不是 1.5：1e2 能通过 input[type=number] 的原生校验（=100，整数、在范围内），
@@ -544,15 +550,20 @@ async function waitCapabilitySettled(page, previous) {
     await page.fill("#task-item-list .task-item-row:nth-child(1) .task-item-limit-input", "2");
     await expectClean(page, "非法条数改回已保存值");
 
-    // ⑤ 脏表单下点击预览入口不会发出预览请求。
-    const previewsBefore = await page.evaluate(() =>
-      window.__calls.filter((call) => call.endpoint.endsWith("/preview")).length);
+    // ⑤ 脏表单点击预览走草稿入口：用当前表单配置，不改已保存任务。
+    const draftsBefore = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint === "task-drafts/preview").length);
     await page.fill("#task-name", "任务A改");
     await page.evaluate(() => document.getElementById("task-preview-form-button").click());
     await page.waitForTimeout(200);
-    const previewsAfter = await page.evaluate(() =>
-      window.__calls.filter((call) => call.endpoint.endsWith("/preview")).length);
-    check(previewsAfter === previewsBefore, "脏表单不发预览请求：" + previewsAfter);
+    const draftCalls = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint === "task-drafts/preview"));
+    check(draftCalls.length === draftsBefore + 1,
+      "脏表单走草稿预览：" + draftCalls.length);
+    check(draftCalls.at(-1).payload.name === "任务A改",
+      "草稿预览带当前表单名称：" + JSON.stringify(draftCalls.at(-1).payload));
+    await page.evaluate(() => document.getElementById("task-preview-close-button").click());
+    await page.waitForFunction(() => !document.getElementById("task-preview-dialog")?.open);
     await page.fill("#task-name", "任务A");
     await expectClean(page, "预览入口用例撤销改名");
 
@@ -570,10 +581,10 @@ async function waitCapabilitySettled(page, previous) {
     }));
     check(!capabilityAfter.text.includes("候选站点全部可用"),
       "在途能力测试响应被丢弃：" + capabilityAfter.text);
-    check(!capabilityAfter.hidden && capabilityAfter.text === DIRTY_HINT,
+    check(capabilityAfter.text !== CAPABILITY_MESSAGE,
       "改表单后的提示不被旧响应覆盖：" + capabilityAfter.text);
     await page.fill("#task-name", "任务A");
-    await expectClean(page, "能力测试用例撤销改名");
+    await expectEntriesEnabled(page, "能力测试用例撤销改名");
     await setHold(page, "test", false);
     await page.click("#task-capability-test-button");
     await page.waitForFunction((expected) =>
@@ -611,7 +622,7 @@ async function waitCapabilitySettled(page, previous) {
 
     // ⑧ 关闭编辑弹窗时在途能力测试作废。
     await page.fill("#task-name", "任务A");
-    await expectClean(page, "关闭弹窗用例前恢复表单");
+    await expectEntriesEnabled(page, "关闭弹窗用例前恢复表单");
     await setHold(page, "test", true);
     await page.click("#task-capability-test-button");
     await waitHold(page, "test", 1);
@@ -733,7 +744,7 @@ async function waitCapabilitySettled(page, previous) {
 
     await page.fill("#task-name", "任务A在途B");
     await page.fill("#task-name", "任务A");
-    await expectClean(page, "作废 A 后表单改回已保存");
+    await expectEntriesEnabled(page, "作废 A 后表单改回已保存");
     await page.click("#task-capability-test-button");
     await waitHold(page, "test", 2);
     const busyB = await gate(page);
@@ -772,7 +783,7 @@ async function waitCapabilitySettled(page, previous) {
     await waitHold(page, "test", 1);
     await page.fill("#task-name", "任务A在途B2");
     await page.fill("#task-name", "任务A");
-    await expectClean(page, "作废失败的 A 后表单改回已保存");
+    await expectEntriesEnabled(page, "作废失败的 A 后表单改回已保存");
     await page.click("#task-capability-test-button");
     await waitHold(page, "test", 2);
     const settledBeforeFailedA = await capabilitySettled(page);
@@ -796,7 +807,7 @@ async function waitCapabilitySettled(page, previous) {
     // 只有「显式清空（Backspace/Delete）」或「键入合法数字」才算解决。
     await page.fill("#task-name", "任务A刷");
     await page.fill("#task-name", "任务A");
-    await expectClean(page, "重建用例前恢复干净表单");
+    await expectEntriesEnabled(page, "重建用例前恢复干净表单");
 
     // 上移：被重建的知乎热榜行仍然非法，保存入口锁死且不产生请求。
     await typeLimit(page, LIMIT_UNLIMITED_ROW, "1e");

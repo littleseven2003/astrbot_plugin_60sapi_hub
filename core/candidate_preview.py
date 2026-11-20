@@ -132,7 +132,52 @@ async def first_satisfying_preview(
     return None
 
 
+async def assembled_preview(
+    previews: object,
+    *,
+    plan_id: str,
+    requirements: tuple[Requirement, ...],
+    site_ids: Iterable[str],
+    owner: str | None = None,
+    catch_errors: bool = False,
+    force_refresh: bool = False,
+    deadline: float | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """优先使用 PlanPreview 的单站优先 + 按栏拼合；旧预览桩回退单站语义。"""
+    assembled = getattr(previews, "preview_assembled", None)
+    if callable(assembled):
+        try:
+            response = await assembled(
+                {"task_id": plan_id, "force_refresh": force_refresh},
+                site_ids=list(site_ids),
+                owner=owner,
+                deadline=deadline,
+            )
+        except Exception:
+            if catch_errors:
+                return None
+            raise
+        if getattr(response, "status_code", None) != 200:
+            return None
+        body = getattr(response, "body", None)
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, dict):
+            return None
+        return str(data.get("site_id") or ""), data
+    return await first_satisfying_preview(
+        previews,
+        plan_id=plan_id,
+        requirements=requirements,
+        site_ids=site_ids,
+        owner=owner,
+        catch_errors=catch_errors,
+        force_refresh=force_refresh,
+        deadline=deadline,
+    )
+
+
 __all__ = [
+    "assembled_preview",
     "attempt_timeout_for",
     "first_satisfying_preview",
     "satisfied_previews",

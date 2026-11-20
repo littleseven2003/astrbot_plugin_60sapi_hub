@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
-from .candidate_preview import first_satisfying_preview
+from .candidate_preview import assembled_preview
 from .plan_preview import PlanPreview, PlanPreviewResult
 from .site_store import (
     DeliveryExecutionExistsError,
@@ -530,8 +530,15 @@ class DeliveryService:
         except Exception as exc:
             raise DeliveryStorageError("无法保存投递计划。") from exc
 
-        # 实际选中的站点优先；提示内容没有站点，此时不校验站点配置，
-        # 否则“原站点停用”会把本应发出的异常提示拦掉。
+        # 拼合内容没有单一来源站点：执行记录标记为空站点，表示“多站点”。
+        if prepared.multi_site:
+            try:
+                await self._store.update_delivery_site(
+                    execution_id, site_id="", site_revision=0,
+                )
+            except Exception as exc:
+                raise DeliveryStorageError("无法记录投递站点。") from exc
+        # 实际选中的站点优先；提示内容没有站点，此时不校验站点配置。
         used_site = prepared.site
         if (
             used_site is not None
@@ -635,7 +642,7 @@ class DeliveryService:
         """按任务保存的顺序，寻找同一个站点满足全部类别与条数。"""
         requirements = requirements_from_items(task.items)
         by_id = {candidate.id: candidate for candidate in candidates}
-        found = await first_satisfying_preview(
+        found = await assembled_preview(
             self._api,
             plan_id=task.id,
             requirements=requirements,
@@ -647,8 +654,10 @@ class DeliveryService:
         if found is None:
             return None
         site_id, data = found
+        multi = data.get("source_mode") == "multi"
         return await self._build_prepared(
-            execution_id, task, data, by_id[site_id], deadline=deadline,
+            execution_id, task, data,
+            None if multi else by_id.get(site_id), deadline=deadline,
         )
 
     async def _build_prepared(
@@ -727,6 +736,7 @@ class DeliveryService:
             content_status=content_status,
             failed_sections=failed,
             site=site,
+            multi_site=data.get("source_mode") == "multi",
         )
 
     async def _generate_section_images(
@@ -1173,6 +1183,7 @@ class _Prepared:
     content_status: str
     failed_sections: list[object]
     site: object = None
+    multi_site: bool = False
 
 
 ALLOWED_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})

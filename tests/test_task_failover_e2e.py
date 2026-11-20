@@ -297,6 +297,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": True,
+            "confirmation_version": 2,
         })
         self.assertEqual(result.status_code, 200, result.body)
         self.assertEqual(len(self.sender.messages), 1)
@@ -322,6 +323,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,
+            "confirmation_version": 2,
         })
         self.assertEqual(result.status_code, 200, result.body)
         self.assertEqual(len(self.sender.messages), 1)
@@ -342,6 +344,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": True,
+            "confirmation_version": 2,
         })
         self.assertEqual(result.status_code, 409, result.body)
         # 校验阶段就拒绝：不创建执行记录，页面不会锁定到不存在的执行。
@@ -367,6 +370,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,
+            "confirmation_version": 2,
         })
         self.assertEqual(result.status_code, 200, result.body)
         self.assertEqual(len(self.sender.messages), 1)
@@ -391,6 +395,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,
+            "confirmation_version": 2,
         })
         self.assertEqual(result.status_code, 200, result.body)
         self.assertEqual(len(self.sender.messages), 1)
@@ -432,6 +437,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": True,
+            "confirmation_version": 2,
         })
         self.assertEqual(result.status_code, 409, result.body)
         self.assertEqual(result.body["data"]["code"], "confirmation_stale")
@@ -453,6 +459,7 @@ class ConfirmIntentTest(TaskFailoverEndToEndTest):
             "expected_site_revision": data["site_revision"],
             "expected_candidates": data["candidate_snapshot"],
             "expected_alert_only": False,
+            "confirmation_version": 2,
         })
         self.assertEqual(result.status_code, 409, result.body)
         self.assertEqual(self.sender.messages, [])

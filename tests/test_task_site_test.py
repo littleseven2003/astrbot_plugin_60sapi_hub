@@ -145,7 +145,7 @@ class TaskSiteTestApiTest(unittest.IsolatedAsyncioTestCase):
         data = result.body["data"]
         self.assertFalse(data["satisfied"])
         self.assertIsNone(data["site_id"])
-        self.assertIn("无法满足", data["message"])
+        self.assertIn("仍缺", data["message"])
 
     async def test_insufficient_candidate_falls_through_to_next(self) -> None:
         first = await self._site("a.example.test")

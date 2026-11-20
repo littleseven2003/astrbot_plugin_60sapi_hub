@@ -2781,6 +2781,11 @@ function renderTaskPreviewMeta(data) {
   meta.replaceChildren();
   addMeta(meta, "任务", data.task_name || "未命名任务");
   addMeta(meta, "站点", data.site_name || "未记录");
+  if (data.source_mode === "multi" && Array.isArray(data.assignments)) {
+    addMeta(meta, "拼合来源", data.assignments
+      .map((item) => `${item.label || item.content_type} → ${item.site_name || item.site_id}`)
+      .join("、"));
+  }
   const items = Array.isArray(data.items) ? data.items : [];
   addMeta(meta, "栏目", items.length > 0
     ? items.map((item) => {
@@ -5632,6 +5637,7 @@ async function submitDelivery(event) {
         // 必须重新审阅，不能改发未经确认的内容。
         expected_candidates: preview.candidate_snapshot,
         expected_alert_only: preview.alert_only === true,
+        confirmation_version: preview.confirmation_version,
       },
     );
     if (requestId !== state.deliveryRequestId ||

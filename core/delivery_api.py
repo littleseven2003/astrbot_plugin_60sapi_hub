@@ -40,6 +40,11 @@ class DeliveryApiResult:
     body: dict[str, Any]
 
 
+# 确认页载荷格式：候选快照去掉 enabled 后必须重新审阅一次。
+# 旧页面携带的确认没有版本号，提交时按过期处理。
+CONFIRMATION_FORMAT_VERSION = 2
+
+
 class DeliveryApi:
     def __init__(
         self,
@@ -139,6 +144,7 @@ class DeliveryApi:
             "targets": targets,
             "can_deliver": can_deliver,
             "reason": reason,
+            "confirmation_version": CONFIRMATION_FORMAT_VERSION,
             "content_policy": "fresh",
         })
 
@@ -213,6 +219,17 @@ class DeliveryApi:
 
         expected_candidates = data.get("expected_candidates")
         expected_alert_only = data.get("expected_alert_only")
+        if (
+            expected_candidates is not None
+            and data.get("confirmation_version") != CONFIRMATION_FORMAT_VERSION
+        ):
+            # 升级前的确认页不知道候选快照形状已变化，必须重新审阅。
+            return _error(
+                409,
+                "确认页格式已更新，请重新打开确认页审阅后再确认。",
+                code="confirmation_stale",
+                data={"reason": "confirmation_version_changed", "sent": False},
+            )
         if expected_candidates is not None:
             stale = await self._confirmation_stale(
                 task_id, expected_candidates, expected_alert_only,
@@ -409,6 +426,8 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "profile_id": e.profile_id,
         "profile_revision": e.profile_revision,
         "site_id": e.site_id,
+        # 拼合内容的执行记录没有单一站点，显示为「多站点」。
+        "site_name": "多站点" if not e.site_id else None,
         "site_revision": e.site_revision,
         "output_format": e.output_format,
         "content_status": e.content_status,

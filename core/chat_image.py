@@ -16,7 +16,7 @@ from .chat_content import (
     authorize_task,
     config_changed,
 )
-from .candidate_preview import satisfied_previews
+from .candidate_preview import assembled_preview, satisfied_previews
 from .plan_preview import PlanPreview
 from .tasks import TaskValidationError, normalize_task_id
 
@@ -77,14 +77,30 @@ class ChatImageQuery:
         owner: str,
     ) -> tuple[tuple[bytes, ...], tuple[str, ...]] | None:
         """按任务候选顺序取第一份满足全部栏目且能出图的内容。"""
-        async for _site_id, data in satisfied_previews(
-            self._previews,
-            plan_id=authorized.task_id,
-            requirements=authorized.requirements,
-            site_ids=[site_id for site_id, _ in authorized.candidates],
-            owner=owner,
-            catch_errors=True,
-        ):
+        if callable(getattr(self._previews, "preview_assembled", None)):
+            found = await assembled_preview(
+                self._previews,
+                plan_id=authorized.task_id,
+                requirements=authorized.requirements,
+                site_ids=[site_id for site_id, _ in authorized.candidates],
+                owner=owner,
+                catch_errors=True,
+            )
+            results = [] if found is None else [found[1]]
+        else:
+            results = [
+                data async for _site, data in satisfied_previews(
+                    self._previews,
+                    plan_id=authorized.task_id,
+                    requirements=authorized.requirements,
+                    site_ids=[site_id for site_id, _ in authorized.candidates],
+                    owner=owner,
+                    catch_errors=True,
+                )
+            ]
+        for data in results:
+            if data.get("source_mode") == "missing" or data.get("missing"):
+                continue
             snapshot = data.get("image_snapshot")
             snapshot_id = snapshot.get("id") if isinstance(snapshot, dict) else None
             if not isinstance(snapshot_id, str) or not snapshot_id:

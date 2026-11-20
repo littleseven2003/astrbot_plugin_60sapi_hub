@@ -140,7 +140,10 @@ class TaskDraftApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(data["draft"], True)
         self.assertIs(data["satisfied"], True)
         self.assertEqual(data["site_id"], self.disabled.id)
-        self.assertEqual([entry["reason"] for entry in data["checked"]], [None])
+        self.assertEqual(
+            [entry["reason"] for entry in data["checked"]], [None, None],
+        )
+        self.assertEqual(data["source_mode"], "single")
         # 草稿不落库：任务列表仍为空。
         self.assertEqual(await self.tasks.list_tasks(), [])
 

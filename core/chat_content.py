@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .candidate_preview import satisfied_previews
+from .candidate_preview import assembled_preview
 from .plan_preview import PlanPreview
 from .site_requirements import Requirement, requirements_from_items
 from .tasks import (
@@ -130,18 +130,22 @@ async def _first_available(
     authorized: _Authorized,
 ) -> str | None:
     """按任务候选顺序取第一份站内满足全部栏目的内容；全部失败返回 None。"""
-    async for _site_id, data in satisfied_previews(
+    found = await assembled_preview(
         previews,
         plan_id=authorized.task_id,
         requirements=authorized.requirements,
         site_ids=[site_id for site_id, _ in authorized.candidates],
         catch_errors=True,
-    ):
-        outputs = data.get("outputs")
-        text = outputs.get("text") if isinstance(outputs, dict) else None
-        if isinstance(text, str) and text.strip():
-            return text
-    return None
+    )
+    if found is None:
+        return None
+    _site_id, data = found
+    if data.get("source_mode") == "missing" or data.get("missing"):
+        # 拼合后仍缺栏目：聊天不能把部分内容当成功结果。
+        return None
+    outputs = data.get("outputs")
+    text = outputs.get("text") if isinstance(outputs, dict) else None
+    return text if isinstance(text, str) and text.strip() else None
 
 
 class _Unauthorized(Exception):

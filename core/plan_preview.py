@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ from .profile_image import (
     ProfileImageError,
 )
 from .profile_render import render_profile_outputs
+from .site_assembly import SiteProbe, assemble
+from .site_requirements import evaluate_sections, requirements_from_items
 from .content_plan import PlanItem, plan_payload
 from .image_styles import resolve_style_id
 from .tasks import (
@@ -96,6 +99,7 @@ class PlanPreview:
         *,
         owner: str | None = None,
         site_id: object = None,
+        _with_snapshot: bool = True,
     ) -> PlanPreviewResult:
         data = _payload_dict(payload)
         if data is None:
@@ -221,14 +225,13 @@ class PlanPreview:
             )
 
         data["outputs"] = render_profile_outputs(data)
-        if self._image_snapshots is not None:
+        if _with_snapshot and self._image_snapshots is not None:
             try:
                 snapshot = self._image_snapshots.put(
                     owner=owner or "",
                     profile_id=config.task.id,
                     profile_revision=plan_revision,
-                    site_id=site.id,
-                    site_revision=site.revision,
+                    sites=((site.id, site.revision),),
                     data=_image_snapshot_data(data),
                 )
             except ImageSnapshotError:
@@ -240,6 +243,204 @@ class PlanPreview:
                 }
         return _ok(data)
 
+    async def _check_snapshot_sites(self, snapshot: Any) -> PlanPreviewResult | None:
+        """快照里的每个来源站点都仍存在且 revision 未变。"""
+        for site_id, revision in getattr(snapshot, "sites", ()):  # noqa: B905
+            try:
+                site = await self._sites.get_site(site_id)
+            except SiteNotFoundError:
+                return _stale_snapshot_error()
+            except SiteStorageError:
+                return _storage_error()
+            except Exception:
+                return _internal_error()
+            if site.revision != revision:
+                return _stale_snapshot_error()
+        return None
+
+    async def preview_assembled(
+        self,
+        payload: object,
+        *,
+        site_ids: object,
+        owner: str | None = None,
+        deadline: float | None = None,
+    ) -> PlanPreviewResult:
+        """按候选顺序单站优先、缺栏时按栏目拼合一次预览。
+
+        每个候选只取一次完整栏目；先判断是否有单站满足全部要求，没有才
+        用已取到的结果按栏目选最靠前的合格站点。仍缺栏目时保留已选内容
+        并返回缺项，调用方据此提示或告警。
+        """
+        data = _payload_dict(payload)
+        if data is None:
+            return _invalid_body_error()
+        force_refresh = data.get("force_refresh", False)
+        if type(force_refresh) is not bool:
+            return _error(
+                400,
+                "force_refresh 必须是布尔值。",
+                code="invalid_force_refresh",
+            )
+        task_id = data.get("task_id")
+        if task_id is None:
+            task_id = data.get("profile_id")
+        try:
+            config = await self._tasks.get_config_snapshot(task_id)
+        except TaskValidationError as exc:
+            return _validation_error(exc)
+        except TaskNotFoundError:
+            return _task_not_found_error()
+        except TaskStorageError:
+            return _storage_error()
+        except Exception:
+            return _internal_error()
+        requirements = requirements_from_items(config.task.items)
+        ordered: list[str] = []
+        if isinstance(site_ids, (list, tuple)):
+            for value in site_ids:
+                if isinstance(value, str) and value and value not in ordered:
+                    ordered.append(value)
+        probes: list[SiteProbe] = []
+        for index, site_id in enumerate(ordered):
+            timeout: float | None = None
+            if deadline is not None:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                timeout = remaining / max(1, len(ordered) - index)
+            call = self.preview_site(
+                {
+                    "task_id": config.task.id,
+                    "force_refresh": force_refresh,
+                    "site_id": site_id,
+                },
+                owner=owner,
+                site_id=site_id,
+                _with_snapshot=False,
+            )
+            try:
+                result = (
+                    await asyncio.wait_for(call, timeout=timeout)
+                    if timeout is not None else await call
+                )
+            except asyncio.TimeoutError:
+                continue
+            if result.status_code not in (200, 502):
+                # 配置冲突、存储错误等明确失败直接中止整次预览。
+                if result.status_code >= 400:
+                    return result
+                continue
+            body = result.body.get("data") or {}
+            sections = body.get("sections")
+            if not isinstance(sections, list):
+                sections = []
+            satisfied, _ = evaluate_sections(sections, requirements)
+            try:
+                site = await self._sites.get_site(site_id)
+            except SiteNotFoundError:
+                continue
+            except (SiteStorageError, Exception):
+                return _storage_error()
+            probes.append(SiteProbe(
+                site_id=site.id,
+                site_name=site.name,
+                revision=site.revision,
+                sections=tuple(sections),
+                satisfied=satisfied,
+            ))
+            if satisfied:
+                # 单站优先：候选顺序里第一个满足全部要求的站点直接采用，
+                # 不再请求后面的候选。
+                break
+        if not probes:
+            return _error(
+                502,
+                "没有候选站点返回可用内容，请调整栏目或候选站点。",
+                code="content_unavailable",
+            )
+        assembly = assemble(probes, requirements)
+        sections = list(assembly.sections)
+        ok_sections = [item for item in sections if item.get("status") == "ok"]
+        failed_sections = [
+            {
+                "content_type": item.get("content_type"),
+                "label": item.get("label"),
+                "message": item.get("message") or "栏目不可用。",
+            }
+            for item in sections
+            if item.get("status") != "ok"
+        ]
+        for missing in assembly.missing:
+            failed_sections.append({
+                "content_type": missing["content_type"],
+                "label": missing["label"],
+                "message": (
+                    f"没有候选站点能提供所需条数（需要 "
+                    f"{missing['required']} 条，最多 {missing['available']} 条）。"
+                    if missing.get("required")
+                    else "没有候选站点提供该栏目。"
+                ),
+            })
+        success_count = len(ok_sections)
+        result = {
+            "task_id": config.task.id,
+            "task_name": config.task.name,
+            "task_revision": config.task.revision,
+            "image_style": config.task.image_style,
+            "plan_revision": config.plan_revision,
+            "items": plan_payload(config.task.items),
+            "site_id": assembly.site_id if assembly.mode == "single" else "",
+            "site_name": (
+                assembly.site_name if assembly.mode == "single" else "多站点"
+            ),
+            "source_mode": assembly.mode,
+            "sites": [
+                {"site_id": site_id, "revision": revision}
+                for site_id, revision in assembly.sites
+            ],
+            "assignments": list(assembly.assignments),
+            "missing": list(assembly.missing),
+            "success_count": success_count,
+            "failure_count": len(failed_sections),
+            "sections": sections,
+            "failed_sections": failed_sections,
+        }
+        if success_count == 0:
+            result["status"] = "failed"
+        elif failed_sections:
+            result["status"] = "partial"
+        else:
+            result["status"] = "complete"
+        if success_count == 0:
+            labels = "、".join(
+                str(item.get("label")) for item in failed_sections
+            ) or "未知栏目"
+            return _error(
+                502,
+                f"没有候选站点能提供所需栏目：{labels}。",
+                code="content_unavailable",
+                data=result,
+            )
+        result["outputs"] = render_profile_outputs(result)
+        if self._image_snapshots is not None:
+            try:
+                snapshot = self._image_snapshots.put(
+                    owner=owner or "",
+                    profile_id=config.task.id,
+                    profile_revision=config.plan_revision,
+                    sites=assembly.sites,
+                    data=_image_snapshot_data(result),
+                )
+            except ImageSnapshotError:
+                snapshot = None
+            if snapshot is not None:
+                result["image_snapshot"] = {
+                    "id": snapshot.id,
+                    "expires_at": snapshot.expires_at,
+                }
+        return _ok(result)
+
     async def preview_draft(
         self,
         items: tuple[Any, ...],
@@ -249,6 +450,7 @@ class PlanPreview:
         site_id: str,
         owner: str | None = None,
         force_refresh: bool = False,
+        _with_snapshot: bool = True,
     ) -> PlanPreviewResult:
         """按未保存的表单草稿取一次内容；不写任务、不发送。"""
         try:
@@ -321,7 +523,7 @@ class PlanPreview:
                 data=data,
             )
         data["outputs"] = render_profile_outputs(data)
-        if self._image_snapshots is not None:
+        if _with_snapshot and self._image_snapshots is not None:
             try:
                 snapshot = self._image_snapshots.put(
                     owner=owner or "",
@@ -329,8 +531,144 @@ class PlanPreview:
                     # 与已保存任务的图片入口严格隔离。
                     profile_id="",
                     profile_revision=0,
-                    site_id=site.id,
-                    site_revision=site.revision,
+                    sites=((site.id, site.revision),),
+                    data={**_image_snapshot_data(data), "draft": True},
+                    scope="draft",
+                )
+            except ImageSnapshotError:
+                snapshot = None
+            if snapshot is not None:
+                data["image_snapshot"] = {
+                    "id": snapshot.id,
+                    "expires_at": snapshot.expires_at,
+                }
+        return _ok(data)
+
+    async def preview_draft_assembled(
+        self,
+        items: tuple[Any, ...],
+        *,
+        name: str,
+        image_style: str,
+        site_ids: object,
+        owner: str | None = None,
+        force_refresh: bool = False,
+    ) -> PlanPreviewResult:
+        """草稿表单的单站优先 + 按栏拼合预览；不写任务、不发送。"""
+        requirements = requirements_from_items(items)
+        ordered: list[str] = []
+        if isinstance(site_ids, (list, tuple)):
+            for value in site_ids:
+                if isinstance(value, str) and value and value not in ordered:
+                    ordered.append(value)
+        probes: list[SiteProbe] = []
+        for site_id in ordered:
+            try:
+                site = await self._sites.get_site(site_id)
+            except SiteNotFoundError:
+                continue
+            except SiteStorageError:
+                return _storage_error()
+            result = await self.preview_draft(
+                items,
+                name=name,
+                image_style=image_style,
+                site_id=site_id,
+                owner=owner,
+                force_refresh=force_refresh,
+                _with_snapshot=False,
+            )
+            if result.status_code not in (200, 502):
+                if result.status_code >= 400:
+                    return result
+                continue
+            body = result.body.get("data") or {}
+            sections = body.get("sections")
+            if not isinstance(sections, list):
+                sections = []
+            satisfied, _ = evaluate_sections(sections, requirements)
+            probes.append(SiteProbe(
+                site_id=site.id,
+                site_name=site.name,
+                revision=site.revision,
+                sections=tuple(sections),
+                satisfied=satisfied,
+            ))
+            if satisfied:
+                break
+        if not probes:
+            return _error(
+                502,
+                "没有候选站点返回可用内容，请调整栏目或候选站点。",
+                code="content_unavailable",
+            )
+        assembly = assemble(probes, requirements)
+        sections = list(assembly.sections)
+        failed_sections = [
+            {
+                "content_type": item.get("content_type"),
+                "label": item.get("label"),
+                "message": item.get("message") or "栏目不可用。",
+            }
+            for item in sections
+            if item.get("status") != "ok"
+        ]
+        for missing in assembly.missing:
+            failed_sections.append({
+                "content_type": missing["content_type"],
+                "label": missing["label"],
+                "message": (
+                    f"没有候选站点能提供所需条数（需要 "
+                    f"{missing['required']} 条，最多 {missing['available']} 条）。"
+                    if missing.get("required")
+                    else "没有候选站点提供该栏目。"
+                ),
+            })
+        success_count = len(
+            [item for item in sections if item.get("status") == "ok"],
+        )
+        data = {
+            "draft": True,
+            "task_name": name,
+            "image_style": image_style,
+            "items": plan_payload(items),
+            "site_id": assembly.site_id if assembly.mode == "single" else "",
+            "site_name": (
+                assembly.site_name if assembly.mode == "single" else "多站点"
+            ),
+            "source_mode": assembly.mode,
+            "sites": [
+                {"site_id": site_id, "revision": revision}
+                for site_id, revision in assembly.sites
+            ],
+            "assignments": list(assembly.assignments),
+            "missing": list(assembly.missing),
+            "success_count": success_count,
+            "failure_count": len(failed_sections),
+            "sections": sections,
+            "failed_sections": failed_sections,
+        }
+        if success_count == 0:
+            data["status"] = "failed"
+        elif failed_sections:
+            data["status"] = "partial"
+        else:
+            data["status"] = "complete"
+        if success_count == 0:
+            return _error(
+                502,
+                "没有候选站点能提供所需栏目。",
+                code="content_unavailable",
+                data=data,
+            )
+        data["outputs"] = render_profile_outputs(data)
+        if self._image_snapshots is not None:
+            try:
+                snapshot = self._image_snapshots.put(
+                    owner=owner or "",
+                    profile_id="",
+                    profile_revision=0,
+                    sites=assembly.sites,
                     data={**_image_snapshot_data(data), "draft": True},
                     scope="draft",
                 )
@@ -393,16 +731,9 @@ class PlanPreview:
                 "图片快照不属于当前预览。",
                 code="snapshot_not_found",
             )
-        try:
-            site = await self._sites.get_site(snapshot.site_id)
-        except SiteNotFoundError:
-            return _stale_snapshot_error()
-        except SiteStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        if site.revision != snapshot.site_revision:
-            return _stale_snapshot_error()
+        stale = await self._check_snapshot_sites(snapshot)
+        if stale is not None:
+            return stale
         try:
             section_images = await self._image_service.render(
                 snapshot.data,
@@ -444,17 +775,10 @@ class PlanPreview:
                 "图片渲染失败，文字和 Markdown 仍可使用。",
                 code="image_internal_error",
             )
-        # 渲染期间站点被改配置或停用：这张图不再对应当前草稿。
-        try:
-            latest_site = await self._sites.get_site(snapshot.site_id)
-        except SiteNotFoundError:
-            return _stale_snapshot_error()
-        except SiteStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        if latest_site.revision != snapshot.site_revision:
-            return _stale_snapshot_error()
+        # 渲染期间来源站点被改配置：这张图不再对应当前内容。
+        stale = await self._check_snapshot_sites(snapshot)
+        if stale is not None:
+            return stale
         return self._image_result(section_images, snapshot.id)
 
     async def _collect_sections(
@@ -701,16 +1025,9 @@ class PlanPreview:
             snapshot.data.get("image_style"),
         ):
             return _stale_snapshot_error()
-        try:
-            site = await self._sites.get_site(snapshot.site_id)
-        except SiteNotFoundError:
-            return _stale_snapshot_error()
-        except SiteStorageError:
-            return _storage_error()
-        except Exception:
-            return _internal_error()
-        if site.revision != snapshot.site_revision:
-            return _stale_snapshot_error()
+        stale = await self._check_snapshot_sites(snapshot)
+        if stale is not None:
+            return stale
         return None
 
 

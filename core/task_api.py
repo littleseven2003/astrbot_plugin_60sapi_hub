@@ -22,6 +22,7 @@ from .candidate_preview import first_satisfying_preview
 from .content_api import content_snapshot_dict
 from .content_plan import plan_payload
 from .site_requirements import evaluate_sections, requirements_from_items
+from .site_assembly import SiteProbe, assemble
 from .sites import SiteService, SiteStorageError
 
 # 一次能力测试最多检查的候选站点数，避免请求被候选数量拖长。
@@ -132,8 +133,8 @@ class TaskApi:
             return _error(503, "内容获取不可用。", code="content_unavailable")
 
         baseline = (task.revision, tuple(task.sites))
-        checked, site_snapshot, winner, truncated = await self._scan_capability(
-            task.items, task.sites, sites,
+        checked, site_snapshot, winner, truncated, assembly = (
+            await self._scan_capability(task.items, task.sites, sites)
         )
 
         # 测试期间配置发生变化时，不能把旧结果报告为当前配置可用。
@@ -160,18 +161,16 @@ class TaskApi:
                     code="config_changed",
                 )
 
-        if winner is not None:
-            message = f"站点「{winner['site_name'] or winner['site_id']}」可以满足全部配置。"
-        elif not checked:
-            message = "任务没有配置候选站点。"
-        else:
-            message = "所选站点均无法满足全部类别与条数要求。"
+        message = _capability_message(assembly, checked)
         ttl = getattr(self._content, "cache_ttl_seconds", None)
         return _ok({
             "task_id": task.id,
             "satisfied": winner is not None,
             "site_id": winner["site_id"] if winner is not None else None,
             "site_name": winner["site_name"] if winner is not None else None,
+            "source_mode": assembly.mode,
+            "assignments": list(assembly.assignments),
+            "missing": list(assembly.missing),
             "message": message,
             "checked": checked,
             "checked_at": self._clock().isoformat(),
@@ -193,8 +192,8 @@ class TaskApi:
         """按候选顺序判断单站能否满足全部栏目；草稿与已保存任务共用。"""
         requirements = requirements_from_items(items)
         checked: list[dict[str, Any]] = []
-        site_snapshot: dict[str, tuple[int, bool]] = {}
-        winner: dict[str, Any] | None = None
+        site_snapshot: dict[str, int] = {}
+        probes: list[SiteProbe] = []
         candidates = tuple(site_ids)[:MAX_TEST_CANDIDATES]
         truncated = len(tuple(site_ids)) > len(candidates)
         for site_id in candidates:
@@ -247,10 +246,26 @@ class TaskApi:
                 for item in shortfalls
             ]
             checked.append(entry)
-            if satisfied:
-                winner = entry
-                break
-        return checked, site_snapshot, winner, truncated
+            probes.append(SiteProbe(
+                site_id=site.id,
+                site_name=site.name,
+                revision=site.revision,
+                sections=tuple(sections),
+                satisfied=satisfied,
+            ))
+        assembly = assemble(probes, requirements)
+        winner: dict[str, Any] | None = None
+        if assembly.mode == "single":
+            winner = next(
+                item for item in checked if item["site_id"] == assembly.site_id
+            )
+        elif assembly.mode == "multi":
+            winner = {
+                "site_id": "",
+                "site_name": "多站点",
+                "assembly": assembly.assignments,
+            }
+        return checked, site_snapshot, winner, truncated, assembly
 
     async def _draft_sites_changed(
         self,
@@ -287,8 +302,10 @@ class TaskApi:
             return _storage_error()
         except Exception:
             return _internal_error()
-        checked, site_snapshot, winner, truncated = await self._scan_capability(
-            draft.items, draft.sites, sites, use_cache=False,
+        checked, site_snapshot, winner, truncated, assembly = (
+            await self._scan_capability(
+                draft.items, draft.sites, sites, use_cache=False,
+            )
         )
         if await self._draft_sites_changed(site_snapshot):
             return _error(
@@ -296,18 +313,16 @@ class TaskApi:
                 "站点配置在测试期间发生变化，请重新测试。",
                 code="config_changed",
             )
-        if winner is not None:
-            message = f"站点「{winner['site_name'] or winner['site_id']}」可以满足全部配置。"
-        elif not checked:
-            message = "任务没有配置候选站点。"
-        else:
-            message = "所选站点均无法满足全部类别与条数要求。"
+        message = _capability_message(assembly, checked)
         ttl = getattr(self._content, "cache_ttl_seconds", None)
         return _ok({
             "draft": True,
             "satisfied": winner is not None,
             "site_id": winner["site_id"] if winner is not None else None,
             "site_name": winner["site_name"] if winner is not None else None,
+            "source_mode": assembly.mode,
+            "assignments": list(assembly.assignments),
+            "missing": list(assembly.missing),
             "message": message,
             "checked": checked,
             "checked_at": self._clock().isoformat(),
@@ -360,17 +375,39 @@ class TaskApi:
         candidates = [
             site_id for site_id in draft.sites if site_id in sites
         ]
-        adapter = _DraftPreviewAdapter(self._plan_preview, draft)
+        assembled = getattr(
+            self._plan_preview, "preview_draft_assembled", None,
+        )
         try:
-            found = await first_satisfying_preview(
-                adapter,
-                plan_id="draft",
-                requirements=requirements_from_items(draft.items),
-                site_ids=candidates,
-                owner=owner,
-                catch_errors=True,
-                force_refresh=force_refresh,
-            )
+            if callable(assembled):
+                response = await assembled(
+                    draft.items,
+                    name=draft.name,
+                    image_style=draft.image_style,
+                    site_ids=candidates,
+                    owner=owner,
+                    force_refresh=force_refresh,
+                )
+                if response.status_code != 200:
+                    return TaskApiResult(response.status_code, response.body)
+                preview_data = (
+                    response.body.get("data")
+                    if isinstance(response.body, dict) else None
+                )
+                if not isinstance(preview_data, dict):
+                    return _internal_error()
+                found = (preview_data.get("site_id") or "", preview_data)
+            else:
+                adapter = _DraftPreviewAdapter(self._plan_preview, draft)
+                found = await first_satisfying_preview(
+                    adapter,
+                    plan_id="draft",
+                    requirements=requirements_from_items(draft.items),
+                    site_ids=candidates,
+                    owner=owner,
+                    catch_errors=True,
+                    force_refresh=force_refresh,
+                )
         except Exception:
             return _internal_error()
         if found is None:
@@ -581,15 +618,35 @@ class TaskApi:
             site_id for site_id in task.sites if site_id in sites
         ]
         try:
-            found = await first_satisfying_preview(
-                self._plan_preview,
-                plan_id=task.id,
-                requirements=requirements_from_items(task.items),
-                site_ids=candidates,
-                owner=owner,
-                catch_errors=True,
-                force_refresh=force_refresh,
-            )
+            assembled = getattr(self._plan_preview, "preview_assembled", None)
+            if callable(assembled):
+                response = await assembled(
+                    {
+                        "task_id": task.id,
+                        "force_refresh": force_refresh,
+                    },
+                    site_ids=candidates,
+                    owner=owner,
+                )
+                if response.status_code != 200:
+                    return TaskApiResult(response.status_code, response.body)
+                preview_data = (
+                    response.body.get("data")
+                    if isinstance(response.body, dict) else None
+                )
+                if not isinstance(preview_data, dict):
+                    return _internal_error()
+                found = (preview_data.get("site_id") or "", preview_data)
+            else:
+                found = await first_satisfying_preview(
+                    self._plan_preview,
+                    plan_id=task.id,
+                    requirements=requirements_from_items(task.items),
+                    site_ids=candidates,
+                    owner=owner,
+                    catch_errors=True,
+                    force_refresh=force_refresh,
+                )
         except Exception:
             return _internal_error()
         if found is None:
@@ -671,6 +728,22 @@ class TaskApi:
         except Exception:
             return _internal_error()
         return _ok({"deleted_id": task_id})
+
+
+def _capability_message(assembly, checked: list[dict[str, Any]]) -> str:
+    """能力测试的人话结论：单站、多站拼合或仍缺栏目。"""
+    if assembly.mode == "single":
+        return f"站点「{assembly.site_name}」可以满足全部配置。"
+    if assembly.mode == "multi":
+        parts = [
+            f"{item['label']}→{item['site_name']}"
+            for item in assembly.assignments
+        ]
+        return "需要多站点拼合：" + "、".join(parts) + "。"
+    if not checked:
+        return "任务没有配置候选站点。"
+    missing = "、".join(item["label"] for item in assembly.missing)
+    return f"所选站点无法提供全部栏目，仍缺：{missing}。"
 
 
 def _task_dict(

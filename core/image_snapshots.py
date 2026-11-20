@@ -42,13 +42,23 @@ class ImageSnapshot:
     owner: str
     profile_id: str
     profile_revision: int
-    site_id: str
-    site_revision: int
+    # 单站或拼合内容用到的全部站点及版本；顺序即栏目分配顺序。
+    sites: tuple[tuple[str, int], ...]
     data: dict[str, Any]
     created_at: str
     expires_at: str
     size_bytes: int
     expires_monotonic: float
+
+    @property
+    def site_id(self) -> str:
+        """兼容旧调用：返回第一个来源站点，无来源时为空串。"""
+        return self.sites[0][0] if self.sites else ""
+
+    @property
+    def site_revision(self) -> int:
+        """兼容旧调用：返回第一个来源站点的版本。"""
+        return self.sites[0][1] if self.sites else 0
 
 
 class ImageSnapshotStore:
@@ -103,11 +113,16 @@ class ImageSnapshotStore:
         owner: str,
         profile_id: str,
         profile_revision: int,
-        site_id: str,
-        site_revision: int,
-        data: dict[str, Any],
+        site_id: str = "",
+        site_revision: int = 0,
+        data: dict[str, Any] | None = None,
         scope: str = "task",
+        sites: tuple[tuple[str, int], ...] | None = None,
     ) -> ImageSnapshot | None:
+        if data is None:
+            raise ValueError("data")
+        if sites is None:
+            sites = ((site_id, site_revision),) if site_id else ()
         if self._closed:
             raise ImageSnapshotClosedError("图片快照存储当前不可用。")
         try:
@@ -149,8 +164,7 @@ class ImageSnapshotStore:
             owner=owner,
             profile_id=profile_id,
             profile_revision=profile_revision,
-            site_id=site_id,
-            site_revision=site_revision,
+            sites=tuple(sites),
             data=json.loads(serialized),
             created_at=created_at,
             expires_at=expires_at,

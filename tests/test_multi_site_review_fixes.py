@@ -17,11 +17,14 @@ from core.content_client import ContentHttpClient
 from core.content_plan import PlanItem
 from core.content_service import ContentService
 from core.delivery import (
+    DeliveryConfirmationStaleError,
     DeliveryLimits,
     DeliveryMessage,
     DeliverySendResult,
     DeliveryService,
+    DeliveryStorageError,
     SendStatus,
+    _Prepared,
 )
 from core.delivery_api import DeliveryApi
 from core.image_service import ProfileImageService
@@ -557,19 +560,110 @@ class ReviewFixTest(unittest.IsolatedAsyncioTestCase):
         for call in atomic.calls:
             self.assertEqual(call, (self.a.id, self.b.id))
 
-        delivery_atomic = AtomicSites(self.sites, "delivery")
-        original_delivery_sites = self.delivery._sites
-        self.delivery._sites = delivery_atomic
-        try:
-            unchanged = await self.delivery._sources_unchanged((
-                (self.a.id, revision_a), (self.b.id, revision_b),
-            ))
-        finally:
-            self.delivery._sites = original_delivery_sites
-        self.assertTrue(unchanged)
-        self.assertEqual(
-            delivery_atomic.calls, [(self.a.id, self.b.id)],
+        # 发送校验不再单独读站点：任务版本、白名单和来源 revision 必须
+        # 来自同一次 get_config_snapshot，不能再有“读完任务再读来源”的间隙。
+        class RecordingTasks:
+            def __init__(self, real) -> None:
+                self._real = real
+                self.calls = 0
+
+            async def get_config_snapshot(self, task_id):
+                self.calls += 1
+                return await self._real.get_config_snapshot(task_id)
+
+        task = await self._task(news_limit=1, hot_limit=2)
+        prepared = _Prepared(
+            slots=((1, "正文"),),
+            content_hash="hash",
+            content_status="complete",
+            failed_sections=[],
+            sites=((self.a.id, revision_a), (self.b.id, revision_b)),
         )
+        recording = RecordingTasks(self.tasks)
+        original_delivery_tasks = self.delivery._tasks
+        original_delivery_sites = self.delivery._sites
+        self.delivery._tasks = recording
+        self.delivery._sites = AtomicSites(self.sites, "delivery")
+        try:
+            self.assertTrue(
+                await self.delivery._config_unchanged(
+                    task, prepared, UMO,
+                ),
+            )
+        finally:
+            self.delivery._tasks = original_delivery_tasks
+            self.delivery._sites = original_delivery_sites
+        self.assertEqual(recording.calls, 1)
+
+        # 清空白名单后同一个方法必须失败：白名单与来源版本来自同一快照。
+        current = await self.tasks.get_task(task.id)
+        await self.tasks.update_task(task.id, TaskUpdate(
+            name=current.name,
+            items=[
+                {"content_type": item.content_type, "params": {},
+                 "limit": item.limit}
+                for item in current.items
+            ],
+            output_format=current.output_format,
+            umos=[],
+            expected_revision=current.revision,
+        ))
+        self.assertFalse(
+            await self.delivery._config_unchanged(task, prepared, UMO),
+        )
+
+    async def test_candidate_storage_failure_aborts_without_alert(self) -> None:
+        async def broken_get_site(site_id):
+            raise SiteStorageError("injected candidate read failure")
+
+        self.sites.get_site = broken_get_site  # type: ignore[assignment]
+        task = await self._task()
+        with self.assertRaises(DeliveryStorageError):
+            await self.delivery.execute(task.id, "candidate-storage")
+        self.assertEqual(self.sender.messages, [])
+
+    async def test_confirmation_candidates_are_rechecked_before_send(
+        self,
+    ) -> None:
+        task = await self._task(news_limit=1, hot_limit=2)
+        revision_a = (await self.sites.get_site(self.a.id)).revision
+        revision_b = (await self.sites.get_site(self.b.id)).revision
+        confirmed = [
+            {"id": self.a.id, "revision": revision_a},
+            {"id": self.b.id, "revision": revision_b},
+        ]
+        state = {"done": False}
+        original = self.preview.preview_assembled
+
+        async def change_after_confirm(*args, **kwargs):
+            if not state["done"]:
+                state["done"] = True
+                current = await self.sites.get_site(self.a.id)
+                await self.sites.update_site(self.a.id, SiteUpdate(
+                    name="确认后改名",
+                    base_url=current.base_url,
+                    timeout_seconds=current.timeout_seconds,
+                    expected_revision=current.revision,
+                ))
+            return await original(*args, **kwargs)
+
+        self.preview.preview_assembled = change_after_confirm  # type: ignore[method-assign]
+        with self.assertRaises(DeliveryConfirmationStaleError):
+            await self.delivery.execute(
+                task.id, "confirm-replaced",
+                expected_task_revision=task.revision,
+                expected_candidates=confirmed,
+            )
+        self.assertEqual(self.sender.messages, [])
+        # 同一执行 ID 已完成后仍优先回读原记录，不重新确认、不重发。
+        existing = await self.delivery.execute(
+            task.id, "confirm-replaced",
+            expected_task_revision=task.revision,
+            expected_candidates=confirmed,
+        )
+        self.assertEqual(existing.id, "confirm-replaced")
+        self.assertEqual(existing.status, "failed")
+        self.assertEqual(self.sender.messages, [])
 
     async def test_storage_error_aborts_without_alert(self) -> None:
         class StoragePreview:

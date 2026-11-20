@@ -27,7 +27,7 @@ from .site_store import (
     StoredDeliveryExecution,
 )
 from .site_requirements import requirements_from_items
-from .sites import SiteService
+from .sites import SiteNotFoundError, SiteService, SiteStorageError
 from .tasks import (
     PushTask,
     PushTaskService,
@@ -492,11 +492,37 @@ class DeliveryService:
         except DeliveryNoContentError as exc:
             await self._finish(execution_id, "failed", str(exc))
             return await self._read(execution_id)
-        # 内容准备完成后、发送开始前再复核一次来源版本：预览返回后到
-        # 这里之间改过来源站点，旧内容不得再发出。
-        prepared_sources = self._prepared_sources(prepared)
-        if prepared_sources and not await self._sources_unchanged(
-            prepared_sources,
+        # 内容准备完成后、发送开始前用同一份任务配置快照复核任务版本、
+        # 白名单和全部来源版本：这份快照一次读取任务、UMO 与候选 revision，
+        # 不会在“读完任务、再读来源”之间漏掉写库变化。
+        try:
+            latest = await self._tasks.get_config_snapshot(task.id)
+        except TaskNotFoundError:
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise DeliveryConfirmationStaleError()
+        except Exception:
+            await self._finish(
+                execution_id, "failed", "storage_unavailable",
+            )
+            return await self._read(execution_id)
+        if expected_candidates is not None:
+            try:
+                self._assert_confirmation(
+                    latest.candidates, expected_candidates,
+                )
+            except DeliveryConfirmationStaleError:
+                await self._finish(
+                    execution_id, "failed", "confirmation_stale",
+                )
+                raise
+        if (
+            latest.task.revision != task.revision
+            or latest.task.items != task.items
+            or latest.task.output_format != task.output_format
+            or latest.task.umos != task.umos
+            or not self._snapshot_sources_unchanged(
+                latest.candidates, prepared,
+            )
         ):
             await self._finish(execution_id, "failed", "config_changed")
             return await self._read(execution_id)
@@ -568,7 +594,9 @@ class DeliveryService:
                 )
             except Exception as exc:
                 raise DeliveryStorageError("无法记录投递站点。") from exc
-        record = await self._send_targets(execution_id, task, prepared)
+        record = await self._send_targets(
+            execution_id, task, prepared, expected_candidates,
+        )
         if prepared.site is None:
             # 采集失败已由 content_status=failed 记录；这里不改写投递结果，
             # 否则会把 unknown/成功统一覆盖成会误导重试的明确失败。
@@ -600,14 +628,20 @@ class DeliveryService:
         if self._candidate_shape(candidates) != confirmed:
             raise DeliveryConfirmationStaleError()
     async def _candidate_sites(self, task: PushTask) -> list[object]:
-        """按任务保存的顺序返回仍存在的候选站点。"""
+        """按任务保存的顺序返回仍存在的候选站点。
+
+        站点确实不存在时跳过（由确认/告警语义处理）；存储读取失败必须
+        中止整次投递，否则会被误判成“没有候选”而发出采集告警。
+        """
         site_ids = tuple(task.sites)
         resolved: list[object] = []
         for site_id in site_ids:
             try:
                 candidate = await self._sites.get_site(site_id)
-            except Exception:
+            except SiteNotFoundError:
                 continue
+            except (SiteStorageError, Exception) as exc:
+                raise DeliveryStorageError("读取候选站点失败。") from exc
             resolved.append(candidate)
         return resolved
 
@@ -810,6 +844,7 @@ class DeliveryService:
         execution_id: str,
         task: PushTask,
         prepared: "_Prepared",
+        expected_candidates: list | None = None,
     ) -> StoredDeliveryExecution:
         statuses: dict[int, str] = {}
         any_unknown = False
@@ -826,7 +861,9 @@ class DeliveryService:
             1 for _, payload in prepared.slots if payload is None
         )
         for position, umo in enumerate(task.umos):
-            unchanged = await self._config_unchanged(task, prepared, umo)
+            unchanged = await self._config_unchanged(
+                task, prepared, umo, expected_candidates,
+            )
             if not unchanged:
                 await self._mark_skipped_remainder(
                     execution_id, position, prepared.slots,
@@ -858,7 +895,7 @@ class DeliveryService:
                     continue
                 if sent_images > 0:
                     unchanged = await self._config_unchanged(
-                        task, prepared, umo,
+                        task, prepared, umo, expected_candidates,
                     )
                     if not unchanged:
                         await self._mark_skipped_remainder(
@@ -889,7 +926,7 @@ class DeliveryService:
                 )
                 # 最后一次生命周期/配置校验：必须紧邻外部调用，之后不能再写入。
                 if self._closed or not await self._config_unchanged(
-                    task, prepared, umo,
+                    task, prepared, umo, expected_candidates,
                 ):
                     await self._mark_skipped_remainder(
                         execution_id, position, prepared.slots,
@@ -1058,23 +1095,32 @@ class DeliveryService:
         task: PushTask,
         prepared: "_Prepared",
         umo: str,
+        expected_candidates: list | None = None,
     ) -> bool:
+        # 一次配置快照同时给出任务版本、白名单和候选 revision：任务与来源
+        # 的校验必须基于同一次读取，否则中间写库会留下发送间隙。
         try:
-            current = await self._tasks.get_task(task.id)
+            snapshot = await self._tasks.get_config_snapshot(task.id)
         except Exception:
             return False
-        # 栏目以任务 revision 与栏目本身双重校验；来源站点逐个校验自身
-        # revision，拼合内容里的任一来源变化都不得继续发送剩余内容。
-        sites_ok = await self._sources_unchanged(
-            self._prepared_sources(prepared),
-        )
-        return (
+        current = snapshot.task
+        if not (
             not self._closed
             and current.revision == task.revision
             and current.items == task.items
             and current.output_format == task.output_format
             and umo in current.umos
-            and sites_ok
+        ):
+            return False
+        if expected_candidates is not None:
+            try:
+                self._assert_confirmation(
+                    snapshot.candidates, expected_candidates,
+                )
+            except DeliveryConfirmationStaleError:
+                return False
+        return self._snapshot_sources_unchanged(
+            snapshot.candidates, prepared,
         )
 
     @staticmethod
@@ -1087,30 +1133,15 @@ class DeliveryService:
             return ((site.id, site.revision),)
         return ()
 
-    async def _sources_unchanged(
-        self,
-        sites: tuple[tuple[str, int], ...],
-    ) -> bool:
-        """本次内容实际使用的每个来源站点仍存在且 revision 未变。
-
-        通过一次存储查询读取全部来源版本：逐个读取会在“读完 A、读 B
-        前 A 被改”时漏过变更，旧内容仍可能被发送。
-        """
-        if not sites:
+    def _snapshot_sources_unchanged(self, candidates, prepared) -> bool:
+        """配置快照里的候选 revision 与本次实际来源逐个一致。"""
+        expected = self._prepared_sources(prepared)
+        if not expected:
             return True
-        ids = [site_id for site_id, _ in sites]
-        getter = getattr(self._sites, "get_revisions", None)
-        try:
-            if callable(getter):
-                revisions = await getter(ids)
-            else:
-                revisions = {}
-                for site_id in ids:
-                    current = await self._sites.get_site(site_id)
-                    revisions[current.id] = current.revision
-        except Exception:
-            return False
-        for site_id, revision in sites:
+        revisions = {
+            candidate.id: candidate.revision for candidate in candidates
+        }
+        for site_id, revision in expected:
             if revisions.get(site_id) != revision:
                 return False
         return True

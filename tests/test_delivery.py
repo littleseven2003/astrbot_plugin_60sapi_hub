@@ -1501,7 +1501,9 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
             await self._task([f"aiocqhttp:GroupMessage:g{i}"])
             for i in range(12)
         ]
-        original = self.tasks.get_task
+        # 发送校验改为任务配置快照读取：准入测试阻塞这一入口，
+        # 继续验证并发额度在初始配置读取之前生效。
+        original = self.tasks.get_config_snapshot
         release = asyncio.Event()
         entered = 0
         all_entered = asyncio.Event()
@@ -1515,7 +1517,7 @@ class DeliveryTest(unittest.IsolatedAsyncioTestCase):
                 await release.wait()
             return await original(task_id)
 
-        self.tasks.get_task = blocked
+        self.tasks.get_config_snapshot = blocked
         running = [
             asyncio.create_task(service.execute(task.id, f"admit-{i}"))
             for i, task in enumerate(tasks)

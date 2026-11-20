@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
-from .candidate_preview import assembled_preview
+from .candidate_preview import assembled_preview_outcome
 from .plan_preview import PlanPreview, PlanPreviewResult
 from .site_store import (
     DeliveryExecutionExistsError,
@@ -492,12 +492,20 @@ class DeliveryService:
         except DeliveryNoContentError as exc:
             await self._finish(execution_id, "failed", str(exc))
             return await self._read(execution_id)
+        # 内容准备完成后、发送开始前再复核一次来源版本：预览返回后到
+        # 这里之间改过来源站点，旧内容不得再发出。
+        prepared_sources = self._prepared_sources(prepared)
+        if prepared_sources and not await self._sources_unchanged(
+            prepared_sources,
+        ):
+            await self._finish(execution_id, "failed", "config_changed")
+            return await self._read(execution_id)
         if (
             # 只有“确认时为异常提示、现在却拿到了内容”才说明配置变了。
             # 确认时为正常内容、运行时同站全部失败 → 这是内容采集失败，
             # 按确认页已说明的规则发送异常提示，不能误报成配置变化。
             expected_alert_only is True
-            and prepared.site is not None
+            and (prepared.site is not None or prepared.multi_site)
         ):
             await self._finish(execution_id, "failed", "confirmation_stale")
             raise DeliveryConfirmationStaleError()
@@ -509,12 +517,20 @@ class DeliveryService:
             metadata = json.dumps(prepared.failed_sections, ensure_ascii=False)
         else:
             metadata = None
+        if prepared.sources:
+            sources_json = json.dumps(
+                [dict(source) for source in prepared.sources],
+                ensure_ascii=False,
+            )
+        else:
+            sources_json = None
         try:
             await self._store.set_delivery_content(
                 execution_id,
                 content_hash=prepared.content_hash,
                 content_status=prepared.content_status,
                 failed_sections_json=metadata,
+                sources_json=sources_json,
                 status="running",
             )
             generated_flags = _slot_image_generated(
@@ -552,9 +568,7 @@ class DeliveryService:
                 )
             except Exception as exc:
                 raise DeliveryStorageError("无法记录投递站点。") from exc
-        record = await self._send_targets(
-            execution_id, task, used_site, prepared,
-        )
+        record = await self._send_targets(execution_id, task, prepared)
         if prepared.site is None:
             # 采集失败已由 content_status=failed 记录；这里不改写投递结果，
             # 否则会把 unknown/成功统一覆盖成会误导重试的明确失败。
@@ -639,10 +653,10 @@ class DeliveryService:
         *,
         deadline: float | None = None,
     ) -> "_Prepared | None":
-        """按任务保存的顺序，寻找同一个站点满足全部类别与条数。"""
+        """单站优先、缺栏时按栏目拼合；仍缺栏目时返回 None 走提示路径。"""
         requirements = requirements_from_items(task.items)
         by_id = {candidate.id: candidate for candidate in candidates}
-        found = await assembled_preview(
+        outcome = await assembled_preview_outcome(
             self._api,
             plan_id=task.id,
             requirements=requirements,
@@ -651,10 +665,21 @@ class DeliveryService:
             # 每站只用剩余时间的一份：慢的首选站点不会吃满总时限。
             deadline=deadline,
         )
-        if found is None:
+        if outcome.data is None:
+            if outcome.status_code == 409:
+                # 确认后配置/来源在预览期间变化：不发内容，也不发“采集
+                # 失败”告警，否则等于用一条消息掩盖了需要重新确认的状态。
+                raise DeliveryNoContentError("config_changed")
+            if outcome.status_code and 400 <= outcome.status_code < 500:
+                raise DeliveryNoContentError("config_changed")
             return None
-        site_id, data = found
+        data = outcome.data
+        if data.get("source_mode") == "missing" or data.get("missing"):
+            # 拼合后仍缺栏目：只发送一条异常提示并记采集失败，绝不把
+            # 部分内容伪装成正常推送。
+            return None
         multi = data.get("source_mode") == "multi"
+        site_id = str(data.get("site_id") or "")
         return await self._build_prepared(
             execution_id, task, data,
             None if multi else by_id.get(site_id), deadline=deadline,
@@ -730,6 +755,7 @@ class DeliveryService:
                 payload if isinstance(payload, bytes)
                 else payload.encode("utf-8")
             )
+        sites, sources = _source_entries(data)
         return _Prepared(
             slots=slots,
             content_hash=digest.hexdigest(),
@@ -737,6 +763,8 @@ class DeliveryService:
             failed_sections=failed,
             site=site,
             multi_site=data.get("source_mode") == "multi",
+            sites=sites,
+            sources=sources,
         )
 
     async def _generate_section_images(
@@ -775,7 +803,6 @@ class DeliveryService:
         self,
         execution_id: str,
         task: PushTask,
-        site: object,
         prepared: "_Prepared",
     ) -> StoredDeliveryExecution:
         statuses: dict[int, str] = {}
@@ -793,7 +820,7 @@ class DeliveryService:
             1 for _, payload in prepared.slots if payload is None
         )
         for position, umo in enumerate(task.umos):
-            unchanged = await self._config_unchanged(task, site, umo)
+            unchanged = await self._config_unchanged(task, prepared, umo)
             if not unchanged:
                 await self._mark_skipped_remainder(
                     execution_id, position, prepared.slots,
@@ -825,7 +852,7 @@ class DeliveryService:
                     continue
                 if sent_images > 0:
                     unchanged = await self._config_unchanged(
-                        task, site, umo,
+                        task, prepared, umo,
                     )
                     if not unchanged:
                         await self._mark_skipped_remainder(
@@ -856,7 +883,7 @@ class DeliveryService:
                 )
                 # 最后一次生命周期/配置校验：必须紧邻外部调用，之后不能再写入。
                 if self._closed or not await self._config_unchanged(
-                    task, site, umo,
+                    task, prepared, umo,
                 ):
                     await self._mark_skipped_remainder(
                         execution_id, position, prepared.slots,
@@ -1023,21 +1050,17 @@ class DeliveryService:
     async def _config_unchanged(
         self,
         task: PushTask,
-        site: object,
+        prepared: "_Prepared",
         umo: str,
     ) -> bool:
         try:
             current = await self._tasks.get_task(task.id)
-            current_site = (
-                await self._sites.get_site(site.id) if site is not None else None
-            )
         except Exception:
             return False
-        # 栏目以任务 revision 与栏目本身双重校验；选中站点单独校验自身
-        # revision，版本变化后不得继续发送剩余内容。
-        site_ok = True if site is None else (
-            current_site is not None
-            and current_site.revision == site.revision
+        # 栏目以任务 revision 与栏目本身双重校验；来源站点逐个校验自身
+        # revision，拼合内容里的任一来源变化都不得继续发送剩余内容。
+        sites_ok = await self._sources_unchanged(
+            self._prepared_sources(prepared),
         )
         return (
             not self._closed
@@ -1045,8 +1068,32 @@ class DeliveryService:
             and current.items == task.items
             and current.output_format == task.output_format
             and umo in current.umos
-            and site_ok
+            and sites_ok
         )
+
+    @staticmethod
+    def _prepared_sources(prepared: "_Prepared") -> tuple[tuple[str, int], ...]:
+        """本次内容要复核的 (站点, revision)；旧预览桩回退到单站对象。"""
+        if prepared.sites:
+            return prepared.sites
+        site = prepared.site
+        if site is not None:
+            return ((site.id, site.revision),)
+        return ()
+
+    async def _sources_unchanged(
+        self,
+        sites: tuple[tuple[str, int], ...],
+    ) -> bool:
+        """本次内容实际使用的每个来源站点仍存在且 revision 未变。"""
+        for site_id, revision in sites:
+            try:
+                current = await self._sites.get_site(site_id)
+            except Exception:
+                return False
+            if current.revision != revision:
+                return False
+        return True
 
     async def _load_task(self, task_id: str) -> PushTask:
         try:
@@ -1173,6 +1220,58 @@ class DeliveryService:
         return "failed"
 
 
+def _source_entries(
+    data: dict,
+) -> tuple[tuple[tuple[str, int], ...], tuple[dict[str, object], ...]]:
+    """从预览结果取出“实际来源站点”和逐栏来源。
+
+    旧预览桩不返回 sites/assignments：此时保持空元组，发送校验回退到
+    单站 site 对象，逐栏来源也不写库。
+    """
+    revisions: dict[str, int] = {}
+    raw_sites = data.get("sites")
+    if isinstance(raw_sites, list):
+        for entry in raw_sites:
+            if not isinstance(entry, dict):
+                continue
+            site_id = entry.get("site_id")
+            revision = entry.get("revision")
+            if isinstance(site_id, str) and site_id and type(revision) is int:
+                revisions.setdefault(site_id, revision)
+    raw_assignments = data.get("assignments")
+    sources: list[dict[str, object]] = []
+    seen: set[str] = set()
+    if isinstance(raw_assignments, list):
+        for entry in raw_assignments:
+            if not isinstance(entry, dict):
+                continue
+            content_type = entry.get("content_type")
+            site_id = entry.get("site_id")
+            if (
+                not isinstance(content_type, str) or not content_type
+                or not isinstance(site_id, str) or not site_id
+                or content_type in seen
+            ):
+                continue
+            revision = revisions.get(site_id)
+            if revision is None:
+                raw_revision = entry.get("revision")
+                revision = raw_revision if type(raw_revision) is int else None
+            if revision is None:
+                continue
+            label = entry.get("label")
+            site_name = entry.get("site_name")
+            seen.add(content_type)
+            sources.append({
+                "content_type": content_type,
+                "label": label if isinstance(label, str) else "",
+                "site_id": site_id,
+                "site_name": site_name if isinstance(site_name, str) else "",
+                "revision": revision,
+            })
+    return tuple(revisions.items()), tuple(sources)
+
+
 @dataclass(frozen=True, slots=True)
 class _Prepared:
     """一次投递的待发送内容：一个栏目一张图，文字/Markdown 只有一张。"""
@@ -1184,6 +1283,10 @@ class _Prepared:
     failed_sections: list[object]
     site: object = None
     multi_site: bool = False
+    # 本次内容实际使用的全部来源（拼合时是多站），发送前逐站复核。
+    sites: tuple[tuple[str, int], ...] = ()
+    # 逐栏来源，随执行记录持久化；后台详情据此展示每栏来源。
+    sources: tuple[dict[str, object], ...] = ()
 
 
 ALLOWED_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})

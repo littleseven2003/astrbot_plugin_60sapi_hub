@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +69,10 @@ _SAFE_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _MAX_PREVIEW_ATTEMPTS = 2
 
 
+class _PreviewBudgetExceeded(Exception):
+    """单个栏目没有分到本次预览剩余时间里的取数预算。"""
+
+
 @dataclass(frozen=True, slots=True)
 class PlanPreviewResult:
     status_code: int
@@ -100,6 +105,7 @@ class PlanPreview:
         owner: str | None = None,
         site_id: object = None,
         _with_snapshot: bool = True,
+        deadline: float | None = None,
     ) -> PlanPreviewResult:
         data = _payload_dict(payload)
         if data is None:
@@ -149,7 +155,7 @@ class PlanPreview:
         # 绝不把不同版本的栏目拼进同一个 200 响应。
         for attempt in range(_MAX_PREVIEW_ATTEMPTS):
             sections, failures = await self._collect_sections(
-                plan_items, force_refresh, site.id,
+                plan_items, force_refresh, site.id, deadline=deadline,
             )
             try:
                 latest = await self._tasks.get_config_snapshot(task_id)
@@ -258,6 +264,24 @@ class PlanPreview:
                 return _stale_snapshot_error()
         return None
 
+    async def _verify_sources(
+        self,
+        sources: Iterable[tuple[str, int]],
+    ) -> PlanPreviewResult | None:
+        """本次预览实际使用的来源站点必须仍存在且 revision 一致。"""
+        for site_id, revision in sources:
+            try:
+                site = await self._sites.get_site(site_id)
+            except SiteNotFoundError:
+                return _preview_conflict_error()
+            except SiteStorageError:
+                return _storage_error()
+            except Exception:
+                return _internal_error()
+            if site.revision != revision:
+                return _preview_conflict_error()
+        return None
+
     async def preview_assembled(
         self,
         payload: object,
@@ -303,12 +327,18 @@ class PlanPreview:
                     ordered.append(value)
         probes: list[SiteProbe] = []
         for index, site_id in enumerate(ordered):
-            timeout: float | None = None
+            site_deadline: float | None = None
             if deadline is not None:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     break
-                timeout = remaining / max(1, len(ordered) - index)
+                # 每个候选只分到剩余时间的一份；preview_site 再把这
+                # 份预算分给各栏目，单栏超时只标记该栏失败，已经取到的
+                # 栏目仍保留在探测结果里，供按栏拼合使用。
+                site_deadline = (
+                    asyncio.get_running_loop().time()
+                    + remaining / max(1, len(ordered) - index)
+                )
             call = self.preview_site(
                 {
                     "task_id": config.task.id,
@@ -318,13 +348,13 @@ class PlanPreview:
                 owner=owner,
                 site_id=site_id,
                 _with_snapshot=False,
+                deadline=site_deadline,
             )
             try:
-                result = (
-                    await asyncio.wait_for(call, timeout=timeout)
-                    if timeout is not None else await call
-                )
+                result = await call
             except asyncio.TimeoutError:
+                # preview_site 自己按栏目预算返回部分结果；这里只兜底
+                # 意外的取消，避免整次预览直接失败。
                 continue
             if result.status_code not in (200, 502):
                 # 配置冲突、存储错误等明确失败直接中止整次预览。
@@ -360,6 +390,12 @@ class PlanPreview:
                 code="content_unavailable",
             )
         assembly = assemble(probes, requirements)
+        # 每个候选只在自己的 preview_site 内复核了版本；整次拼合期间前面
+        # 已取完的站点仍可能被修改。返回 200 前必须复核本次实际使用的
+        # 全部来源，否则“A 取完、B 取数时改 A”会把旧内容当成新配置。
+        stale = await self._verify_sources(assembly.sites)
+        if stale is not None:
+            return stale
         sections = list(assembly.sections)
         ok_sections = [item for item in sections if item.get("status") == "ok"]
         failed_sections = [
@@ -392,7 +428,8 @@ class PlanPreview:
             "items": plan_payload(config.task.items),
             "site_id": assembly.site_id if assembly.mode == "single" else "",
             "site_name": (
-                assembly.site_name if assembly.mode == "single" else "多站点"
+                assembly.site_name if assembly.mode == "single"
+                else ("多站点" if assembly.mode == "multi" else None)
             ),
             "source_mode": assembly.mode,
             "sites": [
@@ -603,6 +640,9 @@ class PlanPreview:
                 code="content_unavailable",
             )
         assembly = assemble(probes, requirements)
+        stale = await self._verify_sources(assembly.sites)
+        if stale is not None:
+            return stale
         sections = list(assembly.sections)
         failed_sections = [
             {
@@ -634,7 +674,8 @@ class PlanPreview:
             "items": plan_payload(items),
             "site_id": assembly.site_id if assembly.mode == "single" else "",
             "site_name": (
-                assembly.site_name if assembly.mode == "single" else "多站点"
+                assembly.site_name if assembly.mode == "single"
+                else ("多站点" if assembly.mode == "multi" else None)
             ),
             "source_mode": assembly.mode,
             "sites": [
@@ -788,19 +829,45 @@ class PlanPreview:
         site_id: str,
         *,
         use_cache: bool = True,
+        deadline: float | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """按给定栏目方案获取全部栏目；失败栏目单独记录，不中断其余栏目。"""
+        """按给定栏目方案获取全部栏目；失败栏目单独记录，不中断其余栏目。
+
+        给出 deadline 时，每个栏目只使用剩余时间在尚未取数的栏目间的一份：
+        某个栏目超时或耗尽预算只把该栏目标记为失败，已经成功取到的栏目
+        仍保留在结果里，供按栏拼合使用。
+        """
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        for item in plan_items:
+        total = len(plan_items)
+        for position, item in enumerate(plan_items):
             try:
+                budget: float | None = None
+                if deadline is not None:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise _PreviewBudgetExceeded()
+                    budget = remaining / max(1, total - position)
                 # 必须使用本次实际选中的站点，否则会出现“标记 B、内容来自 A”。
-                cached = await self._content.preview_cached(
+                call = self._content.preview_cached(
                     item.content_type,
                     site_id,
                     force_refresh=force_refresh,
                     use_cache=use_cache,
                 )
+                cached = (
+                    await asyncio.wait_for(call, timeout=budget)
+                    if budget is not None else await call
+                )
+            except (asyncio.TimeoutError, _PreviewBudgetExceeded):
+                section = _section_error(
+                    item.content_type,
+                    item.label,
+                    _PreviewBudgetExceeded(),
+                )
+                sections.append(section)
+                failures.append(section)
+                continue
             except Exception as exc:
                 section = _section_error(item.content_type, item.label, exc)
                 sections.append(section)
@@ -1047,6 +1114,8 @@ def _section_error(
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, _PreviewBudgetExceeded):
+        return "section_timeout", "栏目获取超出本次预览时限。"
     if isinstance(exc, SiteDisabledError):
         return "site_disabled", "站点未启用。"
     if isinstance(exc, SiteNotFoundError):
@@ -1152,6 +1221,14 @@ def _stale_snapshot_error() -> PlanPreviewResult:
         409,
         "任务或站点配置已变化，请重新预览后再生成图片。",
         code="snapshot_stale",
+    )
+
+
+def _preview_conflict_error() -> PlanPreviewResult:
+    return _error(
+        409,
+        "站点配置在获取期间发生变化，本次预览已取消，请重试。",
+        code="preview_revision_changed",
     )
 
 

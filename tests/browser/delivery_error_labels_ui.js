@@ -84,6 +84,9 @@ function execution(id, taskName, fields, targets) {
     skipped_section_image_failed_count: 0,
     skipped_config_changed_count: 0,
     skipped_other_count: 0,
+    content_sources: fields.sources || [],
+    source_mode: fields.sources && fields.sources.length > 1
+      ? "multi" : null,
     targets,
   };
 }
@@ -91,6 +94,12 @@ function execution(id, taskName, fields, targets) {
 // 已调用发送器后超时（第一张）→ 后续目标预算耗尽（未调用发送器）→ 剩余槽位跳过。
 const TIMEOUT = execution("exec-timeout", "发送中断记录", {
   status: "unknown", contentStatus: "complete", errorCode: "sender_timeout",
+  sources: [
+    { content_type: "daily_news", label: "每日新闻",
+      site_id: "site-a", site_name: "站点A", revision: 3 },
+    { content_type: "zhihu_hot", label: "知乎热榜",
+      site_id: "site-b", site_name: "站点B", revision: 4 },
+  ],
 }, [
   target(0, UMO_A, "unknown", "sender_timeout", [
     page_(1, "unknown", "sender_timeout"),
@@ -273,6 +282,8 @@ function countOf(text, needle) {
     check(!timeout.text.includes("sender_budget_exhausted"), "预算耗尽也要译成中文: " + timeout.text);
     check(!timeout.text.includes("undefined") && !timeout.text.includes("null"),
       "不得出现 undefined/null: " + timeout.text);
+    check(timeout.text.includes("内容来源：每日新闻 → 站点A；知乎热榜 → 站点B"),
+      "执行详情应展示逐栏来源: " + timeout.text);
 
     // 2) 目标级：同一次执行里两种终态必须可区分
     check(timeout.rows.length === 2, "应有两条目标记录: " + JSON.stringify(timeout.rows));

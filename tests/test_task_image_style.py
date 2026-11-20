@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.image_styles import DEFAULT_STYLE_ID, PRESETS
-from core.sites import SiteCreate, SiteService
+from core.sites import SCHEMA_VERSION, SiteCreate, SiteService
 from core.task_api import TaskApi
 from core.tasks import PushTaskService
 
@@ -168,7 +168,7 @@ class TaskImageStyleApiTest(unittest.IsolatedAsyncioTestCase):
                     row[1] for row in
                     connection.execute("PRAGMA table_info(push_tasks)")
                 }
-            self.assertEqual(version, 18)
+            self.assertEqual(version, SCHEMA_VERSION)
             self.assertIn("image_style", columns)
         finally:
             await reopened.close()

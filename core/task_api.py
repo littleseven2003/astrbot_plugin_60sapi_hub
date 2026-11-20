@@ -25,8 +25,6 @@ from .site_requirements import evaluate_sections, requirements_from_items
 from .site_assembly import SiteProbe, assemble
 from .sites import SiteService, SiteStorageError
 
-# 一次能力测试最多检查的候选站点数，避免请求被候选数量拖长。
-MAX_TEST_CANDIDATES = 5
 from .image_styles import style_options
 from .tasks import (
     IMAGE_STYLE_UNSET,
@@ -189,13 +187,18 @@ class TaskApi:
         *,
         use_cache: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, tuple[int, bool]], dict[str, Any] | None, bool]:
-        """按候选顺序判断单站能否满足全部栏目；草稿与已保存任务共用。"""
+        """按候选顺序判断单站/拼合能否满足全部栏目；草稿与已保存任务共用。
+
+        历史任务可能保存了超过新选上限的长候选列表：能力测试必须和预览
+        一样检查完整列表，否则第 6 个候选能满足时会出现“测试不满足、预览
+        却能成功”的口径分叉。
+        """
         requirements = requirements_from_items(items)
         checked: list[dict[str, Any]] = []
         site_snapshot: dict[str, int] = {}
         probes: list[SiteProbe] = []
-        candidates = tuple(site_ids)[:MAX_TEST_CANDIDATES]
-        truncated = len(tuple(site_ids)) > len(candidates)
+        candidates = tuple(site_ids)
+        truncated = False
         for site_id in candidates:
             site = sites.get(site_id)
             entry: dict[str, Any] = {

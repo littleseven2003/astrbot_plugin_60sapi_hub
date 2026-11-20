@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from .site_requirements import Requirement, evaluate_sections
@@ -132,7 +133,22 @@ async def first_satisfying_preview(
     return None
 
 
-async def assembled_preview(
+@dataclass(frozen=True, slots=True)
+class AssemblyPreviewOutcome:
+    """一次组合预览的结果。
+
+    与只返回内容的 ``assembled_preview`` 不同，调用方（投递）必须能区分
+    “没有内容可拼”和“配置在预览期间变化”：前者发送异常提示，后者绝
+    不能调用发送器。``status_code`` 为 0 表示旧预览桩没有返回内容。
+    """
+
+    status_code: int
+    data: dict[str, Any] | None = None
+    code: str | None = None
+    message: str | None = None
+
+
+async def assembled_preview_outcome(
     previews: object,
     *,
     plan_id: str,
@@ -142,8 +158,8 @@ async def assembled_preview(
     catch_errors: bool = False,
     force_refresh: bool = False,
     deadline: float | None = None,
-) -> tuple[str, dict[str, Any]] | None:
-    """优先使用 PlanPreview 的单站优先 + 按栏拼合；旧预览桩回退单站语义。"""
+) -> AssemblyPreviewOutcome:
+    """优先走 PlanPreview 的单站优先 + 按栏拼合；旧预览桩回退单站语义。"""
     assembled = getattr(previews, "preview_assembled", None)
     if callable(assembled):
         try:
@@ -155,16 +171,22 @@ async def assembled_preview(
             )
         except Exception:
             if catch_errors:
-                return None
+                return AssemblyPreviewOutcome(0, None, "preview_failed")
             raise
-        if getattr(response, "status_code", None) != 200:
-            return None
+        status = getattr(response, "status_code", None)
         body = getattr(response, "body", None)
         data = body.get("data") if isinstance(body, dict) else None
-        if not isinstance(data, dict):
-            return None
-        return str(data.get("site_id") or ""), data
-    return await first_satisfying_preview(
+        if status == 200 and isinstance(data, dict):
+            return AssemblyPreviewOutcome(200, data)
+        code = data.get("code") if isinstance(data, dict) else None
+        message = body.get("message") if isinstance(body, dict) else None
+        return AssemblyPreviewOutcome(
+            status if isinstance(status, int) else 0,
+            None,
+            code if isinstance(code, str) else None,
+            message if isinstance(message, str) else None,
+        )
+    found = await first_satisfying_preview(
         previews,
         plan_id=plan_id,
         requirements=requirements,
@@ -174,10 +196,42 @@ async def assembled_preview(
         force_refresh=force_refresh,
         deadline=deadline,
     )
+    if found is None:
+        return AssemblyPreviewOutcome(0, None, "content_unavailable")
+    return AssemblyPreviewOutcome(200, found[1])
+
+
+async def assembled_preview(
+    previews: object,
+    *,
+    plan_id: str,
+    requirements: tuple[Requirement, ...],
+    site_ids: Iterable[str],
+    owner: str | None = None,
+    catch_errors: bool = False,
+    force_refresh: bool = False,
+    deadline: float | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """返回第一个可用的组合预览；旧预览桩回退单站语义。"""
+    outcome = await assembled_preview_outcome(
+        previews,
+        plan_id=plan_id,
+        requirements=requirements,
+        site_ids=site_ids,
+        owner=owner,
+        catch_errors=catch_errors,
+        force_refresh=force_refresh,
+        deadline=deadline,
+    )
+    if outcome.data is None:
+        return None
+    return str(outcome.data.get("site_id") or ""), outcome.data
 
 
 __all__ = [
+    "AssemblyPreviewOutcome",
     "assembled_preview",
+    "assembled_preview_outcome",
     "attempt_timeout_for",
     "first_satisfying_preview",
     "satisfied_previews",

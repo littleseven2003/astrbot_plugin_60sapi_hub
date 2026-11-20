@@ -173,8 +173,10 @@ class TaskUpdate:
     image_style: object = IMAGE_STYLE_UNSET
 
 
-# 草稿能力测试与预览共用同一候选上限，避免两处遍历范围不一致。
-MAX_DRAFT_SITES = 5
+# 新选候选的统一上限：表单、草稿测试、新建和改选都按它校验。历史任务
+# 可能保存过更长的列表，未改动时原序保留，能力测试与预览仍检查完整列表。
+MAX_TASK_SITES = 5
+MAX_DRAFT_SITES = MAX_TASK_SITES
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,7 +266,9 @@ class PushTaskService:
         image_style = normalize_image_style(
             payload.get("image_style", DEFAULT_STYLE_ID),
         )
-        sites = await self._resolve_site_ids(payload.get("sites"))
+        sites = await self._resolve_site_ids(
+            payload.get("sites"), limit=MAX_DRAFT_SITES,
+        )
         return TaskDraft(
             name=name,
             items=items,
@@ -284,7 +288,9 @@ class PushTaskService:
             else normalize_image_style(data.image_style)
         )
         schedule = parse_schedule(data.schedule)
-        site_ids = await self._resolve_site_ids(data.sites)
+        site_ids = await self._resolve_site_ids(
+            data.sites, limit=MAX_TASK_SITES,
+        )
         try:
             stored = await self._store.create_task(
                 task_id=uuid.uuid4().hex,
@@ -416,9 +422,20 @@ class PushTaskService:
         task_id: str,
         raw: object,
     ) -> tuple[str, ...] | None:
-        """省略 sites 时保持原有候选与顺序；显式传入才替换。"""
+        """省略 sites 时保持原有候选与顺序；显式传入才替换。
+
+        历史任务可能已有超过新选上限的长列表：原样提交（顺序与成员都
+        未变）时允许保存；一旦改动候选就按新上限重新校验。
+        """
         if raw is not None:
-            return await self._resolve_site_ids(raw)
+            resolved = await self._resolve_site_ids(raw)
+            current = await self.get_task(task_id)
+            unchanged = tuple(current.sites) == resolved
+            if not unchanged and len(resolved) > MAX_TASK_SITES:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_TASK_SITES} 个候选站点",
+                )
+            return resolved
         current = await self.get_task(task_id)
         if current.sites:
             return None
@@ -428,6 +445,8 @@ class PushTaskService:
     async def _resolve_site_ids(
         self,
         raw: object,
+        *,
+        limit: int | None = None,
     ) -> tuple[str, ...]:
         """候选站点顺序即执行顺序；组合不再提供默认站点。"""
         if raw is None:
@@ -451,6 +470,8 @@ class PushTaskService:
             ordered.append(site_id)
         if not ordered:
             raise TaskValidationError("sites", "至少需要一个候选站点")
+        if limit is not None and len(ordered) > limit:
+            raise TaskValidationError("sites", f"最多 {limit} 个候选站点")
         return tuple(ordered)
 
 

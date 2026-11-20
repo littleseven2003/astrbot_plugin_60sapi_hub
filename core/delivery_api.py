@@ -386,6 +386,7 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
             e, image_model, record_complete,
         ),
         "failed_section_count": len(failed_sections),
+        "source_count": len(_project_content_sources(e.content_sources_json)),
         "image_partial": _image_partial(e),
     }
 
@@ -438,6 +439,8 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "updated_at": e.updated_at,
         "failed_sections": failed_sections,
         "failed_section_count": len(failed_sections),
+        "source_mode": _project_source_mode(e),
+        "content_sources": _project_content_sources(e.content_sources_json),
         "image_model": image_model,
         "record_complete": record_complete,
         "image_count": len(e.pages),
@@ -496,6 +499,60 @@ def _safe_label(value: object) -> str:
         for char in value
     )
     return " ".join(text.split()).strip()[:120]
+
+
+def _project_source_mode(e: StoredDeliveryExecution) -> str | None:
+    """来源模式的兼容投影：新记录看逐栏来源，旧记录只能沿用空站点推断。"""
+    sources = _project_content_sources(e.content_sources_json)
+    if sources:
+        return "multi" if len(sources) > 1 else "single"
+    if e.content_status == "failed":
+        # 采集失败只剩异常提示，没有内容来源；不能沿用主候选的站点。
+        return None
+    if not e.content_sources_json and not e.site_id:
+        return "multi"
+    return "single" if e.site_id else None
+
+
+def _project_content_sources(raw: object) -> list[dict[str, Any]]:
+    """把逐栏来源 JSON 投影成安全字段；历史/坏数据按空列表处理。"""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in decoded[:_MAX_FAILED_SECTIONS]:
+        if not isinstance(entry, dict):
+            continue
+        content_type = entry.get("content_type")
+        if not isinstance(content_type, str) or not _SAFE_CODE_RE.fullmatch(
+            content_type,
+        ):
+            continue
+        site_id = entry.get("site_id")
+        if not isinstance(site_id, str) or not site_id or len(site_id) > 64:
+            continue
+        if any(ord(char) < 32 or ord(char) == 127 for char in site_id):
+            continue
+        revision = entry.get("revision")
+        revision = revision if type(revision) is int and revision >= 0 else None
+        key = (content_type, site_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            "content_type": content_type,
+            "label": _safe_label(entry.get("label")),
+            "site_id": site_id,
+            "site_name": _safe_label(entry.get("site_name")),
+            "revision": revision,
+        })
+    return result
 
 
 def _project_failed_sections(raw: object) -> list[dict[str, Any]]:

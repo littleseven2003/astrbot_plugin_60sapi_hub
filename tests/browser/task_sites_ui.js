@@ -154,6 +154,22 @@ async function openPage(browser, port, overrides = {}) {
             window.__capabilityFailures = (window.__capabilityFailures || 0) + 1;
             throw new Error("测试失败，请稍后重试");
           }
+          if (window.__capabilityMulti) {
+            return {
+              satisfied: false, site_id: "", site_name: "多站点",
+              source_mode: "multi", truncated: false, checked_count: 2,
+              assignments: [
+                { content_type: "daily_news", label: "每日新闻",
+                  site_id: "site-a", site_name: "站点A", revision: 3 },
+              ],
+              missing: [
+                { content_type: "zhihu_hot", label: "知乎热榜",
+                  required: 3, available: 2, reason: "insufficient" },
+              ],
+              message: "需要多站点拼合，但仍缺栏目。",
+              cache: { used: true, ttl_seconds: 300 },
+            };
+          }
           // 宿主 bridge 成功时直接返回业务 data（不再套一层 data）。
           return {
             satisfied: true, site_id: "site-b", site_name: "站点B",
@@ -266,6 +282,18 @@ async function openPage(browser, port, overrides = {}) {
     const message = await page.textContent("#task-capability-result");
     check(message.includes("可以满足"), "能力测试结论：" + message);
     check(message.includes("内容缓存"), "应说明缓存时效：" + message);
+
+    // 接口返回逐栏分配与缺项时，界面直接展示，不只显示一句结论。
+    await page.evaluate(() => { window.__capabilityMulti = true; });
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("逐栏来源"));
+    const multiMessage = await page.textContent("#task-capability-result");
+    check(multiMessage.includes("逐栏来源：每日新闻 → 站点A"),
+      "能力测试应展示逐栏来源：" + multiMessage);
+    check(multiMessage.includes("缺项：知乎热榜（需要 3 条，最多 2 条）"),
+      "能力测试应展示缺项与条数：" + multiMessage);
+    await page.evaluate(() => { window.__capabilityMulti = false; });
 
     // 未保存的候选改动：旧结论立即作废，但草稿仍可直接重新测试。
     await page.selectOption("#task-site-picker", "site-c");

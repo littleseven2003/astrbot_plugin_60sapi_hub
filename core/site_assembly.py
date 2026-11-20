@@ -96,6 +96,7 @@ def assemble(
                         "label": item.label,
                         "site_id": probe.site_id,
                         "site_name": probe.site_name,
+                        "revision": probe.revision,
                     }
                     for item in required
                 ),
@@ -142,6 +143,7 @@ def assemble(
             "label": item.label,
             "site_id": probe.site_id,
             "site_name": probe.site_name,
+            "revision": probe.revision,
         })
         used_sites[probe.site_id] = probe.revision
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _CREATE_SITES_TABLE = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS delivery_executions (
     content_hash TEXT,
     content_status TEXT,
     failed_sections_json TEXT,
+    content_sources_json TEXT,
     image_model TEXT,
     status TEXT NOT NULL CHECK (
         status IN ('preparing', 'running', 'success', 'partial',
@@ -390,6 +391,7 @@ class StoredDeliveryExecution:
     created_at: str
     updated_at: str
     image_model: str | None = None
+    content_sources_json: str | None = None
     targets: tuple[StoredDeliveryTarget, ...] = ()
     pages: tuple[StoredDeliveryPage, ...] = ()
 
@@ -818,6 +820,19 @@ class SiteStore:
                         f"WHERE task_id IN ({placeholders})",
                         tuple(paused_task_ids),
                     )
+            # v19：拼合内容的逐栏来源。历史行保持 NULL，详情接口据此显示
+            # “未记录来源”，不根据空站点 ID 反推具体栏目来源。
+            async with connection.execute(
+                "PRAGMA table_info(delivery_executions)",
+            ) as cursor:
+                delivery_columns = {
+                    row[1] for row in await cursor.fetchall()
+                }
+            if "content_sources_json" not in delivery_columns:
+                await connection.execute(
+                    "ALTER TABLE delivery_executions "
+                    "ADD COLUMN content_sources_json TEXT",
+                )
             await connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}",
             )
@@ -2126,6 +2141,7 @@ class SiteStore:
         content_status: str,
         failed_sections_json: str | None,
         status: str,
+        sources_json: str | None = None,
     ) -> None:
         await self._update_delivery_row(
             "delivery_executions",
@@ -2134,6 +2150,7 @@ class SiteStore:
                 "content_hash": content_hash,
                 "content_status": content_status,
                 "failed_sections_json": failed_sections_json,
+                "content_sources_json": sources_json,
                 "status": status,
             },
         )
@@ -2239,7 +2256,7 @@ class SiteStore:
         allowed = {
             "delivery_executions": {
                 "content_hash", "content_status", "failed_sections_json",
-                "status", "error_code",
+                "content_sources_json", "status", "error_code",
             },
             "delivery_targets": {"status", "error_code"},
             "delivery_pages": {"status", "error_code"},
@@ -2779,6 +2796,10 @@ def _row_to_delivery(
         content_hash=row["content_hash"],
         content_status=row["content_status"],
         failed_sections_json=row["failed_sections_json"],
+        content_sources_json=(
+            row["content_sources_json"]
+            if "content_sources_json" in row.keys() else None
+        ),
         image_model=(
             row["image_model"]
             if "image_model" in row.keys() else None

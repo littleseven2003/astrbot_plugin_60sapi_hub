@@ -2782,7 +2782,7 @@ function renderTaskPreviewMeta(data) {
   meta.replaceChildren();
   addMeta(meta, "任务", data.task_name || "未命名任务");
   addMeta(meta, "站点", data.site_name || "未记录");
-  if (data.source_mode === "multi" && Array.isArray(data.assignments)) {
+  if (data.source_mode !== "single" && Array.isArray(data.assignments)) {
     addMeta(meta, "拼合来源", data.assignments
       .map((item) => `${item.label || item.content_type} → ${item.site_name || item.site_id}`)
       .join("、"));
@@ -4084,16 +4084,21 @@ function removeTaskSite(index) {
   renderTaskSites();
 }
 
-function setTaskCapabilityResult(text, tone) {
+function setTaskCapabilityResult(text, tone, details) {
   const node = elements.taskCapabilityResult;
   if (!text) {
     node.hidden = true;
     node.textContent = "";
+    node.style.whiteSpace = "";
     node.className = "site-test-result";
     return;
   }
+  const lines = [text, ...(Array.isArray(details) ? details : [])]
+    .filter((line) => typeof line === "string" && line.trim().length > 0);
   node.hidden = false;
-  node.textContent = text;
+  node.textContent = lines.join("\n");
+  // 逐栏来源与缺项各占一行；窄屏也按行阅读，不挤成一段。
+  node.style.whiteSpace = lines.length > 1 ? "pre-line" : "";
   node.className = `site-test-result site-test-${tone || "info"}`;
 }
 
@@ -4409,8 +4414,30 @@ async function runTaskCapabilityTest() {
       notes.push(`结果来自 ${Math.round(ttl)} 秒内容缓存，非实时连通性测试`);
     }
     const suffix = notes.length > 0 ? `（${notes.join("；")}）` : "";
+    // 接口已经返回逐栏分配与缺项：直接展示，别让管理员只看一句结论
+    // 再去猜是哪一栏、来自哪个站点。
+    const details = [];
+    const assignments = Array.isArray(payload.assignments)
+      ? payload.assignments
+      : [];
+    if (payload.source_mode !== "single" && assignments.length > 0) {
+      details.push("逐栏来源：" + assignments.map((item) => {
+        const label = item && (item.label || item.content_type) || "栏目";
+        const site = item && (item.site_name || item.site_id) || "未知站点";
+        return `${label} → ${site}`;
+      }).join("；"));
+    }
+    const missing = Array.isArray(payload.missing) ? payload.missing : [];
+    if (missing.length > 0) {
+      details.push("缺项：" + missing.map((item) => {
+        const label = item && (item.label || item.content_type) || "栏目";
+        return Number.isInteger(item && item.required)
+          ? `${label}（需要 ${item.required} 条，最多 ${item.available} 条）`
+          : `${label}（没有候选站点提供）`;
+      }).join("；"));
+    }
     setTaskCapabilityResult((payload.message || "测试完成。") + suffix,
-      payload.satisfied ? "success" : "error");
+      payload.satisfied ? "success" : "error", details);
   } catch (error) {
     if (!stillCurrent()) return;
     setTaskCapabilityResult(friendlyErrorMessage(error), "error");
@@ -5633,6 +5660,18 @@ function renderDeliveryExecution(execution) {
       ? `错误码：${deliveryErrorLabel(execution.error_code)}`
       : "无执行级错误");
   elements.deliveryResult.append(title, id, content);
+  const sources = Array.isArray(execution.content_sources)
+    ? execution.content_sources
+    : [];
+  if (sources.length > 0) {
+    const sourceLine = document.createElement("p");
+    sourceLine.textContent = "内容来源：" + sources.map((entry) => {
+      const label = entry && (entry.label || entry.content_type) || "栏目";
+      const site = entry && (entry.site_name || entry.site_id) || "未知站点";
+      return `${label} → ${site}`;
+    }).join("；");
+    elements.deliveryResult.append(sourceLine);
+  }
   if (execution.status === "unknown") {
     const note = document.createElement("p");
     note.className = "task-disabled";

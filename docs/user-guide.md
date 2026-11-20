@@ -54,7 +54,7 @@
 ### 数据目录与备份
 
 - 数据库位置：`<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`。目录由宿主 `StarTools.get_data_dir()` 获取，位于插件目录之外，因此替换或删除插件目录不会删除数据。
-- schema 版本 16，共 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets`、`delivery_pages`。
+- schema 版本 19，共 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets`、`delivery_pages`。
 - 旧库迁移：受支持的 v1～v18 旧库在事务内迁移至 v19，失败回滚。旧任务引用的组合栏目按原顺序和条数复制为每个任务独立的配置，原组合数据保留；共享旧组合的任务迁移后互不联动，重复启动不会重复复制。旧任务没有候选站点时使用原组合站点，已有候选顺序保留；无来源类型的旧站点迁移为公开，已有类型保留。升级前停用并备份，升级后核对任务栏目和站点；不要手工修改数据库。
 - 备份：先在后台停用插件以关闭数据库连接，再复制 `sites.sqlite3` 到插件目录之外的安全位置；恢复时停用插件、替换该文件、再启用。不要在插件运行中直接复制活跃数据库当作备份。
 - 数据库包含站点凭据原件，备份文件同样按敏感文件保管，不要提交到仓库或贴进 Issue。

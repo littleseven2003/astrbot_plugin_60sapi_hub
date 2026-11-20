@@ -265,7 +265,7 @@
 
 ## 数据与升级
 
-站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 16，包含 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库创建当前结构；受支持的旧 v1～v15 数据库通过同一事务补齐或迁移至 `user_version=16`，迁移取得 SQLite 写锁后重新读取版本，避免并发打开时重复执行迁移。失败回滚，保留旧站点、凭据、组合、任务、白名单及历史。未带来源类型的站点迁移为公开；已带来源类型的记录保持原值，包括旧版迁移留下的自建类型。
+站点、内容组合和推送任务保存在同一个数据库 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`；目录由宿主 `StarTools.get_data_dir()` 获取。schema 版本为 19，包含 12 张业务表：`sites`、`content_profiles`、`content_profile_items`、`push_tasks`、`push_task_umos`、`push_task_sites`、`push_schedule_state`、`push_schedule_claims`、`push_schedule_skips`、`delivery_executions`、`delivery_targets` 和 `delivery_pages`。首次建库创建当前结构；受支持的旧 v1～v18 数据库通过同一事务补齐或迁移至 `user_version=19`，迁移取得 SQLite 写锁后重新读取版本，避免并发打开时重复执行迁移。失败回滚，保留旧站点、凭据、组合、任务、白名单及历史。未带来源类型的站点迁移为公开；已带来源类型的记录保持原值，包括旧版迁移留下的自建类型。
 
 任务、投递记录与站点/组合共用同一个 `SiteStore` 连接、锁和事务，不另建 JSON 配置或复制到 `_conf_schema.json`。更新/删除任务按 expected_revision，冲突不覆盖；任务内部方案随任务管理，站点引用受保护。写入失败回滚，取消后下一次正常操作不受影响。
 

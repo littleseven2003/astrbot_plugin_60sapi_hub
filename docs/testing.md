@@ -332,7 +332,7 @@ node tests/browser/manual_delivery_query.js
 - 取消回归：用独立 SQLite 连接持有写锁，等待写操作已排队后取消任务，再释放锁；覆盖新增、编辑、删除取消后的下一次正常写入和重开数据库，确认未提交修改不落盘。不要用固定 sleep 判断写操作已进入等待。
 - 资源泄漏：用 `python -W always::ResourceWarning -m unittest discover -s tests` 运行，日志不应出现 `unclosed database`；需要定位分配点时再加 `-X tracemalloc=4`，警告中 `Object allocated at` 的末帧才是连接创建位置，通常不等于打印警告的测试。测试夹具读写 SQLite 一律用 `contextlib.closing` 包裹连接：`with sqlite3.connect(...)` 只提交或回滚事务，不关闭连接；需要提交语义时写 `with closing(sqlite3.connect(path)) as connection, connection:`。
 - 宿主级：在 AstrBot v4.29.1 中加载、停用、启用、重载；确认 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3` 存在、停用后数据库句柄关闭、重载后数据保留且插件只有一份注册。扩展 API 未登录返回 401；停用后旧处理器返回 503；启用/重载后恢复读写。
-- 后台页面：在真实 AstrBot Dashboard 登录后打开“站点管理”，新增两个虚构站点（内网地址和反向代理前缀），编辑名称/超时/启用状态，保留/替换/清除凭据，制造过期 revision 并确认冲突不覆盖，删除站点，刷新页面，停用/启用/重载，检查窄屏无横向溢出。页面只显示 `has_bearer_token`，不显示凭据原文。
+- 后台页面：在真实 AstrBot Dashboard 登录后从左侧栏「60sAPI Hub」进入，并在插件内左侧导航选择“站点管理”，新增两个虚构站点（内网地址和反向代理前缀），编辑名称/超时/启用状态，保留/替换/清除凭据，制造过期 revision 并确认冲突不覆盖，删除站点，刷新页面，停用/启用/重载，检查窄屏无横向溢出。页面只显示 `has_bearer_token`，不显示凭据原文。
 - 写操作未确认：在真实宿主浏览器中把新增/编辑/删除请求转发到服务器后丢弃响应，确认页面进入“结果未确认”、保存/删除按钮禁用且不能直接重提；重新读取成功显示最新列表状态，读取失败继续保持未确认；请求未到达服务器时重新读取后可明确重新提交。普通字段校验、正常保存和 revision 冲突仍单独验证。
 - 每日新闻：`tests/test_news.py` 覆盖 URL/反代/IPv6、字符串/对象条目、顺序与条数、空内容、缺失/非法/旧日期、业务/结构错误、站点启用/禁用/凭据隐藏和服务层 URL/令牌/超时传递；`tests/test_news_http.py` 覆盖重试、超时、大小、重定向、取消、关闭和并发，并用事件同步覆盖在途、排队、重试等待中的关闭、关闭幂等、重新打开和无关任务不被取消；`tests/test_news_api.py` 覆盖错误映射、凭据不外泄，以及上游 HTTP/业务错误正文回显虚构 Bearer token 时后台响应不包含凭据。
 - 每日新闻浏览器：真实宿主 + 本地模拟上游，选择已启用站点主动获取，覆盖正常、合法空内容、旧内容、缺失日期、HTML 文本安全渲染、HTTP 错误、超时和重复触发保护；打开页面、保存站点和启动插件不自动请求；停用/启用/重载后恢复，未登录预览 API 返回 401，窄屏无横向溢出。

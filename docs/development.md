@@ -49,7 +49,7 @@ git config core.hooksPath .githooks
 - 在 WebUI 插件列表中可读到名称、作者、版本和仓库；停用、启用、重载均返回成功，重载后插件仍只有一份注册记录，未出现本插件引起的 Traceback。
 - 插件数据目录通过 `StarTools.get_data_dir(plugin_name)` 创建；站点数据库位于 `<ASTRBOT_ROOT>/data/plugin_data/<插件名>/sites.sqlite3`。停用后数据库句柄关闭，启用/重载后数据保留。
 - 初始加载、停用、启用和重载过程没有触发 60s API 请求，也没有发送消息。
-- 插件视图：Dashboard 会扫描插件根目录的 `views/<视图名>/index.html`（其次 `pages/`），以受限 iframe 加载并自动注入 bridge。真实环境已验证 `views/sites/index.html` 被发现、页面标题通过 `.astrbot-plugin/i18n/zh-CN.json` 显示为“站点管理”，侧边栏入口可用。
+- 插件视图：Dashboard 会扫描插件根目录的 `views/<视图名>/index.html`（其次 `pages/`），以受限 iframe 加载并自动注入 bridge。真实环境已验证 `views/sites/index.html` 被发现、页面标题与左侧栏入口通过 `.astrbot-plugin/i18n/zh-CN.json` 显示为「60sAPI Hub」，入口可用。
 - 视图 bridge：实际对象为 `window.AstrBotPluginView`（别名 `AstrBotPluginPage`），提供 `ready()`、`getContext()`、`getLocale()`、`getI18n()`、`t(...)`、`onContext(...)`、`apiGet(endpoint, params)`、`apiPost(endpoint, body)`、上传/下载和 SSE 方法。`endpoint` 是相对路径，由宿主拼成 `/api/v1/plugins/extensions/<插件名>/<endpoint>`；本页只使用 `apiGet`/`apiPost`，不创建独立登录或保存 Dashboard token。
 - 视图 bridge 的响应约定：后端返回 `{status:"ok",data:...}` 时解析为 `data` 本身；返回 `{status:"error",message,...}` 或 HTTP 失败时抛出 `Error`。本页按成功、明确拒绝、revision 冲突和结果未确认分别处理。
 - Web API：`context.register_web_api(route, handler, methods, desc)` 注册，路由须以 `/<插件名>/` 开头；Dashboard 负责扩展路由鉴权，处理器可通过 `astrbot.api.web.request.username` 检查当前用户。请求体用 `request.json(default=None)`，响应使用 `json_response`/`error_response`。同路由同方法会替换旧注册；重载不会整体清空注册表，因此插件用“实例是否已启用”标志拒绝停用后的旧处理器。

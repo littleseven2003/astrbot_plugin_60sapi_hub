@@ -239,12 +239,8 @@ class PushTaskService:
             raise TaskValidationError("body", "请求体必须是 JSON 对象")
         raw_sites = payload.get("sites")
         if isinstance(raw_sites, (list, tuple)):
-            # 能力测试最多检查前 5 个候选：草稿也必须用同一上限，且不静默去重，
-            # 否则预览会遍历比能力测试更多的站点。
-            if len(raw_sites) > MAX_DRAFT_SITES:
-                raise TaskValidationError(
-                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
-                )
+            # 新选候选上限为 5，且不静默去重，否则预览会遍历比能力
+            # 测试更多的站点。历史任务的超长列表另由下方按 task_id 放行。
             seen: set[str] = set()
             for raw_site in raw_sites:
                 if not isinstance(raw_site, str):
@@ -253,6 +249,15 @@ class PushTaskService:
                 if site_id in seen:
                     raise TaskValidationError("sites", "候选站点不能重复")
                 seen.add(site_id)
+            # 没有任务上下文时，超限在解析站点前直接拒绝；带任务 ID 的
+            # 历史长列表要等站点解析后再与已保存列表比对。
+            has_task_context = isinstance(payload.get("task_id"), str) and bool(
+                payload["task_id"].strip()
+            )
+            if len(raw_sites) > MAX_DRAFT_SITES and not has_task_context:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                )
         raw_name = payload.get("name")
         name = (
             "草稿预览"
@@ -266,9 +271,25 @@ class PushTaskService:
         image_style = normalize_image_style(
             payload.get("image_style", DEFAULT_STYLE_ID),
         )
-        sites = await self._resolve_site_ids(
-            payload.get("sites"), limit=MAX_DRAFT_SITES,
-        )
+        sites = await self._resolve_site_ids(payload.get("sites"))
+        if len(sites) > MAX_DRAFT_SITES:
+            # 只有“编辑历史任务且候选与已保存完全一致”才允许超过新上限：
+            # 这样旧长列表仍能在编辑窗口测试和预览，新建或改选仍被拒绝。
+            task_id = payload.get("task_id")
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                )
+            try:
+                saved = await self.get_task(task_id)
+            except TaskNotFoundError:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                ) from None
+            if tuple(saved.sites) != sites:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                )
         return TaskDraft(
             name=name,
             items=items,

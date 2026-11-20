@@ -4363,13 +4363,19 @@ function collectTaskDraftPayload() {
   if (state.taskSites.length === 0) {
     throw new Error("请至少添加一个候选站点后再测试或预览。");
   }
-  return {
+  const payload = {
     name: String(elements.taskName.value || "").trim(),
     items,
     sites: state.taskSites.slice(),
     output_format: elements.taskOutputFormat.value,
     image_style: elements.taskImageStyle?.value || "default",
   };
+  // 编辑历史任务时带上任务 ID：只有候选与已保存完全一致，后端才允许
+  // 超过 5 个的旧长列表继续测试/预览；新建任务不带，始终按新上限。
+  if (state.taskMode === "edit" && state.editingTaskId) {
+    payload.task_id = state.editingTaskId;
+  }
+  return payload;
 }
 
 async function runTaskCapabilityTest() {

@@ -426,6 +426,50 @@ class ReviewFixTest(unittest.IsolatedAsyncioTestCase):
                 sites=list(reversed(current.sites)),
             ))
 
+    async def test_draft_test_allows_unchanged_legacy_list_only(self) -> None:
+        extra_sites = []
+        for index in range(5):
+            extra_sites.append(await self.sites.create_site(SiteCreate(
+                name=f"草稿旧站点{index}",
+                base_url=f"https://draftlegacy{index}.example.test/proxy",
+                timeout_seconds=5, source_kind="self_built",
+            )))
+        task = await self._task(
+            news_limit=1, hot_limit=1,
+            sites=tuple(site.id for site in extra_sites),
+        )
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.execute(
+                "INSERT INTO push_task_sites (task_id, position, site_id) "
+                "VALUES (?, ?, ?)",
+                (task.id, 5, self.a.id),
+            )
+        current = await self.tasks.get_task(task.id)
+        payload = {
+            "name": current.name,
+            "items": [
+                {"content_type": "daily_news", "params": {}, "limit": 1},
+                {"content_type": "zhihu_hot", "params": {}, "limit": 1},
+            ],
+            "sites": list(current.sites),
+            "output_format": current.output_format,
+            "image_style": current.image_style,
+        }
+        # 新任务/无任务上下文：第 6 个候选仍按新上限拒绝。
+        rejected = await self.api.test_draft(dict(payload))
+        self.assertEqual(rejected.status_code, 400, rejected.body)
+        # 编辑这条历史任务、候选完全未改动：允许测试完整 6 个候选。
+        accepted = await self.api.test_draft({**payload, "task_id": task.id})
+        self.assertEqual(accepted.status_code, 200, accepted.body)
+        self.assertEqual(accepted.body["data"]["checked_count"], 6)
+        # 同一任务但候选顺序被改过：不能被 task_id 绕过新上限。
+        changed = await self.api.test_draft({
+            **payload,
+            "task_id": task.id,
+            "sites": list(reversed(current.sites)),
+        })
+        self.assertEqual(changed.status_code, 400, changed.body)
+
 
 if __name__ == "__main__":
     unittest.main()

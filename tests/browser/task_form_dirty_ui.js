@@ -452,18 +452,20 @@ async function waitCapabilitySettled(page, previous) {
       { hasText: "上移" }).click();
     await expectClean(page, "撤销候选顺序");
 
-    await page.fill("#task-schedule-time", "09:00");
+    await page.selectOption("#task-schedule-hour", "09");
+    await page.selectOption("#task-schedule-minute", "00");
     await expectDirty(page, "改计划时间");
-    await page.fill("#task-schedule-time", "08:30");
+    await page.selectOption("#task-schedule-hour", "08");
+    await page.selectOption("#task-schedule-minute", "30");
     await expectClean(page, "撤销计划时间");
 
     await page.check("#task-schedule-weekly");
     await expectDirty(page, "改计划 kind");
     await page.check("#task-schedule-daily");
     await expectClean(page, "撤销计划 kind");
-    await page.fill("#task-schedule-timezone", "UTC");
+    await page.selectOption("#task-schedule-timezone", "UTC");
     await expectDirty(page, "改计划时区");
-    await page.fill("#task-schedule-timezone", "Asia/Shanghai");
+    await page.selectOption("#task-schedule-timezone", "Asia/Shanghai");
     await expectClean(page, "撤销计划时区");
 
     // 间隔计划：起点和间隔分钟数都参与判断。
@@ -479,8 +481,9 @@ async function waitCapabilitySettled(page, previous) {
     await page.fill("#task-schedule-expression", "0 8 * * *");
     await expectDirty(page, "改 Cron 表达式");
     await page.check("#task-schedule-daily");
-    await page.fill("#task-schedule-time", "08:30");
-    await page.fill("#task-schedule-timezone", "Asia/Shanghai");
+    await page.selectOption("#task-schedule-hour", "08");
+    await page.selectOption("#task-schedule-minute", "30");
+    await page.selectOption("#task-schedule-timezone", "Asia/Shanghai");
     await expectClean(page, "计划改回已保存的每天 08:30");
 
     // ③ 条数三态：空=不限，1-1000=该值，其余非法且不改写输入。

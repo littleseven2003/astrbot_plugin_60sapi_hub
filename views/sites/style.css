@@ -719,6 +719,42 @@ textarea:focus-visible {
   margin: 0;
 }
 
+/* 计划时间用两个原生下拉，24 小时制由 00-23 选项表达；窄屏仍并排。 */
+.time-selects {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.time-select {
+  display: flex;
+  flex: 0 1 104px;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.time-select > span {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.time-select select {
+  min-width: 0;
+  min-height: 44px;
+  padding-right: 26px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.time-colon {
+  padding-bottom: 11px;
+  color: var(--ink-2);
+  font-weight: 700;
+}
+
 .weekday-picker {
   display: flex;
   flex-wrap: wrap;

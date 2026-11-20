@@ -244,7 +244,8 @@ const elements = {
   taskScheduleIntervalMinutes: document.getElementById("task-schedule-interval-minutes"),
   taskWeekdays: document.getElementById("task-weekdays"),
   taskScheduleFields: document.getElementById("task-schedule-fields"),
-  taskScheduleTime: document.getElementById("task-schedule-time"),
+  taskScheduleHour: document.getElementById("task-schedule-hour"),
+  taskScheduleMinute: document.getElementById("task-schedule-minute"),
   taskTimeField: document.getElementById("task-time-field"),
   taskScheduleTimezone: document.getElementById("task-schedule-timezone"),
   taskScheduleError: document.getElementById("task-schedule-error"),
@@ -3570,11 +3571,60 @@ function schedulePreviewText(task) {
     `；评估于 ${preview.evaluated_at}`;
 }
 
+const TASK_TIME_DEFAULT = "08:30";
+const TASK_TIMEZONE_DEFAULT = "Asia/Shanghai";
+let temporaryTaskTimezoneGroup = null;
+
+function readTaskScheduleTime() {
+  const hour = String(elements.taskScheduleHour.value || "").trim() || "08";
+  const minute = String(elements.taskScheduleMinute.value || "").trim() || "30";
+  return `${hour}:${minute}`;
+}
+
+function setTaskScheduleTime(value) {
+  const match = /^([01][0-9]|2[0-3]):([0-5][0-9])$/.exec(
+    String(value == null ? "" : value).trim(),
+  );
+  elements.taskScheduleHour.value = match ? match[1] : "08";
+  elements.taskScheduleMinute.value = match ? match[2] : "30";
+}
+
+function clearTemporaryTaskTimezone() {
+  if (temporaryTaskTimezoneGroup && temporaryTaskTimezoneGroup.parentNode) {
+    temporaryTaskTimezoneGroup.remove();
+  }
+  temporaryTaskTimezoneGroup = null;
+}
+
+// 旧任务可能保存了预设外的合法 IANA 时区：临时插一个「已保存」选项原值
+// 回填，不改写用户数据；切换到其他任务时移除，避免把旧值留在下拉里。
+function setTaskScheduleTimezone(value) {
+  clearTemporaryTaskTimezone();
+  const wanted = String(value == null ? "" : value).trim() ||
+    TASK_TIMEZONE_DEFAULT;
+  const known = Array.from(elements.taskScheduleTimezone.options)
+    .some((option) => option.value === wanted);
+  if (!known) {
+    const group = document.createElement("optgroup");
+    group.label = "已保存";
+    const option = document.createElement("option");
+    option.value = wanted;
+    option.textContent = `已保存：${wanted}`;
+    group.appendChild(option);
+    elements.taskScheduleTimezone.insertBefore(
+      group, elements.taskScheduleTimezone.firstChild,
+    );
+    temporaryTaskTimezoneGroup = group;
+  }
+  elements.taskScheduleTimezone.value = wanted;
+}
+
 function applyTaskScheduleEnabled() {
   const off = state.taskFormDisabled || elements.taskScheduleFields.hidden;
   const mode = currentTaskScheduleMode();
-  elements.taskScheduleTime.disabled = off || (mode !== "daily" && mode !== "weekly");
-  elements.taskTimeField.hidden = mode !== "daily" && mode !== "weekly";
+  const timeOff = off || (mode !== "daily" && mode !== "weekly");
+  elements.taskScheduleHour.disabled = timeOff;
+  elements.taskScheduleMinute.disabled = timeOff;
   elements.taskTimeField.hidden = mode !== "daily" && mode !== "weekly";
   elements.taskScheduleTimezone.disabled = off;
   elements.taskScheduleStartAt.disabled = off || mode !== "interval";
@@ -3599,11 +3649,11 @@ function setTaskScheduleMode(mode) {
   elements.taskWeekdays.hidden = !weekly;
   elements.taskIntervalFields.hidden = !interval;
   elements.taskCronFields.hidden = !cron;
-  if ((daily || weekly) && !elements.taskScheduleTime.value) {
-    elements.taskScheduleTime.value = "08:30";
+  if ((daily || weekly) && !elements.taskScheduleHour.value) {
+    setTaskScheduleTime(TASK_TIME_DEFAULT);
   }
   if ((daily || weekly) && !elements.taskScheduleTimezone.value) {
-    elements.taskScheduleTimezone.value = "Asia/Shanghai";
+    setTaskScheduleTimezone(TASK_TIMEZONE_DEFAULT);
   }
   applyTaskScheduleEnabled();
 }
@@ -3621,8 +3671,8 @@ function resetTaskScheduleEditor() {
   state.editingTaskScheduleRaw = null;
   state.editingTaskScheduleError = null;
   state.editingTaskScheduleDirty = false;
-  elements.taskScheduleTime.value = "08:30";
-  elements.taskScheduleTimezone.value = "Asia/Shanghai";
+  setTaskScheduleTime(TASK_TIME_DEFAULT);
+  setTaskScheduleTimezone(TASK_TIMEZONE_DEFAULT);
   elements.taskScheduleStartAt.value = "";
   elements.taskScheduleIntervalMinutes.value = "";
   for (const input of elements.taskWeekdays.querySelectorAll("input")) {
@@ -3644,10 +3694,10 @@ function fillTaskScheduleEditor(task) {
   if (saved) {
     setTaskScheduleMode(saved.kind === "cron" ? "cron" : saved.kind === "interval" ? "interval" : saved.kind === "weekly" ? "weekly" : "daily");
     if (typeof saved.time === "string") {
-      elements.taskScheduleTime.value = saved.time;
+      setTaskScheduleTime(saved.time);
     }
     if (typeof saved.timezone === "string") {
-      elements.taskScheduleTimezone.value = saved.timezone;
+      setTaskScheduleTimezone(saved.timezone);
     }
     if (saved.kind === "cron") {
       elements.taskScheduleExpression.value = saved.expression || "";
@@ -3699,8 +3749,8 @@ function collectTaskSchedule() {
   if (mode === "none") {
     return null;
   }
-  const time = elements.taskScheduleTime.value.trim();
-  const timezone = elements.taskScheduleTimezone.value.trim();
+  const time = readTaskScheduleTime();
+  const timezone = String(elements.taskScheduleTimezone.value || "").trim();
   if (!timezone) {
     throw new Error("定时计划必须填写 IANA 时区。");
   }
@@ -6071,8 +6121,9 @@ function bindEvents() {
   for (const input of elements.taskWeekdays.querySelectorAll("input")) {
     input.addEventListener("change", markTaskScheduleDirty);
   }
-  elements.taskScheduleTime.addEventListener("input", markTaskScheduleDirty);
-  elements.taskScheduleTimezone.addEventListener("input", markTaskScheduleDirty);
+  elements.taskScheduleHour.addEventListener("change", markTaskScheduleDirty);
+  elements.taskScheduleMinute.addEventListener("change", markTaskScheduleDirty);
+  elements.taskScheduleTimezone.addEventListener("change", markTaskScheduleDirty);
   elements.taskDeleteConfirmButton.addEventListener("click", confirmTaskDelete);
   elements.taskPowerConfirmButton.addEventListener("click", confirmTaskPower);
   elements.taskPowerRecheckButton.addEventListener("click", recheckTaskPower);

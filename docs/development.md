@@ -149,7 +149,7 @@ WebUI 初始密码只写入隔离环境日志；不要提交日志、token、数
 - revision：新增为 1；编辑和删除必须传入期望 revision，冲突时抛出明确错误；成功编辑后加 1。
 - 取消写入：新增、编辑、删除被取消时保留 `CancelledError`，在释放锁前完成回滚或关闭；提交前取消会回滚，COMMIT 已完成时不承诺撤销；清理无法确认时关闭连接并标记存储不可用，需要重建实例。
 - 凭据：编辑使用 `keep`、`set`、`clear`；默认 `keep`，空白值不会清除原凭据。公开站点结构只有 `has_bearer_token`，输入对象和存储对象的调试输出也隐藏原文。
-- 测试：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用临时数据库和虚构数据，不联网；`tests/test_site_api.py` 覆盖后台业务接口的成功与错误映射。
+- 测试：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用临时数据库和虚构数据，不联网；`tests/test_site_api.py` 覆盖后台业务接口的成功与错误映射。测试只能依赖标准库和 `requirements.txt` 已声明的包，不得引入未声明的第三方库（例如读取 `metadata.yaml` 用标准库按顶层键解析，而不是 PyYAML）。
 - 宿主检查：启动后确认数据库路径和 `PRAGMA user_version`；停用后确认数据库句柄已关闭；启用或重载后确认数据仍在且插件只有一份注册。不要对正在使用的插件数据目录做破坏性测试。
 
 ## 站点管理页面与 API

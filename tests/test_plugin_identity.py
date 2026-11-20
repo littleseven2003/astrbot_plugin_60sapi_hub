@@ -6,16 +6,32 @@ import json
 import unittest
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parent.parent
 DISPLAY_NAME = "60sAPI Hub"
 PAGE_NAME = "sites"
 
 
+def read_metadata_keys(path: Path) -> dict[str, str]:
+    """只读取 metadata.yaml 的顶层 ``key: value``，避免测试依赖 PyYAML。
+
+    手册要求安装的运行时依赖里没有 PyYAML；身份测试必须能在该环境直接运行。
+    """
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1].isspace():
+            continue
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
 class PluginIdentityTest(unittest.TestCase):
     def test_metadata_declares_display_name(self) -> None:
-        metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+        metadata = read_metadata_keys(ROOT / "metadata.yaml")
         self.assertEqual(metadata["name"], "astrbot_plugin_60sapi_hub")
         self.assertEqual(metadata["version"], "v0.1.0-dev.1")
         self.assertEqual(metadata["display_name"], DISPLAY_NAME)

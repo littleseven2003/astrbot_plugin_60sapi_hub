@@ -318,7 +318,7 @@ node tests/browser/manual_delivery_query.js
 - 入口：两版登录后侧栏各只有一个「60sAPI Hub」入口，图标 `mdi-puzzle`，路径 `#/plugin-view/astrbot_plugin_60sapi_hub/sites`；点击后路径正确、入口为选中态，iframe 加载管理页并可切换到「推送任务」。截图 `/tmp/sidebar-entry-16311.png`、`/tmp/sidebar-entry-16312.png`。
 - 鉴权：未登录访问深层链接被重定向到 `#/auth/login`，未带令牌访问 `/api/v1/plugins/astrbot_plugin_60sapi_hub/pages` 返回 401。
 - 英文回退：把 `astrbot-locale` 设为 `en-US` 后侧栏仍显示 `60sAPI Hub`（`en-US.json` 与显示名一致）。
-- 生命周期（两版一致）：停用后不刷新页面入口仍在（`offBeforeReload=1`），刷新后消失（`offAfterReload=0`）；重新启用后不刷新仍为 0、刷新后恢复为 1（`onAfterReload=1`）；卸载后刷新为 0；从最终 ZIP 重装后只有 1 个入口（`reinstalled=1`）。说明侧栏需要刷新页面才反映启停/卸载。
+- 生命周期要区分两条操作路径（两版一致）：直接在 Dashboard 插件管理页点启停开关时，侧栏入口即时消失/恢复，无需刷新；通过独立 API 启停（`tests/browser/sidebar_entry_ui.js` 的路径）时，已打开页面保持旧状态：停用后 `offBeforeReload=1`、刷新后 `offAfterReload=0`；重新启用后 `onBeforeReload=0`、刷新后 `onAfterReload=1`。卸载后刷新为 0；从最终 ZIP 重装后只有 1 个入口（`reinstalled=1`）。
 - 单元：`tests/test_plugin_identity.py` 校验 `metadata.yaml` 显示名、`views/sites/index.html` 入口存在、中英文 `metadata.display_name` 与 `views.sites.title` 一致。
 - 自动化：`tests/browser/sidebar_entry_ui.js` 两版通过，覆盖上述入口、点击、鉴权、英文回退与停用/启用/卸载/重装。
 - 未验证：真实部署环境的反向代理与多用户权限差异。

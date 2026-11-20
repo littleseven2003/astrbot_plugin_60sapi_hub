@@ -612,6 +612,54 @@ class ReviewFixTest(unittest.IsolatedAsyncioTestCase):
             await self.delivery._config_unchanged(task, prepared, UMO),
         )
 
+    async def test_many_items_in_first_column_do_not_shrink_later_budget(
+        self,
+    ) -> None:
+        # 首栏返回 50 条、第二栏固定 1.85 秒：预算必须按“还剩几个栏目”
+        # 等分，不能被首栏条数覆盖成 1 秒级超时。
+        self.news = {"a.example.test": 50}
+        self.hot = {"a.example.test": 3}
+        self.hot_delay["a.example.test"] = 1.85
+        task = await self._task(
+            news_limit=2, hot_limit=2, sites=(self.a.id,),
+        )
+        result = await self.delivery.execute(task.id, "many-first-column")
+        self.assertEqual(len(self.sender.messages), 1)
+        text = self.sender.messages[0].text or ""
+        self.assertIn("新闻", text)
+        self.assertIn("热榜", text)
+        self.assertNotIn("60sAPI推送服务异常", text)
+        self.assertEqual(result.content_status, "complete")
+
+    async def test_confirmation_reads_report_storage_failure(self) -> None:
+        task = await self._task()
+        preview = await self.delivery_api.preview(task.id)
+        self.assertEqual(preview.status_code, 200, preview.body)
+        data = preview.body["data"]
+
+        async def broken_get_site(site_id):
+            raise SiteStorageError("injected confirmation read failure")
+
+        self.sites.get_site = broken_get_site  # type: ignore[assignment]
+        page = await self.delivery_api.preview(task.id)
+        self.assertEqual(page.status_code, 503, page.body)
+        self.assertEqual(
+            page.body["data"]["code"], "storage_unavailable",
+        )
+        payload = {
+            "execution_id": "confirm-storage",
+            "expected_task_revision": data["task_revision"],
+            "expected_candidates": data["candidate_snapshot"],
+            "expected_alert_only": data["alert_only"],
+            "confirmation_version": 2,
+        }
+        submitted = await self.delivery_api.execute(task.id, payload)
+        self.assertEqual(submitted.status_code, 503, submitted.body)
+        self.assertEqual(
+            submitted.body["data"]["code"], "storage_unavailable",
+        )
+        self.assertEqual(self.sender.messages, [])
+
     async def test_candidate_storage_failure_aborts_without_alert(self) -> None:
         async def broken_get_site(site_id):
             raise SiteStorageError("injected candidate read failure")

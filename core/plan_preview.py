@@ -914,7 +914,9 @@ class PlanPreview:
         """
         sections: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        total = len(plan_items)
+        # 预算按“还剩几个栏目”等分；栏目条数不能覆盖这个计数，否则首栏
+        # 返回很多条后会把后续栏目误判成超时。
+        column_total = len(plan_items)
         for position, item in enumerate(plan_items):
             try:
                 budget: float | None = None
@@ -922,7 +924,7 @@ class PlanPreview:
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
                         raise _PreviewBudgetExceeded()
-                    budget = remaining / max(1, total - position)
+                    budget = remaining / max(1, column_total - position)
                 # 必须使用本次实际选中的站点，否则会出现“标记 B、内容来自 A”。
                 call = self._content.preview_cached(
                     item.content_type,
@@ -969,7 +971,9 @@ class PlanPreview:
                 continue
 
             all_items = snapshot.get("items")
-            total = len(all_items) if isinstance(all_items, list) else 0
+            available_total = (
+                len(all_items) if isinstance(all_items, list) else 0
+            )
             if item.limit is not None and isinstance(all_items, list):
                 snapshot["items"] = all_items[: item.limit]
             shown = (
@@ -978,7 +982,7 @@ class PlanPreview:
                 else 0
             )
             snapshot["item_count"] = shown
-            snapshot["total_item_count"] = total
+            snapshot["total_item_count"] = available_total
             snapshot["displayed_count"] = shown
             snapshot["limit"] = item.limit
             snapshot["label"] = item.label

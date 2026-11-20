@@ -24,7 +24,7 @@ from .site_store import (
     SiteStore,
     StoredDeliveryExecution,
 )
-from .sites import SiteService, SiteStorageError
+from .sites import SiteNotFoundError, SiteService, SiteStorageError
 from .content_plan import plan_payload
 from .tasks import (
     PushTaskService,
@@ -98,8 +98,14 @@ class DeliveryApi:
         for candidate_id in candidate_ids:
             try:
                 candidates.append(await self._sites.get_site(candidate_id))
-            except Exception:
+            except SiteNotFoundError:
+                # 站点确实已删除：确认页按“候选不可用/只发告警”展示。
                 continue
+            except SiteStorageError:
+                # 存储读取失败不是缺站：保留 503，让用户识别存储故障。
+                return _storage_error()
+            except Exception:
+                return _internal_error()
         usable = list(candidates)
         # 全部候选不可用时仍允许管理员手动验证：这次投递会发送异常提示，
         # 而不是内容；确认页需要把这个语义说清楚。
@@ -157,14 +163,22 @@ class DeliveryApi:
             return {"reason": "invalid_confirmation"}
         try:
             task = await self._tasks.get_task(task_id)
+        except TaskNotFoundError:
+            return {"reason": "task_changed"}
+        except (TaskStorageError, SiteStorageError):
+            raise
         except Exception:
-            return None
+            raise
         current: list[dict] = []
         for site_id in tuple(task.sites):
             try:
                 site = await self._sites.get_site(site_id)
-            except Exception:
+            except SiteNotFoundError:
                 continue
+            except SiteStorageError:
+                raise
+            except Exception:
+                raise
             current.append({
                 "id": site.id,
                 "revision": site.revision,
@@ -231,9 +245,14 @@ class DeliveryApi:
                 data={"reason": "confirmation_version_changed", "sent": False},
             )
         if expected_candidates is not None:
-            stale = await self._confirmation_stale(
-                task_id, expected_candidates, expected_alert_only,
-            )
+            try:
+                stale = await self._confirmation_stale(
+                    task_id, expected_candidates, expected_alert_only,
+                )
+            except (TaskStorageError, SiteStorageError):
+                return _storage_error()
+            except Exception:
+                return _internal_error()
             if stale is not None:
                 return _error(
                     409,

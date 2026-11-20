@@ -386,7 +386,7 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
             e, image_model, record_complete,
         ),
         "failed_section_count": len(failed_sections),
-        "source_count": len(_project_content_sources(e.content_sources_json)),
+        "source_count": _distinct_source_site_count(e.content_sources_json),
         "image_partial": _image_partial(e),
     }
 
@@ -440,6 +440,7 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "failed_sections": failed_sections,
         "failed_section_count": len(failed_sections),
         "source_mode": _project_source_mode(e),
+        "source_count": _distinct_source_site_count(e.content_sources_json),
         "content_sources": _project_content_sources(e.content_sources_json),
         "image_model": image_model,
         "record_complete": record_complete,
@@ -501,11 +502,19 @@ def _safe_label(value: object) -> str:
     return " ".join(text.split()).strip()[:120]
 
 
+def _distinct_source_site_count(raw: object) -> int:
+    return len({
+        entry["site_id"] for entry in _project_content_sources(raw)
+    })
+
+
 def _project_source_mode(e: StoredDeliveryExecution) -> str | None:
     """来源模式的兼容投影：新记录看逐栏来源，旧记录只能沿用空站点推断。"""
     sources = _project_content_sources(e.content_sources_json)
     if sources:
-        return "multi" if len(sources) > 1 else "single"
+        # 同一站点提供多个栏目仍然是单站内容；只看不同来源站点数。
+        site_ids = {entry["site_id"] for entry in sources}
+        return "multi" if len(site_ids) > 1 else "single"
     if e.content_status == "failed":
         # 采集失败只剩异常提示，没有内容来源；不能沿用主候选的站点。
         return None

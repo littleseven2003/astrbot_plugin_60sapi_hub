@@ -200,6 +200,9 @@ class PlanPreview:
             "items": plan_payload(plan_items),
             "site_id": site.id,
             "site_name": site.name,
+            # 内容实际取数时的站点版本：拼合侧不能再用稍后读取的
+            # revision 标注这批旧栏目。
+            "site_revision": site.revision,
             "success_count": success_count,
             "failure_count": len(failures),
             "sections": sections,
@@ -366,16 +369,34 @@ class PlanPreview:
             if not isinstance(sections, list):
                 sections = []
             satisfied, _ = evaluate_sections(sections, requirements)
-            try:
-                site = await self._sites.get_site(site_id)
-            except SiteNotFoundError:
-                continue
-            except (SiteStorageError, Exception):
-                return _storage_error()
+            fetched_id = body.get("site_id")
+            fetched_name = body.get("site_name")
+            fetched_revision = body.get("site_revision")
+            if (
+                isinstance(fetched_id, str) and fetched_id
+                and type(fetched_revision) is int
+            ):
+                # 使用预览实际取数时记录的版本，而不是返回后重新读取的
+                # 站点版本：两步之间改过站点时，旧栏目必须按旧版本复核。
+                probe_id = fetched_id
+                probe_name = (
+                    fetched_name if isinstance(fetched_name, str) else None
+                )
+                probe_revision = fetched_revision
+            else:
+                # 旧预览桩没有返回版本：回退到当前站点对象。
+                try:
+                    site = await self._sites.get_site(site_id)
+                except SiteNotFoundError:
+                    continue
+                except (SiteStorageError, Exception):
+                    return _storage_error()
+                probe_id, probe_name = site.id, site.name
+                probe_revision = site.revision
             probes.append(SiteProbe(
-                site_id=site.id,
-                site_name=site.name,
-                revision=site.revision,
+                site_id=probe_id,
+                site_name=probe_name,
+                revision=probe_revision,
                 sections=tuple(sections),
                 satisfied=satisfied,
             ))
@@ -531,6 +552,9 @@ class PlanPreview:
             "items": plan_payload(items),
             "site_id": site.id,
             "site_name": site.name,
+            # 内容实际取数时的站点版本：拼合侧不能再用稍后读取的
+            # revision 标注这批旧栏目。
+            "site_revision": site.revision,
             "success_count": success_count,
             "failure_count": len(failures),
             "sections": sections,
@@ -624,10 +648,26 @@ class PlanPreview:
             if not isinstance(sections, list):
                 sections = []
             satisfied, _ = evaluate_sections(sections, requirements)
+            fetched_id = body.get("site_id")
+            fetched_revision = body.get("site_revision")
+            fetched_name = body.get("site_name")
+            if (
+                isinstance(fetched_id, str) and fetched_id
+                and type(fetched_revision) is int
+            ):
+                probe_id = fetched_id
+                probe_name = (
+                    fetched_name if isinstance(fetched_name, str) else None
+                )
+                probe_revision = fetched_revision
+            else:
+                probe_id, probe_name, probe_revision = (
+                    site.id, site.name, site.revision,
+                )
             probes.append(SiteProbe(
-                site_id=site.id,
-                site_name=site.name,
-                revision=site.revision,
+                site_id=probe_id,
+                site_name=probe_name,
+                revision=probe_revision,
                 sections=tuple(sections),
                 satisfied=satisfied,
             ))

@@ -426,6 +426,113 @@ class ReviewFixTest(unittest.IsolatedAsyncioTestCase):
                 sites=list(reversed(current.sites)),
             ))
 
+    async def test_probe_uses_actual_fetch_revision(self) -> None:
+        state = {"done": False}
+        original = self.preview.preview_site
+
+        async def change_after_probe(*args, **kwargs):
+            response = await original(*args, **kwargs)
+            if (
+                kwargs.get("site_id") == self.a.id
+                and not state["done"]
+                and getattr(response, "status_code", None) == 200
+            ):
+                state["done"] = True
+                current = await self.sites.get_site(self.a.id)
+                await self.sites.update_site(self.a.id, SiteUpdate(
+                    name="探测后改名",
+                    base_url="https://changed.example.test/proxy",
+                    timeout_seconds=current.timeout_seconds,
+                    expected_revision=current.revision,
+                ))
+            return response
+
+        self.preview.preview_site = change_after_probe  # type: ignore[method-assign]
+        task = await self._task(news_limit=2, hot_limit=3)
+        preview = await self.preview.preview_assembled(
+            {"task_id": task.id},
+            site_ids=[self.a.id],
+            owner="probe-revision",
+        )
+        # 探测返回后再改站点：旧栏目必须按探测时的版本复核并取消，
+        # 不能把旧内容标成改名后的新 revision。
+        self.assertEqual(preview.status_code, 409, preview.body)
+        self.assertEqual(
+            preview.body["data"]["code"], "preview_revision_changed",
+        )
+
+    async def test_delivery_refuses_old_content_when_probe_revision_changed(
+        self,
+    ) -> None:
+        state = {"done": False}
+        original = self.preview.preview_site
+
+        async def rename_after_probe(*args, **kwargs):
+            response = await original(*args, **kwargs)
+            if (
+                kwargs.get("site_id") == self.a.id
+                and not state["done"]
+                and getattr(response, "status_code", None) == 200
+            ):
+                state["done"] = True
+                current = await self.sites.get_site(self.a.id)
+                await self.sites.update_site(self.a.id, SiteUpdate(
+                    name="探测后改名",
+                    base_url=current.base_url,
+                    timeout_seconds=current.timeout_seconds,
+                    expected_revision=current.revision,
+                ))
+            return response
+
+        self.preview.preview_site = rename_after_probe  # type: ignore[method-assign]
+        task = await self._task(news_limit=2, hot_limit=3)
+        result = await self.delivery.execute(task.id, "probe-revision-send")
+        # 内容准备阶段已发现探测版本与当前版本不一致：不得发送旧正文，
+        # 也不能发“采集失败”告警。
+        self.assertEqual(self.sender.messages, [])
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "config_changed")
+
+    async def test_storage_error_aborts_without_alert(self) -> None:
+        class StoragePreview:
+            async def preview_assembled(self, payload, **kwargs):
+                return PlanPreviewResult(503, {
+                    "status": "error",
+                    "message": "配置存储暂不可用，请稍后重试。",
+                    "data": {"code": "storage_unavailable"},
+                })
+
+        delivery = DeliveryService(
+            tasks=self.tasks, sites=self.sites, plan_preview=StoragePreview(),
+            store=self.sites.store, sender=self.sender,
+            limits=DeliveryLimits(),
+        )
+        try:
+            task = await self._task()
+            result = await delivery.execute(task.id, "storage-error")
+        finally:
+            await delivery.close()
+        self.assertEqual(self.sender.messages, [])
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "storage_unavailable")
+        self.assertIsNone(result.content_status)
+
+    async def test_single_site_two_columns_is_not_multi(self) -> None:
+        task = await self._task(
+            news_limit=1, hot_limit=2, sites=(self.a.id,),
+        )
+        record = await self.delivery.execute(task.id, "single-two-columns")
+        details = await self.delivery_api.get_execution(record.id)
+        self.assertEqual(details.status_code, 200, details.body)
+        data = details.body["data"]
+        self.assertEqual(data["source_mode"], "single")
+        self.assertEqual(data["source_count"], 1)
+        self.assertEqual(len(data["content_sources"]), 2)
+        self.assertEqual(
+            {entry["site_id"] for entry in data["content_sources"]},
+            {self.a.id},
+        )
+
     async def test_draft_test_allows_unchanged_legacy_list_only(self) -> None:
         extra_sites = []
         for index in range(5):

@@ -145,7 +145,7 @@ SAFE_ERROR_CODES = frozenset({
     # 全部候选都取不到所需内容：提示已发送，但内容采集失败。
     "content_unavailable", "confirmation_stale",
     "preview_failed", "preview_invalid", "profile_not_found",
-    "record_after_send_failed", "render_failed",
+    "record_after_send_failed", "render_failed", "storage_unavailable",
     "section_image_failed", "send_failed",
     "send_unknown", "sender_budget_exhausted", "sender_cancelled",
     "sender_exception",
@@ -670,9 +670,15 @@ class DeliveryService:
                 # 确认后配置/来源在预览期间变化：不发内容，也不发“采集
                 # 失败”告警，否则等于用一条消息掩盖了需要重新确认的状态。
                 raise DeliveryNoContentError("config_changed")
-            if outcome.status_code and 400 <= outcome.status_code < 500:
-                raise DeliveryNoContentError("config_changed")
-            return None
+            if outcome.status_code in (0, 502) and outcome.code in (
+                None, "content_unavailable", "all_sections_failed",
+            ):
+                # 真正的“没有任何可用内容”才走异常提示；存储故障、
+                # 内部错误等必须直接中止，不能伪装成一次采集失败告警。
+                return None
+            raise DeliveryNoContentError(
+                _safe_error_code(outcome.code) or "preview_failed"
+            )
         data = outcome.data
         if data.get("source_mode") == "missing" or data.get("missing"):
             # 拼合后仍缺栏目：只发送一条异常提示并记采集失败，绝不把

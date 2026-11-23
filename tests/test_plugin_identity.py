@@ -33,7 +33,7 @@ class PluginIdentityTest(unittest.TestCase):
     def test_metadata_declares_display_name(self) -> None:
         metadata = read_metadata_keys(ROOT / "metadata.yaml")
         self.assertEqual(metadata["name"], "astrbot_plugin_60sapi_hub")
-        self.assertEqual(metadata["version"], "v0.1.0-dev.1")
+        self.assertEqual(metadata["version"], "v0.1.0")
         self.assertEqual(metadata["display_name"], DISPLAY_NAME)
 
     def test_side_bar_page_entry_exists(self) -> None:

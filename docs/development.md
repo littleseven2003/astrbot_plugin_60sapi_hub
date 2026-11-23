@@ -330,7 +330,7 @@ commit-msg hook 检查类别、冒号空格及中文描述。它不能判断改�
 
 ## 版本来源
 
-当前已在 `metadata.yaml` 的 `version` 字段建立唯一程序版本源，初始开发版本为 `v0.1.0-dev.1`；**尚无发布标签或可分发版本**。不额外维护容易不同步的 VERSION 或 `__version__`。
+当前已在 `metadata.yaml` 的 `version` 字段建立唯一程序版本源，首个正式版本为 `v0.1.0`（2026-11-23 发布）。不额外维护容易不同步的 VERSION 或 `__version__`。
 
 使用 SemVer：
 

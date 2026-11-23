@@ -3,3 +3,6 @@
 *.jpg binary
 *.jpeg binary
 *.webp binary
+
+# 发布归档排除开发协作约定文件
+AGENTS.md export-ignore

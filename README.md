@@ -76,7 +76,7 @@ M1 基础集成、M2 内容获取和 M3 图文输出已完成基线验收，验�
 
 程序版本唯一来源为 [metadata.yaml](metadata.yaml)，当前为 `v0.1.0`。运行依赖见 [requirements.txt](requirements.txt)，当前为 `aiosqlite`（异步 SQLite）、`httpx`（异步 HTTP）、`Pillow`（本地中文图片渲染）和 `croniter>=6.2.4,<7`（五字段 Cron 计划解析）；AstrBot 本体由宿主提供，不列为插件依赖。图片输出需要宿主系统已有可验证的 CJK 字体（macOS 验证使用 Hiragino Sans GB，Linux 可使用 Noto Sans CJK/WenQuanYi），也可通过 `ASTRBOT_60SAPI_FONT` 指定；不下载远程字体。
 
-项目标识：`astrbot_plugin_60sapi_hub`。开发协作约定见根目录 [AGENTS.md](AGENTS.md)。
+项目标识：`astrbot_plugin_60sapi_hub`。开发协作约定见仓库中的 [AGENTS.md](https://github.com/littleseven2003/astrbot_plugin_60sapi_hub/blob/main/AGENTS.md)（该文件不随插件发布包分发）。
 
 仓库：https://github.com/littleseven2003/astrbot_plugin_60sapi_hub
 

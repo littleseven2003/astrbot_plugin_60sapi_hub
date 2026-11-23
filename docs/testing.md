@@ -301,9 +301,9 @@ node tests/browser/manual_delivery_query.js
 2026-11-20 针对用户手测的两项优化在本机隔离环境验证，使用模拟上游与假 aiocqhttp 平台，零真实发送。
 
 - 无摘要栏目紧凑排版：排版改按「本栏是否有摘要」决定。每日新闻、Bilibili、抖音、今日头条没有摘要，热度与标题同行；知乎等带摘要栏目保留摘要展开。无摘要栏目按本栏实测热度宽度分配共用列，上限 180px 且不超过正文宽度四分之一。
-- 实渲：四套样式各渲染 50 条抖音样例（20 条 8 位、20 条 7 位、1 条缺热度、6 条 8 位、1 条超长、2 条 9 位混排），全部条目各占一行；图高 default 3106px、mist 3211px、floral 3209px、bold_studio 3216px，相邻条目间距 56/57px 或 58/59px，仅最后一条少一条分隔线。七八位热度完整显示，超长热度在图内单行省略；文字与 Markdown 保留原值。样张见 `/private/tmp/hub-evidence/compact-*.png`。知乎带摘要样例仍为标题 + 摘要 + 热度展开，未回退。
+- 实渲：四套样式各渲染 50 条抖音样例（20 条 8 位、20 条 7 位、1 条缺热度、6 条 8 位、1 条超长、2 条 9 位混排），全部条目各占一行；图高 default 3106px、mist 3211px、floral 3209px、bold_studio 3216px，相邻条目间距 56/57px 或 58/59px，仅最后一条少一条分隔线。七八位热度完整显示，超长热度在图内单行省略；文字与 Markdown 保留原值。复现方式：按上面同样的样例构成在四款样式下各渲染一次，核对图高、行距与缺热度占位；样张不入库。知乎带摘要样例仍为标题 + 摘要 + 热度展开，未回退。
 - 单元回归：`tests/test_profile_heat_layout.py` 覆盖无摘要单行、列宽上限、带摘要保留展开、缺热度占位、长标题只挤首行、整栏无热度用整行宽度；`tests/test_profile_image.py` 的旧「长热度下移」断言按新语义更新为无摘要栏目内联省略。
-- 首行标点重叠修复：标题 `202611201234567890123456789012345678？？？` 与八位热度 `87654321` 在四款下首行标题的几何宽度与真实字形墨迹都停在热度字形左侧，续行以数字或文字起头，标题拼回与原文一致；普通短标题仍单行、行距不变。样张 `/private/tmp/hub-evidence/overlap-fixed-{default,mist,floral,bold_studio}.png`。
+- 首行标点重叠修复：标题 `202611201234567890123456789012345678？？？` 与八位热度 `87654321` 在四款下首行标题的几何宽度与真实字形墨迹都停在热度字形左侧，续行以数字或文字起头，标题拼回与原文一致；普通短标题仍单行、行距不变。复现方式：用该标题与八位热度在四款样式下各渲染一次，比对标点字形右侧与热度字形左侧的墨迹边界；样张不入库。
 - 计划时间控件：每日/每周时间改为小时、分钟两个原生下拉（静态 `00–23` / `00–59`，默认 08:30，提交拼成 `HH:mm`）；时区改为预置下拉（`Asia/Shanghai` 置顶，显示 `IANA · 中文名`），旧任务的非预置合法时区以临时「已保存」选项原值回填，切到其他任务即移除。服务端仍用 `ZoneInfo` 校验，省略 `schedule` 的编辑保留原计划。
 - 宿主回归：AstrBot 4.29.4 与 4.29.1 均从最终 ZIP 上传安装，隔离 Dashboard 实际登录、真实 plugin-view bridge 与假 aiocqhttp 平台。`tests/browser/time_timezone_ui.js` 两版通过：真实键盘 typeahead 选到 23:59 + `Asia/Tokyo` 并保存读回、编辑后键盘回到 00:00、改后放弃保留原值、`Europe/Paris` 旧时区以「已保存」回填且未改计划时保存不写 `schedule`、切到上海任务后临时选项消失、无计划隐藏并禁用、390px 小时/分钟同行且各 44px、无横向溢出。`task_schedule_ui.js`、`interval_schedule_ui.js`、`weekly_schedule_ui.js`、`cron_schedule_ui.js`、`task_form_dirty_ui.js`（226 项断言）两版通过，覆盖 00:00/23:59、间隔、Cron、revision 冲突与脏表单草稿预览。
 - 测试口径修订：`task_form_dirty_ui.js` 原「未保存即置灰、脏表单不发预览」的断言早于草稿预览功能，按现行为改为「未保存仍可预览/测试、走 `task-drafts/preview`、在途旧响应作废」，不再断言阻塞提示。
@@ -315,7 +315,7 @@ node tests/browser/manual_delivery_query.js
 2026-11-20 在 AstrBot 4.29.4 与 4.29.1 的隔离宿主验证 Dashboard 左侧栏插件入口，零真实发送。
 
 - 注册方式：宿主从插件 `views/<page>/index.html` 自动发现页面；侧栏标题优先读插件本地化 `views.<page>.title`，再回退插件显示名。插件 `.astrbot-plugin/i18n/zh-CN.json`、`en-US.json` 与 `metadata.yaml` 的 `display_name` 均设为 `60sAPI Hub`，原「站点管理」标题改为该名称。
-- 入口：两版登录后侧栏各只有一个「60sAPI Hub」入口，图标 `mdi-puzzle`，路径 `#/plugin-view/astrbot_plugin_60sapi_hub/sites`；点击后路径正确、入口为选中态，iframe 加载管理页并可切换到「推送任务」。截图 `/tmp/sidebar-entry-16311.png`、`/tmp/sidebar-entry-16312.png`。
+- 入口：两版登录后侧栏各只有一个「60sAPI Hub」入口，图标 `mdi-puzzle`，路径 `#/plugin-view/astrbot_plugin_60sapi_hub/sites`；点击后路径正确、入口为选中态，iframe 加载管理页并可切换到「推送任务」。复现方式：在两版隔离宿主分别登录后读取侧栏入口计数与路径，入口、点击、鉴权与启停生命周期由 `tests/browser/sidebar_entry_ui.js` 覆盖。
 - 鉴权：未登录访问深层链接被重定向到 `#/auth/login`，未带令牌访问 `/api/v1/plugins/astrbot_plugin_60sapi_hub/pages` 返回 401。
 - 英文回退：把 `astrbot-locale` 设为 `en-US` 后侧栏仍显示 `60sAPI Hub`（`en-US.json` 与显示名一致）。
 - 生命周期要区分两条操作路径（两版一致）：直接在 Dashboard 插件管理页点启停开关时，侧栏入口即时消失/恢复，无需刷新；通过独立 API 启停（`tests/browser/sidebar_entry_ui.js` 的路径）时，已打开页面保持旧状态：停用后 `offBeforeReload=1`、刷新后 `offAfterReload=0`；重新启用后 `onBeforeReload=0`、刷新后 `onAfterReload=1`。卸载后刷新为 0；从最终 ZIP 重装后只有 1 个入口（`reinstalled=1`）。
@@ -331,7 +331,7 @@ node tests/browser/manual_delivery_query.js
 - 多站拼合：新增 `core/site_assembly.py` 纯判定；`tests/test_site_assembly.py` 覆盖单站优先、逐栏取最靠前候选、同栏整表不拼条数、缺栏短报；`tests/test_multi_site_e2e.py` 用两站（A 只给新闻、B 只给知乎）验证预览 `source_mode=multi`、能力测试 `需要多站点拼合`、投递发送 A+B 内容且执行记录 `site_name=多站点`、旧确认格式 409、拼合快照可出 2 张图。
 - 复核退回修复：`tests/test_multi_site_review_fixes.py` 覆盖 21 项——要求条数不足时只发 1 条异常提示且 `content_status=failed`；站点预算内单栏超时保留已成功栏目（A 新闻 + B 热榜拼合 `complete`）；预览注入 409 时零发送且执行 `config_changed`；草稿/已保存预览在 A 取完、B 取数期间改 A 时返回 409 `preview_revision_changed`；内容准备完成后改来源站点时发送前拒绝、执行 `config_changed`；执行详情返回逐栏 `content_sources`；历史 6 候选能力测试检查全部 6 个；新建/改选 6 候选拒绝、未改动的 6 候选可保存；草稿测试无任务上下文时 6 候选拒绝，带历史任务 ID 且列表一致时完整检查 6 个、改动顺序仍拒绝；探测返回后改站点时预览 409、投递零发送；预览注入 503 `storage_unavailable` 时零发送且执行失败；单站供两栏的执行详情 `source_mode=single`、`source_count=1`；栏目取数内部注入 `SiteStorageError` 时预览 503、投递零发送；来源复核和快照校验各只调用一次多站 revision 查询（覆盖预览返回、渲染后与发送前）；发送校验用同一次任务配置快照覆盖任务版本、白名单和来源版本；候选读取注入存储故障时中止且零发送；确认后、取数前替换候选版本时投递 409 `confirmation_stale`、零发送，同执行 ID 仍回读；首栏 50 条、次栏固定 1.85 秒的正常投递保持完整；确认页读取/提交遇到 `SiteStorageError` 返回 503、零发送。schema v19 为执行记录补 `content_sources_json`，历史行保持 NULL。
 - 真实宿主：AstrBot 4.29.4 / 4.29.1 从最终 ZIP 安装并迁移到 schema v19。本机模拟上游（两站点）在宿主实测：能力测试 `multi`、预览 `complete`（文字同时含 A/B）、出图 2 张、手动投递到假账号成功且记录「多站点」、无 `confirmation_version` 的旧确认返回 409 `confirmation_stale`。
-- 新样式：`morning` / `midnight` / `beacon` 三款加入注册表，七款可读文字对比度均 ≥ 4.5:1（新三款主要文字 ≥ 6.1:1），`tests/test_image_styles.py` 校验字号/层级/对比度/preview token，实渲样张 `/private/tmp/hub-evidence/style-{morning,midnight,beacon}.png`。样式下拉旁示例卡在 4.29.4/4.29.1 通过 `tests/browser/task_image_style_ui.js`；390px 实测卡移到下方、无横向溢出（`/tmp/style-preview-390.png`、`/tmp/style-preview-desktop.png`）。
+- 新样式：`morning` / `midnight` / `beacon` 三款加入注册表，七款可读文字对比度均 ≥ 4.5:1（新三款主要文字 ≥ 6.1:1），`tests/test_image_styles.py` 校验字号/层级/对比度/preview token，并对七款样式逐类内容实际渲染断言像素；样张不入库，可用该测试的样例数据在本地重渲复核。样式下拉旁示例卡在 4.29.4/4.29.1 通过 `tests/browser/task_image_style_ui.js`；390px 实测卡移到下方、无横向溢出（同一脚本在 1440px 与 390px 各跑一次即可复核）。
 - 回归：`task_sites_ui` 36 项、`site_list_ui`、`task_items_ui` 70 项、`profile_site_decoupling_ui` 18 项；相关脚本按移除启用和草稿预览语义更新断言。
 - 自动化：`python -m unittest discover -s tests -q` 共运行 819 项，795 项通过、24 项跳过；`task_sites_ui` 38 项、`delivery_error_labels_ui` 30 项、`task_form_dirty_ui` 226 项 PASS；`node --check` 与 `git diff --check` 通过。
 - 未验证：真实公开上游、真实账号收件与真实平台定时投递；真实部署的反向代理与多用户权限差异。

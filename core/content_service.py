@@ -84,6 +84,10 @@ class ContentService:
         return self._client
 
     @property
+    def sites(self) -> SiteService:
+        return self._sites
+
+    @property
     def is_open(self) -> bool:
         return self._client.is_open
 
@@ -121,7 +125,12 @@ class ContentService:
             await self._client.close()
 
     async def test_connection(
-        self, site_id: object, content_type: object, expected_revision: object,
+        self,
+        site_id: object,
+        content_type: object,
+        expected_revision: object,
+        *,
+        inflight_limit: int = 2,
     ) -> dict[str, object]:
         """按已保存站点快照测试一个固定 endpoint；不使用缓存。"""
         from .sites import SiteNotFoundError, SiteValidationError
@@ -137,7 +146,7 @@ class ContentService:
         if not self._test_admitted:
             from .sites import SiteTestUnavailableError
             raise SiteTestUnavailableError()
-        if self._test_inflight >= 2:
+        if self._test_inflight >= inflight_limit:
             from .sites import SiteTestBusyError
             raise SiteTestBusyError()
         self._test_inflight += 1
@@ -216,8 +225,13 @@ class ContentService:
         site_id: object,
         *,
         force_refresh: bool = False,
+        use_cache: bool = True,
     ) -> CacheResult:
-        """统一预览的缓存入口；站点状态在读取缓存前重新校验。"""
+        """统一预览的缓存入口；站点状态在读取缓存前重新校验。
+
+        ``use_cache=False`` 时直接取数，既不读也不写生产缓存：表单草稿的
+        测试与预览不能改变已保存任务后续看到的内容。
+        """
         site = await self._sites.get_fetch_config(site_id)
         fetchers = {
             "daily_news": lambda: self.news.preview(site.id),
@@ -240,6 +254,12 @@ class ContentService:
             day_token = lambda: self._clock().astimezone(
                 CHINA_TIMEZONE,
             ).date()
+        if not use_cache:
+            return CacheResult(
+                snapshot=await fetch(),
+                hit=False,
+                expires_at="",
+            )
         return await self._cache.get(
             key,
             fetch,

@@ -107,7 +107,7 @@ class ProfileRenderTest(unittest.TestCase):
 
     def test_text_contains_order_limits_dates_warnings_and_heat(self) -> None:
         text = render_profile_text(data())
-        self.assertIn("组合：组合 # [名称]", text)
+        self.assertIn("任务：组合 # [名称]", text)
         self.assertIn("来源站点：站点", text)
         self.assertIn("状态：部分成功（2 成功 / 1 失败）", text)
         self.assertLess(text.index("【每日新闻】"), text.index("【知乎热榜】"))
@@ -145,6 +145,99 @@ class ProfileRenderTest(unittest.TestCase):
         self.assertNotIn("1. # [标题]", markdown)
         self.assertIn("热度：0", markdown)
         self.assertIn("热度：42", markdown)
+
+    def test_section_source_url_is_rendered_per_section(self) -> None:
+        payload = {
+            "profile_name": "组合",
+            "site_name": "站点",
+            "status": "complete",
+            "success_count": 2,
+            "failure_count": 0,
+            "sections": [
+                {
+                    "content_type": "daily_news",
+                    "label": "每日新闻",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:00:00+00:00",
+                    "source_url": (
+                        "https://user:pass@example.test/proxy/v2/60s"
+                        "?token=secret#frag"
+                    ),
+                    "source_kind": "public",
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+                {
+                    "content_type": "zhihu_hot",
+                    "label": "知乎热榜",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:01:00+00:00",
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+                {
+                    "content_type": "douyin_hot",
+                    "label": "抖音热搜",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:02:00+00:00",
+                    "source_url": "http://10.0.0.5:8080/proxy/v2/douyin",
+                    "source_kind": "self_built",
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+            ],
+        }
+        text = render_profile_text(payload)
+        markdown = render_profile_markdown(payload)
+        # 公开站点只展示域名，路径、查询串和凭据都不进入输出。
+        self.assertIn("数据来源：example.test", text)
+        self.assertIn("- 数据来源：example.test", markdown)
+        self.assertNotIn("proxy/v2", text)
+        self.assertNotIn("proxy/v2", markdown)
+        self.assertNotIn("user", text)
+        self.assertNotIn("secret", text)
+        self.assertNotIn("secret", markdown)
+        # 旧快照缺少来源字段时明确写不可用，不用站点名称冒充。
+        self.assertIn("数据来源：来源不可用", text)
+        self.assertIn("- 数据来源：来源不可用", markdown)
+        # 自建站点只写“自建服务”，不把内网地址写进输出。
+        self.assertIn("数据来源：自建服务", text)
+        self.assertIn("- 数据来源：自建服务", markdown)
+        self.assertNotIn("10.0.0.5", text)
+        self.assertNotIn("10.0.0.5", markdown)
+
+    def test_long_source_url_keeps_domain_without_path(self) -> None:
+        url = "https://example.test/" + "very-long-path-segment/" * 30 + "v2/60s"
+        payload = {
+            "profile_name": "组合",
+            "site_name": "站点",
+            "status": "complete",
+            "success_count": 1,
+            "failure_count": 0,
+            "sections": [
+                {
+                    "content_type": "daily_news",
+                    "label": "每日新闻",
+                    "status": "ok",
+                    "fetched_at": "2026-10-26T02:00:00+00:00",
+                    "source_url": url,
+                    "source_kind": "public",
+                    "displayed_count": 0,
+                    "total_item_count": 0,
+                    "items": [],
+                },
+            ],
+        }
+        text = render_profile_text(payload)
+        markdown = render_profile_markdown(payload)
+        # 超长路径不会让可展示的域名丢失，也不会把路径写进输出。
+        self.assertIn("数据来源：example.test", text)
+        self.assertIn("- 数据来源：example.test", markdown)
+        self.assertNotIn("very-long-path-segment", text)
+        self.assertNotIn("very-long-path-segment", markdown)
 
     def test_unknown_or_stale_daily_warning_is_rendered(self) -> None:
         payload = {

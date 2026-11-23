@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
+from .source_url import (
+    SOURCE_KIND_PUBLIC,
+    SOURCE_KIND_SELF_BUILT,
+    SOURCE_KINDS,
+)
 from .site_store import (
     SCHEMA_VERSION,
     SiteRecordNotFoundError,
@@ -21,6 +26,7 @@ from .site_store import (
     SiteReferencedError,
     SiteStore,
     SiteStoreClosedError,
+    SiteNameConflictError,
     SiteStoreError,
     StoredSite,
 )
@@ -29,7 +35,8 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 MIN_TIMEOUT_SECONDS = 1.0
 MAX_TIMEOUT_SECONDS = 120.0
 
-MAX_SITE_NAME_LENGTH = 80
+# 名称设置时就限制长度；留空时用基础地址兜底并按同一上限截断。
+MAX_SITE_NAME_LENGTH = 40
 MAX_BASE_URL_LENGTH = 2048
 MAX_BEARER_TOKEN_LENGTH = 4096
 MAX_SITE_ID_LENGTH = 64
@@ -98,16 +105,20 @@ class SiteDisabledError(SiteError):
         super().__init__(f"站点 {site_id} 未启用。")
 
 
-class SiteReferencedProfilesError(SiteError):
-    """站点仍被内容组合引用，不能删除。"""
+class SiteReferencedTasksError(SiteError):
+    """站点仍是任务候选，不能删除。"""
 
-    def __init__(self, site_id: str, profile_names: tuple[str, ...]) -> None:
+    def __init__(self, site_id: str, task_names: tuple[str, ...]) -> None:
         self.site_id = site_id
-        self.profile_names = profile_names
-        names = "、".join(profile_names)
+        self.task_names = task_names
+        names = "、".join(task_names)
         super().__init__(
-            f"站点 {site_id} 仍被内容组合引用，不能删除：{names}。",
+            f"站点 {site_id} 仍是任务的候选站点，不能删除：{names}。",
         )
+
+
+# 旧名别名：组合曾经绑定站点，保留导入兼容。
+SiteReferencedProfilesError = SiteReferencedTasksError
 
 
 class CredentialAction(str, Enum):
@@ -125,8 +136,8 @@ class SiteConfig:
     id: str
     name: str
     base_url: str
-    enabled: bool
     timeout_seconds: float
+    source_kind: str
     has_bearer_token: bool
     revision: int
     created_at: str
@@ -142,6 +153,7 @@ class SiteFetchConfig:
     base_url: str
     timeout_seconds: float
     revision: int
+    source_kind: str = SOURCE_KIND_PUBLIC
     bearer_token: str | None = field(default=None, repr=False)
 
 
@@ -151,8 +163,8 @@ class SiteCreate:
 
     name: str
     base_url: str
-    enabled: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    source_kind: str = SOURCE_KIND_PUBLIC
     bearer_token: str | None = field(default=None, repr=False)
 
 
@@ -162,9 +174,9 @@ class SiteUpdate:
 
     name: str
     base_url: str
-    enabled: bool
     timeout_seconds: float
     expected_revision: int
+    source_kind: str | None = None
     credential_action: CredentialAction = CredentialAction.KEEP
     bearer_token: str | None = field(default=None, repr=False)
 
@@ -191,6 +203,10 @@ class SiteService:
     async def open(self) -> None:
         try:
             await self._store.open()
+        except SiteNameConflictError:
+            raise SiteValidationError(
+                "name", "已存在同名站点，请换一个名称",
+            ) from None
         except SiteStoreError as exc:
             raise SiteStorageError(str(exc)) from exc
 
@@ -201,10 +217,13 @@ class SiteService:
             raise SiteStorageError("关闭站点数据库失败。") from exc
 
     async def create_site(self, data: SiteCreate) -> SiteConfig:
-        name = normalize_site_name(data.name)
         base_url = normalize_base_url(data.base_url)
-        enabled = normalize_enabled(data.enabled)
+        name = normalize_site_name(data.name, fallback=base_url)
         timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
+        source_kind = normalize_source_kind(
+            data.source_kind,
+            default=SOURCE_KIND_PUBLIC,
+        )
         bearer_token = normalize_bearer_token(data.bearer_token)
 
         try:
@@ -212,10 +231,14 @@ class SiteService:
                 site_id=uuid.uuid4().hex,
                 name=name,
                 base_url=base_url,
-                enabled=enabled,
                 timeout_seconds=timeout_seconds,
+                source_kind=source_kind,
                 bearer_token=bearer_token,
             )
+        except SiteNameConflictError:
+            raise SiteValidationError(
+                "name", "已存在同名站点，请换一个名称",
+            ) from None
         except SiteStoreClosedError as exc:
             raise SiteStorageError("站点存储尚未打开。") from exc
         except SiteStoreError as exc:
@@ -237,26 +260,39 @@ class SiteService:
             stored = await self._store.get_site(normalized_id)
         return _to_public(stored)
 
+    async def get_revisions(self, site_ids: object) -> dict[str, int]:
+        """一次读取多个站点的 revision，供预览/投递的原子来源复核。"""
+        if isinstance(site_ids, (str, bytes)):
+            raise SiteValidationError("sites", "必须是站点 id 列表")
+        if not isinstance(site_ids, (list, tuple)):
+            raise SiteValidationError("sites", "必须是站点 id 列表")
+        ids = [site_id for site_id in site_ids if isinstance(site_id, str)]
+        try:
+            return await self._store.get_site_revisions(ids)
+        except SiteStoreClosedError as exc:
+            raise SiteStorageError("站点存储尚未打开。") from exc
+        except SiteStoreError as exc:
+            raise SiteStorageError("站点存储操作失败。") from exc
+
     async def get_fetch_config(self, site_id: object) -> SiteFetchConfig:
-        """读取已启用站点的内部连接配置；凭据只交给获取层。"""
+        """读取站点的内部连接配置；凭据只交给获取层。"""
         normalized_id = normalize_site_id(site_id)
         async with self._translate_store_errors(normalized_id):
             stored = await self._store.get_site(normalized_id)
-        if not stored.enabled:
-            raise SiteDisabledError(normalized_id)
         return SiteFetchConfig(
             id=stored.id,
             name=stored.name,
             base_url=stored.base_url,
             timeout_seconds=stored.timeout_seconds,
             revision=stored.revision,
+            source_kind=stored.source_kind,
             bearer_token=stored.bearer_token,
         )
 
     async def get_test_config(
         self, site_id: object, expected_revision: object,
     ) -> SiteFetchConfig:
-        """读取测试连接快照；允许停用站点，但 revision 必须匹配。"""
+        """读取测试连接快照；revision 必须匹配。"""
         normalized_id = normalize_site_id(site_id)
         revision = normalize_revision(expected_revision)
         async with self._translate_store_errors(normalized_id):
@@ -266,6 +302,7 @@ class SiteService:
         return SiteFetchConfig(
             id=stored.id, name=stored.name, base_url=stored.base_url,
             timeout_seconds=stored.timeout_seconds, revision=stored.revision,
+            source_kind=stored.source_kind,
             bearer_token=stored.bearer_token,
         )
 
@@ -285,10 +322,17 @@ class SiteService:
                     current.revision,
                 )
 
-            name = normalize_site_name(data.name)
             base_url = normalize_base_url(data.base_url)
-            enabled = normalize_enabled(data.enabled)
+            name = normalize_site_name(
+                data.name,
+                fallback=base_url,
+                keep=current.name,
+            )
             timeout_seconds = normalize_timeout_seconds(data.timeout_seconds)
+            source_kind = normalize_source_kind(
+                data.source_kind,
+                default=None,
+            ) or current.source_kind
             action = normalize_credential_action(data.credential_action)
             bearer_token = resolve_credential_update(
                 action,
@@ -300,8 +344,8 @@ class SiteService:
                 normalized_id,
                 name=name,
                 base_url=base_url,
-                enabled=enabled,
                 timeout_seconds=timeout_seconds,
+                source_kind=source_kind,
                 bearer_token=bearer_token,
                 expected_revision=expected_revision,
             )
@@ -331,9 +375,9 @@ class SiteService:
         except SiteRecordNotFoundError as exc:
             raise SiteNotFoundError(exc.site_id) from exc
         except SiteReferencedError as exc:
-            raise SiteReferencedProfilesError(
+            raise SiteReferencedTasksError(
                 site_id,
-                exc.profile_names,
+                exc.task_names,
             ) from exc
         except SiteRevisionConflictError as exc:
             if expected_revision is None:
@@ -343,6 +387,10 @@ class SiteService:
                 expected_revision,
                 exc.actual_revision,
             ) from exc
+        except SiteNameConflictError:
+            raise SiteValidationError(
+                "name", "已存在同名站点，请换一个名称",
+            ) from None
         except SiteStoreClosedError as exc:
             raise SiteStorageError("站点存储尚未打开。") from exc
         except SiteStoreError as exc:
@@ -365,13 +413,24 @@ def normalize_site_id(value: object) -> str:
     return normalized
 
 
-def normalize_site_name(value: object) -> str:
+def normalize_site_name(
+    value: object,
+    fallback: str = "",
+    *,
+    keep: str | None = None,
+) -> str:
+    if value is None:
+        value = ""
     if not isinstance(value, str):
         raise SiteValidationError("name", "必须是字符串")
     normalized = value.strip()
     if not normalized:
+        # 名称为空时用已规范化的完整基础地址，保留反向代理路径。
+        normalized = _truncate_site_name(fallback.strip())
+    if not normalized:
         raise SiteValidationError("name", "不能为空")
-    if len(normalized) > MAX_SITE_NAME_LENGTH:
+    # keep 是库里的既有名称：旧数据可能超过现在的上限，原样保存时不受影响。
+    if len(normalized) > MAX_SITE_NAME_LENGTH and normalized != keep:
         raise SiteValidationError(
             "name",
             f"长度不能超过 {MAX_SITE_NAME_LENGTH} 个字符",
@@ -386,10 +445,34 @@ def normalize_site_name(value: object) -> str:
     return normalized
 
 
+def _truncate_site_name(value: str) -> str:
+    if len(value) <= MAX_SITE_NAME_LENGTH:
+        return value
+    return value[: MAX_SITE_NAME_LENGTH - 1].rstrip() + "…"
+
+
 def normalize_enabled(value: object) -> bool:
     if not isinstance(value, bool):
         raise SiteValidationError("enabled", "必须是布尔值")
     return value
+
+
+def normalize_source_kind(
+    value: object,
+    *,
+    default: str | None = None,
+) -> str | None:
+    """站点来源类型：public（公开实例）或 self_built（自建）。
+
+    ``None`` 表示调用方没有提交该字段：新增时用默认值，编辑时沿用原值。
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in SOURCE_KINDS:
+            return normalized
+    raise SiteValidationError("source_kind", "必须为 public 或 self_built")
 
 
 def normalize_timeout_seconds(value: object) -> float:
@@ -581,8 +664,8 @@ def _to_public(stored: StoredSite) -> SiteConfig:
         id=stored.id,
         name=stored.name,
         base_url=stored.base_url,
-        enabled=stored.enabled,
         timeout_seconds=stored.timeout_seconds,
+        source_kind=stored.source_kind,
         has_bearer_token=stored.bearer_token is not None,
         revision=stored.revision,
         created_at=stored.created_at,
@@ -614,10 +697,12 @@ __all__ = [
     "normalize_base_url",
     "normalize_bearer_token",
     "normalize_credential_action",
-    "normalize_enabled",
     "normalize_revision",
     "normalize_site_id",
     "normalize_site_name",
+    "normalize_source_kind",
     "normalize_timeout_seconds",
+    "SOURCE_KIND_PUBLIC",
+    "SOURCE_KIND_SELF_BUILT",
     "resolve_credential_update",
 ]

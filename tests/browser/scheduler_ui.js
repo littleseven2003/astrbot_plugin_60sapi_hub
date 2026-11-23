@@ -1,7 +1,7 @@
 /*
  * Dashboard scheduler UI regression. Env:
  * ASTRBOT_URL, ASTRBOT_PASSWORD, CHROME_PATH.
- * Real host API creates and removes temporary site/profile/task; scheduling
+ * Real host API creates and removes temporary site/task; scheduling
  * records are route fixtures. No delivery or content preview is invoked.
  */
 const assert=require('assert/strict');
@@ -82,13 +82,12 @@ async function showView(frame,view){
 
 const BASE=process.env.ASTRBOT_URL,P=process.env.ASTRBOT_PLUGIN||'astrbot_plugin_60sapi_hub',PW=process.env.ASTRBOT_PASSWORD,CHROME=process.env.CHROME_PATH;
 if(!BASE||!PW||!CHROME){console.error('ASTRBOT_URL, ASTRBOT_PASSWORD and CHROME_PATH are required');process.exit(2);}
-let token=null,siteId=null,profileId=null,taskId=null;const name='调度页面回归'+Date.now();
+let token=null,siteId=null,taskId=null;const name='调度页面回归'+Date.now();
 async function api(method,path,data){const r=await fetch(BASE+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:data?JSON.stringify(data):undefined});const body=await r.json().catch(()=>({}));return {status:r.status,body};}
 (async()=>{const browser=await chromium.launch({headless:true,executablePath:CHROME,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:1400,height:1000}});const enablePosts=[];try{
   const login=await api('POST','/api/v1/auth/login',{username:'astrbot',password:PW});assert.equal(login.status,200);token=login.body.data.token;
   let r=await api('POST',`/api/v1/plugins/extensions/${P}/sites`,{name:name+'站点',base_url:'http://example.test/proxy',enabled:true,timeout_seconds:5});assert.equal(r.status,201);siteId=r.body.data.id;
-  r=await api('POST',`/api/v1/plugins/extensions/${P}/profiles`,{name:name+'组合',site_id:siteId,items:[{content_type:'daily_news',params:{},limit:null}]});assert.equal(r.status,201);profileId=r.body.data.id;
-  r=await api('POST',`/api/v1/plugins/extensions/${P}/tasks`,{name,profile_id:profileId,output_format:'text',umos:['fake_qq_01:GroupMessage:123'],schedule:{kind:'daily',timezone:'Asia/Shanghai',time:'08:30'}});assert.equal(r.status,201);taskId=r.body.data.id;
+  r=await api('POST',`/api/v1/plugins/extensions/${P}/tasks`,{name,items:[{content_type:'daily_news'}],sites:[siteId],output_format:'text',umos:['fake_qq_01:GroupMessage:123'],schedule:{kind:'daily',timezone:'Asia/Shanghai',time:'08:30'}});assert.equal(r.status,201);assert.deepEqual(r.body.data.sites.map(site=>site.id),[siteId]);taskId=r.body.data.id;
   page.on('request',req=>{if(req.method()==='POST'&&/\/tasks\/[^/]+\/enable$/.test(new URL(req.url()).pathname))enablePosts.push(req.postData());});
   await page.goto(BASE+'/',{waitUntil:'domcontentloaded'});await page.fill('input[name=username]','astrbot');await page.fill('input[name=password]',PW);
   await Promise.all([page.waitForURL(url=>!url.toString().includes('/auth/login')),page.getByRole('button',{name:'登录',exact:true}).click()]);
@@ -112,7 +111,7 @@ await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'
   current=await api('GET',`/api/v1/plugins/extensions/${P}/tasks/${taskId}`);assert.equal(current.body.data.enabled,false);assert.ok(current.body.data.revision>beforeEdit);assert.equal(current.body.data.next_run_at,null);
   // Revision conflict: hold an old revision in the confirmation, then update externally.
   await clear();await frame.locator('#tasks-list li').filter({hasText:name+'改'}).getByRole('button',{name:/启用定时调度/}).click();await frame.waitForSelector('#task-power-dialog[open]');
-  const stale=await api('GET',`/api/v1/plugins/extensions/${P}/tasks/${taskId}`);await api('POST',`/api/v1/plugins/extensions/${P}/tasks/${taskId}/update`,{name:name+'外部',profile_id:profileId,output_format:'text',umos:['fake_qq_01:GroupMessage:123'],expected_revision:stale.body.data.revision});
+  const stale=await api('GET',`/api/v1/plugins/extensions/${P}/tasks/${taskId}`);await api('POST',`/api/v1/plugins/extensions/${P}/tasks/${taskId}/update`,{name:name+'外部',items:[{content_type:'daily_news'}],sites:[siteId],output_format:'text',umos:['fake_qq_01:GroupMessage:123'],expected_revision:stale.body.data.revision});
   await frame.locator('#task-power-confirm-button').click();await frame.waitForFunction(()=>!document.getElementById('task-power-dialog')?.open);await frame.waitForFunction(n=>document.getElementById('tasks-list')?.innerText.includes(n),name+'外部');
   current=await api('GET',`/api/v1/plugins/extensions/${P}/tasks/${taskId}`);assert.equal(current.body.data.enabled,false);
   // Enable request reaches the server, but its response is discarded.
@@ -135,4 +134,4 @@ await page.goto(`${BASE}/#/plugin-view/${P}/sites`,{waitUntil:'domcontentloaded'
   await frame.locator('#schedule-runs-retry-button').click();await frame.waitForFunction(()=>document.getElementById('schedule-runs-state')?.hidden===true);
   await page.setViewportSize({width:390,height:1000});await page.screenshot({path:'/tmp/m5-scheduler-ui-390.png',fullPage:true});
   console.log('SCHEDULER UI PASS',{name,calls,enablePosts:enablePosts.length});
-}finally{try{if(taskId&&token){const t=await api('GET',`/api/v1/plugins/extensions/${P}/tasks/${taskId}`);if(t.status===200)await api('POST',`/api/v1/plugins/extensions/${P}/tasks/${taskId}/delete`,{expected_revision:t.body.data.revision});}if(profileId&&token)await api('POST',`/api/v1/plugins/extensions/${P}/profiles/${profileId}/delete`,{expected_revision:1});if(siteId&&token)await api('POST',`/api/v1/plugins/extensions/${P}/sites/${siteId}/delete`,{expected_revision:1});}catch{}await browser.close();}})().catch(e=>{console.error(e);process.exit(1)});
+}finally{try{if(taskId&&token){const t=await api('GET',`/api/v1/plugins/extensions/${P}/tasks/${taskId}`);if(t.status===200)await api('POST',`/api/v1/plugins/extensions/${P}/tasks/${taskId}/delete`,{expected_revision:t.body.data.revision});}if(siteId&&token)await api('POST',`/api/v1/plugins/extensions/${P}/sites/${siteId}/delete`,{expected_revision:1});}catch{}await browser.close();}})().catch(e=>{console.error(e);process.exit(1)});

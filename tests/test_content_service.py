@@ -11,7 +11,7 @@ import httpx
 
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
-from core.sites import SiteCreate, SiteDisabledError, SiteService
+from core.sites import SiteCreate, SiteService
 
 
 class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -31,7 +31,6 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             SiteCreate(
                 name=name,
                 base_url="http://example.test/proxy",
-                enabled=True,
                 timeout_seconds=5,
                 bearer_token=token,
             ),
@@ -135,10 +134,63 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(douyin.items[0].hot_value, 123)
         self.assertEqual(toutiao.items[0].title, "头条")
         self.assertEqual(toutiao.items[0].hot_value, 456)
+        # 每个栏目记录本次实际请求地址：保留站点路径前缀和各自 endpoint，
+        # 且不包含凭据。
+        self.assertEqual(
+            daily.source_url, "http://example.test/proxy/v2/60s",
+        )
+        self.assertEqual(
+            bili.source_url, "http://example.test/proxy/v2/bili",
+        )
+        self.assertEqual(
+            zhihu.source_url, "http://example.test/proxy/v2/zhihu",
+        )
+        self.assertEqual(
+            douyin.source_url, "http://example.test/proxy/v2/douyin",
+        )
+        self.assertEqual(
+            toutiao.source_url, "http://example.test/proxy/v2/toutiao",
+        )
+        for snapshot in (daily, bili, zhihu, douyin, toutiao):
+            self.assertNotIn("token", snapshot.source_url)
         self.assertIs(content.news._client, content.bili._client)
         self.assertIs(content.news._client, content.zhihu._client)
         self.assertIs(content.news._client, content.douyin._client)
         self.assertIs(content.news._client, content.toutiao._client)
+
+    async def test_snapshot_records_site_source_kind(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"code": 200, "data": {"news": ["新闻"]}},
+            )
+
+        client = ContentHttpClient(transport=httpx.MockTransport(handler))
+        content = ContentService(self.sites, client=client, clock=self.clock)
+        public_site = await self.sites.create_site(SiteCreate(
+            name="公开实例", base_url="https://public.example.test/60s",
+            timeout_seconds=5, source_kind="public",
+        ))
+        self_hosted = await self.sites.create_site(SiteCreate(
+            name="自建服务", base_url="http://10.0.0.5:8080/proxy",
+            timeout_seconds=5, source_kind="self_built",
+        ))
+        await content.open()
+        try:
+            public_snapshot = await content.preview_daily(public_site.id)
+            self_hosted_snapshot = await content.preview_daily(self_hosted.id)
+        finally:
+            await content.close()
+        self.assertEqual(public_snapshot.source_kind, "public")
+        self.assertEqual(
+            public_snapshot.source_url,
+            "https://public.example.test/60s/v2/60s",
+        )
+        self.assertEqual(self_hosted_snapshot.source_kind, "self_built")
+        self.assertEqual(
+            self_hosted_snapshot.source_url,
+            "http://10.0.0.5:8080/proxy/v2/60s",
+        )
 
     async def test_five_content_types_use_their_own_site_credentials(self) -> None:
         daily_site = await self._site("每日新闻站点", "daily-token")
@@ -182,7 +234,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_site_connection_probe_five_types_without_writes(self) -> None:
         site = await self.sites.create_site(SiteCreate(
             name="测试连接站点", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5, bearer_token="secret-token",
+            timeout_seconds=5, bearer_token="secret-token",
         ))
         seen = []
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -206,8 +258,6 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             raise AssertionError("connection test must not touch cache")
         service._cache.get = forbidden_cache
         try:
-            with self.assertRaises(SiteDisabledError):
-                await service.preview_cached("bilibili_hot", site.id)
             for content_type in (
                 "daily_news", "bilibili_hot", "zhihu_hot",
                 "douyin_hot", "toutiao_hot",
@@ -219,7 +269,6 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["revision"], site.revision)
             self.assertEqual(len(seen), 5)
             current = await self.sites.get_site(site.id)
-            self.assertFalse(current.enabled)
             self.assertEqual(current.revision, site.revision)
             self.assertEqual(await self.sites.store.list_tasks(), [])
         finally:
@@ -232,7 +281,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         site = await self.sites.create_site(SiteCreate(
             name="边界站点", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         calls = []
         release = asyncio.Event()
@@ -307,7 +356,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         from core.sites import SiteConflictError, SiteUpdate
         site = await self.sites.create_site(SiteCreate(
             name="并发修改", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5,
+            timeout_seconds=5,
         ))
         started = asyncio.Event(); release = asyncio.Event()
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -323,7 +372,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             await started.wait()
             await self.sites.update_site(site.id, SiteUpdate(
                 name="并发修改后", base_url="http://example.test/proxy",
-                enabled=False, timeout_seconds=5, expected_revision=site.revision,
+                timeout_seconds=5, expected_revision=site.revision,
             ))
             release.set()
             with self.assertRaises(SiteConflictError):
@@ -336,7 +385,7 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
         from core.news import NewsHTTPStatusError, NewsTransportError
         class FailingService:
             def __init__(self, error): self.error = error
-            async def test_connection(self, *args): raise self.error
+            async def test_connection(self, *args, **kwargs): raise self.error
         for error, code in (
             (NewsHTTPStatusError("secret-token reflected"), "test_http_status"),
             (NewsTransportError("secret-token reflected"), "test_network_error"),

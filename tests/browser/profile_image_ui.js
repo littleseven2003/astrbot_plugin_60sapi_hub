@@ -1,6 +1,6 @@
 /*
  * 后台图片预览与逐张下载的可持久浏览器回归。
- * 站点/组合走真实 API；preview 与 image 接口用 route fixture 返回构造好的
+ * 站点/任务走真实 API；preview 与 image 接口用 route fixture 返回构造好的
  * images（一个栏目一张长图），不请求真实上游、不连真实群聊/私聊。
  *
  * ASTRBOT_URL=... ASTRBOT_PASSWORD=... ASTRBOT_PLUGIN=... \
@@ -25,7 +25,7 @@ const WAIT = 20000;
 const stamp = Date.now();
 let token;
 const siteId = { value: null };
-const profileIds = { first: null, second: null };
+const taskIds = { first: null, second: null };
 const upstreamCalls = [];
 
 /* ---------- 构造真实的 900×H PNG（不引入额外依赖） ---------- */
@@ -103,25 +103,166 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function waitUntil(predicate, message, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || WAIT);
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(message || "等待超时");
+}
+
 const routeState = {
   previewData: null,
   imageData: null,
   imageStatus: 200,
-  imageGate: null,
+  // 按请求顺序排队的放行门闩：每次图片请求取走队首，没有门闩就立刻放行。
+  imageGates: [],
   imageCalls: 0,
+  // 被拦截的图片响应真正交回浏览器的次数（route.fulfill 完成后自增）。
+  imageFulfilled: 0,
+  // 页面里 apiPost 图片请求 promise 已结算的次数（由页面内探针维护）。
+  imageSettledInPage: 0,
 };
 
-function previewPayload(profileId, profileName, revision) {
+/*
+ * ---------- 旧响应的确定性等待 ----------
+ * 页面里的失效判断（views/sites/app.js 的 generatePreviewImage：requestId/snapshotId/taskId
+ * 不一致就 return，且 finally 也被 requestId 拦住）不产生任何 DOM 变化，所以“页面已处理完旧响应”
+ * 只能从执行层取证，分三步：
+ *   1. route.fulfill 完成 → routeState.imageFulfilled 增长（旧请求确实交回了浏览器）；
+ *   2. 页面内 apiPost 的 promise 结算 → __hubImageProbe.settled 增长（页面确实拿到了响应）；
+ *   3. 让出两帧 → 页面的 await 续体（失效判断 + finally）已执行完，再读 DOM。
+ * 任何一步超时都抛带上下文的错误，不用固定毫秒兜底。
+ */
+async function installImageSettleProbe(frame) {
+  const result = await frame.evaluate(() => {
+    const host = window.AstrBotPluginView;
+    if (!host || typeof host.apiPost !== "function") {
+      return "页面没有 window.AstrBotPluginView.apiPost";
+    }
+    if (host.__hubImageProbe) return "ok";
+    const original = host.apiPost;
+    const probe = { settled: 0, endpoint: null };
+    const wrapped = function (endpoint, ...rest) {
+      const call = original.call(this, endpoint, ...rest);
+      if (!/\/image$/.test(String(endpoint || ""))) return call;
+      const mark = () => {
+        probe.settled += 1;
+        probe.endpoint = String(endpoint);
+      };
+      return Promise.resolve(call).then(
+        (value) => { mark(); return value; },
+        (error) => { mark(); throw error; },
+      );
+    };
+    try {
+      host.apiPost = wrapped;
+    } catch (error) {
+      return "apiPost 不可写: " + error.message;
+    }
+    if (host.apiPost !== wrapped) return "apiPost 不可写（赋值被忽略）";
+    host.__hubImageProbe = probe;
+    return "ok";
+  });
+  if (result !== "ok") {
+    throw new Error("无法安装图片响应完成探针: " + result);
+  }
+}
+
+async function pageImageSettled(frame) {
+  return frame.evaluate(() => window.AstrBotPluginView?.__hubImageProbe?.settled ?? -1);
+}
+
+// 1) 旧请求确实完成：route.fulfill 之后计数必须增长。
+async function waitForImageFulfilled(before) {
+  const message = "旧请求未完成：拦住的旧图片请求在 " + WAIT + "ms 内没有走完 route.fulfill";
+  try {
+    await waitUntil(() => routeState.imageFulfilled > before, message);
+  } catch {
+    throw new Error(message + JSON.stringify({
+      before,
+      imageFulfilled: routeState.imageFulfilled,
+      imageCalls: routeState.imageCalls,
+      settledInPage: routeState.imageSettledInPage,
+      gated: routeState.imageGates.length > 0,
+    }));
+  }
+}
+
+// 2) 页面拿到了这次响应：页面内 apiPost 的 promise 已结算。
+async function waitForPageImageHandled(frame, before) {
+  const deadline = Date.now() + WAIT;
+  let settled = null;
+  while (Date.now() < deadline) {
+    settled = await pageImageSettled(frame);
+    if (settled < 0) {
+      throw new Error("页面未处理完：页面里没有图片请求探针"
+        + "（window.AstrBotPluginView.__hubImageProbe）");
+    }
+    if (settled > before) {
+      routeState.imageSettledInPage = settled;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("页面未处理完：旧响应交回后，页面内图片请求 promise 在 " + WAIT
+    + "ms 内没有结算" + JSON.stringify({ before, settled, imageFulfilled: routeState.imageFulfilled }));
+}
+
+// 3) 让出两帧：microtask 队列（页面的 await 续体）已在读 DOM 前跑完。
+async function waitForFrameDrain(frame) {
+  const message = "页面未处理完：旧响应结算后 " + WAIT + "ms 内没有完成两帧渲染";
+  let timer;
+  const drained = frame.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+  }));
+  try {
+    const result = await Promise.race([
+      drained,
+      new Promise((resolve) => { timer = setTimeout(() => resolve("timeout"), WAIT); }),
+    ]);
+    if (result === "timeout") throw new Error(message);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 挂一个门闩，拦住下一张发往 /image 的请求。
+function holdImageRequest() {
+  const gate = deferred();
+  routeState.imageGates.push(gate);
+  return gate;
+}
+
+// 放行门闩，并按上面的三步等页面真正处理完这次响应。
+async function releaseImageRequest(frame, gate) {
+  const before = {
+    fulfilled: routeState.imageFulfilled,
+    settled: await pageImageSettled(frame),
+  };
+  if (before.settled < 0) {
+    throw new Error("页面未处理完：页面里没有图片请求探针"
+      + "（window.AstrBotPluginView.__hubImageProbe）");
+  }
+  gate.resolve();
+  await waitForImageFulfilled(before.fulfilled);
+  await waitForPageImageHandled(frame, before.settled);
+  await waitForFrameDrain(frame);
+}
+
+function previewPayload(taskId, taskName, revision) {
   return {
-    profile_id: profileId,
-    profile_revision: revision,
-    profile_name: profileName,
+    task_id: taskId,
+    task_revision: revision,
+    task_name: taskName,
+    items: [{ content_type: "daily_news", label: "每日新闻", limit: null }],
     site_name: "图片回归站点",
     status: "complete",
     success_count: 1,
     failure_count: 0,
     sections: [],
-    outputs: { text: "组合正文", markdown: "# 组合正文" },
+    outputs: { text: "任务正文", markdown: "# 任务正文" },
     image_snapshot: { id: "snapshot-" + stamp },
     failed_sections: [],
   };
@@ -135,7 +276,7 @@ function imagesPayload(sections, failedLabels) {
   };
 }
 
-/* ---------- 真实 API：站点与组合 ---------- */
+/* ---------- 真实 API：站点与任务 ---------- */
 async function api(method, path, data) {
   const response = await fetch(BASE + path, {
     method,
@@ -164,19 +305,19 @@ async function frameOf(page) {
   return frame;
 }
 
-async function showProfiles(frame) {
+async function showTasks(frame) {
   await frame.waitForFunction(
     () => document.getElementById("sites-list")?.getAttribute("aria-busy") === "false",
     null, { timeout: WAIT },
   );
   // 宿主 iframe 内合成点击偶发被 Dashboard 覆盖层吞掉，这里走同一套 hash 路由。
   await frame.evaluate(() => {
-    if (document.getElementById("view-profiles")?.hidden !== false) {
-      window.location.hash = "#profiles";
+    if (document.getElementById("view-tasks")?.hidden !== false) {
+      window.location.hash = "#tasks";
     }
   });
   await frame.waitForFunction(
-    () => document.getElementById("view-profiles")?.hidden === false,
+    () => document.getElementById("view-tasks")?.hidden === false,
     null, { timeout: WAIT },
   );
 }
@@ -185,6 +326,13 @@ async function openPage(browser, width) {
   const page = await browser.newPage({ viewport: { width, height: 1000 }, acceptDownloads: true });
   page.on("request", (request) => {
     if (!request.url().startsWith(BASE)) upstreamCalls.push(request.url());
+  });
+  // 记录宿主 iframe 最近一次导航时间。Chromium 在帧刚完成导航的瞬间偶尔
+  // 丢掉第一次合成点击（mousedown/mouseup 落不到同一节点，按钮收不到
+  // click），表现为点“预览内容”没反应。等导航静默一小段时间再交互。
+  page.on("framenavigated", (navigated) => {
+    if (navigated === page.mainFrame()) return;
+    page.evaluate(() => { window.__lastFrameNavAt = Date.now(); }).catch(() => {});
   });
   await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
   await page.fill("input[name=username]", "astrbot");
@@ -203,32 +351,89 @@ async function openPage(browser, width) {
     }
   });
   const frame = await frameOf(page);
-  await showProfiles(frame);
+  await showTasks(frame);
+  await waitForFrameSettled(page, frame);
   return { page, frame };
 }
 
-async function selectProfile(frame, profileId) {
-  await frame.waitForFunction((id) =>
-    [...document.querySelectorAll("#profile-preview-select option")]
-      .some((option) => option.value === id), profileId, { timeout: WAIT });
-  await frame.selectOption("#profile-preview-select", profileId);
+// 等待宿主 iframe 完成上一次导航后再交互：先让页面画两帧，再要求最近
+// 一次 iframe 导航已静默 300ms，避免点击落在帧切换的空档里被丢掉。
+async function waitForFrameSettled(page, frame) {
+  await frame.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await page.waitForFunction(
+    () => Date.now() - (window.__lastFrameNavAt || 0) > 300,
+    null, { timeout: WAIT },
+  );
 }
 
-async function runPreview(frame) {
-  await frame.evaluate(() => document.getElementById("profile-preview-button").click());
+// 打开任务卡片上的“预览内容”：预览按已保存的任务配置发起，拿到快照后才能生成长图。
+async function openTask(frame, taskId) {
+  const card = frame.locator(`#tasks-list .task-card[data-task-id="${taskId}"]`).first();
+  await card.waitFor({ state: "visible", timeout: WAIT });
+  const waitDialogOpen = () => frame.waitForFunction(
+    () => document.getElementById("task-preview-dialog")?.open === true,
+    null, { timeout: 5000 },
+  );
+  await card.locator(".task-card-actions button").first().click({ timeout: WAIT });
+  try {
+    await waitDialogOpen();
+  } catch (firstError) {
+    // 兜底：宿主帧边界偶发丢掉一次点击时，像真实用户一样再点一次；
+    // 仍打不开就带上对话框状态直接失败，而不是一直等到图片按钮超时。
+    await card.locator(".task-card-actions button").first().click({ timeout: WAIT });
+    try {
+      await waitDialogOpen();
+    } catch {
+      const state = await frame.evaluate(() => ({
+        open: Boolean(document.getElementById("task-preview-dialog")?.open),
+        status: document.getElementById("task-preview-status")?.textContent || "",
+        buttonDisabled: Boolean(document.getElementById("task-preview-image-button")?.disabled),
+      }));
+      throw new Error(
+        "点击预览内容后对话框未打开：" + JSON.stringify(state)
+        + "；首次错误：" + (firstError && firstError.message),
+      );
+    }
+  }
   await frame.waitForFunction(
-    () => !document.getElementById("profile-image-button").disabled,
+    () => !document.getElementById("task-preview-image-button").disabled,
     null, { timeout: WAIT },
   );
 }
 
 async function runImage(frame) {
-  await frame.evaluate(() => document.getElementById("profile-image-button").click());
+  // 真实 locator 点击：按钮 disabled 时 Playwright 会等它可用，不做 DOM click 绕过。
+  await frame.locator("#task-preview-image-button").click({ timeout: WAIT });
+}
+
+// 用真实 locator 点应用里的关闭按钮，并等对话框确实关闭（关闭后的 <dialog> 是 display:none）。
+async function closePreview(frame) {
+  await frame.locator("#task-preview-close-button").click({ timeout: WAIT });
+  await frame.locator("#task-preview-dialog").waitFor({ state: "hidden", timeout: WAIT });
+  await frame.waitForFunction(
+    () => !document.getElementById("task-preview-dialog")?.open,
+    null, { timeout: WAIT },
+  );
+}
+
+// 读图片区的忙状态：状态行文案 + 图片按钮可用性，用来判断“旧响应有没有清掉当前忙状态”。
+async function imageBusy(frame) {
+  return frame.evaluate(() => {
+    const button = document.getElementById("task-preview-image-button");
+    return {
+      state: document.getElementById("task-preview-image-state").textContent,
+      buttonText: button ? button.textContent : null,
+      buttonDisabled: button ? button.disabled : null,
+      figures: document.querySelectorAll("#task-preview-image-pages figure").length,
+    };
+  });
 }
 
 async function figures(frame) {
   return frame.evaluate(() => {
-    const host = document.getElementById("profile-image-pages");
+    const host = document.getElementById("task-preview-image-pages");
     return [...host.querySelectorAll("figure")].map((figure) => {
       const image = figure.querySelector("img");
       const captions = [...figure.querySelectorAll("figcaption")].map((node) => node.textContent);
@@ -247,84 +452,159 @@ async function figures(frame) {
 
 async function stateText(frame) {
   return frame.evaluate(() => ({
-    state: document.getElementById("profile-image-state").textContent,
-    hint: document.getElementById("profile-image-hint").textContent,
-    hintHidden: document.getElementById("profile-image-hint").hidden,
-    panel: document.querySelector(".profile-image-panel").innerText,
+    state: document.getElementById("task-preview-image-state").textContent,
+    hint: document.getElementById("task-preview-image-hint").textContent,
+    hintHidden: document.getElementById("task-preview-image-hint").hidden,
+    panel: document.querySelector(".preview-image-panel").innerText,
   }));
 }
 
 (async () => {
-  await login();
-  const site = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/sites", {
-    name: "图片回归站点" + stamp,
-    base_url: "http://127.0.0.1:9/mock-upstream",
-    enabled: true, timeout_seconds: 5,
-  });
-  siteId.value = site.body.data.id;
-  const firstProfile = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/profiles", {
-    name: "图片回归组合A" + stamp, site_id: siteId.value,
-    items: [
-      { content_type: "daily_news", params: {}, limit: 20 },
-      { content_type: "zhihu_hot", params: {}, limit: 20 },
-      { content_type: "bilibili_hot", params: {}, limit: 20 },
-    ],
-  });
-  assert.ok([200, 201].includes(firstProfile.status), JSON.stringify(firstProfile.body));
-  profileIds.first = firstProfile.body.data.id;
-  const firstRevision = firstProfile.body.data.revision;
-  const secondProfile = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/profiles", {
-    name: "图片回归组合B" + stamp, site_id: siteId.value,
-    items: [{ content_type: "douyin_hot", params: {}, limit: 20 }],
-  });
-  assert.ok([200, 201].includes(secondProfile.status), JSON.stringify(secondProfile.body));
-  profileIds.second = secondProfile.body.data.id;
-  const secondRevision = secondProfile.body.data.revision;
-
-  routeState.previewData = previewPayload(profileIds.first, "图片回归组合A" + stamp, firstRevision);
-  routeState.imageData = imagesPayload(SECTIONS, []);
-
-  const browser = await chromium.launch({
-    headless: true, executablePath: CHROME, args: ["--no-sandbox"],
-  });
   let assertions = 0;
   const check = (condition, message) => {
     assertions += 1;
     assert.ok(condition, message);
   };
+  // 夹具 id 在每条创建成功的瞬间记录，后续断言失败也能按 id 清掉已建资源。
+  const created = [];
+  let browser = null;
+  let firstRevision = null;
+  let secondRevision = null;
+  let passReport = null;
+  let workError = null;
+  let cleanupProblems = [];
+
+  const briefBody = (body) => {
+    const text = JSON.stringify(body === undefined ? null : body);
+    return text.length > 300 ? text.slice(0, 300) + "…" : text;
+  };
+
+  // 清理逐条核对：POST delete 必须 200 且 body.status==='ok'，删除后 GET 必须 404。
+  // 已不存在的资源不算失败，但要留下可诊断的记录。
+  const reapFixtures = async () => {
+    const problems = [];
+    for (const { kind, id, label } of created.slice().reverse()) {
+      const path = "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id;
+      try {
+        const live = await api("GET", path);
+        if (live.status === 404) {
+          console.log("  · 夹具" + label + "（" + kind + "/" + id + "）已不存在，无需删除");
+          continue;
+        }
+        if (live.status !== 200) {
+          problems.push({
+            step: "删除前读取夹具" + label, kind, id,
+            status: live.status, body: briefBody(live.body),
+          });
+          continue;
+        }
+        const removed = await api("POST", path + "/delete", {
+          expected_revision: live.body && live.body.data ? live.body.data.revision : undefined,
+        });
+        if (removed.status !== 200 || !removed.body || removed.body.status !== "ok") {
+          problems.push({
+            step: "删除夹具" + label, kind, id,
+            status: removed.status, body: briefBody(removed.body),
+          });
+          continue;
+        }
+        const gone = await api("GET", path);
+        if (gone.status !== 404) {
+          problems.push({
+            step: "删除后复核夹具" + label, kind, id,
+            expect: 404, status: gone.status, body: briefBody(gone.body),
+          });
+        }
+      } catch (error) {
+        problems.push({
+          step: "清理夹具" + label, kind, id,
+          error: String(error && error.message || error),
+        });
+      }
+    }
+    return problems;
+  };
+
   try {
+    await login();
+    const site = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/sites", {
+      name: "图片回归站点" + stamp,
+      base_url: "http://127.0.0.1:9/mock-upstream",
+      enabled: true, timeout_seconds: 5,
+    });
+    check((site.status === 200 || site.status === 201)
+      && Boolean(site.body && site.body.data && site.body.data.id),
+    "站点创建失败: " + JSON.stringify({ status: site.status, body: site.body }));
+    siteId.value = site.body.data.id;
+    created.push({ kind: "sites", id: siteId.value, label: "站点" });
+    const firstTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
+      name: "图片回归任务A" + stamp,
+      items: [
+        { content_type: "daily_news", limit: 20 },
+        { content_type: "zhihu_hot", limit: 20 },
+        { content_type: "bilibili_hot", limit: 20 },
+      ],
+      sites: [siteId.value],
+      output_format: "text",
+      umos: [],
+    });
+    assert.ok([200, 201].includes(firstTask.status), JSON.stringify(firstTask.body));
+    taskIds.first = firstTask.body.data.id;
+    firstRevision = firstTask.body.data.revision;
+    created.push({ kind: "tasks", id: taskIds.first, label: "任务A" });
+    const secondTask = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
+      name: "图片回归任务B" + stamp,
+      items: [{ content_type: "douyin_hot", limit: 20 }],
+      sites: [siteId.value],
+      output_format: "text",
+      umos: [],
+    });
+    assert.ok([200, 201].includes(secondTask.status), JSON.stringify(secondTask.body));
+    taskIds.second = secondTask.body.data.id;
+    secondRevision = secondTask.body.data.revision;
+    created.push({ kind: "tasks", id: taskIds.second, label: "任务B" });
+
+    routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
+    routeState.imageData = imagesPayload(SECTIONS, []);
+
+    browser = await chromium.launch({
+      headless: true, executablePath: CHROME, args: ["--no-sandbox"],
+    });
     for (const width of [1440, 390]) {
-      routeState.imageGate = null;
+      for (const gate of routeState.imageGates.splice(0)) gate.resolve();
       routeState.imageStatus = 200;
       routeState.imageData = imagesPayload(SECTIONS, []);
-      routeState.previewData = previewPayload(profileIds.first, '图片回归组合A' + stamp, firstRevision);
+      routeState.previewData = previewPayload(taskIds.first, '图片回归任务A' + stamp, firstRevision);
       const { page, frame } = await openPage(browser, width);
       try {
-        await page.route("**/profiles/*/preview", async (route) => {
+        await installImageSettleProbe(frame);
+        await page.route("**/tasks/*/preview", async (route) => {
           await route.fulfill({
             status: 200, contentType: "application/json",
             body: JSON.stringify({ status: "ok", data: routeState.previewData }),
           });
         });
-        await page.route("**/profiles/*/image", async (route) => {
+        await page.route("**/tasks/*/image", async (route) => {
           routeState.imageCalls += 1;
-          if (routeState.imageGate) await routeState.imageGate.promise;
+          const gate = routeState.imageGates.shift();
+          if (gate) await gate.promise;
           await route.fulfill({
             status: routeState.imageStatus, contentType: "application/json",
             body: JSON.stringify(routeState.imageStatus === 200
               ? { status: "ok", data: routeState.imageData }
               : { status: "error", message: "图片生成失败", data: { code: "image_render_failed" } }),
           });
+          // 响应已交回浏览器，旧请求的完成信号。
+          routeState.imageFulfilled += 1;
         });
 
         /* 1) 多栏目顺序：每个成功栏目恰好一张，高度取自接口实际值 */
-        await selectProfile(frame, profileIds.first);
-        routeState.previewData = previewPayload(profileIds.first, "图片回归组合A" + stamp, firstRevision);
-        await runPreview(frame);
+        routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
+        await openTask(frame, taskIds.first);
         await runImage(frame);
         try {
           await frame.waitForFunction(
-            () => document.querySelectorAll("#profile-image-pages figure").length === 3,
+            () => document.querySelectorAll("#task-preview-image-pages figure").length === 3,
             null, { timeout: WAIT },
           );
         } catch (error) {
@@ -333,7 +613,7 @@ async function stateText(frame) {
             figures: await figures(frame),
             state: await stateText(frame),
             button: await frame.evaluate(() =>
-              document.getElementById("profile-image-button").textContent),
+              document.getElementById("task-preview-image-button").textContent),
           }));
         }
         const happy = await figures(frame);
@@ -362,7 +642,7 @@ async function stateText(frame) {
 
         /* 2) 逐张下载：文件名含 content_type 与序号，内容为 PNG */
         const downloadPromise = page.waitForEvent("download", { timeout: WAIT });
-        await frame.evaluate(() => document.querySelector("#profile-image-pages figure button").click());
+        await frame.evaluate(() => document.querySelector("#task-preview-image-pages figure button").click());
         const download = await downloadPromise;
         const filename = download.suggestedFilename();
         check(filename.includes("daily_news"), "文件名必须含 content_type: " + filename);
@@ -385,8 +665,8 @@ async function stateText(frame) {
         routeState.imageData.failed_sections = ["今日头条热榜"];
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 3
-            && document.querySelector('#profile-image-pages figure[data-status="failed"]') !== null,
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 3
+            && document.querySelector('#task-preview-image-pages figure[data-status="failed"]') !== null,
           null, { timeout: WAIT },
         );
         const partial = await figures(frame);
@@ -395,7 +675,8 @@ async function stateText(frame) {
         check(failedCard.hasImage === false, "失败栏目不得当作图片");
         check(failedCard.buttons.length === 0, "失败栏目不得有下载按钮");
         check(failedCard.captions.join("").includes("未生成"), "失败栏目要有明确提示");
-        check(failedCard.captions.join("").includes("section_too_tall"), "失败原因要展示");
+        check(failedCard.captions.join("").includes("图片高度超限"),
+          "失败原因要用可读中文展示");
         const partialState = await stateText(frame);
         check(partialState.state.includes("2 张栏目长图"), "部分失败仍按实际张数计数");
         check(partialState.state.includes("1 个栏目未生成"), "部分失败要在状态行提示");
@@ -404,7 +685,7 @@ async function stateText(frame) {
         routeState.imageStatus = 422;
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.getElementById("profile-image-hint")?.hidden === false,
+          () => document.getElementById("task-preview-image-hint")?.hidden === false,
           null, { timeout: WAIT },
         );
         const allFailed = await stateText(frame);
@@ -413,48 +694,126 @@ async function stateText(frame) {
         routeState.imageStatus = 200;
         routeState.imageData = imagesPayload(SECTIONS, []);
 
-        /* 4) 旧响应隔离：延迟旧请求，切换组合后旧响应不得覆盖 */
-        routeState.imageGate = deferred();
+        /*
+         * 4) 旧响应隔离：任务 A 的图片请求在途时，用 Playwright locator 点真实关闭按钮关预览，
+         *    再打开任务 B；B 自己的图片请求也在途时放行 A 的旧响应——
+         *    旧响应既不得写入结果区，也不得清掉任务 B 当前的“正在生成图片…”忙状态。
+         */
+        const staleGate = holdImageRequest();
+        const staleCallsBefore = routeState.imageCalls;
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.getElementById("profile-image-state").textContent.includes("正在生成图片"),
+          () => document.getElementById("task-preview-image-state").textContent.includes("正在生成图片"),
           null, { timeout: WAIT },
         );
-        await selectProfile(frame, profileIds.second);
-        routeState.previewData = previewPayload(profileIds.second, "图片回归组合B" + stamp, secondRevision);
-        await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 0,
-          null, { timeout: WAIT },
-        );
-        routeState.imageGate.resolve();
-        routeState.imageGate = null;
-        await page.waitForTimeout(400);
-        const afterStale = await figures(frame);
-        check(afterStale.length === 0, "切换组合后旧响应不得写入: " + JSON.stringify(afterStale));
-        check((await stateText(frame)).state === "", "旧响应不得恢复已清空的状态行");
+        await waitUntil(() => routeState.imageCalls > staleCallsBefore,
+          "旧图片请求未在关闭预览前发出");
+        check(routeState.imageCalls > staleCallsBefore, "关闭预览前旧图片请求必须已发出");
+        const staleBusy = await imageBusy(frame);
+        check(staleBusy.buttonDisabled === true && staleBusy.buttonText.includes("正在生成"),
+          "旧请求在途时图片按钮必须处于忙状态: " + JSON.stringify(staleBusy));
 
-        /* 切换回第一个组合后重新请求，必须拿到新结果（旧响应已失效） */
-        routeState.imageData = imagesPayload([SECTIONS[0]], []);
-        routeState.previewData = previewPayload("图片回归组合A" + stamp, [SECTIONS[0]]);
-        await selectProfile(frame, profileIds.first);
-        routeState.previewData = previewPayload(profileIds.first, "图片回归组合A" + stamp, firstRevision);
-        await runPreview(frame);
+        /* 走应用里真实的关闭控件（locator 点击，走可操作性检查）：关闭对话框并清空图片面板，此时旧请求仍在途 */
+        await closePreview(frame);
+        const closedPreview = await frame.evaluate(() => ({
+          dialogOpen: Boolean(document.getElementById("task-preview-dialog")?.open),
+          figures: document.querySelectorAll("#task-preview-image-pages figure").length,
+          images: document.querySelectorAll("#task-preview-image-pages img").length,
+          state: document.getElementById("task-preview-image-state").textContent,
+          stateHidden: document.getElementById("task-preview-image-state").hidden,
+          hintHidden: document.getElementById("task-preview-image-hint").hidden,
+          panel: document.querySelector(".preview-image-panel").innerText,
+        }));
+        check(closedPreview.dialogOpen === false, "关闭预览后对话框必须关闭");
+        check(closedPreview.figures === 0 && closedPreview.images === 0,
+          "关闭预览后图片区必须清空: " + JSON.stringify(closedPreview));
+        check(closedPreview.state === "" && closedPreview.stateHidden,
+          "关闭预览后图片状态行必须清空: " + JSON.stringify(closedPreview));
+        check(closedPreview.hintHidden && !closedPreview.panel.includes("正在生成图片"),
+          "关闭预览后不得残留生成中提示: " + JSON.stringify(closedPreview));
+
+        /* 关闭之后才通过任务卡片的预览按钮打开任务 B */
+        routeState.previewData = previewPayload(taskIds.second, "图片回归任务B" + stamp, secondRevision);
+        await openTask(frame, taskIds.second);
+        const reopenedPreview = await frame.evaluate(() => ({
+          dialogOpen: Boolean(document.getElementById("task-preview-dialog")?.open),
+          title: document.getElementById("task-preview-title").textContent,
+        }));
+        check(reopenedPreview.dialogOpen === true, "关闭后重新打开预览，对话框必须再次打开");
+        check(reopenedPreview.title.includes("图片回归任务B" + stamp),
+          "重新打开后必须预览任务 B: " + JSON.stringify(reopenedPreview));
+        await frame.waitForFunction(
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,
+          null, { timeout: WAIT },
+        );
+        /* 任务 B 自己的图片请求也进门闩：此刻的忙状态属于 B，不属于 A */
+        const freshGate = holdImageRequest();
+        const freshCallsBefore = routeState.imageCalls;
         await runImage(frame);
         await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 1,
+          () => document.getElementById("task-preview-image-state").textContent.includes("正在生成图片"),
+          null, { timeout: WAIT },
+        );
+        await waitUntil(() => routeState.imageCalls > freshCallsBefore, "任务 B 的图片请求未发出");
+        check(routeState.imageCalls > freshCallsBefore, "任务 B 的图片请求必须已发出");
+
+        /* 放行 A 的旧响应：页面必须把它当废响应丢掉，既不写结果也不清忙状态 */
+        await releaseImageRequest(frame, staleGate);
+        const afterStale = await figures(frame);
+        check(afterStale.length === 0, "切换任务后旧响应不得写入: " + JSON.stringify(afterStale));
+        const busyAfterStale = await imageBusy(frame);
+        check(busyAfterStale.state.includes("正在生成图片"),
+          "旧响应的 finally 不得清掉任务 B 的忙状态行: " + JSON.stringify(busyAfterStale));
+        check(busyAfterStale.buttonDisabled === true,
+          "旧响应结算后任务 B 的图片按钮必须仍然禁用: " + JSON.stringify(busyAfterStale));
+        const staleImagePanel = await frame.evaluate(() =>
+          document.querySelector(".preview-image-panel").innerText);
+        check(!staleImagePanel.includes("每日新闻") && !staleImagePanel.includes("Bilibili 热搜"),
+          "旧任务 A 的长图不得出现在任务 B 的预览里: " + staleImagePanel.slice(0, 300));
+
+        /* 放行 B 自己的请求：必须正常写入结果并结束忙状态 */
+        await releaseImageRequest(frame, freshGate);
+        await frame.waitForFunction(
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 3,
+          null, { timeout: WAIT },
+        );
+        const freshB = await figures(frame);
+        check(freshB.length === 3,
+          "任务 B 自己的响应必须正常写入: " + JSON.stringify(freshB.map((item) => item.status)));
+        const freshBState = await imageBusy(frame);
+        check(freshBState.state.includes("已生成 3 张栏目长图"),
+          "任务 B 完成后状态行必须按张计数: " + JSON.stringify(freshBState));
+        check(freshBState.buttonDisabled === false,
+          "任务 B 完成后图片按钮必须恢复可用: " + JSON.stringify(freshBState));
+
+        /* 切换回第一个任务后重新请求，必须拿到新结果（旧响应已失效） */
+        routeState.imageData = imagesPayload([SECTIONS[0]], []);
+        routeState.previewData = previewPayload(taskIds.first, "图片回归任务A" + stamp, firstRevision);
+        /* 对话框是模态的：真实用户要切换任务，必须先关掉当前预览。 */
+        await closePreview(frame);
+        check(!(await frame.evaluate(() => Boolean(document.getElementById("task-preview-dialog")?.open))),
+          "切换任务前必须能关闭上一个预览");
+        await openTask(frame, taskIds.first);
+        await runImage(frame);
+        await frame.waitForFunction(
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 1,
           null, { timeout: WAIT },
         );
         const fresh = await figures(frame);
         check(fresh.length === 1 && fresh[0].height === SECTIONS[0].height,
           "重新请求必须展示最新结果");
 
-        /* 5) 关闭/失效：切走组合后预览结果清空，不再展示旧图 */
-        await selectProfile(frame, profileIds.second);
+        /* 5) 关闭/失效：切走任务后预览结果清空，不再展示旧图 */
+        routeState.previewData = previewPayload(taskIds.second, "图片回归任务B" + stamp, secondRevision);
+        await closePreview(frame);
+        check(!(await frame.evaluate(() => Boolean(document.getElementById("task-preview-dialog")?.open))),
+          "切走任务前必须能关闭上一个预览");
+        await openTask(frame, taskIds.second);
         await frame.waitForFunction(
-          () => document.querySelectorAll("#profile-image-pages figure").length === 0,
+          () => document.querySelectorAll("#task-preview-image-pages figure").length === 0,
           null, { timeout: WAIT },
         );
-        check(true, "切换组合后图片区必须清空");
+        check(true, "切换任务后图片区必须清空");
 
         if (width === 390) {
           const layout = await page.evaluate(() => ({
@@ -478,22 +837,44 @@ async function stateText(frame) {
     check(external.length === 0, "不得请求外部地址: " + JSON.stringify(external));
     const upstreamHits = upstreamCalls.filter((url) => url.includes("127.0.0.1:9"));
     check(upstreamHits.length === 0, "不得请求真实上游: " + JSON.stringify(upstreamHits));
-    console.log("PROFILE IMAGE UI PASS", {
-      assertions, imageCalls: routeState.imageCalls,
-    });
+    passReport = {
+      assertions,
+      imageCalls: routeState.imageCalls,
+      imageFulfilled: routeState.imageFulfilled,
+      imageSettledInPage: routeState.imageSettledInPage,
+    };
+  } catch (error) {
+    workError = error;
   } finally {
-    await browser.close();
-    for (const [id, kind] of [
-      [profileIds.first, "profiles"], [profileIds.second, "profiles"], [siteId.value, "sites"],
-    ]) {
-      if (!id) continue;
-      const current = await api("GET", "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id);
-      if (current.status === 200) {
-        await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id + "/delete",
-          { expected_revision: current.body.data.revision });
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (error) {
+        cleanupProblems.push({ step: "关闭浏览器", error: String(error && error.message || error) });
       }
     }
+    try {
+      cleanupProblems = cleanupProblems.concat(await reapFixtures());
+    } catch (error) {
+      cleanupProblems.push({ step: "清理夹具", error: String(error && error.message || error) });
+    }
   }
+
+  // PASS 只在夹具删除、DELETE 响应与 404 复核全部通过之后打印。
+  if (workError) {
+    console.error(workError);
+    process.exitCode = 1;
+  }
+  if (cleanupProblems.length > 0) {
+    console.error("CLEANUP FAILED：夹具清理未通过（" + cleanupProblems.length + " 项）");
+    for (const problem of cleanupProblems) console.error("  - " + JSON.stringify(problem));
+    process.exitCode = 1;
+  }
+  if (workError || cleanupProblems.length > 0) return;
+  console.log("PROFILE IMAGE UI PASS", {
+    ...passReport,
+    fixturesCleaned: created.length,
+  });
 })().catch((error) => {
   console.error(error);
   process.exit(1);

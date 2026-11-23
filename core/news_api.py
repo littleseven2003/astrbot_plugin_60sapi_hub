@@ -18,6 +18,7 @@ from .news import (
     NewsTransportError,
 )
 from .news_service import NewsService
+from .source_url import source_display_text
 from .sites import (
     SiteDisabledError,
     SiteNotFoundError,
@@ -131,6 +132,11 @@ def snapshot_dict(snapshot: NewsSnapshot) -> dict[str, Any]:
         "site_id": snapshot.site_id,
         "site_name": snapshot.site_name,
         "endpoint": snapshot.endpoint,
+        "source_url": snapshot.source_url,
+        "source_kind": snapshot.source_kind,
+        "source_display": source_display_text(
+            snapshot.source_url, snapshot.source_kind,
+        ),
         "fetched_at": snapshot.fetched_at,
         "content_date": snapshot.content_date,
         "date_is_unknown": snapshot.date_is_unknown,

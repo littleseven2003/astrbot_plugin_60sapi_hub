@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 
 from core.delivery import DeliveryLimits, DeliveryService
 from core.delivery_api import DeliveryApi
-from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 from tests.test_delivery import FakeSender, StubApi, item
@@ -38,25 +37,21 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.db_path = Path(self.tmp.name) / "plugin.sqlite3"
         self.sites = SiteService(self.db_path)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
             name="站点", base_url="http://example.test/proxy",
-            enabled=True, timeout_seconds=5,
-        ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="组合", site_id=self.site.id, items=[item()],
+            timeout_seconds=5,
         ))
         self.sender = FakeSender()
         self.stub = StubApi()
         self.service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.stub, store=self.sites.store,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.stub, store=self.sites.store,
             sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=5, sender_timeout_seconds=5),
         )
         self.api = DeliveryApi(
-            delivery=self.service, tasks=self.tasks, profiles=self.profiles,
+            delivery=self.service, tasks=self.tasks,
             sites=self.sites, store=self.sites.store, inspector=Inspector(),
         )
 
@@ -71,32 +66,33 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self.sites = SiteService(self.db_path)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.sender = FakeSender()
         self.stub = StubApi()
         self.service = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=self.stub, store=self.sites.store,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=self.stub, store=self.sites.store,
             sender=self.sender,
             limits=DeliveryLimits(
                 max_execution_seconds=5, sender_timeout_seconds=5,
             ),
         )
         self.api = DeliveryApi(
-            delivery=self.service, tasks=self.tasks, profiles=self.profiles,
+            delivery=self.service, tasks=self.tasks,
             sites=self.sites, store=self.sites.store, inspector=Inspector(),
         )
 
     async def _task(self, umos):
         return await self.tasks.create_task(TaskCreate(
-            name="任务", profile_id=self.profile.id,
+            name="任务", items=[item()],
+            sites=[self.site.id],
             output_format="text", umos=umos,
         ))
 
     async def _image_task(self, umos):
         return await self.tasks.create_task(TaskCreate(
-            name="图片任务", profile_id=self.profile.id,
+            name="图片任务", items=[item()],
+            sites=[self.site.id],
             output_format="image", umos=umos,
         ))
 
@@ -144,6 +140,13 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         preview = await self.api.preview(task.id)
         self.assertEqual(preview.status_code, 200)
         self.assertTrue(preview.body["data"]["can_deliver"])
+        preview_data = preview.body["data"]
+        # 栏目已并入任务：预览投影用 task_id / plan_revision，不再有组合字段。
+        self.assertEqual(preview_data["task_id"], task.id)
+        self.assertEqual(preview_data["task_revision"], task.revision)
+        self.assertIn("plan_revision", preview_data)
+        self.assertNotIn("profile_id", preview_data)
+        self.assertNotIn("profile_name", preview_data)
         self.assertEqual(
             [t["target"] for t in preview.body["data"]["targets"]],
             ["123", "789"],
@@ -152,7 +155,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": execution_id,
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200, result.body)
@@ -181,11 +184,24 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         again = await self.api.execute(task.id, {
             "execution_id": execution_id,
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(again.status_code, 200)
         self.assertEqual(len(self.sender.calls), 2)
+
+    async def test_expected_profile_revision_no_longer_decides(self) -> None:
+        task = await self._task(["demo_qq_01:GroupMessage:123"])
+        result = await self.api.execute(task.id, {
+            "execution_id": "manual-legacy",
+            "expected_task_revision": task.revision,
+            "expected_profile_revision": 999,
+            "expected_site_revision": self.site.revision,
+        })
+        # 旧字段只校验格式：版本一致性由 expected_task_revision 覆盖。
+        self.assertEqual(result.status_code, 200, result.body)
+        self.assertEqual(result.body["data"]["status"], "success")
+        self.assertEqual(len(self.sender.calls), 1)
 
     async def test_partial_image_failure_projection(self) -> None:
         self.stub.image_sections[1]["status"] = "failed"
@@ -193,7 +209,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": "image-partial-1",
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200, result.body)
@@ -221,7 +237,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["failed_section_count"], 1)
         self.assertEqual(data["failed_sections"], [{
             "label": "知乎热榜",
-            "reason": "image_failed",
+            "reason": "image_limit_exceeded",
             "image_index": 2,
         }])
         target = data["targets"][0]
@@ -266,7 +282,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": "image-partial-multi",
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200, result.body)
@@ -320,7 +336,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": "image-partial-failed",
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200, result.body)
@@ -362,7 +378,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": "image-all-success",
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200, result.body)
@@ -400,7 +416,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
             result = await self.api.execute(task.id, {
                 "execution_id": "image-config-skip",
                 "expected_task_revision": task.revision,
-                "expected_profile_revision": self.profile.revision,
+                "expected_profile_revision": 1,
                 "expected_site_revision": self.site.revision,
             })
         self.assertEqual(result.status_code, 200, result.body)
@@ -438,7 +454,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
             result = await self.api.execute(task.id, {
                 "execution_id": "image-mixed-skip",
                 "expected_task_revision": task.revision,
-                "expected_profile_revision": self.profile.revision,
+                "expected_profile_revision": 1,
                 "expected_site_revision": self.site.revision,
             })
         self.assertEqual(result.status_code, 200, result.body)
@@ -473,7 +489,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         await self.api.execute(text_task.id, {
             "execution_id": "text-counts",
             "expected_task_revision": text_task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         text_detail = await self.api.get_execution("text-counts")
@@ -503,13 +519,14 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(skipped_breakdown(text_summary), (0, 0, 0))
 
         markdown_task = await self.tasks.create_task(TaskCreate(
-            name="Markdown 任务", profile_id=self.profile.id,
+            name="Markdown 任务", items=[item("daily_news")],
+            sites=[self.site.id],
             output_format="markdown", umos=["demo_qq_01:GroupMessage:123"],
         ))
         await self.api.execute(markdown_task.id, {
             "execution_id": "markdown-counts",
             "expected_task_revision": markdown_task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         markdown_detail = await self.api.get_execution("markdown-counts")
@@ -531,7 +548,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
             await self.api.execute(skipped_text.id, {
                 "execution_id": "text-config-skip",
                 "expected_task_revision": skipped_text.revision,
-                "expected_profile_revision": self.profile.revision,
+                "expected_profile_revision": 1,
                 "expected_site_revision": self.site.revision,
             })
         skipped_detail = await self.api.get_execution("text-config-skip")
@@ -565,7 +582,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         await self.api.execute(task.id, {
             "execution_id": "history-no-code",
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         await self.sites.store.set_delivery_page_status(
@@ -766,7 +783,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": "legacy-1",
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200, result.body)
@@ -826,7 +843,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": "stale-1",
             "expected_task_revision": task.revision + 1,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 409)
@@ -839,7 +856,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(empty.id, {
             "execution_id": "empty-1",
             "expected_task_revision": empty.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200)
@@ -867,7 +884,7 @@ class DeliveryApiTest(unittest.IsolatedAsyncioTestCase):
         result = await self.api.execute(task.id, {
             "execution_id": "history-1",
             "expected_task_revision": task.revision,
-            "expected_profile_revision": self.profile.revision,
+            "expected_profile_revision": 1,
             "expected_site_revision": self.site.revision,
         })
         self.assertEqual(result.status_code, 200)

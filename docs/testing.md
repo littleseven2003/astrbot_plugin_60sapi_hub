@@ -1,6 +1,6 @@
 # 测试与验收手册
 
-当前已实现站点/组合/任务配置、五类内容获取与缓存、图文预览、aiocqhttp 适配层、后台手动投递/执行记录，以及聊天帮助/当前会话任务列表。M4 后台范围已完成隔离验收，详见下文；真实账号群聊/私聊发送尚未验证，聊天图片查询已完成 PR #19 隔离验收；每日/每周计划配置、显式启停和单循环调度后端已实现，任务页启停与调度记录已通过 PR #23 隔离验收。测试使用临时 SQLite、虚构 UMO、本地模拟上游、真实宿主源码与假机器人；浏览器投递请求均拦截。
+当前任务直接配置栏目与候选站点，支持五类内容预览、图文输出、aiocqhttp 投递、执行记录、聊天查询和计划调度。下文记录各阶段的历史验收及其代码基线；旧版内容组合页面和接口已移除，这些历史结果不能替代当前任务流程的宿主验证。当前版本已用临时 SQLite、模拟上游、假发送器和模拟 bridge 做离线回归；真实 AstrBot Dashboard、真实上游和真实账号发送尚未完成本版验证。宿主浏览器脚本已迁移至任务栏目和预览接口，仍需在隔离宿主中运行并验证。
 
 ## M2 验收基线
 
@@ -237,14 +237,115 @@ node tests/browser/manual_delivery_query.js
 
 21 条以上 UI 翻页仍由服务端分页测试覆盖，未在浏览器脚本中构造；延迟旧响应测试使用完整 deferred 对象；从父页面捕获旧历史查询的 bridge `requestId`（匹配 `channel`、`api:get` 和 `executions/<id>` endpoint），释放前断言 iframe 尚未收到该 requestId 的 response（新 preview 响应不能替代），释放后等待路由完成及同一 requestId 的 response 到达，再断言新弹窗状态。成功和失败 response 分别覆盖；不使用固定 100ms 或仅父页面动画帧。静态语法检查不作为浏览器通过。
 
-## 当前检查
+## 任务栏目与预览的宿主验证
+
+2026-11-19 在隔离 AstrBot 4.29.1 和 4.29.4（Python 3.12.13、随包 Dashboard，真实登录与真实 plugin-view iframe bridge）实际运行。栏目预览脚本由真实插件后端读取本机模拟上游内容；图片竞态脚本才拦截预览与图片接口、使用浏览器响应夹具。两者都不连接真实账号、不发消息。功能基线 `534a286`，脚本点击时序修复 `be28ec1`，投递写库失败文案 `e7d7f43` 并按真实记录状态订正于 `9fd9b36`。
+
+- 任务栏目与预览：`tests/browser/task_items_real_ui.js` 在 1440 与 390px 下验证栏目新建/保存/重开/排序/条数、预览栏目顺序与条数标注、预览不改任务配置且零投递记录，34 项断言通过；两版均通过。
+- 图片预览：`tests/browser/profile_image_ui.js` 验证切换任务前必须关闭图片预览、旧响应隔离、按栏目长图生成与逐张下载，89 项断言通过。稳定性修复前，脚本在宿主 iframe 刚完成导航后立即点击，Chromium 偶发丢掉第一次合成点击（按钮收不到 `click`，非插件重渲染、非遮罩、非布局位移）；修复增加「两帧渲染 + 导航静默 300ms」等待与对话框打开断言（失败即报具体状态，不再挂到图片按钮超时），修复后 4.29.1 连续 15 次、4.29.4 连续 5 次通过。
+- 投递记录文案：`tests/browser/delivery_error_labels_ui.js` 29 项、`tests/browser/delivery_status_copy_ui.js` 69 项断言通过。发送器返回成功但写入投递记录失败时，执行级错误码 `record_after_send_failed` 显示「发送器返回成功，但写入投递记录失败，请核对实际收件」；该场景执行状态为 unknown，目标与图片仍是尚未写回的 `sending`（显示「发送中」），夹具按真实记录状态断言，`tests/test_delivery.py` 同一场景校验 `error_code`、目标与页面状态为 `sending`。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 736 项，712 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过宿主集成测试）；`node --check` 与 `git diff --check` 通过。
+- 未验证：真实平台账号收件与回执、真实公开上游、真实平台定时投递、其他宿主版本；边界同 M4/M5 各节。
+
+## 可配置图片样式
+
+2026-11-19 完成本轮功能验证，功能与测试基线 `0710e0e`。任务可保存图片样式（`default` / `mist` / `floral` / `bold_studio`），样式随预览快照冻结，后台预览、聊天长图、手动与定时图片投递共用同一次渲染。
+
+- 注册表与预设：`core/image_styles/` 提供不可变定义与稳定顺序；新增款式只需登记定义，渲染器共用中文测字、换行、基线、内容顺序、来源脱敏与资源限制。四套预设的可读文字与实际底色均达到 4.5:1（本机核算最低 4.63 / 5.10 / 4.65 / 4.83）。
+- 渲染：4 套 × 5 类内容实际渲染 900px 长图全部成功，序号颜色取自样式、页眉/页脚底色与方形序号按样式绘制；空栏目出空状态图，失败栏目保持失败状态。默认款与 313ac13 相比只调整次要文字（`#6B717B`）与热度（`#6F7580`）以提升对比度，序号统一 `#6B7280`。
+- 存储与接口：schema v17 新增 `push_tasks.image_style`，v16 旧库升级后任务、栏目、白名单、计划、启用状态、revision 与执行历史保留，旧行默认 `default`；新建省略字段为默认，更新省略保留原值，显式 `null`、非字符串或未知 ID 返回字段级 400，历史未知值安全回退默认。任务列表附带 `image_styles` 与 `default_image_style`，任务与预览响应返回有效样式。
+- 快照：样式写入图片快照数据，生成图片前核对方案版本与样式；改样式后旧快照返回 409 `snapshot_stale`，需要重新预览。渲染完成后再复核一次方案、样式与站点版本：渲染期间保存了新样式或栏目，手里这张旧图不再按 200 返回。
+- 后台：任务表单「输出与计划」提供带可见标签的图片样式下拉，回填已保存值，改选计入未保存判定并立即作废在途预览；改选未保存值时预览按钮置灰，改回已保存值即恢复。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 760 项，736 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过）；`node --check` 与 `git diff --check` 通过。
+- 链路样式：`tests/test_image_style_chain.py` 用模拟上游与假发送器、真实渲染器分别跑聊天长图、手动投递与定时投递，断言最终 PNG 页眉底色来自任务所选样式（粗体工作室 / 花间 / 雾笺）。
+- 宿主回归：`tests/browser/task_image_style_ui.js` 在 4.29.1 与 4.29.4 通过，新增「改选置灰、改回恢复」3 项断言；既有 `task_items_real_ui` 34 项、`profile_image_ui` 89 项、`delivery_error_labels_ui` 29 项、`delivery_status_copy_ui` 69 项继续通过。4.29.4 有一次 `task_items_real_ui` 在 34 项断言后的 390px 收尾阶段等待对话框关闭超时，复跑通过，属既有的宿主点击/会话抖动。
+- 未验证：真实平台账号收件与回执、真实公开上游、真实平台定时投递；参考模板的视觉细节未逐像素复刻，样式以配色、层级、页眉页脚和序号气质适配现有排版。
+
+## 手测反馈四项修复
+
+2026-11-19 按用户手测反馈修复四项，基线 `601baac`。全部本地提交、使用本机模拟上游与假发送器，零真实发送。
+
+- 长图超限（`b9b8a9a`）：50 条、每条约 220 字摘要的知乎数据在四款样式下原预计 11,406–12,116px，超过 8000px 上限而整栏失败。渲染器现在先按完整摘要排版，高度或单图 2 MiB 超限时按实测字宽把摘要压到最多两行、必要时一行并加省略号；标题、顺序、条数与栏目数不变，全文仍在文字/Markdown 输出。缩略成功时图片结果带 `note=部分摘要已缩略`，页面说明显示该提示。仍无法压到上限时保留 `section_too_tall`/`section_too_large` 明确失败。实测同批数据四款高度 7,506–7,816px。
+- 失败原因可行动（`b9b8a9a`）：投递解码保留渲染器的逐栏目失败码（如 `section_too_tall`），执行记录的失败栏目按「知乎热榜 · 图片高度超限」展示；历史只有 `image_failed` 的记录仍显示通用文案。
+- 候选站点布局（`db79bc7`）：补齐 `.task-site-*` 样式，选择器与「添加」同一行，列表去原生圆点、序号独立方块、名称可换行、操作组右对齐；390px 下操作组整体下移、按钮点击高度至少 44px。`tests/browser/task_sites_ui.js` 35 项断言覆盖桌面与 390px 布局、空列表、首尾禁用、增删与重排。
+- 热度排版（`9ec6ded`）：原先每条按 124px 单独判断热度是否下移，7/8 位热度混排时行高在 59px 与 89px 间跳变。现在按整栏测量选同一布局：常规值用同宽右对齐热度列，存在超长热度时整栏统一改为单独一行，缺值留空。`tests/test_profile_heat_layout.py` 覆盖 6/7 位混排与短热度内联。
+- 草稿直接测试与预览（`6f5c4d8`、`16e3b9c`）：新增 `task-drafts/capability-test`、`task-drafts/preview`、`task-drafts/image`，只接受栏目与条数、有序候选站点 ID、输出格式、图片样式与可选名称；站点地址和凭据在服务端按 ID 读取。草稿预览用独立临时内容与绑定登录身份、草稿用途、站点版本的图片快照，出图前后复核站点配置；草稿快照与已保存任务入口互相拒绝（404）。前端测试与预览都改用当前表单草稿，未保存修改不再阻断；编辑、保存、关闭或切任务时按请求代次作废旧结果。任务、调度与投递记录保持不变。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 773 项，749 项通过、24 项跳过（无宿主 `astrbot` 包时按约定跳过）；`node --check` 与 `git diff --check` 通过。
+- 宿主回归：AstrBot 4.29.1 与 4.29.4 隔离 Dashboard 均从最终 ZIP 上传安装。`tests/browser/task_draft_real_ui.js` 两版各 24 项通过（新建与编辑草稿的能力测试、预览、真实出图、草稿不落库、已保存任务 revision 不变、候选站点桌面与 390px 布局）；`task_image_style_ui`、`profile_image_ui`、`task_items_real_ui` 两版继续通过。4.29.1 有一次 `task_items_real_ui` 在 34 项断言后清理阶段超时，复跑通过，属既有宿主点击/会话抖动。
+- 未验证：真实公开上游、真实平台账号收件与真实平台定时投递；草稿能力测试复用内容缓存，结论是缓存时效内的判断。
+
+## 手测反馈第二轮修复
+
+2026-11-19 针对 `865ecf8` 复核退回的三项继续修复，仍用本机模拟上游、假发送器与隔离宿主，零真实发送。
+
+- 草稿取数隔离：`ContentService.preview_cached(..., use_cache=False)` 直接取数，既不读也不写生产缓存；草稿预览与草稿能力测试都走该路径，返回栏目的 `cache` 标为 `{"used": false}`。`normalize_draft` 统一限制候选 1–5 个并拒绝重复项（不再静默去重），与能力测试只查前五个保持一致。`tests/test_task_draft.py` 验证：已保存任务先缓存内容 A，草稿预览拿到 B 后，已保存任务预览仍读到 A 且没有新的上游请求；草稿能力测试后已保存预览需要真实取数并重新缓存。另覆盖重复站点与 6 个候选的字段级 400。
+- 热度行高：整栏统一布局后，缺热度条目在单独一行模式占同样的热度行，并排模式也为缺值条目预留同宽首行热度列；极长热度固定单行并按实测字宽加省略号，不再换行撑高。50 条 8 位/7 位/缺值/超长描述/超大数字混排，四款样式实渲高度 5,920–6,122px，同栏相邻条目 117–118px（仅末条与分隔线的 1px 差）。`tests/test_profile_heat_layout.py` 与 `test_profile_image.py` 覆盖。
+- 390px 候选行：移动端不再把选择器与「添加」各设 100%，改回同行（选择器占剩余宽度、按钮固定），列表操作组仍整体下移、按钮 ≥44px。`tests/browser/task_sites_ui.js` 36 项断言含窄屏同行与无横向滚动；`task_draft_real_ui.js` 在真实宿主 390px 复核。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 775 项，751 项通过、24 项跳过；`node --check` 与 `git diff --check` 通过。
+- 宿主回归：AstrBot 4.29.1 与 4.29.4 从最终 ZIP 上传安装后，`task_draft_real_ui.js` 各 25 项通过；`task_sites_ui.js`（桩 bridge）36 项、`task_image_style_ui.js`、`profile_image_ui.js`、`task_items_real_ui.js` 继续通过。
+- 未验证：真实公开上游、真实账号收件与真实平台定时投递。
+
+## 手测反馈第三轮修复
+
+2026-11-19 针对 `05fc441` 复核退回的三项继续修复，仍使用本机模拟上游、假发送器与两版隔离宿主，零真实发送。
+
+- 超长热度截断：省略逻辑改为二分查找保留长度（并带少量字偶距兜底），不再逐字重测；截断循环响应渲染取消。约 3,200 字热度描述的每日新闻/知乎样例从触发 20 秒超时、线程约 33 秒才释放，降到单次渲染毫秒级（测试断言 <2 秒，实测 0.1 秒量级），同批正常栏目照常出图。`tests/test_profile_image.py` 覆盖耗时上限与取消路径。
+- 无热度栏目：整栏都没有热度时恢复原有整行标题宽度，不再预留空白热度列；雾笺单条无热度新闻恢复 320px（修复前 358px）。有热度与缺值混排时仍统一占位、行高一致。
+- 草稿快照隔离：快照存储按用途区分 `task` 与 `draft`；草稿写入只能淘汰草稿快照，任务快照不会被草稿挤出。总量与字节上限仍由同一个存储约束；任务占满存储时草稿快照写入返回空（预览内容仍可用，只是暂不直接出图）。`tests/test_image_snapshots.py` 覆盖 40 次草稿写入后任务快照仍在、任务占满时拒绝草稿；`tests/test_task_draft.py` 用另一身份连续 40 次草稿预览后，原任务快照仍能成功出图。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 780 项，756 项通过、24 项跳过；`node --check` 与 `git diff --check` 通过。
+- 宿主回归：AstrBot 4.29.1 与 4.29.4 从最终 ZIP 上传安装后，`task_draft_real_ui.js` 各 25 项通过；`task_image_style_ui.js`、`profile_image_ui.js`、`task_items_real_ui.js` 两版继续通过。4.29.1 有一次首个登录页跳转等待超时、两版各有一次 `task_items_real_ui` 在 34 项断言后清理阶段超时，复跑均通过，属既有宿主登录/点击抖动。
+- 未验证：真实公开上游、真实账号收件与真实平台定时投递。
+
+## 长图紧凑排版与计划时间控件
+
+2026-11-20 针对用户手测的两项优化在本机隔离环境验证，使用模拟上游与假 aiocqhttp 平台，零真实发送。
+
+- 无摘要栏目紧凑排版：排版改按「本栏是否有摘要」决定。每日新闻、Bilibili、抖音、今日头条没有摘要，热度与标题同行；知乎等带摘要栏目保留摘要展开。无摘要栏目按本栏实测热度宽度分配共用列，上限 180px 且不超过正文宽度四分之一。
+- 实渲：四套样式各渲染 50 条抖音样例（20 条 8 位、20 条 7 位、1 条缺热度、6 条 8 位、1 条超长、2 条 9 位混排），全部条目各占一行；图高 default 3106px、mist 3211px、floral 3209px、bold_studio 3216px，相邻条目间距 56/57px 或 58/59px，仅最后一条少一条分隔线。七八位热度完整显示，超长热度在图内单行省略；文字与 Markdown 保留原值。复现方式：按上面同样的样例构成在四款样式下各渲染一次，核对图高、行距与缺热度占位；样张不入库。知乎带摘要样例仍为标题 + 摘要 + 热度展开，未回退。
+- 单元回归：`tests/test_profile_heat_layout.py` 覆盖无摘要单行、列宽上限、带摘要保留展开、缺热度占位、长标题只挤首行、整栏无热度用整行宽度；`tests/test_profile_image.py` 的旧「长热度下移」断言按新语义更新为无摘要栏目内联省略。
+- 首行标点重叠修复：标题 `202611201234567890123456789012345678？？？` 与八位热度 `87654321` 在四款下首行标题的几何宽度与真实字形墨迹都停在热度字形左侧，续行以数字或文字起头，标题拼回与原文一致；普通短标题仍单行、行距不变。复现方式：用该标题与八位热度在四款样式下各渲染一次，比对标点字形右侧与热度字形左侧的墨迹边界；样张不入库。
+- 计划时间控件：每日/每周时间改为小时、分钟两个原生下拉（静态 `00–23` / `00–59`，默认 08:30，提交拼成 `HH:mm`）；时区改为预置下拉（`Asia/Shanghai` 置顶，显示 `IANA · 中文名`），旧任务的非预置合法时区以临时「已保存」选项原值回填，切到其他任务即移除。服务端仍用 `ZoneInfo` 校验，省略 `schedule` 的编辑保留原计划。
+- 宿主回归：AstrBot 4.29.4 与 4.29.1 均从最终 ZIP 上传安装，隔离 Dashboard 实际登录、真实 plugin-view bridge 与假 aiocqhttp 平台。`tests/browser/time_timezone_ui.js` 两版通过：真实键盘 typeahead 选到 23:59 + `Asia/Tokyo` 并保存读回、编辑后键盘回到 00:00、改后放弃保留原值、`Europe/Paris` 旧时区以「已保存」回填且未改计划时保存不写 `schedule`、切到上海任务后临时选项消失、无计划隐藏并禁用、390px 小时/分钟同行且各 44px、无横向溢出。`task_schedule_ui.js`、`interval_schedule_ui.js`、`weekly_schedule_ui.js`、`cron_schedule_ui.js`、`task_form_dirty_ui.js`（226 项断言）两版通过，覆盖 00:00/23:59、间隔、Cron、revision 冲突与脏表单草稿预览。
+- 测试口径修订：`task_form_dirty_ui.js` 原「未保存即置灰、脏表单不发预览」的断言早于草稿预览功能，按现行为改为「未保存仍可预览/测试、走 `task-drafts/preview`、在途旧响应作废」，不再断言阻塞提示。
+- 自动化：`python -W always::ResourceWarning -m unittest discover -s tests -q` 共运行 784 项，760 项通过、24 项跳过；`node --check` 与 `git diff --check` 通过。
+- 未验证：真实公开上游、真实账号收件与真实平台定时投递；纯键盘在 macOS 原生下拉中依赖首个字符 typeahead（重复字符会循环匹配），已在用例中固定该行为。
+
+## 侧栏入口与插件生命周期
+
+2026-11-20 在 AstrBot 4.29.4 与 4.29.1 的隔离宿主验证 Dashboard 左侧栏插件入口，零真实发送。
+
+- 注册方式：宿主从插件 `views/<page>/index.html` 自动发现页面；侧栏标题优先读插件本地化 `views.<page>.title`，再回退插件显示名。插件 `.astrbot-plugin/i18n/zh-CN.json`、`en-US.json` 与 `metadata.yaml` 的 `display_name` 均设为 `60sAPI Hub`，原「站点管理」标题改为该名称。
+- 入口：两版登录后侧栏各只有一个「60sAPI Hub」入口，图标 `mdi-puzzle`，路径 `#/plugin-view/astrbot_plugin_60sapi_hub/sites`；点击后路径正确、入口为选中态，iframe 加载管理页并可切换到「推送任务」。复现方式：在两版隔离宿主分别登录后读取侧栏入口计数与路径，入口、点击、鉴权与启停生命周期由 `tests/browser/sidebar_entry_ui.js` 覆盖。
+- 鉴权：未登录访问深层链接被重定向到 `#/auth/login`，未带令牌访问 `/api/v1/plugins/astrbot_plugin_60sapi_hub/pages` 返回 401。
+- 英文回退：把 `astrbot-locale` 设为 `en-US` 后侧栏仍显示 `60sAPI Hub`（`en-US.json` 与显示名一致）。
+- 生命周期要区分两条操作路径（两版一致）：直接在 Dashboard 插件管理页点启停开关时，侧栏入口即时消失/恢复，无需刷新；通过独立 API 启停（`tests/browser/sidebar_entry_ui.js` 的路径）时，已打开页面保持旧状态：停用后 `offBeforeReload=1`、刷新后 `offAfterReload=0`；重新启用后 `onBeforeReload=0`、刷新后 `onAfterReload=1`。卸载后刷新为 0；从最终 ZIP 重装后只有 1 个入口（`reinstalled=1`）。
+- 单元：`tests/test_plugin_identity.py` 校验 `metadata.yaml` 显示名、`views/sites/index.html` 入口存在、中英文 `metadata.display_name` 与 `views.sites.title` 一致。
+- 自动化：`tests/browser/sidebar_entry_ui.js` 两版通过，覆盖上述入口、点击、鉴权、英文回退与停用/启用/卸载/重装。
+- 未验证：真实部署环境的反向代理与多用户权限差异。
+
+## 站点启用移除、多站拼合与新样式
+
+2026-11-20 基于 `100964d` 完成三项优化，使用本机模拟上游与假 aiocqhttp 平台，零真实发送。
+
+- 站点启用移除：模型/存储/API/取数/任务/投递/聊天/UI 全面清理站点级过滤；旧列保留，旧请求 `enabled: true` 兼容、`false` 返回 400。`tests/test_schema_v18_pause.py` 覆盖 v17→v18 只暂停引用历史停用站点的任务、保留计划/白名单/历史、重新启用后二次打开不再暂停；独立旧库样本由审查员核对通过。
+- 多站拼合：新增 `core/site_assembly.py` 纯判定；`tests/test_site_assembly.py` 覆盖单站优先、逐栏取最靠前候选、同栏整表不拼条数、缺栏短报；`tests/test_multi_site_e2e.py` 用两站（A 只给新闻、B 只给知乎）验证预览 `source_mode=multi`、能力测试 `需要多站点拼合`、投递发送 A+B 内容且执行记录 `site_name=多站点`、旧确认格式 409、拼合快照可出 2 张图。
+- 复核退回修复：`tests/test_multi_site_review_fixes.py` 覆盖 21 项——要求条数不足时只发 1 条异常提示且 `content_status=failed`；站点预算内单栏超时保留已成功栏目（A 新闻 + B 热榜拼合 `complete`）；预览注入 409 时零发送且执行 `config_changed`；草稿/已保存预览在 A 取完、B 取数期间改 A 时返回 409 `preview_revision_changed`；内容准备完成后改来源站点时发送前拒绝、执行 `config_changed`；执行详情返回逐栏 `content_sources`；历史 6 候选能力测试检查全部 6 个；新建/改选 6 候选拒绝、未改动的 6 候选可保存；草稿测试无任务上下文时 6 候选拒绝，带历史任务 ID 且列表一致时完整检查 6 个、改动顺序仍拒绝；探测返回后改站点时预览 409、投递零发送；预览注入 503 `storage_unavailable` 时零发送且执行失败；单站供两栏的执行详情 `source_mode=single`、`source_count=1`；栏目取数内部注入 `SiteStorageError` 时预览 503、投递零发送；来源复核和快照校验各只调用一次多站 revision 查询（覆盖预览返回、渲染后与发送前）；发送校验用同一次任务配置快照覆盖任务版本、白名单和来源版本；候选读取注入存储故障时中止且零发送；确认后、取数前替换候选版本时投递 409 `confirmation_stale`、零发送，同执行 ID 仍回读；首栏 50 条、次栏固定 1.85 秒的正常投递保持完整；确认页读取/提交遇到 `SiteStorageError` 返回 503、零发送。schema v19 为执行记录补 `content_sources_json`，历史行保持 NULL。
+- 真实宿主：AstrBot 4.29.4 / 4.29.1 从最终 ZIP 安装并迁移到 schema v19。本机模拟上游（两站点）在宿主实测：能力测试 `multi`、预览 `complete`（文字同时含 A/B）、出图 2 张、手动投递到假账号成功且记录「多站点」、无 `confirmation_version` 的旧确认返回 409 `confirmation_stale`。
+- 新样式：`morning` / `midnight` / `beacon` 三款加入注册表，七款可读文字对比度均 ≥ 4.5:1（新三款主要文字 ≥ 6.1:1），`tests/test_image_styles.py` 校验字号/层级/对比度/preview token，并对七款样式逐类内容实际渲染断言像素；样张不入库，可用该测试的样例数据在本地重渲复核。样式下拉旁示例卡在 4.29.4/4.29.1 通过 `tests/browser/task_image_style_ui.js`；390px 实测卡移到下方、无横向溢出（同一脚本在 1440px 与 390px 各跑一次即可复核）。
+- 回归：`task_sites_ui` 36 项、`site_list_ui`、`task_items_ui` 70 项、`profile_site_decoupling_ui` 18 项；相关脚本按移除启用和草稿预览语义更新断言。
+- 自动化：`python -m unittest discover -s tests -q` 共运行 819 项，795 项通过、24 项跳过；`task_sites_ui` 38 项、`delivery_error_labels_ui` 30 项、`task_form_dirty_ui` 226 项 PASS；`node --check` 与 `git diff --check` 通过。
+- 未验证：真实公开上游、真实账号收件与真实平台定时投递；真实部署的反向代理与多用户权限差异。
+
+## 历史检查清单
+
+以下清单记录旧版本的检查方法，其中组合管理相关路径与页面不适用于当前任务内栏目模型。
 
 - 服务级：在仓库根目录安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`，覆盖合法/非法站点地址、控制字符、名称/超时/凭据边界、CRUD 与重开持久化、revision 冲突、凭据保留/替换/清除、写入回滚和 schema 版本。
 - 接口回归：`tests/test_site_api.py` 覆盖站点列表、新增、读取、编辑、删除，非法请求体、字段校验、未找到、revision 冲突且不覆盖、删除冲突、凭据保留/替换/清除与脱敏、存储不可用和未预期错误的通用响应。接口业务测试不替代真实宿主鉴权和页面验收。
 - 取消回归：用独立 SQLite 连接持有写锁，等待写操作已排队后取消任务，再释放锁；覆盖新增、编辑、删除取消后的下一次正常写入和重开数据库，确认未提交修改不落盘。不要用固定 sleep 判断写操作已进入等待。
 - 资源泄漏：用 `python -W always::ResourceWarning -m unittest discover -s tests` 运行，日志不应出现 `unclosed database`；需要定位分配点时再加 `-X tracemalloc=4`，警告中 `Object allocated at` 的末帧才是连接创建位置，通常不等于打印警告的测试。测试夹具读写 SQLite 一律用 `contextlib.closing` 包裹连接：`with sqlite3.connect(...)` 只提交或回滚事务，不关闭连接；需要提交语义时写 `with closing(sqlite3.connect(path)) as connection, connection:`。
 - 宿主级：在 AstrBot v4.29.1 中加载、停用、启用、重载；确认 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3` 存在、停用后数据库句柄关闭、重载后数据保留且插件只有一份注册。扩展 API 未登录返回 401；停用后旧处理器返回 503；启用/重载后恢复读写。
-- 后台页面：在真实 AstrBot Dashboard 登录后打开“站点管理”，新增两个虚构站点（内网地址和反向代理前缀），编辑名称/超时/启用状态，保留/替换/清除凭据，制造过期 revision 并确认冲突不覆盖，删除站点，刷新页面，停用/启用/重载，检查窄屏无横向溢出。页面只显示 `has_bearer_token`，不显示凭据原文。
+- 后台页面：在真实 AstrBot Dashboard 登录后从左侧栏「60sAPI Hub」进入，并在插件内左侧导航选择“站点管理”，新增两个虚构站点（内网地址和反向代理前缀），编辑名称/超时/启用状态，保留/替换/清除凭据，制造过期 revision 并确认冲突不覆盖，删除站点，刷新页面，停用/启用/重载，检查窄屏无横向溢出。页面只显示 `has_bearer_token`，不显示凭据原文。
 - 写操作未确认：在真实宿主浏览器中把新增/编辑/删除请求转发到服务器后丢弃响应，确认页面进入“结果未确认”、保存/删除按钮禁用且不能直接重提；重新读取成功显示最新列表状态，读取失败继续保持未确认；请求未到达服务器时重新读取后可明确重新提交。普通字段校验、正常保存和 revision 冲突仍单独验证。
 - 每日新闻：`tests/test_news.py` 覆盖 URL/反代/IPv6、字符串/对象条目、顺序与条数、空内容、缺失/非法/旧日期、业务/结构错误、站点启用/禁用/凭据隐藏和服务层 URL/令牌/超时传递；`tests/test_news_http.py` 覆盖重试、超时、大小、重定向、取消、关闭和并发，并用事件同步覆盖在途、排队、重试等待中的关闭、关闭幂等、重新打开和无关任务不被取消；`tests/test_news_api.py` 覆盖错误映射、凭据不外泄，以及上游 HTTP/业务错误正文回显虚构 Bearer token 时后台响应不包含凭据。
 - 每日新闻浏览器：真实宿主 + 本地模拟上游，选择已启用站点主动获取，覆盖正常、合法空内容、旧内容、缺失日期、HTML 文本安全渲染、HTTP 错误、超时和重复触发保护；打开页面、保存站点和启动插件不自动请求；停用/启用/重载后恢复，未登录预览 API 返回 401，窄屏无横向溢出。
@@ -302,10 +403,10 @@ AstrBot 4.29.1 的视图 bridge 只把失败转换为带一条 `message` 的 `Er
 
 ## 图片：每栏目一张长图
 
-以下为当前模型。上文 M3、M4 基线小节描述的是当时的固定尺寸分页，保留为历史记录，不代表当前行为。
+以下保留长图模型的历史验证说明。任务内栏目模型仍使用每栏目一张长图；旧组合图片接口已移除，当前任务预览接口参见配置说明。
 
 - 一个栏目一张独立长图，高度随内容增长；多栏目按组合配置顺序返回多张，不再有固定高度分页，也不再把整份组合切成固定页。
-- `POST /<插件名>/profiles/<id>/image` 成功时 `data` 为 `{"images": [...], "failed_sections": [...], "snapshot_id": "..."}`：`images` 每条对应一个栏目，含 `index`、`content_type`、`label`、`status`（`success` / `empty` / `failed`）、`width`、`height`，出图时附 `png_base64`，失败时附安全 `error`；不再返回 `pages` / `page_count`。`empty` 是合法空栏目，仍有图并展示空状态；`failed` 没有图片字节。
+- 旧版 `POST /<插件名>/profiles/<id>/image` 成功时 `data` 为 `{"images": [...], "failed_sections": [...], "snapshot_id": "..."}`：`images` 每条对应一个栏目，含 `index`、`content_type`、`label`、`status`（`success` / `empty` / `failed`）、`width`、`height`，出图时附 `png_base64`，失败时附安全 `error`；不再返回 `pages` / `page_count`。`empty` 是合法空栏目，仍有图并展示空状态；`failed` 没有图片字节。
 - 全部栏目失败返回 422 `image_render_failed`，响应仍带 `images` 与 `failed_sections`，但不含 `png_base64`；文字/Markdown 保持可用。
 - 资源上限：宽度固定 900px，单张最大高度 8000px、单张 PNG 最大 2 MiB、一次渲染合计最多 8 MiB、栏目最多 5 个、单栏文本最多 200,000 字符。逐栏失败码：`section_too_long` / `section_too_tall` / `section_too_large`；累计字节将超 8 MiB 时，触发超限的栏目及其后各栏目记 `total_bytes_exceeded`；预览阶段已失败的栏目记 `section_failed`（或透传其安全错误码）；渲染器返回成功却无 PNG 记 `render_failed`。栏目数超过 5 个整体 422 `image_limit_exceeded`（接口侧另有同值 8 MiB 合计兜底）；全部栏目无图整体 422 `image_render_failed`。都不截断、不拆图、不伪造成功。
 - 执行记录投影字段为 `image_index`（第几张栏目图）与 `image_count`（共几张），数据库表名仍为 `delivery_pages`。投递按栏目顺序逐张发送；某栏目未出图时该槽位记 `skipped` + `section_image_failed`，`unknown` 仍不自动重发。
@@ -437,6 +538,21 @@ node tests/browser/site_connection_ui.js
 - 资源清理：`finally` 中按最新 revision 删除本轮创建的临时站点，再关闭浏览器和内置上游，断言失败也会执行。被强制中断（Ctrl-C、CI 取消）时需手动清理残留临时站点，或改用临时数据库重跑后再开始下一轮。
 - 失败判据：断言失败以非零退出码结束并打印错误；`node --check` 只验证语法，不能当作浏览器通过。
 
+## 来源地址展示验证
+
+2026-11-11 本轮改动，分支 `feat/source-url`。范围为：五种内容快照记录来源信息，文字、Markdown、栏目长图和后台预览按栏目展示，并处理旧快照兼容；不包含公开实例、测速、多站点切换或界面重排。
+
+- 自动化：`PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -v` 共 583 项，当前环境 560 项通过、23 项跳过；二者可用时来源类型页面测试实际执行，跳过项为 22（其余跳过仍需 AstrBot 宿主、平台或真实上游环境）。`tests/test_source_url.py` 共 13 项，其中新增 `SourceDomainTest` 7 项覆盖公开只显示域名、自建隐藏、模拟秘密路径、超长基础地址、特殊路径和旧快照；并扩充 `test_sites`、`test_site_api`、`test_content_api`、`test_content_service`、`test_profile_api`、`test_profile_render`、`test_profile_image`。
+- 覆盖范围：带路径前缀的五类 endpoint 各记录自己的 URL；多栏目各自 URL 不同；获取后修改站点地址，已有快照和文字/Markdown 输出仍为原域名，新获取才用新地址；旧快照/旧缓存缺少字段时 API 为 `null`、展示为“来源不可用”，不用站点名称或 endpoint 补造；来源展示不包含用户信息、查询串、fragment、路径或 Bearer 凭据；后台快照地址可能保留路径，路径本身也可能包含秘密；文字、Markdown、图片页脚、聊天和后台栏目投影使用同一份快照值。对外展示只保留域名：路径中的模拟秘密、超长基础地址（拼接 endpoint 后超过 2048 字符）和特殊路径都只能看到域名，图片页脚不因路径很长而增高；IPv6 保留方括号、端口不展示。
+- 来源类型：schema v12 → v13 迁移为无类型旧站点补 `source_kind='public'` 且保留原字段；已有来源类型的站点重开后保留原值；站点 API 支持创建/编辑往返、非法值 400、编辑省略字段保持原值；公开站点在文字、Markdown、图片页脚、聊天和后台栏目投影中只显示域名，自建站点只显示“自建服务”且输出中不出现内网地址；未知类型有地址时按自建隐藏、无地址时显示“来源不可用”。后台受鉴权接口返回快照中的 `source_url`，与对外展示分开；来源地址按 HTTP 客户端规则规范化，无法安全表达时来源不可用。
+- 实际渲染：Python + Pillow + 宿主中文字体实际生成 900px 宽 PNG。公开站点的超长路径来源在页脚只显示域名 `api.example.com`，路径与模拟秘密均不出现；自建站点显示“数据来源：自建服务”且不出现内网地址；无来源栏目显示“数据来源：来源不可用”；空栏目仍正常出图。
+- 快照与长域名：`test_source_snapshot.py` 使用模拟上游核对五种接口的长地址快照和后台投影，另覆盖端口、IPv6、路径编码及来源展示；图片测试检查长域名换行、左右栏间距和路径不进入页脚。聊天来源测试经 `ChatCommandService.handle` 使用模拟上游和真实图片渲染器验证文字、图片；图片来源使用捕获的页脚文本断言，未做 OCR 或真实平台发送。
+- 站点默认值：服务与临时数据库测试覆盖新建默认公开、v12 站点迁移和已保存类型的重开保留。`tests/test_site_source_kind_page.py` 实际探测 node、`playwright-core` 和 Chromium：可用 `NODE_PATH` 指向模块目录，并用 `ASTRBOT_TEST_CHROME_PATH` 或 `CHROME_PATH` 指定浏览器；缺依赖按原因跳过，页面脚本失败则测试失败。`tests/browser/site_source_kind_ui.js` 在 Chromium 中加载真实页面和桩 bridge，共 26 项断言，重复提交同一地址时只读取本次操作之后的新请求。它覆盖新建默认公开、已知类型往返、缺失或未知类型不写回，以及明确选择后提示消失并提交所选类型。这不是真实 AstrBot 后台或数据库往返。
+- 组合预览竞态：`tests/test_profile_preview_revision.py` 用临时数据库、`httpx.MockTransport` 和同步屏障覆盖预览中途修改站点来源类型与地址。断言一次 200 的所有栏目 `source_kind` 唯一且为最终值、文字/Markdown 不含旧域名或“自建服务”、图片快照 `site_revision` 与最终站点一致且随后生成 3 张成功图片；持续变更时返回 409 `preview_revision_changed` 且不带 `sections`；单栏上游失败仍是 200 部分成功。独立对照把版本复核固定为旧值后，可重现 200 中同时出现 `public`/`self_built` 以及文字同时含“自建服务”和新域名，说明该测试能捕获回归。独立复核另确认两处边界：预览中途停用站点现在返回 409 `site_disabled`、不带栏目且不登记图片快照（修复前为 200 部分成功）；在最后一次版本复核读取旧配置后、该异步读取返回前变更站点的探针中，文字/Markdown 仍是读取到的旧版本，图片随后返回 409 `snapshot_stale`。`tests/test_profile_preview_edges.py` 另覆盖中途停用站点、删除组合、修改组合的栏目顺序及条数，以及预热缓存后分别以普通获取和强制刷新切换站点；缓存用例还使用按请求 host 区分的新旧内容标记，检查栏目、文字、Markdown 与图片快照，并覆盖普通获取上游请求在途时切换站点。Bilibili 与今日头条尚无该竞态的专项用例，跨进程并发、跨实例并发和真实宿主中的并发修改未验证；复核不与取数共用事务，仍存在上述窗口。
+- 迁移并发：`tests/test_site_store_migration_race.py` 使用两个独立连接和同步屏障打开同一临时 v4/v12 合成旧库，并检查版本、站点与凭据；还检查注入失败后的回滚及重新打开。`tests/test_site_store_migration_rollback.py` 使用带站点、凭据、组合、任务、白名单和投递记录的 v4 合成旧库，覆盖并发打开、失败后的重试和连接的外键启用；夹具由当前结构删列构造。提交前注入失败的钩子在同一连接中检查加列后的事务状态，再验证异常原因、回滚及重试；独立探针确认迁移前直接失败不再使该用例通过。夹具包含投递目标和页面子记录，并检查外键定义及约束。锁等待用例通过 SQLite trace 观察第二连接发起 `BEGIN IMMEDIATE`，但 trace 在执行前触发，不能单凭该回调证明连接已实际阻塞；测试任务取消后的收集目前没有独立超时。跨进程迁移及真实历史数据库未实测。
+- 静态检查：`node --check views/sites/app.js`、`git diff --check` 通过。
+- 未验证：真实 AstrBot v4.29.1 Dashboard iframe 内的桌面 1400px 与 390px 浏览器回归（隔离宿主缺少 WebUI 构建产物），以及真实平台图片显示、真实公开实例响应。后台长地址换行依赖 `overflow-wrap: anywhere` / `word-break: break-all`，尚未在真实浏览器中实测。来源类型页面测试固定 1440×900，且 Windows 下的 Playwright 缓存位置尚未实测。
+
 ## 真实平台验证准备
 
 本节面向有意在自己授权范围内做真实平台测试的管理员，只说明准备前提、观察方法和脱敏记录判据。仓库内的自动化、隔离宿主和假发送器验证都不包含真实账号发送或真实定时投递；本节描述的是“怎么测”，不是测试结果，也不能当作任何平台能力的验证结论、插件市场收录或最低兼容版本的依据。
@@ -444,7 +560,7 @@ node tests/browser/site_connection_ui.js
 ### 操作前提
 
 - 插件已在目标 AstrBot v4.29.1 中加载，安装目录为 `<ASTRBOT_ROOT>/data/plugins/astrbot_plugin_60sapi_hub`（占位符，替换为实际路径）。推荐使用真实目录副本；若用符号链接，宿主校验的是解析后路径是否仍在 `data/plugins` 边界内，指向边界之外的链接会导致后台视图不出现。
-- 数据目录为 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`，在插件目录之外，由宿主 `StarTools.get_data_dir()` 提供；当前 schema 版本 10、11 张业务表，受支持的 v1～v9 旧库在同一事务内迁移，失败回滚并保留旧数据。测试前先停用插件并备份该文件。
+- 数据目录为 `<ASTRBOT_ROOT>/data/plugin_data/astrbot_plugin_60sapi_hub/sites.sqlite3`，在插件目录之外，由宿主 `StarTools.get_data_dir()` 提供；当前 schema 版本为 19，受支持的旧库在同一事务内迁移，失败回滚并保留旧数据。测试前先停用插件并备份该文件。
 - 测试目标必须已有明确授权：由测试群群主或账号所有者同意本轮测试，使用专用测试账号与专用测试群；不与生产群、日常群或他人账号混用。
 - 管理员明确知道“测试投递”会真的把消息发到任务白名单内的目标，发出后无法撤回；测试期间同一账号只跑测试任务，避免定时任务与测试投递混在一起。
 - 记录测试环境：宿主版本、插件 `metadata.yaml` 的 `version`、Python 版本、平台适配器与实例 ID（脱敏）、测试时间与时区。依赖由 `requirements.txt` 声明（aiosqlite、httpx、Pillow、croniter），AstrBot 本体由宿主提供，不在插件内安装。
@@ -454,7 +570,7 @@ node tests/browser/site_connection_ui.js
 ### 手动测试观察方法
 
 1. 在站点管理点“测试连接”，确认本轮要用的接口可用（判断标准见上）。
-2. 在任务卡片点“测试投递”。确认页只读取最新配置，不获取上游内容、不发送；核对目标 UMO 与实际路由、组合、站点和输出格式是否与本轮测试计划一致。
+2. 在任务卡片点“测试投递”。确认页只读取最新配置，不获取上游内容、不发送；核对目标 UMO 与实际路由、任务栏目、候选站点和输出格式是否与本轮测试计划一致。
 3. 确认后按下面顺序核对：
    - 执行记录状态：`preparing`、`running` 是过程态，终态为 `success`、`partial`、`failed`、`unknown`、`no_targets`、`stopped`。只有 `success` 表示服务端认为全部目标明确成功；`partial` 表示部分目标或部分栏目图成功，必须逐目标、逐栏目图查看；`failed` 是明确失败；`unknown` 既不是成功也不是失败。
    - 逐目标与逐栏目图：每个目标有独立状态，每张栏目图也有独立状态（`success`、`failed`、`unknown`、`skipped`）。核对张数和顺序是否符合输出格式（文字、Markdown 是单条逻辑消息，图片是按组合栏目顺序的多张长图；未出图栏目为 `skipped` + `section_image_failed`），并记录失败或 unknown 后同一目标剩余图被停止、其他目标是否继续。
@@ -487,7 +603,7 @@ node tests/browser/site_connection_ui.js
 - 任务启停（任务卡片“启用/停用定时调度”，带 revision 校验）：停用后该任务不再进入未来调度，停用期间错过的时刻不补发。启停会提升任务 revision，而投递在**每个目标开始前、每张栏目图开始前以及紧邻外部发送前**都会重新校验配置；因此在途执行的下一个校验点会读到配置已变化，**尚未开始的目标和该目标后续栏目图会被跳过并记为 `config_changed`**。已经发出的消息无法撤回。
 - 计划启停（编辑任务计划或改为“无计划”）：保存会自动停用该任务，计划为空即没有调度；需要继续测试时必须重新配置并显式启用。删除任务同样会触发上述校验失败——在途执行的后续校验点会读到任务已不存在，尚未开始的目标与后续页被跳过；已经发出的消息无法撤回，历史执行记录保留。
 - 停用插件：结束调度循环，并按投递、图片、内容、存储的顺序关闭资源；旧 Web 处理器随后返回 503，停用期间没有新的调度和发送。重新启用后配置保留，错过的时刻同样不补发。
-- 建议停止顺序：先停用测试任务，等待在途执行结束并记录终态；必要时再停用插件；执行记录与调度记录保留供复核。测试结束后删除测试用站点、组合和任务，或恢复到测试前的备份，不要把生产数据库直接用于测试。
+- 建议停止顺序：先停用测试任务，等待在途执行结束并记录终态；必要时再停用插件；执行记录与调度记录保留供复核。测试结束后删除测试用站点和任务，或恢复到测试前的备份，不要把生产数据库直接用于测试。
 
 ### 凭据保护
 

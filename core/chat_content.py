@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .profile_api import ProfileApi
+from .candidate_preview import assembled_preview
+from .plan_preview import PlanPreview
+from .site_requirements import Requirement, requirements_from_items
 from .tasks import (
     PushTaskService,
     TaskNotFoundError,
@@ -16,7 +18,7 @@ from .tasks import (
 MAX_REPLY_CHARS = 2000
 AUTH_TEXT = "任务不存在或当前会话无权查询。"
 USAGE_TEXT = "用法：/60s get <任务ID>。"
-CONFIG_TEXT = "任务配置不可用，请检查组合或站点状态。"
+CONFIG_TEXT = "任务配置不可用，请检查栏目或站点状态。"
 CHANGED_TEXT = "任务或配置已变化，请重新查询。"
 FAILED_TEXT = "内容暂时无法获取，请稍后重试。"
 TRUNCATED_NOTICE = "\n……（内容过长，已截断，剩余部分未显示）"
@@ -26,19 +28,20 @@ TRUNCATED_NOTICE = "\n……（内容过长，已截断，剩余部分未显示�
 class _Authorized:
     task_id: str
     task_revision: int
-    profile_id: str
-    profile_revision: int
-    site_id: str
-    site_revision: int
+    plan_revision: int
+    # 启用候选按尝试顺序排列：(site_id, revision)。顺序变化也算配置变化。
+    candidates: tuple[tuple[str, int], ...]
+    # 任务的栏目与条数要求；同一站点必须全部满足才算可用。
+    requirements: tuple[Requirement, ...]
 
 
 class ChatContentQuery:
-    """只读复用组合预览，不发送、不渲染图片、不写配置。"""
+    """只读复用任务预览，不发送、不渲染图片、不写配置。"""
 
     def __init__(
         self,
         tasks: PushTaskService,
-        previews: ProfileApi,
+        previews: PlanPreview,
     ) -> None:
         self._tasks = tasks
         self._previews = previews
@@ -54,19 +57,8 @@ class ChatContentQuery:
             return AUTH_TEXT
         except _Unavailable:
             return CONFIG_TEXT
-        try:
-            result = await self._previews.preview_profile({
-                "profile_id": authorized.profile_id,
-                "force_refresh": False,
-            })
-        except Exception:
-            return FAILED_TEXT
-        if result.status_code != 200:
-            return FAILED_TEXT
-        data = result.body.get("data") if isinstance(result.body, dict) else None
-        outputs = data.get("outputs") if isinstance(data, dict) else None
-        text = outputs.get("text") if isinstance(outputs, dict) else None
-        if not isinstance(text, str) or not text.strip():
+        text = await _first_available(self._previews, authorized)
+        if text is None:
             return FAILED_TEXT
         if await config_changed(self._tasks, umo, authorized):
             return CHANGED_TEXT
@@ -86,19 +78,27 @@ async def authorize_task(
     task = snapshot.task
     if umo not in task.umos:
         raise _Unauthorized
-    if (snapshot.profile_id is None
-            or snapshot.profile_revision is None
-            or snapshot.site_id is None
-            or snapshot.site_revision is None
-            or snapshot.site_enabled is not True):
+    candidates = tuple(
+        (item.id, item.revision)
+        for item in snapshot.candidates
+        if item.revision is not None
+    )
+    if snapshot.plan_revision is None or not candidates:
         raise _Unavailable
+    # revision 为 None 的候选已被删除，无法复核版本，不能用于查询。
+    resolved = tuple(
+        (site_id, int(revision)) for site_id, revision in candidates
+    )
+    try:
+        requirements = requirements_from_items(task.items)
+    except Exception:
+        raise _Unavailable from None
     return _Authorized(
         task_id=task.id,
         task_revision=task.revision,
-        profile_id=snapshot.profile_id,
-        profile_revision=snapshot.profile_revision,
-        site_id=snapshot.site_id,
-        site_revision=snapshot.site_revision,
+        plan_revision=snapshot.plan_revision,
+        candidates=resolved,
+        requirements=requirements,
     )
 
 
@@ -111,15 +111,41 @@ async def config_changed(
         snapshot = await tasks.get_config_snapshot(before.task_id)
     except Exception:
         return True
+    current = tuple(
+        (item.id, item.revision)
+        for item in snapshot.candidates
+        if item.revision is not None
+    )
     return (
         umo not in snapshot.task.umos
         or snapshot.task.revision != before.task_revision
-        or snapshot.profile_id != before.profile_id
-        or snapshot.profile_revision != before.profile_revision
-        or snapshot.site_id != before.site_id
-        or snapshot.site_revision != before.site_revision
-        or snapshot.site_enabled is not True
+        or snapshot.plan_revision != before.plan_revision
+        # 顺序、成员或站点版本任一变化都要求重新查询。
+        or current != before.candidates
     )
+
+
+async def _first_available(
+    previews: PlanPreview,
+    authorized: _Authorized,
+) -> str | None:
+    """按任务候选顺序取第一份站内满足全部栏目的内容；全部失败返回 None。"""
+    found = await assembled_preview(
+        previews,
+        plan_id=authorized.task_id,
+        requirements=authorized.requirements,
+        site_ids=[site_id for site_id, _ in authorized.candidates],
+        catch_errors=True,
+    )
+    if found is None:
+        return None
+    _site_id, data = found
+    if data.get("source_mode") == "missing" or data.get("missing"):
+        # 拼合后仍缺栏目：聊天不能把部分内容当成功结果。
+        return None
+    outputs = data.get("outputs")
+    text = outputs.get("text") if isinstance(outputs, dict) else None
+    return text if isinstance(text, str) and text.strip() else None
 
 
 class _Unauthorized(Exception):

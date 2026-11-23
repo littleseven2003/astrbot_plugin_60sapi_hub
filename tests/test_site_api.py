@@ -40,7 +40,6 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
         payload: dict[str, object] = {
             "name": site["name"],
             "base_url": site["base_url"],
-            "enabled": site["enabled"],
             "timeout_seconds": site["timeout_seconds"],
             "expected_revision": site["revision"],
         }
@@ -61,12 +60,10 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
         site = await self._create(
             name="  内网站点  ",
             base_url="http://10.0.0.5:8080/proxy/",
-            enabled=True,
             timeout_seconds=25,
         )
         self.assertEqual(site["name"], "内网站点")
         self.assertEqual(site["base_url"], "http://10.0.0.5:8080/proxy")
-        self.assertTrue(site["enabled"])
         self.assertEqual(site["timeout_seconds"], 25.0)
         self.assertFalse(site["has_bearer_token"])
         self.assertEqual(site["revision"], 1)
@@ -76,8 +73,8 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
                 "id",
                 "name",
                 "base_url",
-                "enabled",
                 "timeout_seconds",
+                "source_kind",
                 "has_bearer_token",
                 "revision",
                 "created_at",
@@ -92,9 +89,63 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_defaults(self) -> None:
         site = await self._create()
-        self.assertFalse(site["enabled"])
         self.assertEqual(site["timeout_seconds"], 10.0)
         self.assertEqual(site["revision"], 1)
+        # 未提交来源类型时按公开处理（当前产品默认）。
+        self.assertEqual(site["source_kind"], "public")
+
+    async def test_source_kind_round_trip_and_validation(self) -> None:
+        site = await self._create(source_kind="public")
+        self.assertEqual(site["source_kind"], "public")
+        updated = await self.api.update_site(
+            site["id"],
+            self._update_payload(site, source_kind="self_built"),
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.body["data"]["source_kind"], "self_built")
+
+        bad = await self.api.create_site(
+            {
+                "name": "站点",
+                "base_url": "https://example.test/api",
+                "source_kind": "community",
+            },
+        )
+        self.assert_error(bad, 400, "validation_error")
+        self.assertEqual(bad.body["data"]["field"], "source_kind")
+
+        # 编辑时省略字段保持原值，不会把它重置为默认。
+        kept = await self.api.update_site(
+            site["id"],
+            {
+                "name": "保留类型",
+                "base_url": site["base_url"],
+                "timeout_seconds": 10,
+                "expected_revision": updated.body["data"]["revision"],
+            },
+        )
+        self.assertEqual(kept.status_code, 200)
+        self.assertEqual(kept.body["data"]["source_kind"], "self_built")
+
+    async def test_legacy_enabled_field_is_compatible(self) -> None:
+        # 旧客户端仍可能提交 enabled：true 视为未提供，false 明确拒绝，
+        # 避免旧页面以为站点仍可停用。
+        accepted = await self._create(name="旧客户端")
+        self.assertNotIn("enabled", accepted)
+        rejected = await self.api.create_site({
+            "name": "旧停用请求",
+            "base_url": "https://api.example.com/news",
+            "enabled": False,
+        })
+        self.assert_error(rejected, 400, "validation_error")
+        self.assertEqual(rejected.body["data"]["field"], "enabled")
+        bad = await self.api.create_site({
+            "name": "旧非布尔",
+            "base_url": "https://api.example.com/news",
+            "enabled": "false",
+        })
+        self.assert_error(bad, 400, "validation_error")
+        self.assertEqual(bad.body["data"]["field"], "enabled")
 
     async def test_invalid_input_and_body(self) -> None:
         bad = await self.api.create_site(
@@ -128,7 +179,6 @@ class SiteApiTest(unittest.IsolatedAsyncioTestCase):
             self._update_payload(
                 site,
                 name="更新后",
-                enabled=True,
                 timeout_seconds=45,
             ),
         )

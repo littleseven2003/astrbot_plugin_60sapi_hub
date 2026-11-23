@@ -22,7 +22,6 @@ from core.douyin import (
 from core.douyin_service import DouyinHotService
 from core.sites import (
     SiteCreate,
-    SiteDisabledError,
     SiteNotFoundError,
     SiteService,
 )
@@ -148,7 +147,10 @@ class DouyinParserTest(unittest.TestCase):
         self.assertEqual(item_fields, {"title", "hot_value", "link"})
         self.assertEqual(
             snapshot_fields,
-            {"site_id", "site_name", "endpoint", "fetched_at", "items"},
+            {
+                "site_id", "site_name", "endpoint", "fetched_at",
+                "items", "source_url", "source_kind",
+            },
         )
         serialized = repr(snapshot).lower()
         for forbidden in ("rank", "ranking", "updated_at", "event_time", "active_time", "cover"):
@@ -203,12 +205,11 @@ class DouyinServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self._temporary_directory.cleanup()
 
-    async def _site(self, *, enabled=True, token="fictional-douyin-token"):
+    async def _site(self, *, token="fictional-douyin-token"):
         return await self.sites.create_site(
             SiteCreate(
                 name="抖音测试站点",
                 base_url="http://example.test/proxy",
-                enabled=enabled,
                 timeout_seconds=3,
                 bearer_token=token,
             ),
@@ -242,8 +243,7 @@ class DouyinServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.items[0].hot_value, 100)
         self.assertNotIn("fictional-douyin-token", repr(snapshot))
 
-    async def test_disabled_and_missing_sites_are_rejected(self) -> None:
-        disabled = await self._site(enabled=False)
+    async def test_missing_site_is_rejected(self) -> None:
         service = DouyinHotService(
             self.sites,
             client=ContentHttpClient(
@@ -254,8 +254,6 @@ class DouyinServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         await service.open()
         try:
-            with self.assertRaises(SiteDisabledError):
-                await service.preview(disabled.id)
             with self.assertRaises(SiteNotFoundError):
                 await service.preview("missing-site-id")
         finally:

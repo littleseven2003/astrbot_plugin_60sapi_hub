@@ -18,15 +18,16 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
-from .profile_api import ProfileApi
-from .profiles import ContentProfileService, ProfileNotFoundError
+from .candidate_preview import assembled_preview_outcome
+from .plan_preview import PlanPreview, PlanPreviewResult
 from .site_store import (
     DeliveryExecutionExistsError,
     DeliveryRecordNotFoundError,
     SiteStore,
     StoredDeliveryExecution,
 )
-from .sites import SiteService, SiteNotFoundError
+from .site_requirements import requirements_from_items
+from .sites import SiteNotFoundError, SiteService, SiteStorageError
 from .tasks import (
     PushTask,
     PushTaskService,
@@ -61,6 +62,10 @@ class DeliveryNoContentError(DeliveryError):
 
 class DeliveryCapacityError(DeliveryError):
     """排队/执行容量已满。"""
+
+
+class DeliveryConfirmationStaleError(DeliveryError):
+    """确认后候选站点状态已变化，必须重新审阅，不得发送。"""
 
 
 class DeliveryRevisionConflictError(DeliveryError):
@@ -112,8 +117,11 @@ class DeliveryLimits:
     max_images: int = 6
     max_concurrent_executions: int = 2
     max_pending_executions: int = 4
+    # 内容准备预算：只覆盖候选站点取得内容（含栏目图生成）。
     max_execution_seconds: float = 60.0
     sender_timeout_seconds: float = 15.0
+    # 发送预算：内容准备完成后重新计时，不与内容阶段互相挤占。
+    max_send_seconds: float = 30.0
 
 
 ALLOWED_SEND_CODES = frozenset({
@@ -134,14 +142,20 @@ SAFE_ERROR_CODES = frozenset({
     "execution_timeout", "image_failed", "image_invalid",
     "image_render_failed", "image_snapshot_unavailable",
     "image_unavailable", "interrupted", "internal_error",
+    # 全部候选都取不到所需内容：提示已发送，但内容采集失败。
+    "content_unavailable", "confirmation_stale",
     "preview_failed", "preview_invalid", "profile_not_found",
-    "record_after_send_failed", "render_failed",
+    "record_after_send_failed", "render_failed", "storage_unavailable",
     "section_image_failed", "send_failed",
-    "send_unknown", "sender_cancelled", "sender_exception",
+    "send_unknown", "sender_budget_exhausted", "sender_cancelled",
+    "sender_exception",
     "sender_invalid_payload", "sender_not_found",
     "sender_not_supported", "sender_route_rejected",
     "sender_invalid_result", "sender_timeout", "site_disabled",
-    "site_not_found", "task_not_found", "too_many_images",
+    "site_not_found",
+    # 发送中断后，同一目标的剩余图片因前一张失败/结果未知而跳过。
+    "skipped_after_send_failed", "skipped_after_send_unknown",
+    "task_not_found", "too_many_images",
     "too_many_targets",
 })
 
@@ -154,23 +168,25 @@ PAGE_STATUS_SKIPPED = "skipped"
 # 新版图片投递的持久化格式标记：一个栏目一张长图。历史行保持 NULL。
 IMAGE_MODEL_SECTIONS = "sections"
 
+# 外层总守卫只在两段预算之外留出收尾余量：阶段内的超时先自行生效，
+# 记录落库也还有一点时间，不会被守卫抢先取消。
+TOTAL_GUARD_EPSILON_SECONDS = 0.05
+
 
 class DeliveryService:
     def __init__(
         self,
         *,
         tasks: PushTaskService,
-        profiles: ContentProfileService,
         sites: SiteService,
-        profile_api: ProfileApi,
+        plan_preview: PlanPreview,
         store: SiteStore,
         sender: DeliverySender,
         limits: DeliveryLimits | None = None,
     ) -> None:
         self._tasks = tasks
-        self._profiles = profiles
         self._sites = sites
-        self._api = profile_api
+        self._api = plan_preview
         self._store = store
         self._sender = sender
         self._limits = limits or DeliveryLimits()
@@ -200,8 +216,8 @@ class DeliveryService:
         execution_id: object,
         *,
         expected_task_revision: int | None = None,
-        expected_profile_revision: int | None = None,
-        expected_site_revision: int | None = None,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
         if self._closed:
             raise DeliveryClosedError("投递服务已关闭。")
@@ -213,8 +229,8 @@ class DeliveryService:
             self._owned_execute(
                 task_key, execution_key, deadline, start_gate,
                 expected_task_revision,
-                expected_profile_revision,
-                expected_site_revision,
+                expected_candidates,
+                expected_alert_only,
             ),
             name=f"delivery-{execution_key}",
         )
@@ -262,8 +278,8 @@ class DeliveryService:
         deadline: float,
         start_gate: asyncio.Event,
         expected_task_revision: int | None = None,
-        expected_profile_revision: int | None = None,
-        expected_site_revision: int | None = None,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
     ) -> StoredDeliveryExecution:
         await start_gate.wait()
         if self._closed:
@@ -272,15 +288,23 @@ class DeliveryService:
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             raise DeliveryTimeoutError("投递总耗时已超限。")
+        # 内容准备和发送各有预算：总守卫放行“内容阶段剩余 + 发送预算”，
+        # 两段都不必为对方留时间。
+        total_timeout = (
+            remaining
+            + self._limits.max_send_seconds
+            + TOTAL_GUARD_EPSILON_SECONDS
+        )
         try:
             return await asyncio.wait_for(
                 self._execute_work(
                     task_key, execution_key, owner_token,
                     expected_task_revision,
-                    expected_profile_revision,
-                    expected_site_revision,
+                    expected_candidates,
+                    expected_alert_only,
+                    deadline=deadline,
                 ),
-                timeout=remaining,
+                timeout=total_timeout,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             await self._mark_incomplete_if_owner(execution_key, owner_token)
@@ -299,21 +323,21 @@ class DeliveryService:
         execution_key: str,
         owner_token: str,
         expected_task_revision: int | None = None,
-        expected_profile_revision: int | None = None,
-        expected_site_revision: int | None = None,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
+        deadline: float | None = None,
     ) -> StoredDeliveryExecution:
-        async with self._admission():
+        async with self._admission(deadline):
             existing = await self._existing_for_task(execution_key, task_key)
             if existing is not None:
                 return existing
-            task = await self._load_task(task_key)
-            profile, site = await self._load_config(task)
-            self._check_revisions(
-                task, profile, site,
-                expected_task_revision,
-                expected_profile_revision,
-                expected_site_revision,
-            )
+            config = await self._load_config(task_key)
+            task = config.task
+            self._check_revisions(task, expected_task_revision)
+            # 首个候选只作为记录里的初始站点占位；真正取用内容的站点在准备
+            # 完成后写回，提示内容保持占位以免误导成「该站点已可用」。
+            candidates = await self._candidate_sites(task)
+            primary = candidates[0] if candidates else None
             if self._closed:
                 raise DeliveryClosedError("投递服务已关闭。")
             existing = await self._existing_for_task(execution_key, task_key)
@@ -325,10 +349,10 @@ class DeliveryService:
                     task_id=task.id,
                     task_name=task.name,
                     task_revision=task.revision,
-                    profile_id=profile.id,
-                    profile_revision=profile.revision,
-                    site_id=site.id,
-                    site_revision=site.revision,
+                    profile_id=task.id,
+                    profile_revision=config.plan_revision,
+                    site_id=primary.id if primary is not None else "",
+                    site_revision=primary.revision if primary is not None else 0,
                     output_format=task.output_format,
                     umos=task.umos,
                     owner_token=owner_token,
@@ -341,17 +365,32 @@ class DeliveryService:
                 return await self._existing_for_task(execution_key, task_key)
             except Exception as exc:
                 raise DeliveryStorageError("无法创建投递记录。") from exc
-            return await self._run(execution_key, task, profile, site)
+            return await self._run(
+                execution_key, task, primary,
+                expected_candidates, expected_alert_only,
+                deadline=deadline,
+            )
 
     @asynccontextmanager
-    async def _admission(self):
+    async def _admission(self, deadline: float | None = None):
         async with self._admission_condition:
             while self._running >= self._limits.max_concurrent_executions:
                 if self._pending >= self._limits.max_pending_executions:
                     raise DeliveryCapacityError("投递排队已满。")
                 self._pending += 1
                 try:
-                    await self._admission_condition.wait()
+                    if deadline is None:
+                        await self._admission_condition.wait()
+                    else:
+                        # 排队也属于内容准备：内容预算耗尽就结束等待，发送预算
+                        # 不替它续命。
+                        await asyncio.wait_for(
+                            self._admission_condition.wait(),
+                            timeout=max(
+                                0.0,
+                                deadline - asyncio.get_running_loop().time(),
+                            ),
+                        )
                 finally:
                     self._pending -= 1
             self._running += 1
@@ -381,26 +420,18 @@ class DeliveryService:
             or limits.max_pending_executions < 0
             or not valid_timeout(limits.max_execution_seconds)
             or not valid_timeout(limits.sender_timeout_seconds)
+            or not valid_timeout(limits.max_send_seconds)
         ):
             raise DeliveryValidationError("limits", "容量/超时配置不合法")
 
     @staticmethod
-    def _check_revisions(
-        task: PushTask,
-        profile: object,
-        site: object,
-        task_revision: int | None,
-        profile_revision: int | None,
-        site_revision: int | None,
-    ) -> None:
-        checks = (
-            ("task_revision", task_revision, task.revision),
-            ("profile_revision", profile_revision, profile.revision),
-            ("site_revision", site_revision, site.revision),
-        )
-        for field, expected, actual in checks:
-            if expected is not None and expected != actual:
-                raise DeliveryRevisionConflictError(field, expected, actual)
+    def _check_revisions(task: PushTask, task_revision: int | None) -> None:
+        # 站点不上送版本：候选的 id/版本/启用状态由确认快照整体校验。
+        # 栏目已属于任务本身，任务 revision 变化即代表内容配置变化。
+        if task_revision is not None and task_revision != task.revision:
+            raise DeliveryRevisionConflictError(
+                "task_revision", task_revision, task.revision,
+            )
 
     async def _existing_for_task(
         self,
@@ -427,8 +458,10 @@ class DeliveryService:
         self,
         execution_id: str,
         task: PushTask,
-        profile: object,
-        site: object,
+        primary: object,
+        expected_candidates: list | None = None,
+        expected_alert_only: bool | None = None,
+        deadline: float | None = None,
     ) -> StoredDeliveryExecution:
         if task.target_count == 0:
             await self._finish(execution_id, "no_targets", None)
@@ -436,15 +469,72 @@ class DeliveryService:
         if len(task.umos) > self._limits.max_targets:
             await self._finish(execution_id, "failed", "too_many_targets")
             return await self._read(execution_id)
-        if not site.enabled:
-            await self._finish(execution_id, "failed", "site_disabled")
-            return await self._read(execution_id)
+        # 先按完整候选顺序取回全部站点（含停用的），用于与确认快照比对；
+        # 只有真正选择内容时才跳过停用站点。
+        resolved = await self._candidate_sites(task)
+        try:
+            self._assert_confirmation(resolved, expected_candidates)
+        except DeliveryConfirmationStaleError:
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise
+        # 没有候选时同样走告警路径：向任务白名单发送一条文字提示。
+        candidates = list(resolved)
 
         try:
-            prepared = await self._prepare(execution_id, task)
+            prepared = await self._prepare(
+                execution_id, task, candidates,
+                deadline=deadline,
+            )
+        except DeliveryConfirmationStaleError:
+            # 确认后候选状态变了：不发送，记录为明确失败并附安全错误码。
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise
         except DeliveryNoContentError as exc:
             await self._finish(execution_id, "failed", str(exc))
             return await self._read(execution_id)
+        # 内容准备完成后、发送开始前用同一份任务配置快照复核任务版本、
+        # 白名单和全部来源版本：这份快照一次读取任务、UMO 与候选 revision，
+        # 不会在“读完任务、再读来源”之间漏掉写库变化。
+        try:
+            latest = await self._tasks.get_config_snapshot(task.id)
+        except TaskNotFoundError:
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise DeliveryConfirmationStaleError()
+        except Exception:
+            await self._finish(
+                execution_id, "failed", "storage_unavailable",
+            )
+            return await self._read(execution_id)
+        if expected_candidates is not None:
+            try:
+                self._assert_confirmation(
+                    latest.candidates, expected_candidates,
+                )
+            except DeliveryConfirmationStaleError:
+                await self._finish(
+                    execution_id, "failed", "confirmation_stale",
+                )
+                raise
+        if (
+            latest.task.revision != task.revision
+            or latest.task.items != task.items
+            or latest.task.output_format != task.output_format
+            or latest.task.umos != task.umos
+            or not self._snapshot_sources_unchanged(
+                latest.candidates, prepared,
+            )
+        ):
+            await self._finish(execution_id, "failed", "config_changed")
+            return await self._read(execution_id)
+        if (
+            # 只有“确认时为异常提示、现在却拿到了内容”才说明配置变了。
+            # 确认时为正常内容、运行时同站全部失败 → 这是内容采集失败，
+            # 按确认页已说明的规则发送异常提示，不能误报成配置变化。
+            expected_alert_only is True
+            and (prepared.site is not None or prepared.multi_site)
+        ):
+            await self._finish(execution_id, "failed", "confirmation_stale")
+            raise DeliveryConfirmationStaleError()
         if len(prepared.slots) > self._limits.max_images:
             await self._finish(execution_id, "failed", "too_many_images")
             return await self._read(execution_id)
@@ -453,12 +543,20 @@ class DeliveryService:
             metadata = json.dumps(prepared.failed_sections, ensure_ascii=False)
         else:
             metadata = None
+        if prepared.sources:
+            sources_json = json.dumps(
+                [dict(source) for source in prepared.sources],
+                ensure_ascii=False,
+            )
+        else:
+            sources_json = None
         try:
             await self._store.set_delivery_content(
                 execution_id,
                 content_hash=prepared.content_hash,
                 content_status=prepared.content_status,
                 failed_sections_json=metadata,
+                sources_json=sources_json,
                 status="running",
             )
             generated_flags = _slot_image_generated(
@@ -474,19 +572,173 @@ class DeliveryService:
         except Exception as exc:
             raise DeliveryStorageError("无法保存投递计划。") from exc
 
-        return await self._send_targets(execution_id, task, profile, site, prepared)
-
-    async def _prepare(self, execution_id: str, task: PushTask) -> "_Prepared":
-        preview = await self._api.preview_profile(
-            {"profile_id": task.profile_id},
-            owner=execution_id,
+        # 拼合内容没有单一来源站点：执行记录标记为空站点，表示“多站点”。
+        if prepared.multi_site:
+            try:
+                await self._store.update_delivery_site(
+                    execution_id, site_id="", site_revision=0,
+                )
+            except Exception as exc:
+                raise DeliveryStorageError("无法记录投递站点。") from exc
+        # 实际选中的站点优先；提示内容没有站点，此时不校验站点配置。
+        used_site = prepared.site
+        if (
+            used_site is not None
+            and (primary is None or used_site.id != primary.id)
+        ):
+            try:
+                await self._store.update_delivery_site(
+                    execution_id,
+                    site_id=used_site.id,
+                    site_revision=used_site.revision,
+                )
+            except Exception as exc:
+                raise DeliveryStorageError("无法记录投递站点。") from exc
+        record = await self._send_targets(
+            execution_id, task, prepared, expected_candidates,
         )
-        if preview.status_code != 200:
-            code = preview.body.get("data", {}).get("code", "preview_failed")
-            raise DeliveryNoContentError(code)
-        data = preview.body.get("data")
-        if not isinstance(data, dict):
-            raise DeliveryNoContentError("preview_invalid")
+        if prepared.site is None:
+            # 采集失败已由 content_status=failed 记录；这里不改写投递结果，
+            # 否则会把 unknown/成功统一覆盖成会误导重试的明确失败。
+            return record
+        return record
+
+    @staticmethod
+    def _candidate_shape(candidates: list[object]) -> list[dict]:
+        return [
+            {
+                "id": item.id,
+                "revision": item.revision,
+            }
+            for item in candidates
+        ]
+
+    def _assert_confirmation(self, candidates, expected) -> None:
+        """候选状态必须与管理员确认时完全一致，否则不发送。"""
+        if not isinstance(expected, list):
+            return
+        confirmed: list[dict] = []
+        for item in expected:
+            if not isinstance(item, dict):
+                raise DeliveryConfirmationStaleError()
+            confirmed.append({
+                "id": item.get("id"),
+                "revision": item.get("revision"),
+            })
+        if self._candidate_shape(candidates) != confirmed:
+            raise DeliveryConfirmationStaleError()
+    async def _candidate_sites(self, task: PushTask) -> list[object]:
+        """按任务保存的顺序返回仍存在的候选站点。
+
+        站点确实不存在时跳过（由确认/告警语义处理）；存储读取失败必须
+        中止整次投递，否则会被误判成“没有候选”而发出采集告警。
+        """
+        site_ids = tuple(task.sites)
+        resolved: list[object] = []
+        for site_id in site_ids:
+            try:
+                candidate = await self._sites.get_site(site_id)
+            except SiteNotFoundError:
+                continue
+            except (SiteStorageError, Exception) as exc:
+                raise DeliveryStorageError("读取候选站点失败。") from exc
+            resolved.append(candidate)
+        return resolved
+
+    def _alert_prepared(self) -> "_Prepared":
+        # 安全、可理解，且不含凭据、路径或原始上游错误。
+        text = (
+            "60sAPI推送服务异常：候选站点均无法提供本次任务所需的内容，"
+            "请稍后重试或检查站点配置。"
+        )
+        digest = hashlib.sha256()
+        digest.update(b"alert")
+        digest.update(text.encode("utf-8"))
+        return _Prepared(
+            slots=((1, text),),
+            content_hash=digest.hexdigest(),
+            content_status="failed",
+            failed_sections=[],
+            site=None,
+        )
+
+    async def _prepare(
+        self,
+        execution_id: str,
+        task: PushTask,
+        candidates: list[object],
+        *,
+        deadline: float | None = None,
+    ) -> "_Prepared":
+        """按顺序寻找同一个站点同时满足全部类别与条数。"""
+        prepared = await self._prepare_with_failover(
+            execution_id, task, candidates, deadline=deadline,
+        )
+        if prepared is not None:
+            return prepared
+        # 全部候选都不满足：发送一条安全提示，不拼凑多站点内容。
+        return self._alert_prepared()
+
+    async def _prepare_with_failover(
+        self,
+        execution_id: str,
+        task: PushTask,
+        candidates: list[object],
+        *,
+        deadline: float | None = None,
+    ) -> "_Prepared | None":
+        """单站优先、缺栏时按栏目拼合；仍缺栏目时返回 None 走提示路径。"""
+        requirements = requirements_from_items(task.items)
+        by_id = {candidate.id: candidate for candidate in candidates}
+        outcome = await assembled_preview_outcome(
+            self._api,
+            plan_id=task.id,
+            requirements=requirements,
+            site_ids=[candidate.id for candidate in candidates],
+            owner=execution_id,
+            # 每站只用剩余时间的一份：慢的首选站点不会吃满总时限。
+            deadline=deadline,
+        )
+        if outcome.data is None:
+            if outcome.status_code == 409:
+                # 确认后配置/来源在预览期间变化：不发内容，也不发“采集
+                # 失败”告警，否则等于用一条消息掩盖了需要重新确认的状态。
+                raise DeliveryNoContentError("config_changed")
+            if outcome.status_code in (0, 502) and outcome.code in (
+                None, "content_unavailable", "all_sections_failed",
+            ):
+                # 真正的“没有任何可用内容”才走异常提示；存储故障、
+                # 内部错误等必须直接中止，不能伪装成一次采集失败告警。
+                return None
+            raise DeliveryNoContentError(
+                _safe_error_code(outcome.code) or "preview_failed"
+            )
+        data = outcome.data
+        if data.get("source_mode") == "missing" or data.get("missing"):
+            # 拼合后仍缺栏目：只发送一条异常提示并记采集失败，绝不把
+            # 部分内容伪装成正常推送。
+            return None
+        multi = data.get("source_mode") == "multi"
+        site_id = str(data.get("site_id") or "")
+        return await self._build_prepared(
+            execution_id, task, data,
+            None if multi else by_id.get(site_id), deadline=deadline,
+        )
+
+    async def _build_prepared(
+        self,
+        execution_id: str,
+        task: PushTask,
+        data: dict,
+        site: object = None,
+        *,
+        deadline: float | None = None,
+    ) -> "_Prepared":
+        """把一次预览结果转换为待发送内容。
+
+        栏目图生成也属于内容准备：它必须落在同一个内容预算内，不能等到
+        发送阶段才开始等待，也不能让渲染把发送预算一起吃掉。
+        """
         outputs = data.get("outputs")
         raw_failed = data.get("failed_sections") or []
         if not isinstance(raw_failed, list):
@@ -504,10 +756,8 @@ class DeliveryService:
             snapshot = data.get("image_snapshot")
             if not isinstance(snapshot, dict) or not snapshot.get("id"):
                 raise DeliveryNoContentError("image_snapshot_unavailable")
-            image = await self._api.generate_image(
-                task.profile_id,
-                {"snapshot_id": snapshot["id"]},
-                owner=execution_id,
+            image = await self._generate_section_images(
+                execution_id, task, snapshot["id"], deadline=deadline,
             )
             if image.status_code != 200:
                 code = image.body.get("data", {}).get("code", "image_failed")
@@ -545,33 +795,74 @@ class DeliveryService:
                 payload if isinstance(payload, bytes)
                 else payload.encode("utf-8")
             )
+        sites, sources = _source_entries(data)
         return _Prepared(
             slots=slots,
             content_hash=digest.hexdigest(),
             content_status=content_status,
             failed_sections=failed,
+            site=site,
+            multi_site=data.get("source_mode") == "multi",
+            sites=sites,
+            sources=sources,
         )
+
+    async def _generate_section_images(
+        self,
+        execution_id: str,
+        task: PushTask,
+        snapshot_id: object,
+        *,
+        deadline: float | None,
+    ) -> PlanPreviewResult:
+        """在内容准备预算内生成栏目图。
+
+        渲染器自己还有一份固定上限；这里只负责“整次内容准备不得超时”。
+        等待超时只取消协程，渲染器会设置取消标志，已经进入线程池的同步
+        渲染不会被强行终止；失败按既有内容失败语义记录，不发送任何消息。
+        """
+        if deadline is None:
+            return await self._api.generate_image(
+                task.id, {"snapshot_id": snapshot_id}, owner=execution_id,
+            )
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise DeliveryNoContentError("execution_timeout")
+        try:
+            return await asyncio.wait_for(
+                self._api.generate_image(
+                    task.id, {"snapshot_id": snapshot_id},
+                    owner=execution_id,
+                ),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError:
+            raise DeliveryNoContentError("execution_timeout") from None
 
     async def _send_targets(
         self,
         execution_id: str,
         task: PushTask,
-        profile: object,
-        site: object,
         prepared: "_Prepared",
+        expected_candidates: list | None = None,
     ) -> StoredDeliveryExecution:
         statuses: dict[int, str] = {}
         any_unknown = False
         any_failed = False
         any_success = False
         partial_reasons: set[str] = set()
+        # 内容已经准备好，从这里开始单独计发送预算；内容阶段没有花完的时间
+        # 不顺延，避免慢站点把发送机会挤掉。
+        send_deadline = (
+            asyncio.get_running_loop().time() + self._limits.max_send_seconds
+        )
         slot_total = len(prepared.slots)
         image_failed_slot_count = sum(
             1 for _, payload in prepared.slots if payload is None
         )
         for position, umo in enumerate(task.umos):
             unchanged = await self._config_unchanged(
-                task, profile, site, umo,
+                task, prepared, umo, expected_candidates,
             )
             if not unchanged:
                 await self._mark_skipped_remainder(
@@ -604,7 +895,7 @@ class DeliveryService:
                     continue
                 if sent_images > 0:
                     unchanged = await self._config_unchanged(
-                        task, profile, site, umo,
+                        task, prepared, umo, expected_candidates,
                     )
                     if not unchanged:
                         await self._mark_skipped_remainder(
@@ -625,7 +916,9 @@ class DeliveryService:
                     raise DeliveryStorageError("无法保存发送计划。") from exc
                 message = DeliveryMessage(
                     umo=umo,
-                    kind=task.output_format,
+                    # 文字载荷（含异常提示）必须是 text；图片任务也一样，
+                    # 不能把提示当成 PNG 交给发送适配器。
+                    kind="text" if isinstance(payload, str) else "image",
                     page_index=index,
                     page_count=slot_total,
                     text=payload if isinstance(payload, str) else None,
@@ -633,7 +926,7 @@ class DeliveryService:
                 )
                 # 最后一次生命周期/配置校验：必须紧邻外部调用，之后不能再写入。
                 if self._closed or not await self._config_unchanged(
-                    task, profile, site, umo,
+                    task, prepared, umo, expected_candidates,
                 ):
                     await self._mark_skipped_remainder(
                         execution_id, position, prepared.slots,
@@ -651,7 +944,9 @@ class DeliveryService:
                     partial_reasons.add("config_changed")
                     break
                 try:
-                    result = await self._call_sender(message)
+                    result = await self._call_sender(
+                        message, send_deadline=send_deadline,
+                    )
                 except asyncio.CancelledError:
                     await self._mark_page_safely(
                         execution_id, position, index,
@@ -697,9 +992,17 @@ class DeliveryService:
                 else:
                     any_failed = True
                     target_status = "failed"
+                # 目标记录必须能解释自己的终态：已调用后超时/异常与预算
+                # 耗尽（未调用）要能从记录区分，且同样经过白名单。
+                target_error = _safe_error_code(error_code)
                 await self._mark_skipped_remainder(
                     execution_id, position, prepared.slots,
-                    index + 1, "after_" + error_code,
+                    index + 1,
+                    # 剩余图片是因为这一张失败/结果未知才没有尝试：给稳定、
+                    # 可读的原因，不再拼出未登记的错误码被换成 internal_error。
+                    "skipped_after_send_unknown"
+                    if result.status is SendStatus.UNKNOWN
+                    else "skipped_after_send_failed",
                 )
                 break
             if (
@@ -747,11 +1050,26 @@ class DeliveryService:
         await self._finish(execution_id, final_status, finish_code)
         return await self._read(execution_id)
 
-    async def _call_sender(self, message: DeliveryMessage) -> DeliverySendResult:
+    async def _call_sender(
+        self,
+        message: DeliveryMessage,
+        *,
+        send_deadline: float,
+    ) -> DeliverySendResult:
+        # 单次等待取“单次上限”和“发送阶段剩余”的较小值：阶段预算耗尽后
+        # 结果未知，按既有 sender timeout 路径处理，绝不重发。
+        remaining = send_deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            # 发送预算已经用完，这次根本没有调用发送适配器：状态仍是
+            # unknown（可能已发出，绝不自动重发），但错误码要能和“已调用
+            # 后超时”区分开，否则记录无法说明到底发生了什么。
+            return DeliverySendResult(
+                SendStatus.UNKNOWN, "sender_budget_exhausted",
+            )
         try:
             result = await asyncio.wait_for(
                 self._sender.send(message),
-                timeout=self._limits.sender_timeout_seconds,
+                timeout=min(self._limits.sender_timeout_seconds, remaining),
             )
         except asyncio.TimeoutError:
             return DeliverySendResult(SendStatus.UNKNOWN, "sender_timeout")
@@ -775,27 +1093,58 @@ class DeliveryService:
     async def _config_unchanged(
         self,
         task: PushTask,
-        profile: object,
-        site: object,
+        prepared: "_Prepared",
         umo: str,
+        expected_candidates: list | None = None,
     ) -> bool:
+        # 一次配置快照同时给出任务版本、白名单和候选 revision：任务与来源
+        # 的校验必须基于同一次读取，否则中间写库会留下发送间隙。
         try:
-            current = await self._tasks.get_task(task.id)
-            current_profile = await self._profiles.get_profile(task.profile_id)
-            current_site = await self._sites.get_site(site.id)
+            snapshot = await self._tasks.get_config_snapshot(task.id)
         except Exception:
             return False
-        return (
+        current = snapshot.task
+        if not (
             not self._closed
             and current.revision == task.revision
-            and current.profile_id == task.profile_id
+            and current.items == task.items
             and current.output_format == task.output_format
             and umo in current.umos
-            and current_profile.revision == profile.revision
-            and current_profile.site_id == site.id
-            and current_site.revision == site.revision
-            and current_site.enabled
+        ):
+            return False
+        if expected_candidates is not None:
+            try:
+                self._assert_confirmation(
+                    snapshot.candidates, expected_candidates,
+                )
+            except DeliveryConfirmationStaleError:
+                return False
+        return self._snapshot_sources_unchanged(
+            snapshot.candidates, prepared,
         )
+
+    @staticmethod
+    def _prepared_sources(prepared: "_Prepared") -> tuple[tuple[str, int], ...]:
+        """本次内容要复核的 (站点, revision)；旧预览桩回退到单站对象。"""
+        if prepared.sites:
+            return prepared.sites
+        site = prepared.site
+        if site is not None:
+            return ((site.id, site.revision),)
+        return ()
+
+    def _snapshot_sources_unchanged(self, candidates, prepared) -> bool:
+        """配置快照里的候选 revision 与本次实际来源逐个一致。"""
+        expected = self._prepared_sources(prepared)
+        if not expected:
+            return True
+        revisions = {
+            candidate.id: candidate.revision for candidate in candidates
+        }
+        for site_id, revision in expected:
+            if revisions.get(site_id) != revision:
+                return False
+        return True
 
     async def _load_task(self, task_id: str) -> PushTask:
         try:
@@ -807,17 +1156,16 @@ class DeliveryService:
         except TaskStorageError as exc:
             raise DeliveryStorageError("无法读取任务。") from exc
 
-    async def _load_config(self, task: PushTask) -> tuple[object, object]:
+    async def _load_config(self, task_id: str):
+        """读取任务及其私有栏目方案版本，作为本次投递的配置快照。"""
         try:
-            profile = await self._profiles.get_profile(task.profile_id)
-            site = await self._sites.get_site(profile.site_id)
-        except ProfileNotFoundError as exc:
-            raise DeliveryNoContentError("profile_not_found") from exc
-        except SiteNotFoundError as exc:
-            raise DeliveryNoContentError("site_not_found") from exc
+            return await self._tasks.get_config_snapshot(task_id)
+        except TaskValidationError as exc:
+            raise DeliveryValidationError("task_id", exc.reason) from exc
+        except TaskNotFoundError as exc:
+            raise DeliveryNoContentError("task_not_found") from exc
         except Exception as exc:
             raise DeliveryStorageError("无法读取任务配置。") from exc
-        return profile, site
 
     async def _mark_page_safely(self, *args, **kwargs) -> None:
         try:
@@ -923,6 +1271,58 @@ class DeliveryService:
         return "failed"
 
 
+def _source_entries(
+    data: dict,
+) -> tuple[tuple[tuple[str, int], ...], tuple[dict[str, object], ...]]:
+    """从预览结果取出“实际来源站点”和逐栏来源。
+
+    旧预览桩不返回 sites/assignments：此时保持空元组，发送校验回退到
+    单站 site 对象，逐栏来源也不写库。
+    """
+    revisions: dict[str, int] = {}
+    raw_sites = data.get("sites")
+    if isinstance(raw_sites, list):
+        for entry in raw_sites:
+            if not isinstance(entry, dict):
+                continue
+            site_id = entry.get("site_id")
+            revision = entry.get("revision")
+            if isinstance(site_id, str) and site_id and type(revision) is int:
+                revisions.setdefault(site_id, revision)
+    raw_assignments = data.get("assignments")
+    sources: list[dict[str, object]] = []
+    seen: set[str] = set()
+    if isinstance(raw_assignments, list):
+        for entry in raw_assignments:
+            if not isinstance(entry, dict):
+                continue
+            content_type = entry.get("content_type")
+            site_id = entry.get("site_id")
+            if (
+                not isinstance(content_type, str) or not content_type
+                or not isinstance(site_id, str) or not site_id
+                or content_type in seen
+            ):
+                continue
+            revision = revisions.get(site_id)
+            if revision is None:
+                raw_revision = entry.get("revision")
+                revision = raw_revision if type(raw_revision) is int else None
+            if revision is None:
+                continue
+            label = entry.get("label")
+            site_name = entry.get("site_name")
+            seen.add(content_type)
+            sources.append({
+                "content_type": content_type,
+                "label": label if isinstance(label, str) else "",
+                "site_id": site_id,
+                "site_name": site_name if isinstance(site_name, str) else "",
+                "revision": revision,
+            })
+    return tuple(revisions.items()), tuple(sources)
+
+
 @dataclass(frozen=True, slots=True)
 class _Prepared:
     """一次投递的待发送内容：一个栏目一张图，文字/Markdown 只有一张。"""
@@ -932,6 +1332,12 @@ class _Prepared:
     content_hash: str
     content_status: str
     failed_sections: list[object]
+    site: object = None
+    multi_site: bool = False
+    # 本次内容实际使用的全部来源（拼合时是多站），发送前逐站复核。
+    sites: tuple[tuple[str, int], ...] = ()
+    # 逐栏来源，随执行记录持久化；后台详情据此展示每栏来源。
+    sources: tuple[dict[str, object], ...] = ()
 
 
 ALLOWED_IMAGE_STATUSES = frozenset({"success", "empty", "failed"})
@@ -992,7 +1398,7 @@ def _decode_section_images(
         return None
     if len(raw) > MAX_SECTION_IMAGES:
         return None
-    parsed: list[tuple[int, bytes | None, str | None, str]] = []
+    parsed: list[tuple[int, bytes | None, str | None, str, str | None]] = []
     refs: list[tuple[int, str, str]] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -1011,7 +1417,10 @@ def _decode_section_images(
             content_type = ""
         refs.append((index, label.strip(), content_type.strip()[:64]))
         if status == "failed":
-            parsed.append((index, None, label.strip(), content_type))
+            # 渲染器已给出具体原因（高度/字节/字符超限等），失败栏目保留它，
+            # 页面才能显示“知乎热榜 · 图片高度超限”这类可行动提示。
+            reason = _failure_reason(item.get("error")) or None
+            parsed.append((index, None, label.strip(), content_type, reason))
             continue
         encoded = item.get("png_base64")
         if not isinstance(encoded, str) or not encoded:
@@ -1024,18 +1433,18 @@ def _decode_section_images(
             return None
         if len(png) > MAX_SECTION_IMAGE_BYTES:
             return None
-        parsed.append((index, png, None, content_type))
+        parsed.append((index, png, None, content_type, None))
     parsed.sort(key=lambda entry: entry[0])
     if [entry[0] for entry in parsed] != list(range(1, len(parsed) + 1)):
         return None
-    slots = tuple((index, png) for index, png, _, _ in parsed)
+    slots = tuple((index, png) for index, png, _, _, _ in parsed)
     failed_entries = tuple(
         {
             "label": label,
-            "reason": "image_failed",
+            "reason": reason or "image_failed",
             "image_index": index,
         }
-        for index, png, label, _ in parsed
+        for index, png, label, _, reason in parsed
         if png is None and label
     )
     refs.sort(key=lambda entry: entry[0])

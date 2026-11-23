@@ -20,7 +20,6 @@ from core.news import (
 from core.news_service import NewsService
 from core.sites import (
     SiteCreate,
-    SiteDisabledError,
     SiteNotFoundError,
     SiteService,
 )
@@ -324,11 +323,11 @@ class NewsServiceTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     async def _create(self, *, enabled: bool = True, token: str | None = None):
+        self._site_seq = getattr(self, "_site_seq", 0) + 1
         return await self.sites.create_site(
             SiteCreate(
-                name="虚构内网站点",
+                name=f"虚构内网站点 {self._site_seq}",
                 base_url="http://[::1]:8080/proxy//",
-                enabled=enabled,
                 timeout_seconds=7,
                 bearer_token=token,
             ),
@@ -342,16 +341,13 @@ class NewsServiceTest(unittest.IsolatedAsyncioTestCase):
             ).encode()
         return FakeNewsClient(body)
 
-    async def test_fetch_config_requires_enabled_site_and_hides_token(self) -> None:
+    async def test_fetch_config_hides_token(self) -> None:
         site = await self._create(token="sensitive-token")
         config = await self.sites.get_fetch_config(site.id)
         self.assertEqual(config.base_url, "http://[::1]:8080/proxy")
         self.assertEqual(config.bearer_token, "sensitive-token")
         self.assertNotIn("sensitive-token", repr(config))
 
-        disabled = await self._create(enabled=False)
-        with self.assertRaises(SiteDisabledError):
-            await self.sites.get_fetch_config(disabled.id)
         with self.assertRaises(SiteNotFoundError):
             await self.sites.get_fetch_config("a" * 32)
 
@@ -382,13 +378,10 @@ class NewsServiceTest(unittest.IsolatedAsyncioTestCase):
         await service.close()
         self.assertTrue(client.closed)
 
-    async def test_disabled_and_missing_sites_do_not_call_client(self) -> None:
-        disabled = await self._create(enabled=False)
+    async def test_missing_site_does_not_call_client(self) -> None:
         client = self._client()
         service = NewsService(self.sites, client=client, clock=lambda: FETCHED_AT)
         await service.open()
-        with self.assertRaises(SiteDisabledError):
-            await service.preview(disabled.id)
         with self.assertRaises(SiteNotFoundError):
             await service.preview("a" * 32)
         self.assertEqual(client.calls, [])

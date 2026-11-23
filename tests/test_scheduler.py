@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import tempfile
 import unittest
 
 import httpx
 from core.content_client import ContentHttpClient
 from core.content_service import ContentService
-from core.profile_api import ProfileApi
+from core.plan_preview import PlanPreview, PlanPreviewResult
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.delivery import DeliveryLimits, DeliveryMessage, DeliverySendResult, DeliveryService, SendStatus
-from core.profiles import ContentProfileService, ProfileCreate
 from core.scheduler import SchedulerService, SchedulerValidationError
 from core.task_api import TaskApi
 from core.sites import SiteCreate, SiteService
@@ -50,9 +50,8 @@ class FakeSender:
 
 
 class StubApi:
-    async def preview_profile(self, payload, *, owner=None):
-        from core.profile_api import ProfileApiResult
-        return ProfileApiResult(200, {"status": "ok", "data": {
+    async def preview_site(self, payload, *, owner=None, site_id=None):
+        return PlanPreviewResult(200, {"status": "ok", "data": {
             "outputs": {"text": "内容", "markdown": "# 内容"},
             "failed_sections": [],
         }})
@@ -64,20 +63,16 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.tmp.name) / "db.sqlite3"
         self.sites = SiteService(self.path)
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
             name="调度站点", base_url="http://example.test/proxy",
-            enabled=True, timeout_seconds=5,
+            timeout_seconds=5,
         ))
-        self.profile = await self.profiles.create_profile(
-            ProfileCreate(name="调度组合", site_id=self.site.id, items=[item()]),
-        )
         self.clock_now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
         self.sender = FakeSender()
         self.delivery = DeliveryService(
-            tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-            profile_api=StubApi(), store=self.sites.store, sender=self.sender,
+            tasks=self.tasks, sites=self.sites,
+            plan_preview=StubApi(), store=self.sites.store, sender=self.sender,
             limits=DeliveryLimits(max_execution_seconds=5),
         )
         self.scheduler = SchedulerService(
@@ -93,7 +88,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
 
     async def task(self, umos=None, time="08:30", timezone_name="Asia/Shanghai"):
         return await self.tasks.create_task(TaskCreate(
-            name="每日任务", profile_id=self.profile.id, output_format="text",
+            name="每日任务", items=[item()], output_format="text",
+            sites=[self.site.id],
             umos=umos if umos is not None else ["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "daily", "timezone": timezone_name, "time": time},
         ))
@@ -110,6 +106,10 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         claims = await self.sites.store.list_schedule_claims(limit=10, offset=0)
         self.assertEqual(len(claims), 1)
         self.assertEqual(claims[0].status, "succeeded")
+        # claim 行记录任务 id 与该任务私有方案的 revision。
+        snapshot = await self.tasks.get_config_snapshot(task.id)
+        self.assertEqual(claims[0].task_id, task.id)
+        self.assertEqual(claims[0].profile_revision, snapshot.plan_revision)
         tracking = await self.scheduler.list_tracking(limit=5, offset=0)
         self.assertEqual(len(tracking["claims"]), 1)
         self.assertEqual(tracking["claims"][0]["execution_id"], claims[0].execution_id)
@@ -130,7 +130,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         task = await self.task()
         await self.scheduler.enable_task(task.id, 1)
         updated = await self.tasks.update_task(task.id, TaskUpdate(
-            name="改名", profile_id=self.profile.id, output_format="text",
+            name="改名", items=[item()], output_format="text",
             umos=list(task.umos), expected_revision=2,
         ))
         self.assertFalse(updated.enabled)
@@ -152,17 +152,20 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.scheduler.check_once(), 1)
         self.assertEqual(len(self.sender.calls), 1)
 
-    async def test_disabled_and_site_disabled_do_not_send(self):
+    async def test_missing_candidate_still_sends_safe_alert(self):
+        """候选失效不再静默跳过：到期后仍要发一条安全异常提示。"""
         task = await self.task()
         await self.scheduler.enable_task(task.id, 1)
-        from core.sites import SiteUpdate
-        await self.sites.update_site(self.site.id, SiteUpdate(
-            name="调度站点", base_url="http://example.test/proxy",
-            enabled=False, timeout_seconds=5, expected_revision=1,
-        ))
+        # 站点级启用已移除：清空候选行，模拟候选全部失效的历史任务。
+        with sqlite3.connect(self.path) as connection, connection:
+            connection.execute(
+                "DELETE FROM push_task_sites WHERE task_id = ?", (task.id,),
+            )
         self.clock_now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
-        self.assertEqual(await self.scheduler.check_once(), 0)
-        self.assertEqual(self.sender.calls, [])
+        self.assertEqual(await self.scheduler.check_once(), 1)
+        self.assertEqual(len(self.sender.calls), 1)
+        self.assertEqual(self.sender.calls[0].kind, "text")
+        self.assertIn("60sAPI推送服务异常", self.sender.calls[0].text or "")
 
     async def test_second_same_time_task_rechecks_late_window(self):
         first = await self.task()
@@ -239,10 +242,10 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         )
         await content.open()
         try:
-            api = ProfileApi(self.profiles, content, self.sites)
+            api = PlanPreview(self.tasks, content, self.sites)
             delivery = DeliveryService(
-                tasks=self.tasks, profiles=self.profiles, sites=self.sites,
-                profile_api=api, store=self.sites.store, sender=self.sender,
+                tasks=self.tasks, sites=self.sites,
+                plan_preview=api, store=self.sites.store, sender=self.sender,
                 limits=DeliveryLimits(max_execution_seconds=5),
             )
             scheduler = SchedulerService(
@@ -371,7 +374,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_interval_due_once_and_late_restart(self):
         task = await self.tasks.create_task(TaskCreate(
-            name="间隔调度", profile_id=self.profile.id, output_format="text",
+            name="间隔调度", items=[item()], output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
                       "start_at": "2026-01-01T00:00", "interval_minutes": 60},
@@ -386,7 +390,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_weekly_selected_day_only(self):
         task = await self.tasks.create_task(TaskCreate(
-            name="每周任务", profile_id=self.profile.id, output_format="text",
+            name="每周任务", items=[item()], output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "weekly", "timezone": "Asia/Shanghai",
                       "time": "08:30", "weekdays": [3]},
@@ -469,7 +474,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_task_api_enable_disable_and_revision(self):
         task = await self.task()
         api = TaskApi(
-            self.tasks, self.profiles, self.sites,
+            self.tasks, self.sites,
             clock=lambda: self.clock_now, scheduler=self.scheduler,
         )
         result = await api.enable_task(task.id, {"expected_revision": 1})
@@ -485,7 +490,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_cron_no_candidate_rejects_enable_without_state(self):
         task = await self.tasks.create_task(TaskCreate(
-            name="Cron无候选", profile_id=self.profile.id, output_format="text",
+            name="Cron无候选", items=[item()], output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "UTC",
                       "expression": "0 0 31 2 *"},
@@ -509,7 +515,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_cron_late_boundary_restart_rollback_and_config_edit(self):
         task = await self.tasks.create_task(TaskCreate(
-            name="Cron恢复边界", profile_id=self.profile.id, output_format="text",
+            name="Cron恢复边界", items=[item()], output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "UTC",
                       "expression": "0 1 * * *"},
@@ -529,7 +536,7 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await second.check_once(), 0)
         await second.close()
         await self.tasks.update_task(task.id, TaskUpdate(
-            name="Cron改配置", profile_id=self.profile.id,
+            name="Cron改配置", items=[item()],
             output_format="text", umos=list(task.umos),
             expected_revision=(await self.tasks.get_task(task.id)).revision,
         ))
@@ -538,7 +545,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_cron_due_once_and_repeat_scan(self):
         task = await self.tasks.create_task(TaskCreate(
-            name="Cron调度", profile_id=self.profile.id, output_format="text",
+            name="Cron调度", items=[item()], output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "cron", "timezone": "UTC",
                       "expression": "0 1 * * *"},
@@ -551,7 +559,8 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_interval_late_restart_and_config_change(self):
         task = await self.tasks.create_task(TaskCreate(
-            name="间隔边界", profile_id=self.profile.id, output_format="text",
+            name="间隔边界", items=[item()], output_format="text",
+            sites=[self.site.id],
             umos=["aiocqhttp:GroupMessage:g:1"],
             schedule={"kind": "interval", "timezone": "UTC",
                       "start_at": "2026-01-01T00:00", "interval_minutes": 60},

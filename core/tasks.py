@@ -1,6 +1,8 @@
-"""推送任务的领域模型、UMO 白名单校验和持久化服务。
+"""推送任务的领域模型、内容栏目校验、UMO 白名单和持久化服务。
 
-本轮只保存配置，不发送消息、不调度、不执行上游请求。任务固定保持未启用。
+内容栏目属于任务自己：每个任务保存一份独立的栏目顺序与每栏条数，
+编辑一个任务不会改变其他任务。本轮只保存配置，不发送消息、不调度、
+不执行上游请求；新任务固定保持未启用。
 """
 
 from __future__ import annotations
@@ -17,13 +19,16 @@ from .schedule import (
     ScheduleValidationError,
     parse_schedule,
 )
-from .profiles import (
-    ContentProfileService,
-    ProfileNotFoundError,
-    ProfileStorageError,
-    normalize_profile_id,
+from .image_styles import DEFAULT_STYLE_ID, parse_style_id, resolve_style_id
+from .content_plan import (
+    PlanItem,
+    PlanValidationError,
+    normalize_plan_items,
+    plan_items_from_stored,
+    plan_items_to_stored,
 )
 from .site_store import (
+    SiteRecordNotFoundError,
     SiteStore,
     StoredTask,
     TaskRecordNotFoundError,
@@ -42,6 +47,7 @@ MAX_UMO_LENGTH = 512
 MAX_PLATFORM_ID_LENGTH = 128
 MAX_SESSION_ID_LENGTH = 384
 SCHEDULE_UNSET = object()
+IMAGE_STYLE_UNSET = object()
 SUPPORTED_OUTPUT_FORMATS = ("text", "markdown", "image")
 OUTPUT_FORMAT_LABELS = {
     "text": "纯文字",
@@ -99,7 +105,7 @@ class TaskStorageError(TaskError):
 class PushTask:
     id: str
     name: str
-    profile_id: str
+    items: tuple[PlanItem, ...]
     output_format: str
     umos: tuple[str, ...]
     enabled: bool
@@ -109,6 +115,16 @@ class PushTask:
     schedule: DailySchedule | WeeklySchedule | IntervalSchedule | CronSchedule | None = None
     schedule_raw: dict[str, object] | None = None
     schedule_error: str | None = None
+    sites: tuple[str, ...] = ()
+    image_style: str = DEFAULT_STYLE_ID
+
+    @property
+    def profile_id(self) -> str:
+        """兼容字段：执行记录仍以 profile_id 列保存本任务的内容方案 id。
+
+        方案行与任务同 id，且只有这个任务会读取它，因此不存在共享可变组合。
+        """
+        return self.id
 
     @property
     def output_label(self) -> str:
@@ -120,43 +136,64 @@ class PushTask:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskCandidateSite:
+    """任务的一个候选站点；顺序即尝试顺序。"""
+
+    id: str
+    revision: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class TaskConfigSnapshot:
     task: PushTask
-    profile_id: str | None
-    profile_revision: int | None
-    site_id: str | None
-    site_revision: int | None
-    site_enabled: bool | None
+    plan_revision: int | None
+    candidates: tuple[TaskCandidateSite, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class TaskCreate:
     name: object
-    profile_id: object
+    items: object
     output_format: object
     umos: object
     schedule: object = None
+    sites: object = None
+    image_style: object = IMAGE_STYLE_UNSET
 
 
 @dataclass(frozen=True, slots=True)
 class TaskUpdate:
     name: object
-    profile_id: object
+    items: object
     output_format: object
     umos: object
     expected_revision: object
     schedule: object = SCHEDULE_UNSET
+    sites: object = None
+    image_style: object = IMAGE_STYLE_UNSET
+
+
+# 新选候选的统一上限：表单、草稿测试、新建和改选都按它校验。历史任务
+# 可能保存过更长的列表，未改动时原序保留，能力测试与预览仍检查完整列表。
+MAX_TASK_SITES = 5
+MAX_DRAFT_SITES = MAX_TASK_SITES
+
+
+@dataclass(frozen=True, slots=True)
+class TaskDraft:
+    """未保存表单草稿：只用于能力测试与预览，不写数据库。"""
+
+    name: str
+    items: tuple[PlanItem, ...]
+    sites: tuple[str, ...]
+    output_format: str
+    image_style: str
 
 
 class PushTaskService:
-    """推送任务 CRUD；与站点/组合共用同一个 SQLite 连接和事务锁。"""
+    """推送任务 CRUD；与站点共用同一个 SQLite 连接和事务锁。"""
 
-    def __init__(
-        self,
-        profiles: ContentProfileService,
-        store: SiteStore,
-    ) -> None:
-        self._profiles = profiles
+    def __init__(self, store: SiteStore) -> None:
         self._store = store
 
     async def list_tasks(self) -> list[PushTask]:
@@ -186,27 +223,104 @@ class PushTaskService:
             raise TaskStorageError("读取任务配置快照失败。") from exc
         return TaskConfigSnapshot(
             task=_to_task(stored.task),
-            profile_id=stored.profile_id,
-            profile_revision=stored.profile_revision,
-            site_id=stored.site_id,
-            site_revision=stored.site_revision,
-            site_enabled=stored.site_enabled,
+            plan_revision=stored.profile_revision,
+            candidates=tuple(
+                TaskCandidateSite(
+                    id=candidate.id,
+                    revision=candidate.revision,
+                )
+                for candidate in stored.candidates
+            ),
+        )
+
+    async def normalize_draft(self, payload: object) -> TaskDraft:
+        """校验并归一化表单草稿；与保存任务使用同一套字段规则。"""
+        if not isinstance(payload, dict):
+            raise TaskValidationError("body", "请求体必须是 JSON 对象")
+        raw_sites = payload.get("sites")
+        if isinstance(raw_sites, (list, tuple)):
+            # 新选候选上限为 5，且不静默去重，否则预览会遍历比能力
+            # 测试更多的站点。历史任务的超长列表另由下方按 task_id 放行。
+            seen: set[str] = set()
+            for raw_site in raw_sites:
+                if not isinstance(raw_site, str):
+                    continue
+                site_id = raw_site.strip()
+                if site_id in seen:
+                    raise TaskValidationError("sites", "候选站点不能重复")
+                seen.add(site_id)
+            # 没有任务上下文时，超限在解析站点前直接拒绝；带任务 ID 的
+            # 历史长列表要等站点解析后再与已保存列表比对。
+            has_task_context = isinstance(payload.get("task_id"), str) and bool(
+                payload["task_id"].strip()
+            )
+            if len(raw_sites) > MAX_DRAFT_SITES and not has_task_context:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                )
+        raw_name = payload.get("name")
+        name = (
+            "草稿预览"
+            if raw_name is None or raw_name == ""
+            else _normalize_task_name(raw_name)
+        )
+        items = _normalize_plan_items(payload.get("items"))
+        if not items:
+            raise TaskValidationError("items", "请至少添加一个内容栏目")
+        output_format = normalize_output_format(payload.get("output_format"))
+        image_style = normalize_image_style(
+            payload.get("image_style", DEFAULT_STYLE_ID),
+        )
+        sites = await self._resolve_site_ids(payload.get("sites"))
+        if len(sites) > MAX_DRAFT_SITES:
+            # 只有“编辑历史任务且候选与已保存完全一致”才允许超过新上限：
+            # 这样旧长列表仍能在编辑窗口测试和预览，新建或改选仍被拒绝。
+            task_id = payload.get("task_id")
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                )
+            try:
+                saved = await self.get_task(task_id)
+            except TaskNotFoundError:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                ) from None
+            if tuple(saved.sites) != sites:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_DRAFT_SITES} 个候选站点",
+                )
+        return TaskDraft(
+            name=name,
+            items=items,
+            sites=sites,
+            output_format=output_format,
+            image_style=image_style,
         )
 
     async def create_task(self, data: TaskCreate) -> PushTask:
         name = _normalize_task_name(data.name)
-        profile_id = _normalize_profile_id(data.profile_id)
+        items = _normalize_plan_items(data.items)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
+        image_style = (
+            DEFAULT_STYLE_ID
+            if data.image_style is IMAGE_STYLE_UNSET
+            else normalize_image_style(data.image_style)
+        )
         schedule = parse_schedule(data.schedule)
-        await self._require_profile(profile_id)
+        site_ids = await self._resolve_site_ids(
+            data.sites, limit=MAX_TASK_SITES,
+        )
         try:
             stored = await self._store.create_task(
                 task_id=uuid.uuid4().hex,
                 name=name,
-                profile_id=profile_id,
+                items=plan_items_to_stored(items),
                 output_format=output_format,
                 umos=umos,
+                image_style=image_style,
+                site_ids=site_ids,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
                 schedule_time=(
@@ -242,20 +356,29 @@ class PushTaskService:
         normalized_id = normalize_task_id(task_id)
         expected_revision = _normalize_expected_revision(data.expected_revision)
         name = _normalize_task_name(data.name)
-        profile_id = _normalize_profile_id(data.profile_id)
+        items = _normalize_plan_items(data.items)
         output_format = normalize_output_format(data.output_format)
         umos = normalize_umos(data.umos)
         schedule_unchanged = data.schedule is SCHEDULE_UNSET
         schedule = None if schedule_unchanged else parse_schedule(data.schedule)
-        await self._require_profile(profile_id)
+        image_style = (
+            None
+            if data.image_style is IMAGE_STYLE_UNSET
+            else normalize_image_style(data.image_style)
+        )
+        site_ids = await self._resolve_updated_site_ids(
+            normalized_id, data.sites,
+        )
         try:
             stored = await self._store.update_task(
                 normalized_id,
                 name=name,
-                profile_id=profile_id,
+                items=plan_items_to_stored(items),
                 output_format=output_format,
                 umos=umos,
                 expected_revision=expected_revision,
+                image_style=image_style,
+                site_ids=site_ids,
                 schedule_unchanged=schedule_unchanged,
                 schedule_kind=schedule.kind if schedule else None,
                 schedule_timezone=schedule.timezone if schedule else None,
@@ -315,13 +438,62 @@ class PushTaskService:
         except Exception as exc:
             raise TaskStorageError("删除推送任务失败。") from exc
 
-    async def _require_profile(self, profile_id: str) -> None:
-        try:
-            await self._profiles.get_profile(profile_id)
-        except ProfileNotFoundError:
-            raise
-        except ProfileStorageError:
-            raise
+    async def _resolve_updated_site_ids(
+        self,
+        task_id: str,
+        raw: object,
+    ) -> tuple[str, ...] | None:
+        """省略 sites 时保持原有候选与顺序；显式传入才替换。
+
+        历史任务可能已有超过新选上限的长列表：原样提交（顺序与成员都
+        未变）时允许保存；一旦改动候选就按新上限重新校验。
+        """
+        if raw is not None:
+            resolved = await self._resolve_site_ids(raw)
+            current = await self.get_task(task_id)
+            unchanged = tuple(current.sites) == resolved
+            if not unchanged and len(resolved) > MAX_TASK_SITES:
+                raise TaskValidationError(
+                    "sites", f"最多 {MAX_TASK_SITES} 个候选站点",
+                )
+            return resolved
+        current = await self.get_task(task_id)
+        if current.sites:
+            return None
+        # 组合不再绑定站点：没有候选就无从执行，要求管理员明确选择。
+        raise TaskValidationError("sites", "请至少选择一个候选站点")
+
+    async def _resolve_site_ids(
+        self,
+        raw: object,
+        *,
+        limit: int | None = None,
+    ) -> tuple[str, ...]:
+        """候选站点顺序即执行顺序；组合不再提供默认站点。"""
+        if raw is None:
+            raise TaskValidationError("sites", "请至少选择一个候选站点")
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
+            raise TaskValidationError("sites", "必须是站点 id 列表")
+        ordered: list[str] = []
+        for item in raw:
+            if not isinstance(item, str) or not item.strip():
+                raise TaskValidationError("sites", "站点 id 必须是非空字符串")
+            site_id = item.strip()
+            if site_id in ordered:
+                continue
+            try:
+                await self._store.get_site(site_id)
+            except SiteRecordNotFoundError:
+                raise TaskNotFoundError(site_id) from None
+            except Exception as exc:
+                # 存储故障不能被伪装成“站点不存在”。
+                raise TaskStorageError("读取候选站点失败。") from exc
+            ordered.append(site_id)
+        if not ordered:
+            raise TaskValidationError("sites", "至少需要一个候选站点")
+        if limit is not None and len(ordered) > limit:
+            raise TaskValidationError("sites", f"最多 {limit} 个候选站点")
+        return tuple(ordered)
 
 
 def normalize_task_id(value: object) -> str:
@@ -350,6 +522,17 @@ def normalize_output_format(value: object) -> str:
             "必须是 text、markdown 或 image",
         )
     return value
+
+
+def normalize_image_style(value: object) -> str:
+    """严格校验任务提交的图片样式；未知值转成字段级 400。"""
+    try:
+        return parse_style_id(value)
+    except ValueError:
+        raise TaskValidationError(
+            "image_style",
+            "必须是已登记的图片样式",
+        ) from None
 
 
 def normalize_umos(value: object) -> tuple[str, ...]:
@@ -431,15 +614,15 @@ def _normalize_task_name(value: object) -> str:
         raise TaskValidationError("name", exc.reason) from exc
 
 
-def _normalize_profile_id(value: object) -> str:
+def _normalize_plan_items(value: object) -> tuple[PlanItem, ...]:
     try:
-        return normalize_profile_id(value)
-    except Exception as exc:
-        reason = getattr(exc, "reason", "必须是有效的内容组合 ID")
-        raise TaskValidationError("profile_id", str(reason)) from exc
+        return normalize_plan_items(value)
+    except PlanValidationError as exc:
+        raise TaskValidationError(exc.field, exc.reason) from exc
 
 
 def _to_task(stored: StoredTask) -> PushTask:
+    sites = tuple(stored.sites)
     schedule = None
     raw = None
     error = None
@@ -487,9 +670,10 @@ def _to_task(stored: StoredTask) -> PushTask:
     return PushTask(
         id=stored.id,
         name=stored.name,
-        profile_id=stored.profile_id,
+        items=plan_items_from_stored(stored.items),
         output_format=stored.output_format,
         umos=tuple(stored.umos),
+        sites=sites,
         enabled=stored.enabled,
         revision=stored.revision,
         created_at=stored.created_at,
@@ -497,6 +681,7 @@ def _to_task(stored: StoredTask) -> PushTask:
         schedule=schedule,
         schedule_raw=raw,
         schedule_error=error,
+        image_style=resolve_style_id(getattr(stored, "image_style", None)),
     )
 
 
@@ -505,6 +690,7 @@ __all__ = [
     "MAX_UMO_LENGTH",
     "OUTPUT_FORMAT_LABELS",
     "SUPPORTED_OUTPUT_FORMATS",
+    "PlanItem",
     "PushTask",
     "PushTaskService",
     "TaskConflictError",

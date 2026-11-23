@@ -1,6 +1,6 @@
 /*
  * 真实后端渲染的图片预览与逐张下载回归。
- * 站点指向本机模拟上游（返回真实 60s JSON），组合含两个栏目；预览与生成
+ * 站点指向本机模拟上游（返回真实 60s JSON），任务含两个栏目；预览与生成
  * 图片都走真实插件后端与真实渲染器，不使用 route fixture 伪造 images。
  *
  * ASTRBOT_URL=... ASTRBOT_PASSWORD=... ASTRBOT_PLUGIN=... \
@@ -25,7 +25,8 @@ const WAIT = 60000;
 const stamp = Date.now();
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 let token;
-const ids = { site: null, profile: null };
+const ids = { site: null, task: null };
+const taskName = "真实渲染任务" + stamp;
 const upstreamCalls = [];
 const NEWS_COUNT = 40;
 const ZHIHU_COUNT = 45;
@@ -95,24 +96,38 @@ async function frameOf(page) {
   return frame;
 }
 
-async function openProfilePreview(page, frame) {
+async function openTaskPreview(frame) {
   await frame.waitForFunction(
     () => document.getElementById("sites-list")?.getAttribute("aria-busy") === "false",
     null, { timeout: WAIT },
   );
+  // 宿主 iframe 内合成点击偶发被 Dashboard 覆盖层吞掉，这里走同一套 hash 路由。
   await frame.evaluate(() => {
-    if (document.getElementById("view-profiles")?.hidden !== false) {
-      window.location.hash = "#profiles";
+    if (document.getElementById("view-tasks")?.hidden !== false) {
+      window.location.hash = "#tasks";
     }
   });
   await frame.waitForFunction(
-    () => document.getElementById("view-profiles")?.hidden === false,
+    () => document.getElementById("view-tasks")?.hidden === false,
     null, { timeout: WAIT },
   );
-  await frame.waitForFunction((id) =>
-    [...document.querySelectorAll("#profile-preview-select option")]
-      .some((option) => option.value === id), ids.profile, { timeout: WAIT });
-  await frame.selectOption("#profile-preview-select", ids.profile);
+  // 预览入口在任务卡片上：点“预览内容”按已保存的任务配置请求预览。
+  await frame.waitForFunction((id) => [...document.querySelectorAll("#tasks-list .task-card")]
+    .some((node) => node.dataset.taskId === id), ids.task, { timeout: WAIT });
+  await frame.evaluate((id) => {
+    const card = [...document.querySelectorAll("#tasks-list .task-card")]
+      .find((node) => node.dataset.taskId === id);
+    card.querySelector(".task-card-actions button").click();
+  }, ids.task);
+  await frame.waitForFunction(
+    () => document.getElementById("task-preview-dialog")?.open === true,
+    null, { timeout: WAIT },
+  );
+  // 预览拿到 image_snapshot 后“生成长图”才可用。
+  await frame.waitForFunction(
+    () => !document.getElementById("task-preview-image-button").disabled,
+    null, { timeout: WAIT },
+  );
 }
 
 async function openPage(browser, width) {
@@ -132,13 +147,13 @@ async function openPage(browser, width) {
     }
   });
   const frame = await frameOf(page);
-  await openProfilePreview(page, frame);
+  await openTaskPreview(frame);
   return { page, frame };
 }
 
 async function readFigures(frame) {
   return frame.evaluate(() => {
-    const host = document.getElementById("profile-image-pages");
+    const host = document.getElementById("task-preview-image-pages");
     return [...host.querySelectorAll("figure")].map((figure) => {
       const image = figure.querySelector("img");
       return {
@@ -166,15 +181,18 @@ async function readFigures(frame) {
   });
   assert.ok([200, 201].includes(site.status), JSON.stringify(site.body));
   ids.site = site.body.data.id;
-  const profile = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/profiles", {
-    name: "真实渲染组合" + stamp, site_id: ids.site,
+  const task = await api("POST", "/api/v1/plugins/extensions/" + PLUGIN + "/tasks", {
+    name: taskName,
     items: [
-      { content_type: "daily_news", params: {}, limit: 20 },
-      { content_type: "zhihu_hot", params: {}, limit: 20 },
+      { content_type: "daily_news", limit: 20 },
+      { content_type: "zhihu_hot", limit: 20 },
     ],
+    sites: [ids.site],
+    output_format: "text",
+    umos: [],
   });
-  assert.ok([200, 201].includes(profile.status), JSON.stringify(profile.body));
-  ids.profile = profile.body.data.id;
+  assert.ok([200, 201].includes(task.status), JSON.stringify(task.body));
+  ids.task = task.body.data.id;
 
   const browser = await chromium.launch({
     headless: true, executablePath: CHROME, args: ["--no-sandbox"],
@@ -189,35 +207,30 @@ async function readFigures(frame) {
     for (const width of [1440, 390]) {
       const { page, frame } = await openPage(browser, width);
       try {
-        await frame.evaluate(() => document.getElementById("profile-preview-button").click());
-        await frame.waitForFunction(
-          () => !document.getElementById("profile-image-button").disabled,
-          null, { timeout: WAIT },
-        );
-        await frame.evaluate(() => document.getElementById("profile-image-button").click());
+        await frame.evaluate(() => document.getElementById("task-preview-image-button").click());
         try {
           await frame.waitForFunction(
-            () => document.querySelectorAll("#profile-image-pages figure").length === 2,
+            () => document.querySelectorAll("#task-preview-image-pages figure").length === 2,
             null, { timeout: WAIT },
           );
         } catch (error) {
           throw new Error("真实渲染未出图: " + JSON.stringify(await frame.evaluate(() => ({
-            state: document.getElementById("profile-image-state").textContent,
-            hint: document.getElementById("profile-image-hint").textContent,
-            hintHidden: document.getElementById("profile-image-hint").hidden,
-            figures: document.querySelectorAll("#profile-image-pages figure").length,
-            button: document.getElementById("profile-image-button").textContent,
-            previewStatus: document.getElementById("profile-preview-status").textContent,
+            state: document.getElementById("task-preview-image-state").textContent,
+            hint: document.getElementById("task-preview-image-hint").textContent,
+            hintHidden: document.getElementById("task-preview-image-hint").hidden,
+            figures: document.querySelectorAll("#task-preview-image-pages figure").length,
+            button: document.getElementById("task-preview-image-button").textContent,
+            previewStatus: document.getElementById("task-preview-status").textContent,
           }))));
         }
         // 图片是 loading="lazy"：逐张滚入视口后再等解码，才能读到 naturalWidth/Height
         for (let position = 0; position < 2; position += 1) {
           await frame.evaluate((index) => {
-            const figure = document.querySelectorAll("#profile-image-pages figure")[index];
+            const figure = document.querySelectorAll("#task-preview-image-pages figure")[index];
             if (figure) figure.scrollIntoView({ block: "center" });
           }, position);
           await frame.waitForFunction((index) => {
-            const image = document.querySelectorAll("#profile-image-pages figure")[index]
+            const image = document.querySelectorAll("#task-preview-image-pages figure")[index]
               ?.querySelector("img");
             return Boolean(image) && image.complete && image.naturalWidth > 0;
           }, position, { timeout: WAIT });
@@ -247,7 +260,7 @@ async function readFigures(frame) {
         for (const [index, expected] of [[0, "daily_news"], [1, "zhihu_hot"]]) {
           const downloadPromise = page.waitForEvent("download", { timeout: WAIT });
           await frame.evaluate((position) => {
-            const figure = document.querySelectorAll("#profile-image-pages figure")[position];
+            const figure = document.querySelectorAll("#task-preview-image-pages figure")[position];
             figure.querySelector("button").click();
           }, index);
           const download = await downloadPromise;
@@ -262,8 +275,8 @@ async function readFigures(frame) {
         }
 
         const state = await frame.evaluate(() => ({
-          state: document.getElementById("profile-image-state").textContent,
-          panel: document.querySelector(".profile-image-panel").innerText,
+          state: document.getElementById("task-preview-image-state").textContent,
+          panel: document.querySelector(".preview-image-panel").innerText,
         }));
         check(state.state.includes("已生成 2 张栏目长图"), "状态行按张计数: " + state.state);
         check(!state.panel.includes("页"), "面板不出现分页字样");
@@ -300,7 +313,7 @@ async function readFigures(frame) {
     console.log("PROFILE IMAGE REAL UI PASS", { assertions, report, upstreamCalls: upstreamCalls.length });
   } finally {
     await browser.close();
-    for (const [id, kind] of [[ids.profile, "profiles"], [ids.site, "sites"]]) {
+    for (const [id, kind] of [[ids.task, "tasks"], [ids.site, "sites"]]) {
       if (!id) continue;
       const current = await api("GET", "/api/v1/plugins/extensions/" + PLUGIN + "/" + kind + "/" + id);
       if (current.status === 200) {

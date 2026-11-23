@@ -8,7 +8,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .profiles import ContentProfileService
 from .sites import SiteService
 from .tasks import OUTPUT_FORMAT_LABELS, PushTaskService
 
@@ -43,13 +42,11 @@ class ChatCommandService:
     def __init__(
         self,
         tasks: PushTaskService,
-        profiles: ContentProfileService,
         sites: SiteService,
         content_query=None,
         image_query=None,
     ) -> None:
         self._tasks = tasks
-        self._profiles = profiles
         self._sites = sites
         self._content_query = content_query
         self._image_query = image_query
@@ -117,21 +114,17 @@ class ChatCommandService:
 
     async def _visible_tasks(self, umo: str) -> list[VisibleTask]:
         tasks = await self._tasks.list_tasks()
-        profiles = await self._profiles.list_profiles()
         sites = await self._sites.list_sites()
-        profile_by_id = {profile.id: profile for profile in profiles}
-        site_by_id = {site.id: site for site in sites}
+        known_site_ids = {site.id for site in sites}
         visible: list[VisibleTask] = []
         for task in tasks:
             # Exact UMO membership only. No prefix, bare ID, platform or
             # member-isolation fallback; the current UMO is never widened.
             if umo not in task.umos:
                 continue
-            profile = profile_by_id.get(task.profile_id)
-            if profile is None:
-                continue
-            site = site_by_id.get(profile.site_id)
-            if site is None or not site.enabled:
+            # 任务自带栏目即视为已配置内容；候选里至少有一个仍存在的
+            # 站点才可能查询到内容。
+            if not any(site_id in known_site_ids for site_id in task.sites):
                 continue
             visible.append(VisibleTask(
                 id=task.id,

@@ -26,13 +26,14 @@ function detail(caseData) {
     id: caseData.id,
     task_id: "task-1",
     task_name: caseData.taskName,
-    profile_id: "profile-1", profile_revision: 1,
+    items: [{ content_type: "daily_news", label: "每日新闻", limit: null }],
+    sites: [{ id: "site-1", name: "夹具站点", enabled: true, revision: 1 }],
     site_id: "site-1", site_revision: 1,
     output_format: caseData.outputFormat || "image",
     content_status: caseData.contentStatus || (caseData.status === "success" ? "complete" : "partial"),
     content_hash: "hash",
     status: caseData.status || "partial",
-    error_code: null,
+    error_code: caseData.errorCode || null,
     created_at: "2026-11-06T00:00:00Z", updated_at: "2026-11-06T00:00:00Z",
     image_model: caseData.model,
     image_record_count: caseData.records,
@@ -201,6 +202,48 @@ const CASES = {
       { image_index: 2, status: "success" },
       { image_index: 3, status: "skipped", error_code: "config_changed" },
     ])],
+  },
+  // 发送中断：第一张已调用发送器后超时，后续目标预算耗尽（未调用），
+  // 每个目标剩余槽位因前一条结果未知而跳过。
+  "copy-send-interrupted": {
+    id: "copy-send-interrupted", taskName: "发送中断记录", model: "sections",
+    status: "unknown", contentStatus: "complete", errorCode: "sender_timeout",
+    slots: 3, generated: 3, records: 4, delivered: 0, skipped: 2,
+    imagePartial: false,
+    failedSections: [],
+    targets: [{
+      position: 0, umo: "fake_qq_01:GroupMessage:g0", status: "unknown",
+      error_code: "sender_timeout", delivered_image_count: 0,
+      skipped_image_count: 1, section_image_count: 2,
+      images: [
+        { image_index: 1, status: "unknown", error_code: "sender_timeout", label: "每日新闻" },
+        { image_index: 2, status: "skipped", error_code: "skipped_after_send_unknown", label: "知乎热榜" },
+      ],
+    }, {
+      position: 1, umo: "fake_qq_01:GroupMessage:g1", status: "unknown",
+      error_code: "sender_budget_exhausted", delivered_image_count: 0,
+      skipped_image_count: 1, section_image_count: 2,
+      images: [
+        { image_index: 1, status: "unknown", error_code: "sender_budget_exhausted", label: "每日新闻" },
+        { image_index: 2, status: "skipped", error_code: "skipped_after_send_unknown", label: "知乎热榜" },
+      ],
+    }],
+  },
+  // 发送成功但写投递记录失败：执行级错误码要译成中文，目标本身仍是成功。
+  "copy-record-failed": {
+    id: "copy-record-failed", taskName: "记录写入失败记录", model: "sections",
+    status: "unknown", contentStatus: "complete", errorCode: "record_after_send_failed",
+    slots: 1, generated: 1, records: 1, delivered: 1, skipped: 0,
+    imagePartial: false,
+    failedSections: [],
+    targets: [{
+      position: 0, umo: "fake_qq_01:GroupMessage:g0", status: "sending",
+      error_code: null, delivered_image_count: 0,
+      skipped_image_count: 0, section_image_count: 1,
+      images: [
+        { image_index: 1, status: "sending", label: "每日新闻" },
+      ],
+    }],
   },
   "copy-text-output": {
     id: "copy-text-output", taskName: "文字历史记录", model: "unknown",
@@ -401,6 +444,55 @@ async function frameOf(page) {
       document.getElementById("delivery-result").innerText);
     check(!legacyDetail.includes("栏目"), "旧记录详情不得出现栏目字样: " + legacyDetail);
     check(!legacyDetail.includes("张栏目图"), "旧记录详情不得出现张栏目图: " + legacyDetail);
+
+    // 9) 发送中断：执行级 / 目标级 / 槽位都译成中文，
+    //    并区分「已调用发送器后超时」与「预算耗尽未调用发送器」。
+    await frame.evaluate(() => {
+      const button = document.querySelector('button[aria-label="查看执行 copy-send-interrupted"]');
+      if (button) button.click();
+    });
+    await frame.waitForFunction(
+      () => document.getElementById("delivery-result")?.innerText.includes("copy-send-interrupted"),
+      null, { timeout: WAIT },
+    );
+    const interruptedDetail = await frame.evaluate(() =>
+      document.getElementById("delivery-result").innerText);
+    check(interruptedDetail.includes("错误码：已调用发送器后超时，结果未知"),
+      "执行级错误码要译成中文: " + interruptedDetail);
+    check(interruptedDetail.includes("结果未知（已调用发送器后超时，结果未知）"),
+      "目标级要说明已调用发送器后超时: " + interruptedDetail);
+    check(interruptedDetail.includes("结果未知（发送预算已耗尽，未调用发送器）"),
+      "目标级要说明预算耗尽未调用发送器: " + interruptedDetail);
+    check(interruptedDetail.includes("第 1 张 结果未知（每日新闻）（已调用发送器后超时，结果未知）"),
+      "槽位要带栏目与中文原因: " + interruptedDetail);
+    check(interruptedDetail.includes("第 2 张 未送达（知乎热榜）（因前一条结果未知未尝试）"),
+      "后续槽位要说明为何未尝试: " + interruptedDetail);
+    check(!interruptedDetail.includes("sender_timeout"),
+      "不得再暴露发送错误原码: " + interruptedDetail);
+    check(!interruptedDetail.includes("sender_budget_exhausted"),
+      "预算耗尽不得暴露原码: " + interruptedDetail);
+    check(!interruptedDetail.includes("skipped_after_send_unknown"),
+      "跳过原因不得暴露原码: " + interruptedDetail);
+
+    // 10) 发送成功但写投递记录失败：执行级译成中文，目标仍为成功
+    await frame.evaluate(() => {
+      const button = document.querySelector('button[aria-label="查看执行 copy-record-failed"]');
+      if (button) button.click();
+    });
+    await frame.waitForFunction(
+      () => document.getElementById("delivery-result")?.innerText.includes("copy-record-failed"),
+      null, { timeout: WAIT },
+    );
+    const recordFailedDetail = await frame.evaluate(() =>
+      document.getElementById("delivery-result").innerText);
+    check(recordFailedDetail.includes("错误码：发送器返回成功，但写入投递记录失败，请核对实际收件"),
+      "记录写入失败要按真实语义译成中文: " + recordFailedDetail);
+    check(!recordFailedDetail.includes("record_after_send_failed"),
+      "记录写入失败不得暴露原码: " + recordFailedDetail);
+    check(recordFailedDetail.includes("发送中 · 第 1 张 发送中（每日新闻）"),
+      "目标与图片应显示真实的未写回状态: " + recordFailedDetail);
+    check(!recordFailedDetail.includes("sending"),
+      "发送中不得显示英文原值: " + recordFailedDetail);
 
     console.log("DELIVERY STATUS COPY PASS", { assertions });
   } finally {

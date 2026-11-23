@@ -16,11 +16,10 @@ if (!BASE || !PW || !CHROME) {
 
 const WAIT_TIMEOUT = Number(process.env.DASH_NAV_TIMEOUT_MS || 15000);
 const TOTAL_TIMEOUT_MS = Number(process.env.DASH_NAV_TOTAL_TIMEOUT_MS || 600000);
-const VIEWS = ["sites", "preview", "profiles", "tasks", "executions"];
+const VIEWS = ["sites", "preview", "tasks", "executions"];
 const VIEW_TITLES = {
   sites: "站点管理",
   preview: "内容预览",
-  profiles: "内容组合",
   tasks: "推送任务",
   executions: "执行记录",
 };
@@ -231,7 +230,7 @@ async function assertNavContract(frame, label) {
   for (const item of state.navItems) {
     checkEqual(item.type, "button", label + " 导航项必须是 button type=button");
   }
-  checkEqual(state.views.length, VIEWS.length, label + " section.view 数量应为 5");
+  checkEqual(state.views.length, VIEWS.length, label + " section.view 数量应为 " + VIEWS.length);
   checkEqual(JSON.stringify(state.views.map((view) => view.dataView)),
     JSON.stringify(VIEWS), label + " section.view data-view 不符合契约");
   for (const view of state.views) {
@@ -417,7 +416,7 @@ async function runPreviewPersistence(page, frame, label) {
     fetchedAt: (document.getElementById("preview-fetched-at") || {}).textContent || "",
     itemCount: (document.getElementById("preview-item-count") || {}).textContent || "",
     source: (document.getElementById("preview-source") || {}).textContent || "",
-    sitesList: [...document.querySelectorAll("#sites-list li")]
+    sitesList: [...document.querySelectorAll("#sites-list > li")]
       .map((item) => item.textContent.replace(/\s+/g, " ").trim()),
   }));
   const upstreamAfterPreview = upstreamCalls.length;
@@ -434,7 +433,7 @@ async function runPreviewPersistence(page, frame, label) {
       fetchedAt: (document.getElementById("preview-fetched-at") || {}).textContent || "",
       itemCount: (document.getElementById("preview-item-count") || {}).textContent || "",
       source: (document.getElementById("preview-source") || {}).textContent || "",
-      sitesList: [...document.querySelectorAll("#sites-list li")]
+      sitesList: [...document.querySelectorAll("#sites-list > li")]
         .map((item) => item.textContent.replace(/\s+/g, " ").trim()),
     };
   });
@@ -467,7 +466,7 @@ async function dialogStates(frame) {
       siteDialogOpen: read("site-dialog"),
       discardDialogOpen: read("discard-dialog"),
       nameValue: (document.getElementById("name") || {}).value ?? null,
-      sitesList: [...document.querySelectorAll("#sites-list li")]
+      sitesList: [...document.querySelectorAll("#sites-list > li")]
         .map((item) => item.textContent.replace(/\s+/g, " ").trim()),
     };
   });

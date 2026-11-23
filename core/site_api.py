@@ -14,7 +14,7 @@ from .sites import (
     SiteConflictError,
     SiteCreate,
     SiteNotFoundError,
-    SiteReferencedProfilesError,
+    SiteReferencedTasksError,
     SiteService,
     SiteStorageError,
     SiteUpdate,
@@ -63,15 +63,16 @@ class SiteApi:
         if data is None:
             return _invalid_body_error()
         try:
+            _reject_legacy_disabled(data)
             site = await self._service.create_site(
                 SiteCreate(
                     name=data.get("name"),
                     base_url=data.get("base_url"),
-                    enabled=data.get("enabled", False),
                     timeout_seconds=data.get(
                         "timeout_seconds",
                         DEFAULT_TIMEOUT_SECONDS,
                     ),
+                    source_kind=data.get("source_kind"),
                     bearer_token=data.get("bearer_token"),
                 ),
             )
@@ -88,14 +89,15 @@ class SiteApi:
         if data is None:
             return _invalid_body_error()
         try:
+            _reject_legacy_disabled(data)
             site = await self._service.update_site(
                 site_id,
                 SiteUpdate(
                     name=data.get("name"),
                     base_url=data.get("base_url"),
-                    enabled=data.get("enabled"),
                     timeout_seconds=data.get("timeout_seconds"),
                     expected_revision=data.get("expected_revision"),
+                    source_kind=data.get("source_kind"),
                     credential_action=data.get("credential_action", "keep"),
                     bearer_token=data.get("bearer_token"),
                 ),
@@ -127,7 +129,7 @@ class SiteApi:
             return _not_found_error()
         except SiteConflictError as exc:
             return _conflict_error(exc)
-        except SiteReferencedProfilesError as exc:
+        except SiteReferencedTasksError as exc:
             return _referenced_error(exc)
         except SiteStorageError:
             return _storage_error()
@@ -140,13 +142,31 @@ def _payload_dict(payload: object) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _reject_legacy_disabled(payload: dict[str, Any]) -> None:
+    """兼容旧客户端的 enabled 字段：接受 true，明确拒绝 false。
+
+    站点级启用开关已移除，站点是否参与取数只由任务候选顺序决定；
+    静默忽略 false 会让旧页面误以为站点仍可停用。
+    """
+    if "enabled" not in payload:
+        return
+    value = payload.get("enabled")
+    if value is False:
+        raise SiteValidationError(
+            "enabled",
+            "站点启用开关已移除；请通过任务候选决定是否使用该站点。",
+        )
+    if value is not True:
+        raise SiteValidationError("enabled", "必须是布尔值")
+
+
 def _site_dict(site: SiteConfig) -> dict[str, Any]:
     return {
         "id": site.id,
         "name": site.name,
         "base_url": site.base_url,
-        "enabled": site.enabled,
         "timeout_seconds": site.timeout_seconds,
+        "source_kind": site.source_kind,
         "has_bearer_token": site.has_bearer_token,
         "revision": site.revision,
         "created_at": site.created_at,
@@ -210,12 +230,16 @@ def _conflict_error(exc: SiteConflictError) -> SiteApiResult:
     )
 
 
-def _referenced_error(exc: SiteReferencedProfilesError) -> SiteApiResult:
+def _referenced_error(exc: SiteReferencedTasksError) -> SiteApiResult:
     return _error(
         409,
-        "站点仍被内容组合引用，请先删除或修改相关组合。",
+        "站点仍是任务的候选站点，请先修改相关任务。",
         code="site_referenced",
-        data={"profile_names": list(exc.profile_names)},
+        data={
+            "task_names": list(exc.task_names),
+            # 旧字段沿用，避免旧前端读到空引用列表。
+            "profile_names": list(exc.task_names),
+        },
     )
 
 

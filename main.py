@@ -16,13 +16,11 @@ from .core.news_api import NewsApi
 from .core.site_api import SiteApi
 from .core.sites import SiteService
 from .news_web import NewsWeb
-from .profile_web import ProfileWeb
 from .site_web import SiteWeb
 from .task_web import TaskWeb
 from .core.image_service import ProfileImageService
 from .core.image_snapshots import ImageSnapshotStore
-from .core.profile_api import ProfileApi
-from .core.profiles import ContentProfileService
+from .core.plan_preview import PlanPreview
 from .core.task_api import TaskApi
 from .core.tasks import PushTaskService
 from .core.astrbot_sender import AstrBotAiocqhttpSender
@@ -46,8 +44,7 @@ class SixtySAPIHub(Star):
         data_dir = StarTools.get_data_dir(plugin_name)
         self.sites = SiteService(data_dir / DATABASE_FILENAME)
         self.content = ContentService(self.sites)
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self._context = context
         self._plugin_name = plugin_name
         self._active = False
@@ -105,8 +102,8 @@ class SixtySAPIHub(Star):
         context = self._context
         self.image_snapshots = ImageSnapshotStore()
         self.image_service = ProfileImageService()
-        self.profile_api = ProfileApi(
-            self.profiles,
+        self.plan_preview = PlanPreview(
+            self.tasks,
             self.content,
             self.sites,
             image_snapshots=self.image_snapshots,
@@ -114,19 +111,17 @@ class SixtySAPIHub(Star):
         )
         self.chat_commands = ChatCommandService(
             self.tasks,
-            self.profiles,
             self.sites,
             content_query=ChatContentQuery(
                 self.tasks,
-                ProfileApi(self.profiles, self.content, self.sites),
+                PlanPreview(self.tasks, self.content, self.sites),
             ),
-            image_query=ChatImageQuery(self.tasks, self.profile_api),
+            image_query=ChatImageQuery(self.tasks, self.plan_preview),
         )
         self.delivery = DeliveryService(
             tasks=self.tasks,
-            profiles=self.profiles,
             sites=self.sites,
-            profile_api=self.profile_api,
+            plan_preview=self.plan_preview,
             store=self.sites.store,
             sender=AstrBotAiocqhttpSender(context),
             limits=DeliveryLimits(),
@@ -138,8 +133,10 @@ class SixtySAPIHub(Star):
         )
         self._task_web = TaskWeb(
             TaskApi(
-                self.tasks, self.profiles, self.sites,
+                self.tasks, self.sites,
                 scheduler=self.scheduler,
+                plan_preview=self.plan_preview,
+                content=self.content,
             ),
             plugin_name=self._plugin_name,
             is_active=self._runtime_active_guard(),
@@ -148,7 +145,6 @@ class SixtySAPIHub(Star):
             DeliveryApi(
                 delivery=self.delivery,
                 tasks=self.tasks,
-                profiles=self.profiles,
                 sites=self.sites,
                 store=self.sites.store,
                 inspector=AstrBotAiocqhttpSender(context),
@@ -156,14 +152,8 @@ class SixtySAPIHub(Star):
             plugin_name=self._plugin_name,
             is_active=self._runtime_active_guard(),
         )
-        self._profile_web = ProfileWeb(
-            self.profile_api,
-            plugin_name=self._plugin_name,
-            is_active=self._runtime_active_guard(),
-        )
         self._task_web.register(context)
         self._delivery_web.register(context)
-        self._profile_web.register(context)
 
     @filter.command("60s")
     async def sixty_seconds_command(self, event: AstrMessageEvent):

@@ -12,7 +12,6 @@ import httpx
 from core.content_client import ContentHttpClient
 from core.sites import (
     SiteCreate,
-    SiteDisabledError,
     SiteNotFoundError,
     SiteService,
 )
@@ -145,7 +144,10 @@ class ZhihuParserTest(unittest.TestCase):
         )
         self.assertEqual(
             snapshot_fields,
-            {"site_id", "site_name", "endpoint", "fetched_at", "items"},
+            {
+                "site_id", "site_name", "endpoint", "fetched_at",
+                "items", "source_url", "source_kind",
+            },
         )
         serialized = repr(snapshot).lower()
         for forbidden in ("rank", "ranking", "heat_value", "updated_at"):
@@ -201,12 +203,11 @@ class ZhihuServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.sites.close()
         self._temporary_directory.cleanup()
 
-    async def _site(self, *, enabled=True, token="fictional-zhihu-token"):
+    async def _site(self, *, token="fictional-zhihu-token"):
         return await self.sites.create_site(
             SiteCreate(
                 name="知乎测试站点",
                 base_url="http://example.test/proxy",
-                enabled=enabled,
                 timeout_seconds=3,
                 bearer_token=token,
             ),
@@ -242,8 +243,7 @@ class ZhihuServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.items[0].hot_value_desc, "100 万热度")
         self.assertNotIn("fictional-zhihu-token", repr(snapshot))
 
-    async def test_disabled_and_missing_sites_are_rejected(self) -> None:
-        disabled = await self._site(enabled=False)
+    async def test_missing_site_is_rejected(self) -> None:
         service = ZhihuHotService(
             self.sites,
             client=ContentHttpClient(
@@ -254,8 +254,6 @@ class ZhihuServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         await service.open()
         try:
-            with self.assertRaises(SiteDisabledError):
-                await service.preview(disabled.id)
             with self.assertRaises(SiteNotFoundError):
                 await service.preview("missing-site-id")
         finally:

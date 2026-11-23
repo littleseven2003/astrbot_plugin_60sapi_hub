@@ -34,6 +34,12 @@ class ContentWeb:
             "获取每日新闻或 Bilibili 热搜预览",
         )
         context.register_web_api(
+            f"/{self._plugin_name}/sites/test-batch",
+            self.test_sites_batch,
+            ["POST"],
+            "批量测试已保存站点的连接",
+        )
+        context.register_web_api(
             f"/{self._plugin_name}/sites/<site_id>/test",
             self.test_connection,
             ["POST"],
@@ -52,6 +58,19 @@ class ContentWeb:
                 status_code=503,
             )
         return self._respond(await self._api.test_connection(site_id, payload))
+
+    async def test_sites_batch(self):
+        epoch = self._lifecycle()
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        if epoch != self._lifecycle() or not self._is_active():
+            return error_response(
+                "插件当前不可用，请重新打开页面后重试。",
+                status_code=503,
+            )
+        return self._respond(await self._api.test_sites_batch(payload))
 
     async def preview(self):
         guard = self._guard()

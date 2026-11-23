@@ -42,6 +42,46 @@ class TaskWeb:
                 "删除推送任务",
             ),
             (
+                # 与 DeliveryWeb 的手动测试投递（tasks/<id>/test）区分：
+                # 这里只判断候选站点能力，不产生任何投递。
+                "tasks/<task_id>/capability-test",
+                self.test_task,
+                ["POST"],
+                "测试候选站点是否满足任务配置（不投递）",
+            ),
+            (
+                "tasks/<task_id>/preview",
+                self.preview_task,
+                ["POST"],
+                "按已保存配置获取一次任务内容预览",
+            ),
+            (
+                "tasks/<task_id>/image",
+                self.generate_task_image,
+                ["POST"],
+                "生成任务预览的栏目长图",
+            ),
+            (
+                # 草稿入口只读表单参数，不写任务、不调度；与已保存任务
+                # 的快照和图片入口互相隔离。
+                "task-drafts/capability-test",
+                self.test_task_draft,
+                ["POST"],
+                "用未保存表单草稿测试候选站点能力（不投递）",
+            ),
+            (
+                "task-drafts/preview",
+                self.preview_task_draft,
+                ["POST"],
+                "按未保存表单草稿获取一次内容预览",
+            ),
+            (
+                "task-drafts/image",
+                self.generate_task_draft_image,
+                ["POST"],
+                "生成草稿预览的栏目长图",
+            ),
+            (
                 "schedule-runs",
                 self.list_schedule_runs,
                 ["GET"],
@@ -99,6 +139,49 @@ class TaskWeb:
             task_id, await request.json(),
         ))
 
+    async def preview_task(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(await self._api.preview_task(
+            task_id, payload, owner=request.username,
+        ))
+
+    async def generate_task_image(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(await self._api.generate_task_image(
+            task_id, payload, owner=request.username,
+        ))
+
+    async def test_task_draft(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(await self._api.test_draft(payload))
+
+    async def preview_task_draft(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(await self._api.preview_draft(
+            payload, owner=request.username,
+        ))
+
+    async def generate_task_draft_image(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        payload = await request.json(default=None)
+        return self._respond(await self._api.generate_draft_image(
+            payload, owner=request.username,
+        ))
+
     async def create_task(self):
         guard = self._guard()
         if guard is not None:
@@ -125,6 +208,12 @@ class TaskWeb:
             return guard
         payload = await request.json(default=None)
         return self._respond(await self._api.delete_task(task_id, payload))
+
+    async def test_task(self, task_id: str):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        return self._respond(await self._api.test_task(task_id))
 
     def _guard(self):
         if not request.username:

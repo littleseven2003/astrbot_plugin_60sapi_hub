@@ -11,12 +11,19 @@ from core.chat_commands import (
     ChatCommandService,
     parse_command,
 )
+from core.content_plan import PlanItem
 
 
-def task(task_id, umos, profile_id="profile-1", output="text", created=0):
+def task(
+    task_id, umos, output="text", created=0,
+    sites=("site-1",),
+):
     return SimpleNamespace(
-        id=task_id, name=f"任务-{task_id}", profile_id=profile_id,
-        output_format=output, umos=tuple(umos), created_at=f"2026-01-01T00:00:{created:02d}Z",
+        id=task_id, name=f"任务-{task_id}",
+        items=(PlanItem("daily_news", None),),
+        output_format=output, umos=tuple(umos),
+        sites=tuple(sites),
+        created_at=f"2026-01-01T00:00:{created:02d}Z",
     )
 
 
@@ -26,16 +33,6 @@ class FakeTasks:
         self.list_calls = 0
 
     async def list_tasks(self):
-        self.list_calls += 1
-        return list(self.items)
-
-
-class FakeProfiles:
-    def __init__(self, profiles):
-        self.items = list(profiles)
-        self.list_calls = 0
-
-    async def list_profiles(self):
         self.list_calls += 1
         return list(self.items)
 
@@ -50,12 +47,8 @@ class FakeSites:
         return list(self.items)
 
 
-def profile(profile_id="profile-1", site_id="site-1"):
-    return SimpleNamespace(id=profile_id, site_id=site_id)
-
-
-def site(site_id="site-1", enabled=True):
-    return SimpleNamespace(id=site_id, enabled=enabled)
+def site(site_id="site-1"):
+    return SimpleNamespace(id=site_id)
 
 
 class ParseCommandTest(unittest.TestCase):
@@ -73,11 +66,10 @@ class ParseCommandTest(unittest.TestCase):
 
 
 class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
-    def build(self, tasks=None, profiles=None, sites=None):
+    def build(self, tasks=None, sites=None):
         self.tasks = FakeTasks(tasks or [])
-        self.profiles = FakeProfiles(profiles or [profile()])
         self.sites = FakeSites(sites or [site()])
-        return ChatCommandService(self.tasks, self.profiles, self.sites)
+        return ChatCommandService(self.tasks, self.sites)
 
     async def test_exact_umo_across_group_private_platform_and_isolation(self) -> None:
         source = "bot1:GroupMessage:group:1"
@@ -102,22 +94,22 @@ class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
             tasks=[
                 task("empty", []),
                 task("removed", ["bot1:FriendMessage:other"]),
-                task("disabled", ["bot1:FriendMessage:me"], profile_id="p-disabled"),
-                task("missing-profile", ["bot1:FriendMessage:me"], profile_id="missing"),
+                task(
+                    "missing-site", ["bot1:FriendMessage:me"],
+                    sites=("site-missing",),
+                ),
             ],
-            profiles=[profile(), profile("p-disabled", "site-disabled")],
-            sites=[site(), site("site-disabled", enabled=False)],
+            sites=[site()],
         )
         text = await service.handle("bot1:FriendMessage:me", "/60s list")
         self.assertEqual(text, EMPTY_TEXT)
-        for name in ("empty", "removed", "disabled", "missing-profile"):
+        for name in ("empty", "removed", "missing-site"):
             self.assertNotIn(f"任务-{name}", text)
         self.assertEqual(
-            (self.tasks.list_calls, self.profiles.list_calls, self.sites.list_calls),
-            (1, 1, 1),
+            (self.tasks.list_calls, self.sites.list_calls), (1, 1),
         )
 
-    async def test_visible_tasks_include_disabled_task_but_require_enabled_site(
+    async def test_visible_tasks_include_disabled_task_with_existing_site(
         self,
     ) -> None:
         service = self.build(tasks=[
@@ -188,7 +180,6 @@ class ChatCommandServiceTest(unittest.IsolatedAsyncioTestCase):
         # The service has no delivery/content/write dependency at all; the
         # three read-only calls below are the complete observable work.
         self.assertEqual(self.tasks.list_calls, 1)
-        self.assertEqual(self.profiles.list_calls, 1)
         self.assertEqual(self.sites.list_calls, 1)
         self.assertFalse(hasattr(self.tasks, "create_task"))
         self.assertFalse(hasattr(self.tasks, "execute"))
@@ -198,40 +189,32 @@ class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         import tempfile
         from pathlib import Path
-        from core.profiles import ContentProfileService, ProfileCreate
         from core.sites import SiteCreate, SiteService
         from core.tasks import PushTaskService, TaskCreate
 
         self.tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self.tmp.name) / "chat.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
-            name="聊天站点", base_url="http://example.test", enabled=True,
-            timeout_seconds=5,
+            name="聊天站点", base_url="http://example.test", timeout_seconds=5,
         ))
         self.disabled_site = await self.sites.create_site(SiteCreate(
-            name="停用站点", base_url="http://disabled.test", enabled=False,
-            timeout_seconds=5,
-        ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="聊天组合", site_id=self.site.id,
-            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
-        ))
-        self.disabled_profile = await self.profiles.create_profile(ProfileCreate(
-            name="停用组合", site_id=self.disabled_site.id,
-            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            name="停用站点", base_url="http://disabled.test", timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
-            name="可见任务", profile_id=self.profile.id,
+            name="可见任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            sites=[self.site.id],
             output_format="markdown", umos=["bot:GroupMessage:g"],
         ))
         await self.tasks.create_task(TaskCreate(
-            name="停用站点任务", profile_id=self.disabled_profile.id,
+            name="停用站点任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            sites=[self.disabled_site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
-        self.service = ChatCommandService(self.tasks, self.profiles, self.sites)
+        self.service = ChatCommandService(self.tasks, self.sites)
 
     async def asyncTearDown(self) -> None:
         await self.sites.close()
@@ -243,23 +226,24 @@ class ChatCommandSqliteTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.task.id, text)
         self.assertIn("可见任务", text)
         self.assertIn("输出：Markdown", text)
-        self.assertNotIn("停用站点任务", text)
+        # 站点级启用已移除：历史“停用”站点的任务同样可见。
+        self.assertIn("停用站点任务", text)
         self.assertEqual(len(await self.tasks.list_tasks()), len(before))
 
 
 class ContentFixture:
     def __init__(self):
         self.task = SimpleNamespace(
-            id="task-get", name="查询任务", profile_id="p1",
+            id="task-get", name="查询任务",
+            items=(PlanItem("daily_news", None),),
             output_format="image", umos=("bot:GroupMessage:g",),
+            sites=("s1",),
             revision=2, created_at="2026-01-01T00:00:00Z",
         )
-        self.profile = SimpleNamespace(
-            id="p1", site_id="s1", revision=3,
-        )
-        self.site = SimpleNamespace(id="s1", enabled=True, revision=4)
+        # 任务私有方案的 revision（存储层列名仍是 profile_revision）。
+        self.plan_revision = 3
+        self.site = SimpleNamespace(id="s1", revision=4)
         self.task_reads = 0
-        self.profile_reads = 0
         self.site_reads = 0
         self.preview_calls = []
 
@@ -274,24 +258,21 @@ class ContentFixture:
         task = await self.get_task(task_id)
         return SimpleNamespace(
             task=task,
-            profile_id=self.profile.id,
-            profile_revision=self.profile.revision,
-            site_id=self.site.id,
-            site_revision=self.site.revision,
-            site_enabled=self.site.enabled,
+            profile_id=task.id,
+            plan_revision=self.plan_revision,
+            candidates=(SimpleNamespace(
+                id=self.site.id, revision=self.site.revision,
+            ),),
         )
-
-    async def get_profile(self, profile_id):
-        return self.profile
 
     async def get_site(self, site_id):
         return self.site
 
-    async def preview_profile(self, payload):
+    async def preview_site(self, payload, *, site_id=None):
         self.preview_calls.append(payload)
         return SimpleNamespace(
             status_code=200,
-            body={"data": {"outputs": {"text": "组合：查询任务\n内容"}}},
+            body={"data": {"outputs": {"text": "任务：查询任务\n内容"}}},
         )
 
 
@@ -302,7 +283,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         self.f = ContentFixture()
         query = ChatContentQuery(self.f, self.f)
         service = ChatCommandService(
-            self.f, self.f, self.f, content_query=query,
+            self.f, self.f, content_query=query,
         )
         return service
 
@@ -311,7 +292,7 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         ok = await service.handle("bot:GroupMessage:g", "/60s get task-get")
         self.assertIn("内容", ok)
         self.assertEqual(self.f.preview_calls, [{
-            "profile_id": "p1", "force_refresh": False,
+            "task_id": "task-get", "force_refresh": False, "site_id": "s1",
         }])
         missing = await service.handle("bot:GroupMessage:g", "/60s get nope")
         denied = await service.handle("bot:GroupMessage:other", "/60s get task-get")
@@ -319,24 +300,16 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing, "任务不存在或当前会话无权查询。")
         self.assertEqual(len(self.f.preview_calls), 1)
 
-    async def test_usage_site_disabled_and_all_failed_no_upstream(self) -> None:
+    async def test_usage_and_all_failed_no_upstream(self) -> None:
         service = self.build()
         self.assertEqual(
             await service.handle("bot:GroupMessage:g", "/60s get"),
             "用法：/60s get <任务ID>。",
         )
-        self.f.site.enabled = False
-        self.assertEqual(
-            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
-            "任务配置不可用，请检查组合或站点状态。",
-        )
-        self.assertEqual(self.f.preview_calls, [])
-
-        self.f.site.enabled = True
-        async def failed(payload):
+        async def failed(payload, *, site_id=None):
             self.f.preview_calls.append(payload)
             return SimpleNamespace(status_code=502, body={"data": {"status": "failed"}})
-        self.f.preview_profile = failed
+        self.f.preview_site = failed
         self.assertEqual(
             await service.handle("bot:GroupMessage:g", "/60s get task-get"),
             "内容暂时无法获取，请稍后重试。",
@@ -344,12 +317,27 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_config_change_during_query_suppresses_old_content(self) -> None:
         service = self.build()
-        original = self.f.preview_profile
-        async def changed(payload):
+        original = self.f.preview_site
+        async def changed(payload, *, site_id=None):
             result = await original(payload)
             self.f.task.revision += 1
             return result
-        self.f.preview_profile = changed
+        self.f.preview_site = changed
+        self.assertEqual(
+            await service.handle("bot:GroupMessage:g", "/60s get task-get"),
+            "任务或配置已变化，请重新查询。",
+        )
+
+    async def test_plan_revision_change_during_query_suppresses_old_content(
+        self,
+    ) -> None:
+        service = self.build()
+        original = self.f.preview_site
+        async def changed(payload, *, site_id=None):
+            result = await original(payload)
+            self.f.plan_revision += 1
+            return result
+        self.f.preview_site = changed
         self.assertEqual(
             await service.handle("bot:GroupMessage:g", "/60s get task-get"),
             "任务或配置已变化，请重新查询。",
@@ -357,12 +345,12 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_target_removed_during_query(self) -> None:
         service = self.build()
-        original = self.f.preview_profile
-        async def removed(payload):
+        original = self.f.preview_site
+        async def removed(payload, *, site_id=None):
             result = await original(payload)
             self.f.task.umos = ("bot:GroupMessage:other",)
             return result
-        self.f.preview_profile = removed
+        self.f.preview_site = removed
         self.assertEqual(
             await service.handle("bot:GroupMessage:g", "/60s get task-get"),
             "任务或配置已变化，请重新查询。",
@@ -370,17 +358,17 @@ class ChatContentQueryTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_empty_and_truncation(self) -> None:
         service = self.build()
-        async def partial(payload):
+        async def partial(payload, *, site_id=None):
             return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": "状态：部分成功\n空列表，0 条"}}})
-        self.f.preview_profile = partial
+        self.f.preview_site = partial
         text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
         self.assertIn("部分成功", text)
         self.assertIn("空列表", text)
 
         long_text = "长" * 2500
-        async def long(payload):
+        async def long(payload, *, site_id=None):
             return SimpleNamespace(status_code=200, body={"data": {"outputs": {"text": long_text}}})
-        self.f.preview_profile = long
+        self.f.preview_site = long
         text = await service.handle("bot:GroupMessage:g", "/60s get task-get")
         self.assertLessEqual(len(text), 2000)
         self.assertIn("已截断", text)
@@ -397,25 +385,20 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         import tempfile
         from pathlib import Path
-        from core.profiles import ContentProfileService, ProfileCreate
         from core.sites import SiteCreate, SiteService
         from core.tasks import PushTaskService, TaskCreate
 
         self.tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self.tmp.name) / "race.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
-            name="并发站点", base_url="http://example.test", enabled=True,
-            timeout_seconds=5,
-        ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="并发组合", site_id=self.site.id,
-            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            name="并发站点", base_url="http://example.test", timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
-            name="并发任务", profile_id=self.profile.id,
+            name="并发任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            sites=[self.site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         self.preview = BlockingPreview()
@@ -442,7 +425,8 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         async def mutate():
             current = await self.tasks.get_task(self.task.id)
             await self.tasks.update_task(self.task.id, TaskUpdate(
-                name=current.name, profile_id=current.profile_id,
+                name=current.name,
+                items=[{"content_type": "daily_news", "params": {}, "limit": None}],
                 output_format=current.output_format, umos=[],
                 expected_revision=current.revision,
             ))
@@ -460,13 +444,14 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
             "任务或配置已变化，请重新查询。",
         )
 
-    async def test_modify_profile_during_final_recheck(self) -> None:
-        from core.profiles import ProfileUpdate
+    async def test_modify_task_items_during_final_recheck(self) -> None:
+        from core.tasks import TaskUpdate
         async def mutate():
-            current = await self.profiles.get_profile(self.profile.id)
-            await self.profiles.update_profile(self.profile.id, ProfileUpdate(
-                name="组合已改", site_id=current.site_id,
+            current = await self.tasks.get_task(self.task.id)
+            await self.tasks.update_task(self.task.id, TaskUpdate(
+                name=current.name,
                 items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+                output_format=current.output_format, umos=list(current.umos),
                 expected_revision=current.revision,
             ))
         self.assertEqual(
@@ -480,7 +465,7 @@ class ChatContentSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
             current = await self.sites.get_site(self.site.id)
             await self.sites.update_site(self.site.id, SiteUpdate(
                 name=current.name, base_url=current.base_url,
-                enabled=False, timeout_seconds=current.timeout_seconds,
+                timeout_seconds=current.timeout_seconds,
                 expected_revision=current.revision,
             ))
         self.assertEqual(
@@ -495,7 +480,7 @@ class BlockingPreview:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def preview_profile(self, payload):
+    async def preview_site(self, payload, *, site_id=None):
         self.started.set()
         await self.release.wait()
         return SimpleNamespace(
@@ -507,14 +492,17 @@ class BlockingPreview:
 class ImageFixture:
     def __init__(self):
         self.task = SimpleNamespace(
-            id="task-image", name="图片任务", profile_id="p1",
+            id="task-image", name="图片任务",
+            items=(PlanItem("daily_news", None),),
             output_format="text", umos=("bot:GroupMessage:g",),
+            sites=("s1",),
             revision=5, created_at="2026-01-01T00:00:00Z",
         )
-        self.profile = SimpleNamespace(id="p1", site_id="s1", revision=2)
-        self.site = SimpleNamespace(id="s1", enabled=True, revision=3)
+        self.plan_revision = 2
+        self.site = SimpleNamespace(id="s1", revision=3)
         self.owners = []
         self.preview_owners = []
+        self.image_plan_ids = []
         self.images = [
             {"index": 2, "content_type": "zhihu_hot", "label": "知乎热榜",
              "status": "success", "width": 900, "height": 1400,
@@ -529,20 +517,21 @@ class ImageFixture:
         if task_id != self.task.id:
             raise TaskNotFoundError(task_id)
         return SimpleNamespace(
-            task=self.task, profile_id=self.profile.id,
-            profile_revision=self.profile.revision,
-            site_id=self.site.id, site_revision=self.site.revision,
-            site_enabled=self.site.enabled,
+            task=self.task,
+            profile_id=self.task.id,
+            plan_revision=self.plan_revision,
+            candidates=(SimpleNamespace(id=self.site.id, revision=self.site.revision),),
         )
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_site(self, payload, *, owner=None, site_id=None):
         self.preview_owners.append(owner)
         return SimpleNamespace(status_code=200, body={"data": {
             "image_snapshot": {"id": "snap-1"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None):
+    async def generate_image(self, task_id, payload, *, owner=None, site_id=None):
         self.owners.append(owner)
+        self.image_plan_ids.append(task_id)
         return SimpleNamespace(status_code=200, body={"data": {
             "images": list(self.images),
         }})
@@ -555,7 +544,7 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
         self.f = ImageFixture()
         query = ChatImageQuery(self.f, self.f)
         return ChatCommandService(
-            self.f, self.f, self.f,
+            self.f, self.f,
             content_query=None, image_query=query,
         )
 
@@ -567,6 +556,8 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("共 2 张栏目长图", reply.text)
         self.assertTrue(self.f.owners[0].startswith("chat:"))
         self.assertEqual(self.f.owners[0], self.f.preview_owners[0])
+        # 图片 rerender 用任务 id（组合并入任务后不再有独立组合 id）。
+        self.assertEqual(self.f.image_plan_ids, ["task-image"])
         other = await service.handle("bot:GroupMessage:other", "/60s image task-image")
         self.assertEqual(other, "任务不存在或当前会话无权查询。")
         self.assertEqual(len(self.f.owners), 1)
@@ -584,8 +575,8 @@ class ChatImageQueryTest(unittest.IsolatedAsyncioTestCase):
         self.f.generate_image = ImageFixture().generate_image
         self.f.generate_image = self.f.generate_image.__get__(self.f)
         original = self.f.generate_image
-        async def changed(profile_id, payload, *, owner=None):
-            result = await original(profile_id, payload, owner=owner)
+        async def changed(task_id, payload, *, owner=None, site_id=None):
+            result = await original(task_id, payload, owner=owner)
             self.f.task.revision += 1
             return result
         self.f.generate_image = changed
@@ -624,25 +615,20 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         import tempfile
         from pathlib import Path
-        from core.profiles import ContentProfileService, ProfileCreate
         from core.sites import SiteCreate, SiteService
         from core.tasks import PushTaskService, TaskCreate
 
         self.tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self.tmp.name) / "image-race.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
-            name="图片竞态站点", base_url="http://example.test", enabled=True,
-            timeout_seconds=5,
-        ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="图片竞态组合", site_id=self.site.id,
-            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            name="图片竞态站点", base_url="http://example.test", timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
-            name="图片竞态任务", profile_id=self.profile.id,
+            name="图片竞态任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            sites=[self.site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         self.preview = ImageRacePreview()
@@ -660,7 +646,8 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         await self.preview.started.wait()
         current = await self.tasks.get_task(self.task.id)
         await self.tasks.update_task(self.task.id, TaskUpdate(
-            name=current.name, profile_id=current.profile_id,
+            name=current.name,
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
             output_format=current.output_format, umos=[],
             expected_revision=current.revision,
         ))
@@ -668,15 +655,16 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         self.preview.render_release.set()
         self.assertEqual(await pending, "任务或配置已变化，请重新查询。")
 
-    async def test_modify_profile_during_preview_suppresses_image(self) -> None:
+    async def test_modify_task_items_during_preview_suppresses_image(self) -> None:
         import asyncio
-        from core.profiles import ProfileUpdate
+        from core.tasks import TaskUpdate
         pending = asyncio.create_task(self.query.query("bot:GroupMessage:g", self.task.id))
         await self.preview.started.wait()
-        current = await self.profiles.get_profile(self.profile.id)
-        await self.profiles.update_profile(self.profile.id, ProfileUpdate(
-            name="图片组合已改", site_id=current.site_id,
+        current = await self.tasks.get_task(self.task.id)
+        await self.tasks.update_task(self.task.id, TaskUpdate(
+            name=current.name,
             items=[{"content_type": "daily_news", "params": {}, "limit": 1}],
+            output_format=current.output_format, umos=list(current.umos),
             expected_revision=current.revision,
         ))
         self.preview.release.set()
@@ -690,8 +678,7 @@ class ChatImageSqliteRaceTest(unittest.IsolatedAsyncioTestCase):
         await self.preview.started.wait()
         current = await self.sites.get_site(self.site.id)
         await self.sites.update_site(self.site.id, SiteUpdate(
-            name=current.name, base_url=current.base_url, enabled=False,
-            timeout_seconds=current.timeout_seconds,
+            name=current.name, base_url=current.base_url, timeout_seconds=current.timeout_seconds,
             expected_revision=current.revision,
         ))
         self.preview.release.set()
@@ -717,14 +704,14 @@ class ImageRacePreview:
         self.render_started = asyncio.Event()
         self.render_release = asyncio.Event()
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_site(self, payload, *, owner=None, site_id=None):
         self.started.set()
         await self.release.wait()
         return SimpleNamespace(status_code=200, body={"data": {
             "image_snapshot": {"id": "snap"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None):
+    async def generate_image(self, task_id, payload, *, owner=None, site_id=None):
         self.render_started.set()
         await self.render_release.wait()
         encoded = "iVBORw0KGgo="

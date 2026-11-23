@@ -1,0 +1,530 @@
+/*
+ * 任务候选站点与站点五类测试的页面逻辑回归。
+ *
+ * 真实 Chromium 加载 views/sites/index.html + app.js，只替换宿主 bridge。
+ * 验证：候选站点添加/排序/移除进入保存载荷、栏目条数改动让旧能力测试结论失效、能力测试打到独立路由、
+ * 站点“测试全部五类”逐一请求五类接口。
+ *
+ * 这是桩 bridge 的页面逻辑验证，不代表真实 AstrBot 后台/数据库往返，
+ * 也不连接真实上游或会话。
+ */
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const { chromium } = require("playwright-core");
+
+function resolveChrome() {
+  const configured = process.env.CHROME_PATH;
+  if (configured) return configured;
+  try {
+    return chromium.executablePath();
+  } catch {
+    return "";
+  }
+}
+
+const CHROME = resolveChrome();
+if (!CHROME || !fs.existsSync(CHROME)) {
+  console.error("找不到可用的 Chromium：请设置 CHROME_PATH。");
+  process.exit(2);
+}
+
+const VIEWS_DIR = path.resolve(__dirname, "..", "..", "views", "sites");
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+};
+
+const SITES = [
+  { id: "site-a", name: "站点A", base_url: "https://a.example.test/n",
+    enabled: true, timeout_seconds: 10, source_kind: "public",
+    has_bearer_token: false, revision: 3, updated_at: "" },
+  { id: "site-b", name: "站点B", base_url: "https://b.example.test/n",
+    enabled: true, timeout_seconds: 10, source_kind: "public",
+    has_bearer_token: false, revision: 4, updated_at: "" },
+  { id: "site-c", name: "站点C", base_url: "https://c.example.test/n",
+    enabled: false, timeout_seconds: 10, source_kind: "self_built",
+    has_bearer_token: true, revision: 1, updated_at: "" },
+];
+
+const TASKS = [{
+  id: "task-1", name: "任务一",
+  items: [
+    { content_type: "daily_news", label: "每日新闻", limit: 2 },
+    { content_type: "zhihu_hot", label: "知乎热榜", limit: null },
+  ],
+  output_format: "text", output_label: "纯文字",
+  umos: ["aiocqhttp:GroupMessage:g:1"],
+  enabled: false, revision: 2, created_at: "", updated_at: "",
+  schedule: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
+  schedule_raw: { kind: "daily", timezone: "Asia/Shanghai", time: "08:30" },
+  schedule_error: null,
+  sites: [{ id: "site-a", name: "站点A", enabled: true }],
+}];
+
+const server = http.createServer((request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1");
+  const relative = url.pathname === "/" ? "/index.html" : url.pathname;
+  const target = path.join(VIEWS_DIR, relative);
+  if (!target.startsWith(VIEWS_DIR) || !fs.existsSync(target)) {
+    response.writeHead(404).end("not found");
+    return;
+  }
+  response.writeHead(200, {
+    "Content-Type": MIME[path.extname(target)] || "application/octet-stream",
+  });
+  response.end(fs.readFileSync(target));
+});
+
+let assertions = 0;
+function check(condition, message) {
+  assertions += 1;
+  assert.ok(condition, message);
+}
+
+async function openPage(browser, port, overrides = {}) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.addInitScript((fixtures) => {
+    window.__calls = [];
+    window.AstrBotPluginView = {
+      ready: async () => {
+        window.__taskSites = ["site-a"];
+        return { pageTitle: "60sAPI Hub" };
+      },
+      apiGet: async (endpoint) => {
+        if (endpoint === "sites") return { sites: fixtures.sites };
+        if (endpoint === "tasks") {
+          const task = { ...fixtures.tasks[0] };
+          task.sites = window.__taskSites.map((id) => ({
+            id, name: id, enabled: true,
+          }));
+          return { tasks: [task] };
+        }
+        if (endpoint === "schedule-runs") return { claims: [], skips: [] };
+        if (endpoint === "executions") return { executions: [], total: 0 };
+        return {};
+      },
+      apiPost: async (endpoint, payload) => {
+        window.__calls.push({ endpoint, payload });
+        if (endpoint.endsWith("/update") && Array.isArray(payload && payload.sites)) {
+          window.__taskSites = payload.sites.slice();
+        }
+        if (endpoint.endsWith("/enable") || endpoint.endsWith("/disable")) {
+          return { task_id: "task-1", enabled: true, revision: 3 };
+        }
+        if (endpoint.endsWith("/test-preview")) {
+          // 全站停用时的手动确认：明确这次只发异常提示。
+          return {
+            task_id: "task-1", task_name: "任务一", task_revision: 2,
+            items: fixtures.tasks[0].items,
+            plan_revision: 4, site_id: "site-a", site_name: "站点A",
+            site_revision: 3, site_enabled: false, output_format: "text",
+            output_label: "纯文字", can_deliver: true, alert_only: true,
+            reason: "content_unavailable",
+            targets: [{
+              umo: "aiocqhttp:GroupMessage:g:1", platform_id: "aiocqhttp",
+              message_type: "GroupMessage", target: "g:1", isolated: true,
+              valid: true, reason: null,
+            }],
+            candidate_sites: [
+              { id: "site-a", name: "站点A", enabled: false },
+              { id: "site-b", name: "站点B", enabled: false },
+            ],
+            content_policy: "fresh",
+          };
+        }
+        if (endpoint === "task-drafts/preview") {
+          return {
+            draft: true, task_name: "草稿任务", image_style: payload.image_style,
+            items: [], site_name: "站点A", status: "complete",
+            success_count: 0, failure_count: 0, sections: [],
+            failed_sections: [], outputs: { text: "", markdown: "" },
+          };
+        }
+        if (endpoint.endsWith("/capability-test")) {
+          // 失败意图在请求发起时固定，之后测试可以安全地改动窗口标志。
+          const failNow = Boolean(window.__capabilityFail);
+          if (window.__capabilityGate) {
+            await window.__capabilityGate;
+          }
+          window.__capabilityDoneCount = (window.__capabilityDoneCount || 0) + 1;
+          if (failNow) {
+            window.__capabilityFailures = (window.__capabilityFailures || 0) + 1;
+            throw new Error("测试失败，请稍后重试");
+          }
+          if (window.__capabilityMulti) {
+            return {
+              satisfied: false, site_id: "", site_name: "多站点",
+              source_mode: "multi", truncated: false, checked_count: 2,
+              assignments: [
+                { content_type: "daily_news", label: "每日新闻",
+                  site_id: "site-a", site_name: "站点A", revision: 3 },
+              ],
+              missing: [
+                { content_type: "zhihu_hot", label: "知乎热榜",
+                  required: 3, available: 2, reason: "insufficient" },
+              ],
+              message: "需要多站点拼合，但仍缺栏目。",
+              cache: { used: true, ttl_seconds: 300 },
+            };
+          }
+          // 宿主 bridge 成功时直接返回业务 data（不再套一层 data）。
+          return {
+            satisfied: true, site_id: "site-b", site_name: "站点B",
+            message: "站点「站点B」可以满足全部配置。",
+            truncated: false, checked_count: 2,
+            cache: { used: true, ttl_seconds: 300 },
+          };
+        }
+        if (endpoint.includes("/test")) {
+          // 与真实 ContentApi 契约一致：result 为 success / empty，
+          // 失败走抛出错误（宿主 bridge 对非 2xx 抛错）。
+          if (payload && payload.content_type === "zhihu_hot") {
+            return {
+              result: "empty", message: "连接成功，接口返回合法空内容。",
+              elapsed_ms: 8, content_type: "zhihu_hot",
+            };
+          }
+          if (payload && payload.content_type === "douyin_hot") {
+            throw new Error("test_timeout");
+          }
+          return {
+            result: "success", message: "连接成功，接口返回内容结构合法。",
+            elapsed_ms: 12, content_type: payload && payload.content_type,
+          };
+        }
+        return {};
+      },
+    };
+  }, { sites: SITES, tasks: overrides.tasks || TASKS });
+  await page.goto("http://127.0.0.1:" + port + "/index.html", {
+    waitUntil: "domcontentloaded",
+  });
+  return page;
+}
+
+(async () => {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  try {
+    const page = await openPage(browser, port);
+    await page.click('.nav-item[data-view="tasks"]');
+    await page.waitForSelector("#tasks-list li", { timeout: 10000 });
+
+    // 手动确认：展示候选顺序，并说明本次只会发送异常提示。
+    await page.waitForSelector("#tasks-list li");
+    // 页面启用：确认弹窗通过预检后发出启用请求。
+    await page.locator("#tasks-list button", { hasText: "启用定时调度" }).first().click();
+    await page.waitForSelector("#task-power-confirm-button:not([disabled])");
+    await page.click("#task-power-confirm-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/enable")));
+    check(true, "页面启用应发出启用请求");
+
+    await page.locator("#tasks-list button", { hasText: "测试投递" }).first().click();
+    await page.waitForSelector("#delivery-confirm-button");
+    const confirmText = await page.textContent("#delivery-confirm-info");
+    check(confirmText.includes("候选站点（按尝试顺序）"),
+      "确认页应展示候选顺序：" + confirmText.slice(0, 80));
+    check(confirmText.includes("1. 站点A") && confirmText.includes("2. 站点B"),
+      "确认页候选顺序应正确：" + confirmText.slice(0, 120));
+    check(confirmText.includes("不会发送内容"),
+      "全站停用应说明只发异常提示：" + confirmText.slice(0, 120));
+    check(confirmText.includes("失败处理"),
+      "确认页应说明失败时的提示规则：" + confirmText.slice(0, 160));
+    const confirmLabel = await page.textContent("#delivery-confirm-button");
+    check(confirmLabel.includes("异常提示"), "按钮应写明发送异常提示：" + confirmLabel);
+    await page.click("#delivery-cancel-button");
+
+
+    // 打开任务编辑，候选站点按已保存顺序渲染。
+    await page.getByRole("button", { name: "编辑" }).first().click();
+    await page.waitForSelector("#task-site-list .task-site-row");
+    let rows = await page.$$eval("#task-site-list .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent));
+    check(rows.length === 1 && rows[0] === "站点A", "已保存候选应渲染：" + rows);
+
+    // 添加站点B，然后上移，形成 B、A 的顺序。
+    await page.selectOption("#task-site-picker", "site-b");
+    await page.click("#task-site-add-button");
+    await page.waitForFunction(
+      () => document.querySelectorAll("#task-site-list .task-site-row").length === 2,
+    );
+    await page.locator("#task-site-list button", { hasText: "上移" }).nth(1).click();
+    rows = await page.$$eval("#task-site-list .task-site-name",
+      (nodes) => nodes.map((node) => node.textContent));
+    check(rows[0] === "站点B" && rows[1] === "站点A", "上移后顺序：" + rows);
+
+    // 保存：载荷带上有序 sites。
+    await page.click("#task-save-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/update")));
+    const update = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint.endsWith("/update")).pop());
+    check(
+      JSON.stringify(update.payload.sites) === JSON.stringify(["site-b", "site-a"]),
+      "保存载荷应带有序候选：" + JSON.stringify(update.payload.sites),
+    );
+
+    // 能力测试走独立路由，并展示结论。
+    await page.waitForSelector("#tasks-list li");
+    await page.getByRole("button", { name: "编辑" }).first().click();
+    await page.waitForSelector("#task-capability-test-button:not([disabled])");
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/capability-test")));
+    const capability = await page.evaluate(() =>
+      window.__calls.find((call) => call.endpoint.endsWith("/capability-test")));
+    check(capability.endpoint.endsWith("/capability-test"), "能力测试路由");
+    const message = await page.textContent("#task-capability-result");
+    check(message.includes("可以满足"), "能力测试结论：" + message);
+    check(message.includes("内容缓存"), "应说明缓存时效：" + message);
+
+    // 接口返回逐栏分配与缺项时，界面直接展示，不只显示一句结论。
+    await page.evaluate(() => { window.__capabilityMulti = true; });
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("逐栏来源"));
+    const multiMessage = await page.textContent("#task-capability-result");
+    check(multiMessage.includes("逐栏来源：每日新闻 → 站点A"),
+      "能力测试应展示逐栏来源：" + multiMessage);
+    check(multiMessage.includes("缺项：知乎热榜（需要 3 条，最多 2 条）"),
+      "能力测试应展示缺项与条数：" + multiMessage);
+    await page.evaluate(() => { window.__capabilityMulti = false; });
+
+    // 未保存的候选改动：旧结论立即作废，但草稿仍可直接重新测试。
+    await page.selectOption("#task-site-picker", "site-c");
+    await page.click("#task-site-add-button");
+    await page.waitForFunction(
+      () => document.querySelectorAll("#task-site-list .task-site-row").length >= 2,
+    );
+    check(!(await page.isDisabled("#task-capability-test-button")),
+      "未保存的候选改动不应再禁用能力测试");
+    const gatedText = await page.textContent("#task-capability-result");
+    check(gatedText.includes("已作废"), "旧结论应明确作废：" + gatedText);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint === "task-drafts/capability-test"));
+    const draftCall = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint === "task-drafts/capability-test").pop());
+    check(JSON.stringify(draftCall.payload.sites) === JSON.stringify(["site-b", "site-a", "site-c"]),
+      "草稿能力测试应带当前候选顺序：" + JSON.stringify(draftCall.payload.sites));
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("可以满足"));
+    await page.locator("#task-site-list button", { hasText: "移除" }).last().click();
+    await page.waitForFunction(
+      () => document.querySelectorAll("#task-site-list .task-site-row").length === 2,
+    );
+
+    // 在途修改栏目条数（成功响应）：旧响应不得覆盖“已作废”提示。
+    await page.evaluate(() => {
+      window.__capabilityGate = new Promise((resolve) => {
+        window.__releaseCapability = resolve;
+      });
+    });
+    let doneBefore = await page.evaluate(
+      () => window.__capabilityDoneCount || 0);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) === n, doneBefore);
+    await page.fill("#task-item-list .task-item-limit-input", "5");
+    await page.evaluate(() => {
+      window.__releaseCapability();
+      window.__capabilityGate = null;
+    });
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) > n, doneBefore);
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("已作废"));
+    check(!(await page.isDisabled("#task-capability-test-button")),
+      "在途改栏目后仍可按草稿重新测试");
+
+    // 恢复为已保存栏目后可以再次测试；失败响应同样被丢弃。
+    await page.fill("#task-item-list .task-item-limit-input", "2");
+    await page.evaluate(() => {
+      window.__capabilityFail = true;
+      window.__capabilityGate = new Promise((resolve) => {
+        window.__releaseCapability = resolve;
+      });
+    });
+    doneBefore = await page.evaluate(() => window.__capabilityDoneCount || 0);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) === n, doneBefore);
+    await page.fill("#task-item-list .task-item-limit-input", "5");
+    await page.evaluate(() => {
+      window.__releaseCapability();
+      window.__capabilityGate = null;
+      window.__capabilityFail = false;
+    });
+    await page.waitForFunction(
+      (n) => (window.__capabilityDoneCount || 0) > n, doneBefore);
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result").textContent.includes("已作废"));
+    const failures = await page.evaluate(() => window.__capabilityFailures || 0);
+    check(failures > 0, "延迟失败桩确实触发过请求失败：" + failures);
+
+    // 撤销修改后可以再次测试；改回未保存值再预览，走草稿预览接口。
+    await page.fill("#task-item-list .task-item-limit-input", "2");
+    await page.waitForFunction(() =>
+      !document.querySelector("#task-capability-test-button").disabled);
+    await page.click("#task-capability-test-button");
+    await page.waitForFunction(() => document
+      .querySelector("#task-capability-result")
+      .textContent.includes("可以满足"));
+    await page.fill("#task-item-list .task-item-limit-input", "5");
+    await page.click("#task-preview-form-button");
+    await page.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint === "task-drafts/preview"));
+    const previewCall = await page.evaluate(() =>
+      window.__calls.filter((call) => call.endpoint === "task-drafts/preview").pop());
+    check(previewCall.payload.items[0].limit === 5,
+      "草稿预览应带未保存的条数：" + JSON.stringify(previewCall.payload));
+    check(JSON.stringify(previewCall.payload.sites) === JSON.stringify(["site-b", "site-a"]),
+      "草稿预览应带当前候选顺序：" + JSON.stringify(previewCall.payload.sites));
+    await page.waitForSelector("#task-preview-dialog[open]");
+    await page.click("#task-preview-close-button");
+    await page.waitForFunction(
+      () => !document.querySelector("#task-preview-dialog")?.open);
+    check(true, "未保存草稿可以直接预览");
+
+    await page.click("#task-close-dialog-button");
+
+
+    // A 停用、B 可用：页面仍可确认启用任务。
+    const page2 = await openPage(browser, port, {
+      tasks: [{
+        ...TASKS[0],
+        site_enabled: false,
+        sites: [
+          { id: "site-a", name: "站点A", enabled: false },
+          { id: "site-b", name: "站点B", enabled: true },
+        ],
+      }],
+    });
+    await page2.click('.nav-item[data-view="tasks"]');
+    await page2.waitForSelector("#tasks-list li");
+    await page2.locator("#tasks-list button", { hasText: "启用定时调度" }).first().click();
+    await page2.waitForSelector("#task-power-confirm-button");
+    check(await page2.isEnabled("#task-power-confirm-button"),
+      "A 停用 B 可用时页面仍可确认启用");
+    await page2.click("#task-power-confirm-button");
+    await page2.waitForFunction(() =>
+      window.__calls.some((call) => call.endpoint.endsWith("/enable")));
+    check(true, "A 停用 B 可用时页面实际发出启用请求");
+    await page2.close();
+
+    // 首尾位置按钮禁用：首行不能上移、末行不能下移。
+    const first = page.locator("#task-site-list .task-site-row").first();
+    const last = page.locator("#task-site-list .task-site-row").last();
+    check(await first.locator("button", { hasText: "上移" }).isDisabled(),
+      "首行上移按钮应禁用");
+    check(await last.locator("button", { hasText: "下移" }).isDisabled(),
+      "末行下移按钮应禁用");
+    // 添加下拉只列未加入的站点。
+    const pickerValues = await page.$$eval("#task-site-picker option",
+      (nodes) => nodes.map((node) => node.value));
+    const rowSiteIds = await page.$$eval("#task-site-list .task-site-row",
+      (nodes) => nodes.length);
+    check(pickerValues.length + rowSiteIds <= 3,
+      "添加下拉不包含已加入站点：" + JSON.stringify(pickerValues));
+
+    // 候选站点区块样式：同一行、无原生圆点、操作组右对齐。
+    const desktopLayout = await page.evaluate(() => {
+      const picker = document.querySelector("#task-site-picker");
+      const add = document.getElementById("task-site-add-button");
+      const list = document.getElementById("task-site-list");
+      const row = document.querySelector("#task-site-list .task-site-row");
+      const order = row.querySelector(".task-site-order");
+      const actions = row.querySelector(".task-site-actions");
+      const p = picker.getBoundingClientRect();
+      const a = add.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
+      const o = order.getBoundingClientRect();
+      const act = actions.getBoundingClientRect();
+      return {
+        sameRow: Math.abs((p.top + p.height / 2) - (a.top + a.height / 2)) <= 2,
+        listStyle: getComputedStyle(list).listStyleType,
+        rowStyle: getComputedStyle(row).listStyleType,
+        orderWidth: Math.round(o.width),
+        actionsRightGap: Math.round(r.right - act.right),
+        rowOverflow: row.scrollWidth - row.clientWidth,
+      };
+    });
+    check(desktopLayout.sameRow, "选择器与添加按钮应同一行：" + JSON.stringify(desktopLayout));
+    check(desktopLayout.listStyle === "none" && desktopLayout.rowStyle === "none",
+      "候选列表不应显示原生圆点：" + JSON.stringify(desktopLayout));
+    check(desktopLayout.orderWidth === 24,
+      "序号应有独立方块：" + desktopLayout.orderWidth);
+    check(desktopLayout.actionsRightGap <= 16 && desktopLayout.actionsRightGap >= 0,
+      "操作组应右对齐：" + desktopLayout.actionsRightGap);
+    check(desktopLayout.rowOverflow <= 0, "桌面行内不应溢出：" + desktopLayout.rowOverflow);
+
+    // 390px：长名称换行、操作组整体下移、按钮至少 44px、页面无横向滚动。
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(200);
+    const narrowLayout = await page.evaluate(() => {
+      const picker = document.getElementById("task-site-picker");
+      const add = document.getElementById("task-site-add-button");
+      const p = picker.getBoundingClientRect();
+      const a = add.getBoundingClientRect();
+      const row = document.querySelector("#task-site-list .task-site-row");
+      const name = row.querySelector(".task-site-name");
+      const actions = row.querySelector(".task-site-actions");
+      const r = row.getBoundingClientRect();
+      const n = name.getBoundingClientRect();
+      const act = actions.getBoundingClientRect();
+      const buttons = [...actions.querySelectorAll("button")];
+      return {
+        sameRow: Math.abs((p.top + p.height / 2) - (a.top + a.height / 2)) <= 2,
+        pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+        rowOverflow: row.scrollWidth - row.clientWidth,
+        actionsBelowName: act.top >= n.bottom - 1,
+        actionsWidth: Math.round(act.width),
+        rowWidth: Math.round(r.width),
+        minButtonHeight: Math.min(...buttons.map((b) => b.getBoundingClientRect().height)),
+      };
+    });
+    check(narrowLayout.sameRow,
+      "390px 选择器与添加按钮应同一行：" + JSON.stringify(narrowLayout));
+    check(narrowLayout.pageOverflow <= 0,
+      "390px 页面不应横向滚动：" + narrowLayout.pageOverflow);
+    check(narrowLayout.rowOverflow <= 0,
+      "390px 候选行内不应溢出：" + narrowLayout.rowOverflow);
+    check(narrowLayout.actionsBelowName,
+      "390px 操作组应整体移到名称下一行：" + JSON.stringify(narrowLayout));
+    check(narrowLayout.minButtonHeight >= 44,
+      "390px 操作按钮点击高度应至少 44px：" + narrowLayout.minButtonHeight);
+
+    // 若前面的预览关闭留下一层未确认提示，先回到表单再验证空列表。
+    if (await page.evaluate(() => document.getElementById("discard-dialog")?.open === true)) {
+      await page.click("#discard-cancel-button");
+      await page.waitForFunction(
+        () => document.getElementById("discard-dialog")?.open !== true);
+    }
+    // 空列表给虚线提示，不残留圆点。
+    while (await page.locator("#task-site-list .task-site-row").count()) {
+      await page.locator("#task-site-list button", { hasText: "移除" }).first().click();
+    }
+    await page.waitForSelector("#task-site-list .task-site-empty");
+    const emptyStyle = await page.evaluate(() => {
+      const empty = document.querySelector("#task-site-list .task-site-empty");
+      return {
+        text: empty.textContent,
+        listStyle: getComputedStyle(document.getElementById("task-site-list")).listStyleType,
+      };
+    });
+    check(emptyStyle.text.includes("还没有候选站点") && emptyStyle.listStyle === "none",
+      "空列表应显示提示且无圆点：" + JSON.stringify(emptyStyle));
+    console.log("TASK SITES UI PASS", { assertions });
+  } finally {
+    await browser.close();
+    server.close();
+  }
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

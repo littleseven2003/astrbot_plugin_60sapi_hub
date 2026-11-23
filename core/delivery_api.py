@@ -11,6 +11,7 @@ from .delivery import (
     IMAGE_MODEL_SECTIONS,
     DeliveryCapacityError,
     DeliveryClosedError,
+    DeliveryConfirmationStaleError,
     DeliveryNoContentError,
     DeliveryRevisionConflictError,
     DeliveryService,
@@ -18,17 +19,13 @@ from .delivery import (
     DeliveryTimeoutError,
     DeliveryValidationError,
 )
-from .profiles import (
-    ContentProfileService,
-    ProfileNotFoundError,
-    ProfileStorageError,
-)
 from .site_store import (
     DeliveryRecordNotFoundError,
     SiteStore,
     StoredDeliveryExecution,
 )
 from .sites import SiteNotFoundError, SiteService, SiteStorageError
+from .content_plan import plan_payload
 from .tasks import (
     PushTaskService,
     TaskNotFoundError,
@@ -43,38 +40,36 @@ class DeliveryApiResult:
     body: dict[str, Any]
 
 
+# 确认页载荷格式：候选快照去掉 enabled 后必须重新审阅一次。
+# 旧页面携带的确认没有版本号，提交时按过期处理。
+CONFIRMATION_FORMAT_VERSION = 2
+
+
 class DeliveryApi:
     def __init__(
         self,
         *,
         delivery: DeliveryService,
         tasks: PushTaskService,
-        profiles: ContentProfileService,
         sites: SiteService,
         store: SiteStore,
         inspector: object,
     ) -> None:
         self._delivery = delivery
         self._tasks = tasks
-        self._profiles = profiles
         self._sites = sites
         self._store = store
         self._inspector = inspector
 
     async def preview(self, task_id: str) -> DeliveryApiResult:
         try:
-            task = await self._tasks.get_task(task_id)
-            profile = await self._profiles.get_profile(task.profile_id)
-            site = await self._sites.get_site(profile.site_id)
+            config = await self._tasks.get_config_snapshot(task_id)
+            task = config.task
         except TaskValidationError as exc:
             return _validation_error(exc)
         except TaskNotFoundError:
             return _not_found_error("推送任务不存在。")
-        except ProfileNotFoundError:
-            return _not_found_error("任务引用的内容组合不存在。")
-        except SiteNotFoundError:
-            return _not_found_error("组合引用的站点不存在。")
-        except (TaskStorageError, ProfileStorageError, SiteStorageError):
+        except (TaskStorageError, SiteStorageError):
             return _storage_error()
         except Exception:
             return _internal_error()
@@ -97,33 +92,111 @@ class DeliveryApi:
                 "valid": valid,
                 "reason": info.get("reason"),
             })
-        can_deliver = bool(targets) and site.enabled and all_valid
+        # 站点级启用已移除：候选仍存在就进入正常的选择流程。
+        candidate_ids = tuple(task.sites)
+        candidates: list[object] = []
+        for candidate_id in candidate_ids:
+            try:
+                candidates.append(await self._sites.get_site(candidate_id))
+            except SiteNotFoundError:
+                # 站点确实已删除：确认页按“候选不可用/只发告警”展示。
+                continue
+            except SiteStorageError:
+                # 存储读取失败不是缺站：保留 503，让用户识别存储故障。
+                return _storage_error()
+            except Exception:
+                return _internal_error()
+        usable = list(candidates)
+        # 全部候选不可用时仍允许管理员手动验证：这次投递会发送异常提示，
+        # 而不是内容；确认页需要把这个语义说清楚。
+        alert_only = bool(targets) and all_valid and not usable
+        can_deliver = bool(targets) and all_valid
         reason = None
         if not targets:
             reason = "empty_targets"
-        elif not site.enabled:
-            reason = "site_disabled"
         elif not all_valid:
             reason = "invalid_targets"
+        elif not usable:
+            reason = "content_unavailable"
         return _ok({
             "task_id": task.id,
             "task_name": task.name,
             "task_revision": task.revision,
-            "profile_id": profile.id,
-            "profile_name": profile.name,
-            "profile_revision": profile.revision,
-            "site_id": site.id,
-            "site_name": site.name,
-            "site_revision": site.revision,
-            "site_enabled": site.enabled,
+            "plan_revision": config.plan_revision,
+            "items": plan_payload(task.items),
+            # 任务不再绑定站点：站点字段仅为旧前端保留，一律为空，
+            # 真实来源由 candidate_sites 按尝试顺序给出。
+            "site_id": None,
+            "site_name": None,
+            "site_revision": None,
+            "site_enabled": None,
+            "alert_only": alert_only,
+            "candidate_snapshot": [
+                {
+                    "id": item.id,
+                    "revision": item.revision,
+                }
+                for item in candidates
+            ],
+            "candidate_sites": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                }
+                for item in candidates
+            ],
             "output_format": task.output_format,
             "output_label": task.output_label,
             "targets": targets,
             "can_deliver": can_deliver,
             "reason": reason,
+            "confirmation_version": CONFIRMATION_FORMAT_VERSION,
             "content_policy": "fresh",
         })
 
+    async def _confirmation_stale(self, task_id: str, expected, alert_only):
+        """确认页与实际候选状态是否已经不一致。"""
+        if not isinstance(expected, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("id"), str)
+            for item in expected
+        ):
+            return {"reason": "invalid_confirmation"}
+        try:
+            task = await self._tasks.get_task(task_id)
+        except TaskNotFoundError:
+            return {"reason": "task_changed"}
+        except (TaskStorageError, SiteStorageError):
+            raise
+        except Exception:
+            raise
+        current: list[dict] = []
+        for site_id in tuple(task.sites):
+            try:
+                site = await self._sites.get_site(site_id)
+            except SiteNotFoundError:
+                continue
+            except SiteStorageError:
+                raise
+            except Exception:
+                raise
+            current.append({
+                "id": site.id,
+                "revision": site.revision,
+            })
+        confirmed = [
+            {
+                "id": item.get("id"),
+                "revision": item.get("revision"),
+            }
+            for item in expected
+        ]
+        if current != confirmed:
+            return {"reason": "candidates_changed"}
+        # 站点级启用已移除：没有可用候选（全部被删除）时才走异常提示。
+        now_alert_only = not current
+        if isinstance(alert_only, bool) and alert_only != now_alert_only:
+            return {"reason": "intent_changed"}
+        return None
     async def execute(self, task_id: str, payload: object) -> DeliveryApiResult:
         data = payload if isinstance(payload, dict) else None
         if data is None:
@@ -131,22 +204,80 @@ class DeliveryApi:
         execution_id = data.get("execution_id")
         if not isinstance(execution_id, str) or not execution_id.strip():
             return _error(400, "execution_id 必须是非空字符串。", code="validation_error", data={"field": "execution_id"})
-        revisions = {}
-        for field in (
-            "expected_task_revision",
-            "expected_profile_revision",
-            "expected_site_revision",
+        task_revision = data.get("expected_task_revision")
+        if type(task_revision) is not int or task_revision < 1:
+            return _error(400, "expected_task_revision 必须是正整数。", code="validation_error", data={"field": "expected_task_revision"})
+        # 栏目已属于任务本身：旧客户端仍传 expected_profile_revision，
+        # 只校验格式，版本一致性由 expected_task_revision 覆盖。
+        legacy_revision = data.get("expected_profile_revision")
+        if legacy_revision is not None and (
+            type(legacy_revision) is not int or legacy_revision < 1
         ):
-            value = data.get(field)
-            if type(value) is not int or value < 1:
-                return _error(400, f"{field} 必须是正整数。", code="validation_error", data={"field": field})
-            revisions[field] = value
+            return _error(400, "expected_profile_revision 必须是正整数。", code="validation_error", data={"field": "expected_profile_revision"})
+        # 组合不再绑定站点，站点版本不再是必填；旧客户端仍传时只校验格式。
+        site_revision = data.get("expected_site_revision")
+        if site_revision is not None and (
+            type(site_revision) is not int or site_revision < 1
+        ):
+            return _error(400, "expected_site_revision 必须是正整数。", code="validation_error", data={"field": "expected_site_revision"})
+        # 幂等优先：同一 execution_id 已完成时直接取回原记录，
+        # 不因后来候选变化而误导用户重新发送。
+        try:
+            existing = await self._store.get_delivery_execution(
+                execution_id.strip(),
+            )
+        except Exception:
+            existing = None
+        if existing is not None and existing.task_id == task_id:
+            return _ok(_execution_dict(existing))
+
+        expected_candidates = data.get("expected_candidates")
+        expected_alert_only = data.get("expected_alert_only")
+        if (
+            expected_candidates is not None
+            and data.get("confirmation_version") != CONFIRMATION_FORMAT_VERSION
+        ):
+            # 升级前的确认页不知道候选快照形状已变化，必须重新审阅。
+            return _error(
+                409,
+                "确认页格式已更新，请重新打开确认页审阅后再确认。",
+                code="confirmation_stale",
+                data={"reason": "confirmation_version_changed", "sent": False},
+            )
+        if expected_candidates is not None:
+            try:
+                stale = await self._confirmation_stale(
+                    task_id, expected_candidates, expected_alert_only,
+                )
+            except (TaskStorageError, SiteStorageError):
+                return _storage_error()
+            except Exception:
+                return _internal_error()
+            if stale is not None:
+                return _error(
+                    409,
+                    "确认后配置或候选站点状态已变化，请重新审阅后再确认。",
+                    code="confirmation_stale",
+                    data=stale,
+                )
         try:
             execution = await self._delivery.execute(
                 task_id, execution_id.strip(),
-                expected_task_revision=revisions["expected_task_revision"],
-                expected_profile_revision=revisions["expected_profile_revision"],
-                expected_site_revision=revisions["expected_site_revision"],
+                expected_task_revision=task_revision,
+                # expected_site_revision 仍被接受以兼容旧客户端，但站点不再
+                # 归属组合：候选集合由 expected_candidates 整体校验。
+                expected_candidates=expected_candidates,
+                expected_alert_only=(
+                    expected_alert_only
+                    if isinstance(expected_alert_only, bool) else None
+                ),
+            )
+        except DeliveryConfirmationStaleError:
+            return _error(
+                409,
+                "确认后配置或候选站点状态已变化，请重新审阅后再确认。",
+                code="confirmation_stale",
+                data={"reason": "changed_after_confirmation", "sent": False},
             )
         except DeliveryRevisionConflictError as exc:
             return _error(
@@ -274,6 +405,7 @@ def _execution_summary(e: StoredDeliveryExecution) -> dict[str, Any]:
             e, image_model, record_complete,
         ),
         "failed_section_count": len(failed_sections),
+        "source_count": _distinct_source_site_count(e.content_sources_json),
         "image_partial": _image_partial(e),
     }
 
@@ -314,6 +446,8 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "profile_id": e.profile_id,
         "profile_revision": e.profile_revision,
         "site_id": e.site_id,
+        # 拼合内容的执行记录没有单一站点，显示为「多站点」。
+        "site_name": "多站点" if not e.site_id else None,
         "site_revision": e.site_revision,
         "output_format": e.output_format,
         "content_status": e.content_status,
@@ -324,6 +458,9 @@ def _execution_dict(e: StoredDeliveryExecution) -> dict[str, Any]:
         "updated_at": e.updated_at,
         "failed_sections": failed_sections,
         "failed_section_count": len(failed_sections),
+        "source_mode": _project_source_mode(e),
+        "source_count": _distinct_source_site_count(e.content_sources_json),
+        "content_sources": _project_content_sources(e.content_sources_json),
         "image_model": image_model,
         "record_complete": record_complete,
         "image_count": len(e.pages),
@@ -382,6 +519,68 @@ def _safe_label(value: object) -> str:
         for char in value
     )
     return " ".join(text.split()).strip()[:120]
+
+
+def _distinct_source_site_count(raw: object) -> int:
+    return len({
+        entry["site_id"] for entry in _project_content_sources(raw)
+    })
+
+
+def _project_source_mode(e: StoredDeliveryExecution) -> str | None:
+    """来源模式的兼容投影：新记录看逐栏来源，旧记录只能沿用空站点推断。"""
+    sources = _project_content_sources(e.content_sources_json)
+    if sources:
+        # 同一站点提供多个栏目仍然是单站内容；只看不同来源站点数。
+        site_ids = {entry["site_id"] for entry in sources}
+        return "multi" if len(site_ids) > 1 else "single"
+    if e.content_status == "failed":
+        # 采集失败只剩异常提示，没有内容来源；不能沿用主候选的站点。
+        return None
+    if not e.content_sources_json and not e.site_id:
+        return "multi"
+    return "single" if e.site_id else None
+
+
+def _project_content_sources(raw: object) -> list[dict[str, Any]]:
+    """把逐栏来源 JSON 投影成安全字段；历史/坏数据按空列表处理。"""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in decoded[:_MAX_FAILED_SECTIONS]:
+        if not isinstance(entry, dict):
+            continue
+        content_type = entry.get("content_type")
+        if not isinstance(content_type, str) or not _SAFE_CODE_RE.fullmatch(
+            content_type,
+        ):
+            continue
+        site_id = entry.get("site_id")
+        if not isinstance(site_id, str) or not site_id or len(site_id) > 64:
+            continue
+        if any(ord(char) < 32 or ord(char) == 127 for char in site_id):
+            continue
+        revision = entry.get("revision")
+        revision = revision if type(revision) is int and revision >= 0 else None
+        key = (content_type, site_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            "content_type": content_type,
+            "label": _safe_label(entry.get("label")),
+            "site_id": site_id,
+            "site_name": _safe_label(entry.get("site_name")),
+            "revision": revision,
+        })
+    return result
 
 
 def _project_failed_sections(raw: object) -> list[dict[str, Any]]:

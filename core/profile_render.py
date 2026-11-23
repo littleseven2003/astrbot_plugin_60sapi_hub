@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from .source_url import source_display_text
+
 _STATUS_TEXT = {
     "complete": "完整成功",
     "partial": "部分成功",
@@ -29,9 +31,13 @@ def render_profile_text(data: Any) -> str:
     if not isinstance(data, dict):
         raise ValueError("组合预览数据格式异常")
     lines: list[str] = []
-    name = _plain_inline(data.get("profile_name")) or "未知组合"
+    name = (
+        _plain_inline(data.get("task_name"))
+        or _plain_inline(data.get("profile_name"))
+        or "未知任务"
+    )
     site = _plain_inline(data.get("site_name")) or "未知站点"
-    lines.append(f"组合：{name}")
+    lines.append(f"任务：{name}")
     lines.append(f"来源站点：{site}")
     lines.append(f"状态：{_status_text(data)}")
     lines.append("")
@@ -51,7 +57,11 @@ def render_profile_markdown(data: Any) -> str:
     if not isinstance(data, dict):
         raise ValueError("组合预览数据格式异常")
     lines: list[str] = []
-    name = _md_inline(data.get("profile_name")) or "未知组合"
+    name = (
+        _md_inline(data.get("task_name"))
+        or _md_inline(data.get("profile_name"))
+        or "未知任务"
+    )
     site = _md_inline(data.get("site_name")) or "未知站点"
     lines.append(f"# {name}")
     lines.append("")
@@ -83,6 +93,7 @@ def _text_section(section: dict[str, Any]) -> list[str]:
         return lines
 
     lines.append(f"获取时间：{_clean(section.get('fetched_at')) or '未知'}")
+    lines.append(f"数据来源：{_source_text(section)}")
     lines.append(f"展示条数：{_display_count(section)}")
     content_date = _plain_inline(section.get("content_date"))
     if content_date:
@@ -123,6 +134,7 @@ def _markdown_section(section: dict[str, Any]) -> list[str]:
         return lines
 
     lines.append(f"- 获取时间：{_clean(section.get('fetched_at')) or '未知'}")
+    lines.append(f"- 数据来源：{_markdown_source(section)}")
     lines.append(f"- 展示条数：{_display_count(section)}")
     content_date = _md_inline(section.get("content_date"))
     if content_date:
@@ -156,6 +168,24 @@ def _markdown_section(section: dict[str, Any]) -> list[str]:
             else:
                 lines.append(f"   - 链接：{_md_inline(link)}")
     return lines
+
+
+def _source_text(section: dict[str, Any]) -> str:
+    """公开实例只写域名，自建站点只写“自建服务”。"""
+    return source_display_text(
+        section.get("source_url"),
+        section.get("source_kind"),
+    )
+
+
+def _markdown_source(section: dict[str, Any]) -> str:
+    """Markdown 与文字、图片使用同一条来源规则：公开只写域名。"""
+    text = source_display_text(
+        section.get("source_url"),
+        section.get("source_kind"),
+    )
+    # 域名可能是 IPv6 方括号形式，转义后避免被 Markdown 当作链接引用。
+    return text.replace("[", "\\[").replace("]", "\\]")
 
 
 def _items(section: dict[str, Any]) -> list[dict[str, Any]]:

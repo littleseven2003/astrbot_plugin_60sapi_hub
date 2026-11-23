@@ -15,9 +15,8 @@ from core.content_client import ContentHttpClient
 from core.content_service import ContentService
 from core.image_service import ProfileImageService
 from core.image_snapshots import ImageSnapshot, ImageSnapshotStore
-from core.profile_api import ProfileApi, ProfileApiResult
+from core.plan_preview import PlanPreview, PlanPreviewResult
 from core.profile_image import FontUnavailableError, find_cjk_font
-from core.profiles import ContentProfileService, ProfileCreate
 from core.sites import SiteCreate, SiteService
 from core.tasks import PushTaskService, TaskCreate
 
@@ -48,8 +47,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.png_dir = Path(tempfile.mkdtemp(prefix="60sapi-chat-image-pages-"))
         self.sites = SiteService(Path(self.tmp.name) / "image.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.calls = []
         self.fail_upstream = False
         self.partial = False
@@ -76,20 +74,18 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.content.open()
         self.snapshots = RecordingStore()
         self.image_service = ProfileImageService()
-        self.api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        self.api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=self.snapshots, image_service=self.image_service,
         )
         self.site = await self.sites.create_site(SiteCreate(
             name="图片查询站点", base_url="http://example.test/img",
-            enabled=True, timeout_seconds=5,
-        ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="图片查询组合", site_id=self.site.id,
-            items=[{"content_type": "daily_news", "params": {}, "limit": 100}],
+            timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
-            name="图片查询任务", profile_id=self.profile.id,
+            name="图片查询任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": 100}],
+            sites=[self.site.id],
             output_format="markdown", umos=["bot:GroupMessage:g"],
         ))
         self.query = ChatImageQuery(self.tasks, self.api)
@@ -105,7 +101,7 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_real_section_long_image_cache_and_order(self) -> None:
         reply = await self.query.query("bot:GroupMessage:g", self.task.id)
         self.assertIsInstance(reply, object)
-        # 一个栏目 = 一张长图：该组合只有一个栏目，因此只有一张图。
+        # 一个栏目 = 一张长图：该任务只有一个栏目，因此只有一张图。
         self.assertEqual(reply.image_count, 1)
         self.assertIn(f"共 {reply.image_count} 张栏目长图", reply.text)
         self.assertNotIn("页", reply.text)
@@ -132,26 +128,25 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(record.owner.startswith("chat:") for record in self.snapshots.records))
         snapshot_id = self.snapshots.records[-1].id
         denied = await self.api.generate_image(
-            self.profile.id, {"snapshot_id": snapshot_id}, owner="dashboard-owner",
+            self.task.id, {"snapshot_id": snapshot_id}, owner="dashboard-owner",
         )
         self.assertEqual(denied.status_code, 403)
 
     @unittest.skipUnless(has_font(), "no CJK font available")
-    async def test_partial_failure_still_renders_images(self) -> None:
+    async def test_partial_failure_is_not_rendered(self) -> None:
         self.partial = True
-        profile = await self.profiles.create_profile(ProfileCreate(
-            name="部分失败组合", site_id=self.site.id,
+        task = await self.tasks.create_task(TaskCreate(
+            name="部分失败任务",
             items=[
                 {"content_type": "daily_news", "params": {}, "limit": 20},
                 {"content_type": "bilibili_hot", "params": {}, "limit": 20},
             ],
-        ))
-        task = await self.tasks.create_task(TaskCreate(
-            name="部分失败任务", profile_id=profile.id,
+            sites=[self.site.id],
             output_format="text", umos=["bot:GroupMessage:g"],
         ))
         reply = await self.query.query("bot:GroupMessage:g", task.id)
-        self.assertGreaterEqual(reply.image_count, 1)
+        # 同一站点缺一个栏目就不算满足，聊天不渲染残缺长图。
+        self.assertEqual(reply, IMAGE_FAILED_TEXT)
         self.assertTrue(any(path.endswith("/v2/bili") for path in self.calls))
 
     async def test_all_failed_returns_safe_text(self) -> None:
@@ -163,8 +158,8 @@ class ChatImageIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_font_missing_returns_safe_text(self) -> None:
         from core.image_snapshots import ImageSnapshot, ImageSnapshotStore
         broken_service = ProfileImageService(font_path="/definitely/missing/font.ttf")
-        broken_api = ProfileApi(
-            self.profiles, self.content, self.sites,
+        broken_api = PlanPreview(
+            self.tasks, self.content, self.sites,
             image_snapshots=ImageSnapshotStore(), image_service=broken_service,
         )
         try:
@@ -189,19 +184,21 @@ class StubImageApi:
         self.data = data
         self.preview_calls = 0
         self.image_calls = 0
+        self.image_plan_ids: list[str] = []
 
-    async def preview_profile(self, payload, *, owner=None):
+    async def preview_site(self, payload, *, owner=None, site_id=None):
         self.preview_calls += 1
-        return ProfileApiResult(200, {"status": "ok", "data": {
+        return PlanPreviewResult(200, {"status": "ok", "data": {
             "status": "complete",
             "outputs": {"text": "正文", "markdown": "# 正文"},
             "failed_sections": [],
             "image_snapshot": {"id": "snap-contract"},
         }})
 
-    async def generate_image(self, profile_id, payload, *, owner=None):
+    async def generate_image(self, task_id, payload, *, owner=None, site_id=None):
         self.image_calls += 1
-        return ProfileApiResult(200, {"status": "ok", "data": self.data})
+        self.image_plan_ids.append(task_id)
+        return PlanPreviewResult(200, {"status": "ok", "data": self.data})
 
 
 def image_entry(index, label, *, png=None, status="success", error=None):
@@ -223,18 +220,15 @@ class ChatImageSectionContractTest(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.sites = SiteService(Path(self.tmp.name) / "contract.sqlite3")
         await self.sites.open()
-        self.profiles = ContentProfileService(self.sites)
-        self.tasks = PushTaskService(self.profiles, self.sites.store)
+        self.tasks = PushTaskService(self.sites.store)
         self.site = await self.sites.create_site(SiteCreate(
             name="契约站点", base_url="http://example.test/contract",
-            enabled=True, timeout_seconds=5,
-        ))
-        self.profile = await self.profiles.create_profile(ProfileCreate(
-            name="契约组合", site_id=self.site.id,
-            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            timeout_seconds=5,
         ))
         self.task = await self.tasks.create_task(TaskCreate(
-            name="契约任务", profile_id=self.profile.id,
+            name="契约任务",
+            items=[{"content_type": "daily_news", "params": {}, "limit": None}],
+            sites=[self.site.id],
             output_format="image", umos=["bot:GroupMessage:g"],
         ))
 
@@ -262,6 +256,8 @@ class ChatImageSectionContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("共 2 张栏目长图", reply.text)
         self.assertNotIn("页", reply.text)
         self.assertEqual((api.preview_calls, api.image_calls), (1, 1))
+        # 图片 rerender 用任务 id（组合已并入任务）。
+        self.assertEqual(api.image_plan_ids, [self.task.id])
 
     async def test_failed_section_reported_without_fake_image(self) -> None:
         png = section_png(b"only")
